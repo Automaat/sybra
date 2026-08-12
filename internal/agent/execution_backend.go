@@ -49,26 +49,45 @@ type ExecutionEventSink interface {
 	EmitExecutionEvent(context.Context, ExecutionHandle, ExecutionEvent)
 }
 
+// ExecutionSpec is the immutable process identity handed to a backend. It is
+// deliberately separate from Agent: canonical agent state belongs to Manager
+// and can only be changed in response to events delivered through Sink.
+type ExecutionSpec struct {
+	ID              string
+	TaskID          string
+	Mode            string
+	Provider        string
+	Model           string
+	ReasoningEffort string
+}
+
+func executionSpecFromAgent(a *Agent) ExecutionSpec {
+	return ExecutionSpec{
+		ID: a.ID, TaskID: a.TaskID, Mode: a.Mode, Provider: a.Provider,
+		Model: a.Model, ReasoningEffort: a.ReasoningEffort,
+	}
+}
+
 // ExecutionStart describes one already-admitted run. Provider choice, budget
 // checks, task generation fencing, and capacity admission have all happened
-// before Start is called. Agent and Config are execution inputs, not authority
-// to mutate task or workflow state.
+// before Start is called. Spec and Config are immutable execution inputs, not
+// authority to mutate canonical agent, task, or workflow state.
 //
 // runExisting is the compatibility bridge for the current local and Kubernetes
 // implementations while their provider-specific loops remain in this package.
 // A portable/fake backend ignores it and reports all observations through Sink.
 type ExecutionStart struct {
-	Agent    *Agent
+	Spec     ExecutionSpec
 	Config   RunConfig
 	Provider Provider
 	Sink     ExecutionEventSink
 
-	runExisting func(context.Context)
-	stop        func()
-	steer       func(string) error
-	approve     func(string, bool) error
-	inspect     func() ExecutionInspection
-	recover     func(context.Context, ExecutionEventSink) error
+	runExisting  func(context.Context, ExecutionEventSink, ExecutionHandle)
+	stop         func(context.Context) error
+	steer        func(string) error
+	approve      func(string, bool) error
+	inspect      func() ExecutionInspection
+	startCommand string
 }
 
 // ExecutionInspection is the backend's point-in-time process view. State is
@@ -99,11 +118,32 @@ type ExecutionBackend interface {
 }
 
 type executionControl struct {
-	stop    func()
+	stop    func(context.Context) error
 	steer   func(string) error
 	approve func(string, bool) error
 	inspect func() ExecutionInspection
-	recover func(context.Context, ExecutionEventSink) error
+	sink    *executionSinkRelay
+}
+
+// executionSinkRelay lets recovery atomically attach a new observer without
+// teaching a backend anything about Manager or canonical state.
+type executionSinkRelay struct {
+	mu   sync.RWMutex
+	sink ExecutionEventSink
+}
+
+func (r *executionSinkRelay) EmitExecutionEvent(ctx context.Context, handle ExecutionHandle, event ExecutionEvent) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.sink != nil {
+		r.sink.EmitExecutionEvent(ctx, handle, event)
+	}
+}
+
+func (r *executionSinkRelay) attach(sink ExecutionEventSink) {
+	r.mu.Lock()
+	r.sink = sink
+	r.mu.Unlock()
 }
 
 // callbackExecutionBackend adapts the existing in-process and Kubernetes
@@ -121,10 +161,12 @@ func newCallbackExecutionBackend(name string) *callbackExecutionBackend {
 }
 
 func (b *callbackExecutionBackend) Start(ctx context.Context, start ExecutionStart) (ExecutionHandle, error) {
-	if start.Agent == nil || start.runExisting == nil {
+	if start.Spec.ID == "" || start.runExisting == nil || start.Sink == nil {
 		return "", errors.New("execution backend: incomplete start request")
 	}
-	handle := ExecutionHandle(b.name + ":" + start.Agent.ID)
+	handle := ExecutionHandle(b.name + ":" + start.Spec.ID)
+	relay := &executionSinkRelay{sink: start.Sink}
+	start.Sink = relay
 	b.mu.Lock()
 	if _, exists := b.runs[handle]; exists {
 		b.mu.Unlock()
@@ -132,15 +174,13 @@ func (b *callbackExecutionBackend) Start(ctx context.Context, start ExecutionSta
 	}
 	b.runs[handle] = executionControl{
 		stop: start.stop, steer: start.steer, approve: start.approve,
-		inspect: start.inspect, recover: start.recover,
+		inspect: start.inspect, sink: relay,
 	}
 	b.mu.Unlock()
 
-	if start.Sink != nil {
-		start.Sink.EmitExecutionEvent(ctx, handle, ExecutionEvent{Kind: ExecutionStarted})
-	}
+	start.Sink.EmitExecutionEvent(ctx, handle, ExecutionEvent{Kind: ExecutionStarted, Command: start.startCommand})
 	go func() {
-		start.runExisting(ctx)
+		start.runExisting(ctx, start.Sink, handle)
 		b.mu.Lock()
 		delete(b.runs, handle)
 		b.mu.Unlock()
@@ -163,7 +203,7 @@ func (b *callbackExecutionBackend) lookup(handle ExecutionHandle) (executionCont
 	return control, ok
 }
 
-func (b *callbackExecutionBackend) Stop(_ context.Context, handle ExecutionHandle) error {
+func (b *callbackExecutionBackend) Stop(ctx context.Context, handle ExecutionHandle) error {
 	control, ok := b.lookup(handle)
 	if !ok {
 		return nil
@@ -171,8 +211,7 @@ func (b *callbackExecutionBackend) Stop(_ context.Context, handle ExecutionHandl
 	if control.stop == nil {
 		return ErrExecutionControlUnsupported
 	}
-	control.stop()
-	return nil
+	return control.stop(ctx)
 }
 
 func (b *callbackExecutionBackend) Steer(_ context.Context, handle ExecutionHandle, text string) error {
@@ -210,13 +249,14 @@ func (b *callbackExecutionBackend) Inspect(_ context.Context, handle ExecutionHa
 	return inspection, nil
 }
 
-func (b *callbackExecutionBackend) Recover(ctx context.Context, handle ExecutionHandle, sink ExecutionEventSink) error {
+func (b *callbackExecutionBackend) Recover(_ context.Context, handle ExecutionHandle, sink ExecutionEventSink) error {
 	control, err := b.control(handle)
 	if err != nil {
 		return err
 	}
-	if control.recover == nil {
-		return ErrExecutionControlUnsupported
+	if sink == nil {
+		return errors.New("execution backend: recovery sink is required")
 	}
-	return control.recover(ctx, sink)
+	control.sink.attach(sink)
+	return nil
 }

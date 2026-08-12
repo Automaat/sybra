@@ -2096,8 +2096,9 @@ func (m *Manager) startAgentRunner(ctx context.Context, a *Agent, cfg RunConfig,
 	lastEmit := time.Time{}
 	sink := &managerExecutionSink{manager: m, agent: a, outputStart: len(a.Output()), lastEmit: &lastEmit}
 	start := ExecutionStart{
-		Agent: a, Config: cfg, Provider: prov, Sink: sink,
-		stop:    func() { m.stopLocalAgent(a) },
+		Spec:   executionSpecFromAgent(a),
+		Config: cfg, Provider: prov, Sink: sink,
+		stop:    func(context.Context) error { m.stopLocalAgent(a); return nil },
 		steer:   func(text string) error { return m.sendHeadlessSteerMessage(a, text) },
 		approve: m.respondExecutionApproval,
 		inspect: func() ExecutionInspection {
@@ -2106,7 +2107,9 @@ func (m *Manager) startAgentRunner(ctx context.Context, a *Agent, cfg RunConfig,
 		},
 	}
 	if backend == m.localExecutionBackend {
-		start.runExisting = func(runCtx context.Context) { m.runHeadless(runCtx, a, cfg) }
+		start.runExisting = func(runCtx context.Context, _ ExecutionEventSink, _ ExecutionHandle) {
+			m.runHeadless(runCtx, a, cfg)
+		}
 	}
 	handle, err := backend.Start(ctx, start)
 	if err != nil {

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -12,6 +13,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/Automaat/sybra/internal/providerid"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -112,7 +116,7 @@ func TestK8sRunnerBaseEnvProjectsSecretRefs(t *testing.T) {
 			SecretKey:  "anthropic_api_key",
 		}},
 	})
-	env := r.baseEnv(&Agent{ID: "agent-1", TaskID: "task-1"}, RunConfig{Prompt: "hello"})
+	env := r.baseEnv(ExecutionSpec{ID: "agent-1", TaskID: "task-1"}, RunConfig{Prompt: "hello"})
 	if len(env) != 5 {
 		t.Fatalf("env len = %d, want 5: %#v", len(env), env)
 	}
@@ -171,7 +175,7 @@ func TestK8sCreateJobBuildsTypedManifest(t *testing.T) {
 	})
 
 	a := &Agent{ID: "agent-1", TaskID: "owner/repo"}
-	if err := r.createJob(t.Context(), "sybra-agent-agent-1", a, RunConfig{Prompt: "hello"}); err != nil {
+	if err := r.createJob(t.Context(), "sybra-agent-agent-1", executionSpecFromAgent(a), RunConfig{Prompt: "hello"}); err != nil {
 		t.Fatalf("createJob: %v", err)
 	}
 	actions := client.Actions()
@@ -217,7 +221,7 @@ func TestK8sProviderInvocationRunsInPodWorkdir(t *testing.T) {
 	cfg := RunConfig{Provider: "codex", Mode: "headless", Prompt: "hello", RequirePermissions: false}
 	a := &Agent{ID: "agent-1", TaskID: "task-1", Provider: "codex", Mode: "headless", Model: "gpt-5.5"}
 
-	inv, err := buildK8sProviderInvocation(a, cfg, defaultK8sWorkdir)
+	inv, err := buildK8sProviderInvocation(executionSpecFromAgent(a), cfg, defaultK8sWorkdir)
 	if err != nil {
 		t.Fatalf("buildK8sProviderInvocation: %v", err)
 	}
@@ -237,7 +241,7 @@ func TestK8sProviderInvocationSupportsOpenCode(t *testing.T) {
 		Model:    "openrouter/deepseek/deepseek-v4-flash",
 	}
 
-	inv, err := buildK8sProviderInvocation(a, cfg, defaultK8sWorkdir)
+	inv, err := buildK8sProviderInvocation(executionSpecFromAgent(a), cfg, defaultK8sWorkdir)
 	if err != nil {
 		t.Fatalf("buildK8sProviderInvocation: %v", err)
 	}
@@ -266,7 +270,7 @@ func TestK8sProviderInvocationDoesNotResumeStatelessPodSession(t *testing.T) {
 	}
 	a.SetSessionID("ses_previous")
 
-	inv, err := buildK8sProviderInvocation(a, cfg, defaultK8sWorkdir)
+	inv, err := buildK8sProviderInvocation(executionSpecFromAgent(a), cfg, defaultK8sWorkdir)
 	if err != nil {
 		t.Fatalf("buildK8sProviderInvocation: %v", err)
 	}
@@ -425,7 +429,7 @@ func TestK8sRunPatchesFailedJobTTL(t *testing.T) {
 
 	a := &Agent{ID: "test-agent", TaskID: "task-1", Provider: "claude"}
 	sink := &recordingExecutionSink{}
-	r.Run(t.Context(), "kubernetes:test-agent", ExecutionStart{Agent: a, Config: RunConfig{}, Sink: sink})
+	r.Run(t.Context(), "kubernetes:test-agent", ExecutionStart{Spec: executionSpecFromAgent(a), Config: RunConfig{}, Sink: sink})
 
 	patchAction := lastPatchAction(client.Actions())
 	if patchAction == nil {
@@ -464,11 +468,71 @@ func TestK8sRunSkipsPatchWhenFailedTTLMatchesTTL(t *testing.T) {
 
 	a := &Agent{ID: "test-agent", TaskID: "task-1", Provider: "claude"}
 	sink := &recordingExecutionSink{}
-	r.Run(t.Context(), "kubernetes:test-agent", ExecutionStart{Agent: a, Config: RunConfig{}, Sink: sink})
+	r.Run(t.Context(), "kubernetes:test-agent", ExecutionStart{Spec: executionSpecFromAgent(a), Config: RunConfig{}, Sink: sink})
 
 	if lastPatchAction(client.Actions()) != nil {
 		t.Fatal("expected no PATCH when failedTTL equals ttl — the Job already has that TTL from creation")
 	}
+}
+
+func TestK8sExecutionBackendStopDeletesJobAndRecoveryObservesCancellation(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	runner := newFakeK8sJobRunner(client, nil, K8sJobRunnerConfig{Namespace: "sybra-poc"})
+	backend := &k8sExecutionBackend{
+		callbackExecutionBackend: newCallbackExecutionBackend("kubernetes"),
+		runner:                   runner,
+	}
+	runCtx, cancel := context.WithCancel(t.Context())
+	initial := &recordingExecutionSink{}
+	handle, err := backend.Start(runCtx, ExecutionStart{
+		Spec:   ExecutionSpec{ID: "stop-agent", TaskID: "task-1", Provider: providerid.Claude},
+		Config: RunConfig{},
+		Sink:   initial,
+		stop: func(context.Context) error {
+			cancel()
+			return nil
+		},
+		inspect: func() ExecutionInspection {
+			return ExecutionInspection{State: "running", Agent: View{ID: "stop-agent"}}
+		},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if !pollUntil(time.Second, time.Millisecond, func() bool {
+		return hasK8sAction(client.Actions(), "create", "jobs")
+	}) {
+		t.Fatalf("Job was not created; actions = %+v", client.Actions())
+	}
+	recovered := &recordingExecutionSink{}
+	if err := backend.Recover(t.Context(), handle, recovered); err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if err := backend.Stop(t.Context(), handle); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if err := backend.Stop(t.Context(), handle); err != nil {
+		t.Fatalf("repeated Stop: %v", err)
+	}
+	if !pollUntil(time.Second, time.Millisecond, func() bool {
+		return hasK8sAction(client.Actions(), "delete", "jobs")
+	}) {
+		t.Fatalf("Stop did not delete Job; actions = %+v", client.Actions())
+	}
+	if !pollUntil(time.Second, time.Millisecond, func() bool {
+		return errors.Is(recovered.completedErr(), context.Canceled)
+	}) {
+		t.Fatalf("recovered sink did not observe cancellation; events = %+v", recovered.events)
+	}
+}
+
+func hasK8sAction(actions []k8stesting.Action, verb, resource string) bool {
+	for _, action := range actions {
+		if action.GetVerb() == verb && action.GetResource().Resource == resource {
+			return true
+		}
+	}
+	return false
 }
 
 type recordingExecutionSink struct {

@@ -26,7 +26,7 @@ func newSinkDrivenFakeBackend() *sinkDrivenFakeBackend {
 
 func (b *sinkDrivenFakeBackend) Start(ctx context.Context, start ExecutionStart) (ExecutionHandle, error) {
 	b.mu.Lock()
-	b.handle = ExecutionHandle("fake:" + start.Agent.ID)
+	b.handle = ExecutionHandle("fake:" + start.Spec.ID)
 	b.start = start
 	handle := b.handle
 	b.mu.Unlock()
@@ -72,7 +72,7 @@ func (b *sinkDrivenFakeBackend) Inspect(_ context.Context, handle ExecutionHandl
 	if handle != b.handle {
 		return ExecutionInspection{}, errors.New("unknown handle")
 	}
-	return ExecutionInspection{Handle: handle, State: "running", Agent: b.start.Agent.View()}, nil
+	return ExecutionInspection{Handle: handle, State: "running", Agent: View{ID: b.start.Spec.ID}}, nil
 }
 
 func (b *sinkDrivenFakeBackend) Recover(_ context.Context, handle ExecutionHandle, sink ExecutionEventSink) error {
@@ -192,56 +192,187 @@ func TestExecutionBackendImmediateCompletionDoesNotLeaveControlHandle(t *testing
 }
 
 func TestCallbackExecutionBackendControlConformance(t *testing.T) {
-	runExecutionBackendConformance(t, func() ExecutionBackend { return newCallbackExecutionBackend("test") })
+	runExecutionBackendConformance(t, newCallbackConformanceFixture)
 }
 
-// runExecutionBackendConformance is the reusable lifecycle suite for every
-// backend implementation, including future daemon transports.
-func runExecutionBackendConformance(t *testing.T, factory func() ExecutionBackend) {
-	t.Helper()
-	backend := factory()
+type backendConformanceFixture struct {
+	backend  ExecutionBackend
+	start    ExecutionStart
+	release  func()
+	steered  func() string
+	approved func() bool
+}
+
+type conformanceExecutionSink struct {
+	mu     sync.Mutex
+	events []ExecutionEvent
+}
+
+func (s *conformanceExecutionSink) EmitExecutionEvent(_ context.Context, _ ExecutionHandle, event ExecutionEvent) {
+	s.mu.Lock()
+	s.events = append(s.events, event)
+	s.mu.Unlock()
+}
+
+func (s *conformanceExecutionSink) snapshot() []ExecutionEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]ExecutionEvent(nil), s.events...)
+}
+
+func newCallbackConformanceFixture(_ *testing.T, sink ExecutionEventSink) backendConformanceFixture {
 	done := make(chan struct{})
-	stopped := false
+	var releaseOnce sync.Once
+	var stopOnce sync.Once
+	var mu sync.Mutex
 	steered := ""
 	approved := false
-	a := &Agent{ID: "agent-1", State: StateRunning}
-	handle, err := backend.Start(t.Context(), ExecutionStart{
-		Agent: a,
-		runExisting: func(context.Context) {
-			<-done
+	canceled := false
+	return backendConformanceFixture{
+		backend: newCallbackExecutionBackend("test"),
+		start: ExecutionStart{
+			Spec: ExecutionSpec{ID: "agent-1"},
+			Sink: sink,
+			runExisting: func(ctx context.Context, runSink ExecutionEventSink, handle ExecutionHandle) {
+				<-done
+				mu.Lock()
+				wasCanceled := canceled
+				mu.Unlock()
+				if wasCanceled {
+					return
+				}
+				runSink.EmitExecutionEvent(ctx, handle, ExecutionEvent{Kind: ExecutionOutput, Output: []byte("output")})
+				runSink.EmitExecutionEvent(ctx, handle, ExecutionEvent{Kind: ExecutionCompleted})
+			},
+			stop: func(ctx context.Context) error {
+				stopOnce.Do(func() {
+					mu.Lock()
+					canceled = true
+					mu.Unlock()
+					sink.EmitExecutionEvent(ctx, "test:agent-1", ExecutionEvent{Kind: ExecutionCompleted, Err: context.Canceled})
+					releaseOnce.Do(func() { close(done) })
+				})
+				return nil
+			},
+			steer: func(text string) error {
+				mu.Lock()
+				steered = text
+				mu.Unlock()
+				return nil
+			},
+			approve: func(_ string, answer bool) error {
+				mu.Lock()
+				approved = answer
+				mu.Unlock()
+				return nil
+			},
+			inspect: func() ExecutionInspection { return ExecutionInspection{State: "running", Agent: View{ID: "agent-1"}} },
 		},
-		stop:    func() { stopped = true },
-		steer:   func(text string) error { steered = text; return nil },
-		approve: func(_ string, answer bool) error { approved = answer; return nil },
-		inspect: func() ExecutionInspection { return ExecutionInspection{State: "running", Agent: a.View()} },
-		recover: func(context.Context, ExecutionEventSink) error { return nil },
+		release: func() { releaseOnce.Do(func() { close(done) }) },
+		steered: func() string {
+			mu.Lock()
+			defer mu.Unlock()
+			return steered
+		},
+		approved: func() bool {
+			mu.Lock()
+			defer mu.Unlock()
+			return approved
+		},
+	}
+}
+
+// runExecutionBackendConformance is backend-generic: a daemon factory can
+// provide the same observable controls without using callback adapter fields.
+func runExecutionBackendConformance(t *testing.T, factory func(*testing.T, ExecutionEventSink) backendConformanceFixture) {
+	t.Helper()
+	t.Run("ordered completion and controls", func(t *testing.T) {
+		initial := &conformanceExecutionSink{}
+		fixture := factory(t, initial)
+		handle, err := fixture.backend.Start(t.Context(), fixture.start)
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if err := fixture.backend.Steer(t.Context(), handle, "continue"); err != nil || fixture.steered() != "continue" {
+			t.Fatalf("Steer err=%v text=%q", err, fixture.steered())
+		}
+		if err := fixture.backend.RespondApproval(t.Context(), handle, "tool", true); err != nil || !fixture.approved() {
+			t.Fatalf("RespondApproval err=%v approved=%v", err, fixture.approved())
+		}
+		inspection, err := fixture.backend.Inspect(t.Context(), handle)
+		if err != nil || inspection.Handle != handle || inspection.Agent.ID != "agent-1" {
+			t.Fatalf("Inspect = %+v, err=%v", inspection, err)
+		}
+		recovered := &conformanceExecutionSink{}
+		if err := fixture.backend.Recover(t.Context(), handle, recovered); err != nil {
+			t.Fatalf("Recover: %v", err)
+		}
+		fixture.release()
+		if !pollUntil(time.Second, time.Millisecond, func() bool {
+			events := recovered.snapshot()
+			return len(events) >= 2 && events[len(events)-1].Kind == ExecutionCompleted
+		}) {
+			t.Fatalf("recovered events = %+v", recovered.snapshot())
+		}
+		initialEvents := initial.snapshot()
+		if len(initialEvents) != 1 || initialEvents[0].Kind != ExecutionStarted {
+			t.Fatalf("initial events = %+v, want only Started before recovery", initialEvents)
+		}
+		recoveredEvents := recovered.snapshot()
+		if len(recoveredEvents) != 2 || recoveredEvents[0].Kind != ExecutionOutput || recoveredEvents[1].Kind != ExecutionCompleted {
+			t.Fatalf("recovered events = %+v, want Output then exactly one Completed", recoveredEvents)
+		}
+		if err := fixture.backend.Recover(t.Context(), "unknown-handle", recovered); err == nil {
+			t.Fatal("Recover accepted an unknown handle")
+		}
 	})
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer close(done)
-	if err := backend.Steer(t.Context(), handle, "continue"); err != nil || steered != "continue" {
-		t.Fatalf("Steer err=%v text=%q", err, steered)
-	}
-	if err := backend.RespondApproval(t.Context(), handle, "tool", true); err != nil || !approved {
-		t.Fatalf("RespondApproval err=%v approved=%v", err, approved)
-	}
-	inspection, err := backend.Inspect(t.Context(), handle)
-	if err != nil || inspection.Handle != handle || inspection.Agent.ID != a.ID {
-		t.Fatalf("Inspect = %+v, err=%v", inspection, err)
-	}
-	if err := backend.Recover(t.Context(), handle, nil); err != nil {
-		t.Fatalf("Recover: %v", err)
-	}
-	if err := backend.Stop(t.Context(), handle); err != nil || !stopped {
-		t.Fatalf("Stop err=%v stopped=%v", err, stopped)
-	}
-	if err := backend.Stop(t.Context(), handle); err != nil {
-		t.Fatalf("repeated Stop must be idempotent: %v", err)
-	}
-	if err := backend.Recover(t.Context(), "unknown-handle", nil); err == nil {
-		t.Fatal("Recover accepted an unknown handle")
-	}
+
+	t.Run("start error emits nothing", func(t *testing.T) {
+		sink := &conformanceExecutionSink{}
+		fixture := factory(t, sink)
+		fixture.start.Spec.ID = ""
+		if _, err := fixture.backend.Start(t.Context(), fixture.start); err == nil {
+			t.Fatal("Start accepted an invalid request")
+		}
+		if events := sink.snapshot(); len(events) != 0 {
+			t.Fatalf("events after Start error = %+v", events)
+		}
+		fixture.release()
+	})
+
+	t.Run("stop is idempotent and cancels", func(t *testing.T) {
+		sink := &conformanceExecutionSink{}
+		fixture := factory(t, sink)
+		handle, err := fixture.backend.Start(t.Context(), fixture.start)
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if err := fixture.backend.Stop(t.Context(), handle); err != nil {
+			t.Fatalf("Stop: %v", err)
+		}
+		if err := fixture.backend.Stop(t.Context(), handle); err != nil {
+			t.Fatalf("repeated Stop: %v", err)
+		}
+		if !pollUntil(time.Second, time.Millisecond, func() bool {
+			for _, event := range sink.snapshot() {
+				if event.Kind == ExecutionCompleted && errors.Is(event.Err, context.Canceled) {
+					return true
+				}
+			}
+			return false
+		}) {
+			t.Fatalf("stop events = %+v", sink.snapshot())
+		}
+		completed := 0
+		for _, event := range sink.snapshot() {
+			if event.Kind == ExecutionCompleted {
+				completed++
+			}
+		}
+		if completed != 1 {
+			t.Fatalf("Completed count = %d, want 1", completed)
+		}
+	})
 }
 
 func TestK8sRunnerSelectedThroughExecutionBackendContract(t *testing.T) {
