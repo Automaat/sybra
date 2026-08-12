@@ -97,7 +97,7 @@ func TestValidationRejectsLeaderPathsAndCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, badPath := range []string{"/leader/worktree/file", `C:\leader\file`, `..\secrets\token`, `\\server\share`, "../escape"} {
+	for _, badPath := range []string{"/leader/worktree/file", `C:\leader\file`, `..\secrets\token`, `\\server\share`, "../escape", "safe/../secret"} {
 		bad := spec
 		bad.ExpectedOutputs = append([]ExpectedOutput(nil), spec.ExpectedOutputs...)
 		bad.ExpectedOutputs[0].Path = badPath
@@ -155,6 +155,35 @@ func TestValidateEventOrderSupportsIdempotentReplay(t *testing.T) {
 	}
 	if err := ValidateEventOrder([]EventEnvelope{event(1, "one", EventTerminal), event(2, "two", EventOutput)}); err == nil {
 		t.Fatal("post-terminal event accepted")
+	}
+	for name, mutate := range map[string]func(*EventEnvelope){
+		"run":   func(event *EventEnvelope) { event.RunID = "other" },
+		"build": func(event *EventEnvelope) { event.BuildVersion = "other" },
+		"time":  func(event *EventEnvelope) { event.ObservedAt = event.ObservedAt.Add(time.Second) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			first, replay := event(1, "one", EventStarted), event(1, "one", EventStarted)
+			mutate(&replay)
+			if err := ValidateEventOrder([]EventEnvelope{first, replay}); err == nil {
+				t.Fatal("non-exact replay accepted")
+			}
+		})
+	}
+}
+
+func TestStartCommandRejectsProcessLocalPayload(t *testing.T) {
+	now := time.Now().UTC()
+	for _, payload := range []string{
+		`{"dir":"/leader/private/worktree","extraEnv":["OPENAI_API_KEY=master"]}`,
+		`{"runSpecRef":"run-1","process":{"pid":123}}`,
+	} {
+		command := CommandEnvelope{
+			Version: CurrentVersion(), BuildVersion: "test", CommandID: "command", RunID: "run",
+			IdempotencyKey: "start", Type: CommandStart, SentAt: now, Payload: json.RawMessage(payload),
+		}
+		if err := command.Validate(); err == nil {
+			t.Fatalf("process-local start payload accepted: %s", payload)
+		}
 	}
 }
 

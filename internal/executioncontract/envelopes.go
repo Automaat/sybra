@@ -41,11 +41,46 @@ func (e CommandEnvelope) Validate() error {
 		return errors.New("execution contract: command identity, run, idempotency key, and sent time are required")
 	}
 	switch e.Type {
-	case CommandStart, CommandStop, CommandSteer, CommandApprovalResponse:
+	case CommandStart:
+		return validateStartCommandPayload(e.Payload)
+	case CommandStop, CommandSteer, CommandApprovalResponse:
 		return nil
 	default:
 		return fmt.Errorf("execution contract: unsupported command type %q", e.Type)
 	}
+}
+
+// StartCommandPayload carries either an inline validated spec or a durable
+// contract reference. Additive fields remain forward-compatible, but known
+// process-local RunConfig fields are rejected at the wire boundary.
+type StartCommandPayload struct {
+	RunSpecRef string   `json:"runSpecRef,omitempty"`
+	Spec       *RunSpec `json:"spec,omitempty"`
+}
+
+func validateStartCommandPayload(data json.RawMessage) error {
+	var fields map[string]json.RawMessage
+	if len(data) == 0 || json.Unmarshal(data, &fields) != nil {
+		return errors.New("execution contract: start command requires an object payload")
+	}
+	for name := range fields {
+		normalized := strings.ToLower(strings.NewReplacer("_", "", "-", "").Replace(name))
+		switch normalized {
+		case "dir", "sidecardir", "extraenv", "beforestart", "process", "processobject", "manager", "agent":
+			return fmt.Errorf("execution contract: process-local start field %q is forbidden", name)
+		}
+	}
+	var payload StartCommandPayload
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return fmt.Errorf("execution contract: invalid start payload: %w", err)
+	}
+	if (payload.RunSpecRef == "") == (payload.Spec == nil) {
+		return errors.New("execution contract: start command requires exactly one run spec or reference")
+	}
+	if payload.Spec != nil {
+		return payload.Spec.Validate()
+	}
+	return nil
 }
 
 type EventType string
@@ -91,18 +126,31 @@ func (e EventEnvelope) Validate() error {
 func ValidateEventOrder(events []EventEnvelope) error {
 	var last uint64
 	type identity struct {
-		id, key, payload string
-		typeID           EventType
+		version                   Version
+		build, run, id, key, body string
+		typeID                    EventType
+		observed                  time.Time
 	}
 	identities := map[uint64]identity{}
 	terminal := false
+	var streamRun, streamBuild string
+	var streamVersion Version
 	for i := range events {
 		event := &events[i]
 		if err := event.Validate(); err != nil {
 			return err
 		}
+		if i == 0 {
+			streamRun, streamBuild, streamVersion = event.RunID, event.BuildVersion, event.Version
+		} else if event.RunID != streamRun || event.BuildVersion != streamBuild || event.Version != streamVersion {
+			return errors.New("execution contract: event stream mixes run, build, or protocol identities")
+		}
+		wantIdentity := identity{
+			version: event.Version, build: event.BuildVersion, run: event.RunID, id: event.EventID,
+			key: event.IdempotencyKey, body: string(event.Payload), typeID: event.Type, observed: event.ObservedAt,
+		}
 		if got, duplicate := identities[event.Sequence]; duplicate {
-			if got != (identity{id: event.EventID, key: event.IdempotencyKey, payload: string(event.Payload), typeID: event.Type}) {
+			if got != wantIdentity {
 				return fmt.Errorf("execution contract: sequence %d reused with different event identity", event.Sequence)
 			}
 			continue
@@ -113,7 +161,7 @@ func ValidateEventOrder(events []EventEnvelope) error {
 		if event.Sequence != last+1 {
 			return fmt.Errorf("execution contract: event sequence gap: got %d after %d", event.Sequence, last)
 		}
-		identities[event.Sequence] = identity{id: event.EventID, key: event.IdempotencyKey, payload: string(event.Payload), typeID: event.Type}
+		identities[event.Sequence] = wantIdentity
 		last = event.Sequence
 		terminal = event.Type == EventTerminal
 	}

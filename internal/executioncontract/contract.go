@@ -309,7 +309,11 @@ func validRoot(root LogicalRoot) bool {
 }
 
 func logicalPath(value string) bool {
-	clean := path.Clean(strings.ReplaceAll(value, `\`, "/"))
+	normalized := strings.ReplaceAll(value, `\`, "/")
+	if slices.Contains(strings.Split(normalized, "/"), "..") {
+		return false
+	}
+	clean := path.Clean(normalized)
 	return value != "" && clean != "." && clean != ".." && !strings.HasPrefix(clean, "../") &&
 		!strings.HasPrefix(clean, "/") && !windowsAbsPath.MatchString(value)
 }
