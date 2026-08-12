@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 type sinkDrivenFakeBackend struct {
@@ -35,7 +37,7 @@ func (b *sinkDrivenFakeBackend) Start(ctx context.Context, start ExecutionStart)
 			return
 		}
 		start.Sink.EmitExecutionEvent(ctx, handle, ExecutionEvent{
-			Kind: ExecutionOutput, Provider: "claude",
+			Kind: ExecutionOutput, Provider: providerid.Claude,
 			Output: []byte(`{"type":"result","subtype":"success","result":"fake complete","session_id":"fake-session","total_cost_usd":0.01}`),
 		})
 		start.Sink.EmitExecutionEvent(ctx, handle, ExecutionEvent{Kind: ExecutionCompleted})
@@ -146,7 +148,7 @@ func TestExecutionBackendManagerGuardrailStopsOwningBackend(t *testing.T) {
 	start, handle := backend.start, backend.handle
 	backend.mu.Unlock()
 	start.Sink.EmitExecutionEvent(t.Context(), handle, ExecutionEvent{
-		Kind: ExecutionOutput, Provider: "claude",
+		Kind: ExecutionOutput, Provider: providerid.Claude,
 		Output: []byte(`{"type":"assistant","parent_tool_use_id":"fork-1","message":{"content":[{"type":"text","text":"still working"}]}}`),
 	})
 
