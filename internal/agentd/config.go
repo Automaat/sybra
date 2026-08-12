@@ -83,8 +83,9 @@ func (c *Config) Validate() error {
 	if !filepath.IsAbs(c.WorkspaceRoot) || !filepath.IsAbs(c.StateRoot) {
 		return errors.New("agentd config: workspace_root and state_root must be absolute")
 	}
-	if c.SpoolMaxBytes < 2*terminalReserveBytes {
-		return fmt.Errorf("agentd config: spool_max_bytes must be at least %d", 2*terminalReserveBytes)
+	minimumSpool := terminalEventBudgetBytes * int64(c.Capacity+1)
+	if c.SpoolMaxBytes < minimumSpool {
+		return fmt.Errorf("agentd config: spool_max_bytes must be at least %d for capacity %d", minimumSpool, c.Capacity)
 	}
 	for ref, envName := range c.SecretEnv {
 		if strings.TrimSpace(ref) == "" || strings.TrimSpace(envName) == "" || strings.TrimSpace(os.Getenv(envName)) == "" {

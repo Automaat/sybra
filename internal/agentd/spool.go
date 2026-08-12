@@ -16,31 +16,36 @@ import (
 
 var ErrSpoolExhausted = errors.New("agentd: durable spool exhausted")
 
-const terminalReserveBytes int64 = 4096
+const terminalEventBudgetBytes int64 = 4096
 
 type durableState struct {
-	NodeID          string                                       `json:"nodeId"`
-	SessionID       string                                       `json:"sessionId,omitempty"`
-	LastCommandAck  uint64                                       `json:"lastCommandAck,omitempty"`
-	Events          map[string][]executioncontract.EventEnvelope `json:"events,omitempty"`
-	RunAgents       map[string]string                            `json:"runAgents,omitempty"`
-	RunSequences    map[string]uint64                            `json:"runSequences,omitempty"`
-	Artifacts       map[string]workercontrol.ArtifactUpload      `json:"artifacts,omitempty"`
-	HandledCommands map[string]uint64                            `json:"handledCommands,omitempty"`
+	NodeID         string                                       `json:"nodeId"`
+	SessionID      string                                       `json:"sessionId,omitempty"`
+	LastCommandAck uint64                                       `json:"lastCommandAck,omitempty"`
+	Events         map[string][]executioncontract.EventEnvelope `json:"events,omitempty"`
+	RunAgents      map[string]string                            `json:"runAgents,omitempty"`
+	RunSequences   map[string]uint64                            `json:"runSequences,omitempty"`
+	OutputCounts   map[string]uint64                            `json:"outputCounts,omitempty"`
+	Artifacts      map[string]workercontrol.ArtifactUpload      `json:"artifacts,omitempty"`
 }
 
 type Spool struct {
-	mu       sync.Mutex
-	path     string
-	maxBytes int64
-	state    durableState
+	mu              sync.Mutex
+	path            string
+	maxBytes        int64
+	terminalReserve int64
+	state           durableState
 }
 
-func OpenSpool(root string, maxBytes int64) (*Spool, error) {
+func OpenSpool(root string, maxBytes int64, capacity ...int) (*Spool, error) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, err
 	}
-	s := &Spool{path: filepath.Join(root, "spool.json"), maxBytes: maxBytes}
+	runCapacity := 1
+	if len(capacity) > 0 && capacity[0] > 0 {
+		runCapacity = capacity[0]
+	}
+	s := &Spool{path: filepath.Join(root, "spool.json"), maxBytes: maxBytes, terminalReserve: terminalEventBudgetBytes * int64(runCapacity)}
 	data, err := os.ReadFile(s.path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
@@ -59,11 +64,11 @@ func OpenSpool(root string, maxBytes int64) (*Spool, error) {
 	if s.state.RunSequences == nil {
 		s.state.RunSequences = make(map[string]uint64)
 	}
+	if s.state.OutputCounts == nil {
+		s.state.OutputCounts = make(map[string]uint64)
+	}
 	if s.state.Artifacts == nil {
 		s.state.Artifacts = make(map[string]workercontrol.ArtifactUpload)
-	}
-	if s.state.HandledCommands == nil {
-		s.state.HandledCommands = make(map[string]uint64)
 	}
 	return s, nil
 }
@@ -109,15 +114,28 @@ func cloneState(in durableState) durableState {
 	maps.Copy(out.RunAgents, in.RunAgents)
 	out.RunSequences = make(map[string]uint64, len(in.RunSequences))
 	maps.Copy(out.RunSequences, in.RunSequences)
+	out.OutputCounts = make(map[string]uint64, len(in.OutputCounts))
+	maps.Copy(out.OutputCounts, in.OutputCounts)
 	out.Artifacts = make(map[string]workercontrol.ArtifactUpload, len(in.Artifacts))
 	for id := range in.Artifacts {
 		upload := in.Artifacts[id]
 		upload.Content = append([]byte(nil), upload.Content...)
 		out.Artifacts[id] = upload
 	}
-	out.HandledCommands = make(map[string]uint64, len(in.HandledCommands))
-	maps.Copy(out.HandledCommands, in.HandledCommands)
 	return out
+}
+
+func (s *Spool) capacityError() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	data, err := json.Marshal(s.state)
+	if err != nil {
+		return err
+	}
+	if int64(len(data)) >= s.nonTerminalLimit() {
+		return ErrSpoolExhausted
+	}
+	return nil
 }
 
 // QueueArtifact durably schedules an artifact upload. Artifact assembly is a
@@ -146,15 +164,18 @@ func (s *Spool) appendEvent(event executioncontract.EventEnvelope) error {
 		event.IdempotencyKey = fmt.Sprintf("%s:%d", event.RunID, event.Sequence)
 		state.Events[event.RunID] = append(state.Events[event.RunID], event)
 		state.RunSequences[event.RunID] = event.Sequence
+		if event.Type == executioncontract.EventOutput {
+			state.OutputCounts[event.RunID]++
+		}
 		return nil
 	})
 }
 
 func (s *Spool) nonTerminalLimit() int64 {
-	if s.maxBytes <= terminalReserveBytes {
+	if s.maxBytes <= s.terminalReserve {
 		return s.maxBytes
 	}
-	return s.maxBytes - terminalReserveBytes
+	return s.maxBytes - s.terminalReserve
 }
 
 func (s *Spool) ackEvents(runID string, through uint64) error {

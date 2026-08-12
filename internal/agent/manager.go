@@ -70,6 +70,7 @@ type Manager struct {
 	ctx           context.Context
 	emit          EmitFunc
 	onComplete    func(ag *Agent)
+	onReattach    func(ag *Agent) error
 	logger        *slog.Logger
 	logDir        string
 	maxConcurrent int
@@ -277,6 +278,7 @@ type ManagerConfig struct {
 	Runtime ManagerRuntimeConfig
 
 	OnComplete        func(ag *Agent)
+	OnReattach        func(ag *Agent) error
 	ApprovalAddr      string
 	SurviveRestartDir string
 	SessionSink       func(taskID, agentID, sessionID string) error
@@ -372,6 +374,7 @@ func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir 
 		ctx:                    ctx,
 		emit:                   emit,
 		onComplete:             cfg.OnComplete,
+		onReattach:             cfg.OnReattach,
 		logger:                 logger,
 		logDir:                 logDir,
 		approvalAddr:           cfg.ApprovalAddr,

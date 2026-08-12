@@ -348,6 +348,7 @@ type Agent struct {
 	executionSink           ExecutionEventSink
 	executionHandle         ExecutionHandle
 	unthrottledOutputEvents bool
+	steerCommandIDs         map[string]struct{}
 
 	// mu guards mutable fields touched from multiple goroutines. See the
 	// package-level note above the Agent type.
@@ -519,7 +520,16 @@ func (a *Agent) MarshalJSON() ([]byte, error) {
 func (a *Agent) toRecord() Record {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
+	return a.toRecordLocked()
+}
+
+func (a *Agent) toRecordLocked() Record {
 	pendingPrompts := slices.Clone(a.convo.pendingPrompts)
+	steerCommandIDs := make([]string, 0, len(a.steerCommandIDs))
+	for id := range a.steerCommandIDs {
+		steerCommandIDs = append(steerCommandIDs, id)
+	}
+	slices.Sort(steerCommandIDs)
 	return Record{
 		ID:                      a.ID,
 		TaskID:                  a.TaskID,
@@ -551,6 +561,8 @@ func (a *Agent) toRecord() Record {
 		StartedAt:               a.StartedAt,
 		StdinPath:               a.convo.stdinPath,
 		PendingPrompts:          pendingPrompts,
+		SteerCommandIDs:         steerCommandIDs,
+		UnthrottledOutputEvents: a.unthrottledOutputEvents,
 		OneShot:                 a.oneShot,
 		MaxTurns:                a.MaxTurns,
 		RequirePermissions:      a.requirePermissions,
@@ -614,6 +626,7 @@ func fromRecord(r Record) *Agent {
 		MaxTurns:                r.MaxTurns,
 		oneShot:                 r.OneShot,
 		convo:                   convoIO{stdinPath: r.StdinPath, pendingPrompts: slices.Clone(r.PendingPrompts)},
+		unthrottledOutputEvents: r.UnthrottledOutputEvents,
 		requirePermissions:      r.RequirePermissions,
 		sandboxMode:             r.SandboxMode,
 		ReasoningEffort:         r.ReasoningEffort,
@@ -632,6 +645,12 @@ func fromRecord(r Record) *Agent {
 		renderedSkills:          slices.Clone(r.RenderedSkills),
 		unrenderedSkills:        slices.Clone(r.UnrenderedSkills),
 		detached:                true,
+	}
+	if len(r.SteerCommandIDs) > 0 {
+		a.steerCommandIDs = make(map[string]struct{}, len(r.SteerCommandIDs))
+		for _, id := range r.SteerCommandIDs {
+			a.steerCommandIDs[id] = struct{}{}
+		}
 	}
 	if r.Mode == "headless" {
 		a.escalationCh = make(chan bool, 1)

@@ -50,7 +50,7 @@ func New(ctx context.Context, cfg Config, logger *slog.Logger) (*Daemon, error) 
 			return nil, fmt.Errorf("agentd: initialize %s: %w", dir, err)
 		}
 	}
-	spool, err := OpenSpool(cfg.StateRoot, cfg.SpoolMaxBytes)
+	spool, err := OpenSpool(cfg.StateRoot, cfg.SpoolMaxBytes, cfg.Capacity)
 	if err != nil {
 		return nil, err
 	}
@@ -96,7 +96,10 @@ func New(ctx context.Context, cfg Config, logger *slog.Logger) (*Daemon, error) 
 			MaxConcurrent: cfg.Capacity, DefaultProvider: cfg.Providers[0], SandboxMode: cfg.SandboxMode,
 			HeadlessSteerable: true,
 		},
-		OnComplete:        d.completeAgent,
+		OnComplete: d.completeAgent,
+		OnReattach: func(a *agent.Agent) error {
+			return d.replayMissingOutput(a.TaskID, a)
+		},
 		ApprovalAddr:      approvals.Addr(),
 		SurviveRestartDir: filepath.Join(cfg.StateRoot, "registry"),
 		SandboxHome: func(taskID string) (string, error) {
@@ -205,11 +208,6 @@ func (d *Daemon) Run(ctx context.Context) error {
 			// registration resumes from this cursor instead of replaying control.
 			if err := d.spool.update(func(state *durableState) error {
 				state.LastCommandAck = command.Sequence
-				for commandID, sequence := range state.HandledCommands {
-					if sequence <= command.Sequence {
-						delete(state.HandledCommands, commandID)
-					}
-				}
 				return nil
 			}); err != nil {
 				d.logger.Error("agentd.command_cursor.persist", "sequence", command.Sequence, "err", err)
@@ -253,19 +251,7 @@ func (d *Daemon) handleCommand(ctx context.Context, command workercontrol.Comman
 	if err := envelope.Validate(); err != nil {
 		return err
 	}
-	if envelope.Type != executioncontract.CommandStart {
-		alreadyHandled, err := d.beginControlCommand(command.Envelope.CommandID, command.Sequence)
-		if err != nil || alreadyHandled {
-			return err
-		}
-	}
-	err := d.applyCommand(ctx, envelope)
-	if err != nil && envelope.Type != executioncontract.CommandStart {
-		if clearErr := d.clearControlCommand(command.Envelope.CommandID); clearErr != nil {
-			return errors.Join(err, clearErr)
-		}
-	}
-	return err
+	return d.applyCommand(ctx, envelope)
 }
 
 func (d *Daemon) applyCommand(ctx context.Context, envelope executioncontract.CommandEnvelope) error {
@@ -289,7 +275,7 @@ func (d *Daemon) applyCommand(ctx context.Context, envelope executioncontract.Co
 		if !ok {
 			return nil
 		}
-		return d.manager.SendMessage(agentID, payload.Text)
+		return d.manager.SendMessageOnce(ctx, agentID, envelope.CommandID, payload.Text)
 	case executioncontract.CommandApprovalResponse:
 		var payload struct {
 			ToolUseID string `json:"toolUseId"`
@@ -302,33 +288,14 @@ func (d *Daemon) applyCommand(ctx context.Context, envelope executioncontract.Co
 		if !ok {
 			return nil
 		}
-		return d.manager.RespondExecutionApproval(agentID, payload.ToolUseID, payload.Approved)
+		err := d.manager.RespondExecutionApproval(agentID, payload.ToolUseID, payload.Approved)
+		if err != nil && strings.Contains(err.Error(), "already consumed") {
+			return nil
+		}
+		return err
 	default:
 		return fmt.Errorf("agentd: unsupported command %q", envelope.Type)
 	}
-}
-
-// beginControlCommand durably claims a one-shot control effect before it is
-// applied. A replay after a crash is acknowledged without repeating steering,
-// signaling, or an approval decision. Failed effects clear the claim so the
-// leader can retry them.
-func (d *Daemon) beginControlCommand(commandID string, sequence uint64) (bool, error) {
-	already := false
-	err := d.spool.update(func(state *durableState) error {
-		_, already = state.HandledCommands[commandID]
-		if !already {
-			state.HandledCommands[commandID] = sequence
-		}
-		return nil
-	})
-	return already, err
-}
-
-func (d *Daemon) clearControlCommand(commandID string) error {
-	return d.spool.update(func(state *durableState) error {
-		delete(state.HandledCommands, commandID)
-		return nil
-	})
 }
 
 func (d *Daemon) start(ctx context.Context, envelope executioncontract.CommandEnvelope) error {
@@ -354,6 +321,11 @@ func (d *Daemon) start(ctx context.Context, envelope executioncontract.CommandEn
 	if d.manager.RunningCount() >= d.cfg.Capacity {
 		return d.emit(envelope.RunID, executioncontract.EventTerminal, map[string]any{
 			"state": executioncontract.TerminalFailed, "error": agent.ErrMaxConcurrentReached.Error(),
+		})
+	}
+	if errors.Is(d.spool.capacityError(), ErrSpoolExhausted) {
+		return d.emit(envelope.RunID, executioncontract.EventTerminal, map[string]any{
+			"state": executioncontract.TerminalFailed, "error": ErrSpoolExhausted.Error(),
 		})
 	}
 	var payload executioncontract.StartCommandPayload
@@ -485,9 +457,17 @@ func (d *Daemon) completeAgent(a *agent.Agent) {
 	if runID == "" {
 		return
 	}
+	if !errors.Is(a.GetExitErr(), ErrSpoolExhausted) {
+		if err := d.replayMissingOutput(runID, a); err != nil {
+			d.logger.Error("agentd.output.recover", "run_id", runID, "err", err)
+			return
+		}
+	}
 	state := executioncontract.TerminalSucceeded
 	errText := ""
-	if a.WasStopped() {
+	if err := a.GetExitErr(); errors.Is(err, ErrSpoolExhausted) {
+		state, errText = executioncontract.TerminalFailed, err.Error()
+	} else if a.WasStopped() {
 		state = executioncontract.TerminalCanceled
 	} else if err := a.GetExitErr(); err != nil || !a.CompletedSuccessfully() {
 		state = executioncontract.TerminalFailed
@@ -505,6 +485,23 @@ func (d *Daemon) completeAgent(a *agent.Agent) {
 	if err := d.spool.update(func(state *durableState) error { delete(state.RunAgents, runID); return nil }); err != nil {
 		d.logger.Error("agentd.run_mapping.persist", "run_id", runID, "err", err)
 	}
+}
+
+func (d *Daemon) replayMissingOutput(runID string, a *agent.Agent) error {
+	if runID == "" || a == nil {
+		return nil
+	}
+	output := a.Output()
+	delivered := d.spool.snapshot().OutputCounts[runID]
+	if delivered > uint64(len(output)) {
+		return fmt.Errorf("agentd: durable output cursor %d exceeds recovered output %d", delivered, len(output))
+	}
+	for i := delivered; i < uint64(len(output)); i++ {
+		if err := d.emit(runID, executioncontract.EventOutput, output[i]); err != nil {
+			return fmt.Errorf("agentd: replay recovered output %d: %w", i, err)
+		}
+	}
+	return nil
 }
 
 func (d *Daemon) emit(runID string, kind executioncontract.EventType, payload any) error {
@@ -527,6 +524,9 @@ func (d *Daemon) emit(runID string, kind executioncontract.EventType, payload an
 			agentID := d.runAgents[runID]
 			d.mu.RUnlock()
 			if agentID != "" {
+				if active, getErr := d.manager.GetAgent(agentID); getErr == nil {
+					active.SetExitErr(ErrSpoolExhausted)
+				}
 				_ = d.manager.StopAgent(agentID)
 			}
 		}

@@ -143,7 +143,7 @@ func TestSpoolExhaustionIsExplicitAndPreservesPriorState(t *testing.T) {
 }
 
 func TestSpoolReservesRoomForTerminalFate(t *testing.T) {
-	spool, err := OpenSpool(t.TempDir(), 8192)
+	spool, err := OpenSpool(t.TempDir(), 12288, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,12 +160,38 @@ func TestSpoolReservesRoomForTerminalFate(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := spool.appendEvent(executioncontract.EventEnvelope{
-		Version: executioncontract.CurrentVersion(), BuildVersion: "test", RunID: "run",
-		EventID: "terminal", Type: executioncontract.EventTerminal, ObservedAt: time.Now().UTC(),
-		Payload: json.RawMessage(`{"state":"failed","error":"durable spool exhausted"}`),
-	}); err != nil {
-		t.Fatalf("terminal fate did not fit reserved capacity: %v", err)
+	for _, runID := range []string{"run", "run-two"} {
+		if err := spool.appendEvent(executioncontract.EventEnvelope{
+			Version: executioncontract.CurrentVersion(), BuildVersion: "test", RunID: runID,
+			EventID: "terminal-" + runID, Type: executioncontract.EventTerminal, ObservedAt: time.Now().UTC(),
+			Payload: json.RawMessage(`{"state":"failed","error":"durable spool exhausted"}`),
+		}); err != nil {
+			t.Fatalf("terminal fate for %s did not fit capacity-aware reserve: %v", runID, err)
+		}
+	}
+}
+
+func TestReplayMissingOutputPersistsRehydratedTail(t *testing.T) {
+	spool, err := OpenSpool(t.TempDir(), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	daemon := &Daemon{logger: slog.New(slog.DiscardHandler), spool: spool}
+	first := agent.StreamEvent{Type: "system", SessionID: "session", Timestamp: time.Now().UTC()}
+	if err := daemon.emit("run", executioncontract.EventOutput, first); err != nil {
+		t.Fatal(err)
+	}
+	recovered := &agent.Agent{}
+	recovered.AppendOutput(first)
+	recovered.AppendOutput(agent.StreamEvent{Type: "assistant", Content: "while absent", Timestamp: time.Now().UTC()})
+	recovered.AppendOutput(agent.StreamEvent{Type: "result", Content: "complete", Timestamp: time.Now().UTC()})
+	if err := daemon.replayMissingOutput("run", recovered); err != nil {
+		t.Fatal(err)
+	}
+	events := spool.snapshot().Events["run"]
+	if len(events) != 3 || !strings.Contains(string(events[1].Payload), "while absent") ||
+		!strings.Contains(string(events[2].Payload), `"type":"result"`) {
+		t.Fatalf("replayed events = %+v", events)
 	}
 }
 
@@ -241,12 +267,12 @@ printf '%s\n' '{"type":"result","result":"after restart","session_id":"restart-s
 		t.Fatal(err)
 	}
 	waitForEventCount(t, first.spool, "run-restart", 2)
-	stopFirst()
 	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 5*time.Second)
 	if err := first.approvals.Shutdown(shutdownCtx); err != nil {
 		t.Fatal(err)
 	}
 	cancelShutdown()
+	stopFirst()
 
 	secondCtx, stopSecond := context.WithCancel(t.Context())
 	defer stopSecond()
