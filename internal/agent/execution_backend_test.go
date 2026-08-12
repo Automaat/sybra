@@ -132,6 +132,36 @@ func TestExecutionBackendFakeDrivesCompleteManagerRun(t *testing.T) {
 	}
 }
 
+func TestExecutionBackendManagerGuardrailStopsOwningBackend(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.SetGuardrails(Guardrails{MaxSubagentEvents: 1})
+	backend := newSinkDrivenFakeBackend()
+	m.SetExecutionBackend(backend)
+
+	a, err := m.Run(RunConfig{Mode: "headless", Name: "guardrail", Dir: t.TempDir(), Prompt: "unused"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	backend.mu.Lock()
+	start, handle := backend.start, backend.handle
+	backend.mu.Unlock()
+	start.Sink.EmitExecutionEvent(t.Context(), handle, ExecutionEvent{
+		Kind: ExecutionOutput, Provider: "claude",
+		Output: []byte(`{"type":"assistant","parent_tool_use_id":"fork-1","message":{"content":[{"type":"text","text":"still working"}]}}`),
+	})
+
+	backend.mu.Lock()
+	stops := backend.stops
+	backend.mu.Unlock()
+	if stops != 1 {
+		t.Fatalf("guardrail stops = %d, want 1", stops)
+	}
+	if !a.WasStopped() {
+		t.Fatal("manager guardrail did not mark the canonical agent stopped")
+	}
+	close(backend.release)
+}
+
 func TestExecutionBackendImmediateCompletionDoesNotLeaveControlHandle(t *testing.T) {
 	completed := make(chan struct{}, 1)
 	m, _ := newTestManager(t, ManagerConfig{OnComplete: func(*Agent) { completed <- struct{}{} }})
@@ -154,7 +184,14 @@ func TestExecutionBackendImmediateCompletionDoesNotLeaveControlHandle(t *testing
 }
 
 func TestCallbackExecutionBackendControlConformance(t *testing.T) {
-	backend := newCallbackExecutionBackend("test")
+	runExecutionBackendConformance(t, func() ExecutionBackend { return newCallbackExecutionBackend("test") })
+}
+
+// runExecutionBackendConformance is the reusable lifecycle suite for every
+// backend implementation, including future daemon transports.
+func runExecutionBackendConformance(t *testing.T, factory func() ExecutionBackend) {
+	t.Helper()
+	backend := factory()
 	done := make(chan struct{})
 	stopped := false
 	steered := ""
@@ -190,6 +227,12 @@ func TestCallbackExecutionBackendControlConformance(t *testing.T) {
 	}
 	if err := backend.Stop(t.Context(), handle); err != nil || !stopped {
 		t.Fatalf("Stop err=%v stopped=%v", err, stopped)
+	}
+	if err := backend.Stop(t.Context(), handle); err != nil {
+		t.Fatalf("repeated Stop must be idempotent: %v", err)
+	}
+	if err := backend.Recover(t.Context(), "unknown-handle", nil); err == nil {
+		t.Fatal("Recover accepted an unknown handle")
 	}
 }
 

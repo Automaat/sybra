@@ -161,7 +161,7 @@ func (b *callbackExecutionBackend) control(handle ExecutionHandle) (executionCon
 func (b *callbackExecutionBackend) Stop(_ context.Context, handle ExecutionHandle) error {
 	control, err := b.control(handle)
 	if err != nil {
-		return err
+		return nil
 	}
 	if control.stop == nil {
 		return ErrExecutionControlUnsupported

@@ -2113,6 +2113,7 @@ func (m *Manager) startAgentRunner(ctx context.Context, a *Agent, cfg RunConfig,
 		cancel()
 		return err
 	}
+	sink.bind(ctx, backend, handle)
 	m.mu.Lock()
 	select {
 	case <-a.done:

@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/providerid"
@@ -171,52 +170,49 @@ func (m *Manager) newK8sExecutionBackend(cfg K8sJobRunnerConfig) ExecutionBacken
 	backend := newCallbackExecutionBackend("kubernetes")
 	// The selected backend is immutable for an accepted run, so capturing the
 	// runner here is safe across later runtime-config reloads.
-	return &k8sExecutionBackend{callbackExecutionBackend: backend, runner: runner, manager: m}
+	return &k8sExecutionBackend{callbackExecutionBackend: backend, runner: runner}
 }
 
 type k8sExecutionBackend struct {
 	*callbackExecutionBackend
-	runner  *k8sJobRunner
-	manager *Manager
+	runner *k8sJobRunner
 }
 
 func (b *k8sExecutionBackend) Start(ctx context.Context, start ExecutionStart) (ExecutionHandle, error) {
+	handle := ExecutionHandle("kubernetes:" + start.Agent.ID)
 	start.runExisting = func(runCtx context.Context) {
-		b.runner.Run(runCtx, b.manager, start.Agent, start.Config)
+		b.runner.Run(runCtx, handle, start)
 	}
 	start.steer = nil
 	return b.callbackExecutionBackend.Start(ctx, start)
 }
 
-func (r *k8sJobRunner) Run(ctx context.Context, m *Manager, a *Agent, cfg RunConfig) {
+func (r *k8sJobRunner) Run(ctx context.Context, handle ExecutionHandle, start ExecutionStart) {
+	a, cfg, sink := start.Agent, start.Config, start.Sink
+	complete := func(err error) {
+		sink.EmitExecutionEvent(ctx, handle, ExecutionEvent{Kind: ExecutionCompleted, Err: err})
+	}
 	if r == nil {
-		a.SetExitErr(fmt.Errorf("kubernetes runner is not configured"))
-		m.finalizeRun(ctx, a, "agent.k8s.done")
+		complete(fmt.Errorf("kubernetes runner is not configured"))
 		return
 	}
 	if r.clientErr != nil {
-		a.SetExitErr(fmt.Errorf("kubernetes client: %w", r.clientErr))
-		m.finalizeRun(ctx, a, "agent.k8s.done")
+		complete(fmt.Errorf("kubernetes client: %w", r.clientErr))
 		return
 	}
 	if r.jobs == nil || r.pods == nil {
-		a.SetExitErr(fmt.Errorf("kubernetes runner client is unavailable"))
-		m.finalizeRun(ctx, a, "agent.k8s.done")
+		complete(fmt.Errorf("kubernetes runner client is unavailable"))
 		return
 	}
 
 	jobName := k8sName("sybra-agent-" + a.ID)
 	if err := r.createJob(ctx, jobName, a, cfg); err != nil {
-		a.SetExitErr(err)
-		m.finalizeRun(ctx, a, "agent.k8s.done")
+		complete(err)
 		return
 	}
-	a.SetCommand("kubernetes job/" + jobName)
-	m.emit(events.AgentState(a.ID), a)
+	sink.EmitExecutionEvent(ctx, handle, ExecutionEvent{Kind: ExecutionStarted, Command: "kubernetes job/" + jobName})
 
-	prevLen := len(a.Output())
 	var logOffset int
-	var lastEmit time.Time
 	var podName string
 	logProvider := a.Provider
 	if r.mode == k8sRunnerModeFake {
@@ -228,8 +224,7 @@ func (r *k8sJobRunner) Run(ctx context.Context, m *Manager, a *Agent, cfg RunCon
 	for {
 		select {
 		case <-ctx.Done():
-			a.SetExitErr(ctx.Err())
-			m.finalizeRun(ctx, a, "agent.k8s.done")
+			complete(ctx.Err())
 			return
 		case <-ticker.C:
 		}
@@ -240,14 +235,13 @@ func (r *k8sJobRunner) Run(ctx context.Context, m *Manager, a *Agent, cfg RunCon
 		if podName != "" {
 			logs, err := r.podLogs(ctx, podName)
 			if err == nil && logOffset < len(logs) {
-				logOffset += processK8sLogChunk(ctx, m, a, logProvider, []byte(logs[logOffset:]), false, &lastEmit)
+				logOffset += processK8sLogChunk(ctx, sink, handle, logProvider, []byte(logs[logOffset:]), false)
 			}
 		}
 
 		done, failed, err := r.jobDone(ctx, jobName)
 		if err != nil {
-			a.SetExitErr(err)
-			m.finalizeRun(ctx, a, "agent.k8s.done")
+			complete(err)
 			return
 		}
 		if !done {
@@ -255,11 +249,12 @@ func (r *k8sJobRunner) Run(ctx context.Context, m *Manager, a *Agent, cfg RunCon
 		}
 		if podName != "" {
 			if logs, err := r.podLogs(ctx, podName); err == nil && logOffset < len(logs) {
-				processK8sLogChunk(ctx, m, a, logProvider, []byte(logs[logOffset:]), true, &lastEmit)
+				processK8sLogChunk(ctx, sink, handle, logProvider, []byte(logs[logOffset:]), true)
 			}
 		}
+		var runErr error
 		if failed {
-			a.SetExitErr(fmt.Errorf("kubernetes job %s failed", jobName))
+			runErr = fmt.Errorf("kubernetes job %s failed", jobName)
 			if r.failedTTL != r.ttl {
 				if perr := r.patchJobTTL(ctx, jobName, r.failedTTL); perr != nil {
 					r.logger.Warn("agent.k8s.failed_ttl_patch",
@@ -269,19 +264,19 @@ func (r *k8sJobRunner) Run(ctx context.Context, m *Manager, a *Agent, cfg RunCon
 			}
 		} else {
 			if err := syncK8sGitWorkspace(ctx, cfg.Dir); err != nil {
-				a.SetExitErr(err)
-			} else {
-				m.finalizeFromResult(a, prevLen)
+				runErr = err
 			}
 		}
-		m.finalizeRun(ctx, a, "agent.k8s.done")
+		complete(runErr)
 		return
 	}
 }
 
-func processK8sLogChunk(ctx context.Context, m *Manager, a *Agent, providerName string, chunk []byte, final bool, lastEmit *time.Time) int {
-	prov := providerByName(providerName)
+func processK8sLogChunk(ctx context.Context, sink ExecutionEventSink, handle ExecutionHandle, providerName string, chunk []byte, final bool) int {
 	processed := 0
+	emit := func(line []byte) {
+		sink.EmitExecutionEvent(ctx, handle, ExecutionEvent{Kind: ExecutionOutput, Provider: providerName, Output: line})
+	}
 	for len(chunk) > 0 {
 		nl := bytes.IndexByte(chunk, '\n')
 		if nl < 0 {
@@ -291,7 +286,7 @@ func processK8sLogChunk(ctx context.Context, m *Manager, a *Agent, providerName 
 			line := chunk
 			processed += len(line)
 			if len(line) > 0 {
-				m.processHeadlessLine(ctx, a, line, lastEmit, prov)
+				emit(line)
 			}
 			return processed
 		}
@@ -301,7 +296,7 @@ func processK8sLogChunk(ctx context.Context, m *Manager, a *Agent, providerName 
 		if len(line) == 0 {
 			continue
 		}
-		m.processHeadlessLine(ctx, a, line, lastEmit, prov)
+		emit(line)
 	}
 	return processed
 }

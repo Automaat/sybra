@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -422,10 +423,9 @@ func TestK8sRunPatchesFailedJobTTL(t *testing.T) {
 	})
 	r := newFakeK8sJobRunner(client, newFakePodClient(client.CoreV1().Pods("sybra-poc")), K8sJobRunnerConfig{Namespace: "sybra-poc", TTL: 300, FailedTTL: 86400})
 
-	m, _ := newTestManager(t)
 	a := &Agent{ID: "test-agent", TaskID: "task-1", Provider: "claude"}
-
-	r.Run(t.Context(), m, a, RunConfig{})
+	sink := &recordingExecutionSink{}
+	r.Run(t.Context(), "kubernetes:test-agent", ExecutionStart{Agent: a, Config: RunConfig{}, Sink: sink})
 
 	patchAction := lastPatchAction(client.Actions())
 	if patchAction == nil {
@@ -440,8 +440,8 @@ func TestK8sRunPatchesFailedJobTTL(t *testing.T) {
 	if patchTTL != 86400 {
 		t.Fatalf("patched ttlSecondsAfterFinished = %v, want 86400", patchTTL)
 	}
-	if a.GetExitErr() == nil {
-		t.Fatal("expected the agent to record an error for a failed Job")
+	if err := sink.completedErr(); err == nil {
+		t.Fatal("expected a failed completion event for a failed Job")
 	}
 }
 
@@ -462,14 +462,35 @@ func TestK8sRunSkipsPatchWhenFailedTTLMatchesTTL(t *testing.T) {
 	})
 	r := newFakeK8sJobRunner(client, newFakePodClient(client.CoreV1().Pods("sybra-poc")), K8sJobRunnerConfig{Namespace: "sybra-poc", TTL: 300, FailedTTL: 300})
 
-	m, _ := newTestManager(t)
 	a := &Agent{ID: "test-agent", TaskID: "task-1", Provider: "claude"}
-
-	r.Run(t.Context(), m, a, RunConfig{})
+	sink := &recordingExecutionSink{}
+	r.Run(t.Context(), "kubernetes:test-agent", ExecutionStart{Agent: a, Config: RunConfig{}, Sink: sink})
 
 	if lastPatchAction(client.Actions()) != nil {
 		t.Fatal("expected no PATCH when failedTTL equals ttl — the Job already has that TTL from creation")
 	}
+}
+
+type recordingExecutionSink struct {
+	mu     sync.Mutex
+	events []ExecutionEvent
+}
+
+func (s *recordingExecutionSink) EmitExecutionEvent(_ context.Context, _ ExecutionHandle, event ExecutionEvent) {
+	s.mu.Lock()
+	s.events = append(s.events, event)
+	s.mu.Unlock()
+}
+
+func (s *recordingExecutionSink) completedErr() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := len(s.events) - 1; i >= 0; i-- {
+		if s.events[i].Kind == ExecutionCompleted {
+			return s.events[i].Err
+		}
+	}
+	return nil
 }
 
 func TestPatchJobTTLReturnsErrorOnNonSuccessStatus(t *testing.T) {

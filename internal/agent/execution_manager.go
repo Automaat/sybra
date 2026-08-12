@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/Automaat/sybra/internal/events"
@@ -17,14 +18,46 @@ type activeExecution struct {
 }
 
 type managerExecutionSink struct {
+	mu          sync.Mutex
 	manager     *Manager
 	agent       *Agent
 	outputStart int
 	lastEmit    *time.Time
+	backend     ExecutionBackend
+	handle      ExecutionHandle
+	stopPending bool
 }
 
 func (s *managerExecutionSink) EmitExecutionEvent(ctx context.Context, handle ExecutionHandle, event ExecutionEvent) {
-	s.manager.emitExecutionEvent(ctx, handle, event, s.agent, s.outputStart, s.lastEmit)
+	stop := s.manager.emitExecutionEvent(ctx, handle, event, s.agent, s.outputStart, s.lastEmit)
+	if stop {
+		s.stop(ctx)
+	}
+}
+
+func (s *managerExecutionSink) bind(ctx context.Context, backend ExecutionBackend, handle ExecutionHandle) {
+	s.mu.Lock()
+	s.backend, s.handle = backend, handle
+	pending := s.stopPending
+	s.stopPending = false
+	s.mu.Unlock()
+	if pending {
+		_ = backend.Stop(ctx, handle)
+	}
+}
+
+func (s *managerExecutionSink) stop(ctx context.Context) {
+	s.mu.Lock()
+	backend, handle := s.backend, s.handle
+	if backend == nil {
+		s.stopPending = true
+		s.mu.Unlock()
+		return
+	}
+	s.mu.Unlock()
+	if err := backend.Stop(ctx, handle); err != nil {
+		s.manager.logger.Warn("agent.execution.guardrail-stop", "agent_id", s.agent.ID, "err", err)
+	}
 }
 
 // SetExecutionBackend selects the backend used by future runs. Existing runs
@@ -122,19 +155,20 @@ func (m *Manager) EmitExecutionEvent(ctx context.Context, handle ExecutionHandle
 	m.emitExecutionEvent(ctx, handle, event, a, execution.outputStart, execution.lastEmit)
 }
 
-func (m *Manager) emitExecutionEvent(ctx context.Context, _ ExecutionHandle, event ExecutionEvent, a *Agent, outputStart int, lastEmit *time.Time) {
+func (m *Manager) emitExecutionEvent(ctx context.Context, _ ExecutionHandle, event ExecutionEvent, a *Agent, outputStart int, lastEmit *time.Time) bool {
 	switch event.Kind {
 	case ExecutionStarted:
 		if event.Command != "" {
 			a.SetCommand(event.Command)
 		}
 		m.emit(events.AgentState(a.ID), a)
+		return false
 	case ExecutionOutput:
 		providerName := event.Provider
 		if providerName == "" {
 			providerName = a.Provider
 		}
-		m.processHeadlessLine(ctx, a, event.Output, lastEmit, providerByName(providerName))
+		return m.processHeadlessLine(ctx, a, event.Output, lastEmit, providerByName(providerName))
 	case ExecutionCompleted:
 		if event.Err != nil {
 			a.SetExitErr(event.Err)
@@ -142,7 +176,9 @@ func (m *Manager) emitExecutionEvent(ctx context.Context, _ ExecutionHandle, eve
 			m.finalizeFromResult(a, outputStart)
 		}
 		m.finalizeRun(ctx, a, "agent.execution.done")
+		return false
 	}
+	return false
 }
 
 func (m *Manager) stopLocalAgent(a *Agent) {
