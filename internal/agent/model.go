@@ -2061,6 +2061,10 @@ type RunConfig struct {
 	// and system-critical sessions; user-initiated runs leave this false so
 	// they surface a clear error instead of wasting a hopeless request.
 	IgnoreHealthGate bool
+	// SkipDispatchJitter starts an explicit operator-requested run immediately.
+	// Automated dispatches leave this false so synchronized waves are still
+	// spread before they probe provider health.
+	SkipDispatchJitter bool
 	// IsolateHome routes SYBRA_HOME through a sandbox home even when TaskID is
 	// empty. Use this for taskless system agents that may run sybra-cli or old
 	// Sybra source checkouts: they still need to read the operator board via

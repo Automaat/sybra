@@ -21,6 +21,43 @@ func plantBadRef(t *testing.T, bare, ref string) {
 	}
 }
 
+func TestCloneHealthCacheIsBoundToRefGeneration(t *testing.T) {
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(context.Background(), src, bare); err != nil {
+		t.Fatalf("clone bare: %v", err)
+	}
+
+	now := time.Now()
+	origTTL, origNow := CloneHealthTTL, fetchTTLNow
+	CloneHealthTTL = time.Minute
+	fetchTTLNow = func() time.Time { return now }
+	t.Cleanup(func() {
+		CloneHealthTTL, fetchTTLNow = origTTL, origNow
+		lastCloneHealthAt.Delete(filepath.Clean(bare))
+	})
+
+	if err := CheckBareCloneHealth(context.Background(), bare); err != nil {
+		t.Fatalf("initial health check: %v", err)
+	}
+	refs, err := bareRefTips(context.Background(), bare)
+	if err != nil {
+		t.Fatalf("read refs: %v", err)
+	}
+	objectsGeneration, err := cloneObjectStoreGeneration(filepath.Join(bare, "objects"))
+	if err != nil {
+		t.Fatalf("fingerprint object store: %v", err)
+	}
+	if !cloneHealthIsFresh(bare, strings.Join(refs, "\n")+"\x00"+objectsGeneration) {
+		t.Fatal("successful health check did not publish a reusable certificate")
+	}
+
+	plantBadRef(t, bare, "refs/heads/bad-generation")
+	if err := CheckBareCloneHealth(context.Background(), bare); err == nil {
+		t.Fatal("cached health check accepted a changed ref generation")
+	}
+}
+
 func TestFetchOrigin_RepairsPoisonedSiblingRef(t *testing.T) {
 	src := initRepoWithCommit(t)
 	bare := filepath.Join(t.TempDir(), "bare.git")
@@ -526,6 +563,12 @@ func TestCheckBareCloneHealth_StillDetectsMissingReachableObject(t *testing.T) {
 	if err := CheckBareCloneHealth(context.Background(), bare); err != nil {
 		t.Fatalf("freshly cloned bare repo is unhealthy: %v", err)
 	}
+	origTTL := CloneHealthTTL
+	CloneHealthTTL = time.Minute
+	t.Cleanup(func() {
+		CloneHealthTTL = origTTL
+		lastCloneHealthAt.Delete(filepath.Clean(bare))
+	})
 
 	headSHA, err := outputBare(context.Background(), bare, "rev-parse", "HEAD")
 	if err != nil {
