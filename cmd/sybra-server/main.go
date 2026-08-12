@@ -287,7 +287,7 @@ func serveOptions(logger *slog.Logger, broker *sse.Broker, app *sybra.App) https
 		StaticDir:     os.Getenv("SYBRA_STATIC_DIR"),
 		EnablePprof:   httpserve.PprofEnabled(),
 		Home:          config.HomeDir(),
-		WorkerControl: app.WorkerControlHandler(),
+		WorkerControl: sybra.WorkerControlHandler(app),
 		// No SelfOrigin and no Token: a browser reaching this over the network
 		// gets the origin alone and asks its operator for the token.
 	}

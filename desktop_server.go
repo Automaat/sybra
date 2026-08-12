@@ -72,7 +72,7 @@ func openDesktopBoard(ln net.Listener, cfg *config.Config, logger *slog.Logger, 
 		APIBase:       origin + "/api",
 		Token:         cfg.Server.AuthToken,
 		SelfOrigin:    origin,
-		WorkerControl: app.WorkerControlHandler(),
+		WorkerControl: sybra.WorkerControlHandler(app),
 	})
 }
 
