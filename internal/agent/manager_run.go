@@ -2082,20 +2082,49 @@ func (m *Manager) registerRunningAgent(a *Agent, cfg RunConfig, cancel context.C
 }
 
 func (m *Manager) startAgentRunner(ctx context.Context, a *Agent, cfg RunConfig, prov Provider, cancel context.CancelFunc) error {
-	switch cfg.Mode {
-	case "headless":
-		m.mu.RLock()
-		k8sRunner := m.k8sRunner
-		m.mu.RUnlock()
-		if k8sRunner != nil {
-			go k8sRunner.Run(ctx, m, a, cfg)
-			return nil
-		}
-		go m.runHeadless(ctx, a, cfg)
-	default:
+	if cfg.Mode != "headless" {
 		cancel()
 		return fmt.Errorf("unknown mode: %s", cfg.Mode)
 	}
+	m.mu.RLock()
+	backend := m.executionBackend
+	m.mu.RUnlock()
+	if backend == nil {
+		cancel()
+		return errors.New("execution backend is not configured")
+	}
+	lastEmit := time.Time{}
+	sink := &managerExecutionSink{manager: m, agent: a, outputStart: len(a.Output()), lastEmit: &lastEmit}
+	start := ExecutionStart{
+		Agent: a, Config: cfg, Provider: prov, Sink: sink,
+		stop:    func() { m.stopLocalAgent(a) },
+		steer:   func(text string) error { return m.sendHeadlessSteerMessage(a, text) },
+		approve: m.respondExecutionApproval,
+		inspect: func() ExecutionInspection {
+			snapshot := a.View()
+			return ExecutionInspection{State: string(snapshot.State), Command: snapshot.Command, Agent: snapshot}
+		},
+	}
+	if backend == m.localExecutionBackend {
+		start.runExisting = func(runCtx context.Context) { m.runHeadless(runCtx, a, cfg) }
+	}
+	handle, err := backend.Start(ctx, start)
+	if err != nil {
+		cancel()
+		return err
+	}
+	m.mu.Lock()
+	select {
+	case <-a.done:
+		// A sink-driven backend may complete before Start returns. markAgentDone
+		// already released the run; do not resurrect a stale control handle.
+	default:
+		m.activeExecutions[a.ID] = activeExecution{
+			backend: backend, handle: handle, outputStart: sink.outputStart,
+			lastEmit: sink.lastEmit, sink: sink,
+		}
+	}
+	m.mu.Unlock()
 	return nil
 }
 
@@ -2116,6 +2145,7 @@ func (m *Manager) markAgentDone(ctx context.Context, a *Agent) {
 			_ = reg.Delete(a.ID)
 		}
 		m.mu.Lock()
+		delete(m.activeExecutions, a.ID)
 		if m.liveCount > 0 {
 			m.liveCount--
 		}

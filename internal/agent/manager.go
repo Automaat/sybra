@@ -147,7 +147,10 @@ type Manager struct {
 	// playwrightMCPExtraArgs mirrors config.PlaywrightMCPExtraArgs, appended
 	// verbatim to the Playwright MCP launch command.
 	playwrightMCPExtraArgs []string
-	k8sRunner              *k8sJobRunner
+	executionBackend       ExecutionBackend
+	localExecutionBackend  ExecutionBackend
+	activeExecutions       map[string]activeExecution
+	approvalResponder      func(string, bool) error
 	// warnInertCapOnce guards the one-time inert-cap warning across both New
 	// and every subsequent ReplaceRuntimeConfig call for this manager's
 	// lifetime.
@@ -402,9 +405,12 @@ func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir 
 		deadAgentRetention:     defaultDeadAgentRetention,
 		playwrightMCPEnabled:   cfg.Runtime.PlaywrightMCPEnabled,
 		playwrightMCPExtraArgs: cfg.Runtime.PlaywrightMCPExtraArgs,
+		activeExecutions:       make(map[string]activeExecution),
 	}
+	m.localExecutionBackend = newCallbackExecutionBackend("local")
+	m.executionBackend = m.localExecutionBackend
 	if cfg.Runtime.K8sJobsEnabled {
-		m.k8sRunner = newK8sJobRunner(logger, cfg.Runtime.K8sJobs)
+		m.executionBackend = m.newK8sExecutionBackend(cfg.Runtime.K8sJobs)
 	}
 	m.warnInertCap(logger, m.maxInFlightPerProvider, m.limitGate)
 	if cfg.SurviveRestartDir != "" {
@@ -658,9 +664,9 @@ func (m *Manager) ReplaceRuntimeConfig(cfg ManagerRuntimeConfig) error {
 	m.playwrightMCPExtraArgs = cfg.PlaywrightMCPExtraArgs
 	m.classFloors = cloneClassFloors(cfg.ClassReservations)
 	if cfg.K8sJobsEnabled {
-		m.k8sRunner = newK8sJobRunner(m.logger, cfg.K8sJobs)
+		m.executionBackend = m.newK8sExecutionBackend(cfg.K8sJobs)
 	} else {
-		m.k8sRunner = nil
+		m.executionBackend = m.localExecutionBackend
 	}
 	admission := m.attemptAdmission
 	m.mu.Unlock()

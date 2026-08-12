@@ -166,6 +166,28 @@ func newK8sJobRunner(logger *slog.Logger, cfg K8sJobRunnerConfig) *k8sJobRunner 
 	}
 }
 
+func (m *Manager) newK8sExecutionBackend(cfg K8sJobRunnerConfig) ExecutionBackend {
+	runner := newK8sJobRunner(m.logger, cfg)
+	backend := newCallbackExecutionBackend("kubernetes")
+	// The selected backend is immutable for an accepted run, so capturing the
+	// runner here is safe across later runtime-config reloads.
+	return &k8sExecutionBackend{callbackExecutionBackend: backend, runner: runner, manager: m}
+}
+
+type k8sExecutionBackend struct {
+	*callbackExecutionBackend
+	runner  *k8sJobRunner
+	manager *Manager
+}
+
+func (b *k8sExecutionBackend) Start(ctx context.Context, start ExecutionStart) (ExecutionHandle, error) {
+	start.runExisting = func(runCtx context.Context) {
+		b.runner.Run(runCtx, b.manager, start.Agent, start.Config)
+	}
+	start.steer = nil
+	return b.callbackExecutionBackend.Start(ctx, start)
+}
+
 func (r *k8sJobRunner) Run(ctx context.Context, m *Manager, a *Agent, cfg RunConfig) {
 	if r == nil {
 		a.SetExitErr(fmt.Errorf("kubernetes runner is not configured"))
