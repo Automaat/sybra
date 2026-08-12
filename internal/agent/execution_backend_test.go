@@ -100,6 +100,9 @@ func TestExecutionBackendFakeDrivesCompleteManagerRun(t *testing.T) {
 	if err := m.RespondExecutionApproval(a.ID, "tool-1", true); err != nil {
 		t.Fatalf("RespondExecutionApproval: %v", err)
 	}
+	if err := m.SendMessage(a.ID, "continue remotely"); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
 	if err := m.RecoverExecution(t.Context(), a.ID); err != nil {
 		t.Fatalf("RecoverExecution: %v", err)
 	}
@@ -118,6 +121,14 @@ func TestExecutionBackendFakeDrivesCompleteManagerRun(t *testing.T) {
 	}
 	if m.RunningCount() != 0 {
 		t.Fatalf("running count = %d, want 0", m.RunningCount())
+	}
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	if len(backend.steers) != 1 || backend.steers[0] != "continue remotely" {
+		t.Fatalf("steers = %v", backend.steers)
+	}
+	if len(backend.answers) != 1 || backend.answers[0].ToolUseID != "tool-1" || !backend.answers[0].Approved {
+		t.Fatalf("answers = %+v", backend.answers)
 	}
 }
 

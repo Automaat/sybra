@@ -17,6 +17,9 @@ func (m *Manager) SendPromptToAgent(agentID, text string) error {
 		return conflictError(fmt.Sprintf("agent %s is stopped", agentID))
 	}
 
+	if _, execErr := m.executionForAgent(agentID); execErr == nil {
+		return m.SendMessage(agentID, text)
+	}
 	if a.convo.hasStdinPipe() {
 		return m.SendMessage(agentID, text)
 	}
@@ -36,14 +39,14 @@ func (m *Manager) SendMessage(agentID, text string) error {
 	if err != nil {
 		return err
 	}
-	if !a.convo.hasStdinPipe() {
-		return conflictError(fmt.Sprintf("agent %s has no stdin transport for follow-up messages", agentID))
-	}
 	if a.Mode != "headless" {
 		return conflictError(fmt.Sprintf("agent %s is not in headless steerable mode", agentID))
 	}
 	if execution, execErr := m.executionForAgent(agentID); execErr == nil {
 		return execution.backend.Steer(m.ctx, execution.handle, text)
+	}
+	if !a.convo.hasStdinPipe() {
+		return conflictError(fmt.Sprintf("agent %s has no stdin transport for follow-up messages", agentID))
 	}
 	// Restart-adopted legacy executions predate backend handles.
 	return m.sendHeadlessSteerMessage(a, text)
