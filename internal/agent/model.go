@@ -2104,6 +2104,11 @@ type RunConfig struct {
 	// any caller-supplied entry for those two keys is stripped before the
 	// trusted values are appended, so it cannot override them.
 	ExtraEnv []string
+	// StripEnvKeys removes daemon/control-plane credentials from the ambient
+	// process environment before provider-specific and run-scoped values are
+	// appended. It is a denylist at the shared provider spawn seam, so every
+	// headless launch shape (pipe and restart-surviving) applies it equally.
+	StripEnvKeys []string
 	// EphemeralSandboxHome overrides the ordinary per-task sandbox home for a
 	// disposable local verification command. The verification lease owns it.
 	EphemeralSandboxHome string

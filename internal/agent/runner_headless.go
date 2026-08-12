@@ -331,8 +331,8 @@ func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunC
 	if a.sessionCWD != "" {
 		cmd.Dir = a.sessionCWD
 	}
-	if len(cfg.ExtraEnv) > 0 || len(inv.env) > 0 {
-		cmd.Env = append(os.Environ(), inv.env...)
+	if len(cfg.ExtraEnv) > 0 || len(inv.env) > 0 || len(cfg.StripEnvKeys) > 0 {
+		cmd.Env = append(stripEnvKeys(os.Environ(), cfg.StripEnvKeys...), inv.env...)
 		cmd.Env = append(cmd.Env, cfg.ExtraEnv...)
 	}
 	a.SetCommand(inv.command)
@@ -508,8 +508,8 @@ func (m *Manager) startHeadlessSurviveProcess(ctx context.Context, a *Agent, cfg
 	if a.sessionCWD != "" {
 		cmd.Dir = a.sessionCWD
 	}
-	if len(cfg.ExtraEnv) > 0 || len(invokeEnv) > 0 {
-		cmd.Env = append(os.Environ(), invokeEnv...)
+	if len(cfg.ExtraEnv) > 0 || len(invokeEnv) > 0 || len(cfg.StripEnvKeys) > 0 {
+		cmd.Env = append(stripEnvKeys(os.Environ(), cfg.StripEnvKeys...), invokeEnv...)
 		cmd.Env = append(cmd.Env, cfg.ExtraEnv...)
 	}
 	a.SetCommand(command)
