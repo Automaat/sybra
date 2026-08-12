@@ -2,9 +2,13 @@ package project
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -61,6 +65,17 @@ func CheckBareCloneHealth(ctx context.Context, barePath string) error {
 	if err != nil {
 		return fmt.Errorf("bare clone health check failed: %w", err)
 	}
+	generation := ""
+	if CloneHealthTTL > 0 {
+		objectsGeneration, fingerprintErr := cloneObjectStoreGeneration(filepath.Join(barePath, "objects"))
+		if fingerprintErr != nil {
+			return fmt.Errorf("bare clone health check failed: fingerprint object store: %w", fingerprintErr)
+		}
+		generation = strings.Join(refs, "\n") + "\x00" + objectsGeneration
+		if cloneHealthIsFresh(barePath, generation) {
+			return nil
+		}
+	}
 	if len(refs) == 0 {
 		// No refs to scope to (fresh or fully quarantined clone). Nothing has
 		// been checked out yet either, so the unscoped walk has no worktree
@@ -68,6 +83,7 @@ func CheckBareCloneHealth(ctx context.Context, barePath string) error {
 		if err := runBare(ctx, barePath, "fsck", "--no-dangling"); err != nil {
 			return fmt.Errorf("bare clone health check failed: %w", err)
 		}
+		markCloneHealthy(barePath, generation)
 		return nil
 	}
 	for start := 0; start < len(refs); start += fsckRefBatch {
@@ -77,7 +93,48 @@ func CheckBareCloneHealth(ctx context.Context, barePath string) error {
 			return fmt.Errorf("bare clone health check failed: %w", err)
 		}
 	}
+	markCloneHealthy(barePath, generation)
 	return nil
+}
+
+// cloneObjectStoreGeneration cheaply fingerprints the metadata of every Git
+// object without reading object contents. Unlike a ref-only key, it changes
+// when a reachable loose object is removed or rewritten between preparation
+// and admission. This walk is substantially cheaper than inflating and
+// validating the full reachable graph in git fsck.
+func cloneObjectStoreGeneration(objectsDir string) (string, error) {
+	hash := sha256.New()
+	fanouts, err := os.ReadDir(objectsDir)
+	if err != nil {
+		return "", err
+	}
+	for _, fanout := range fanouts {
+		if err := writeCloneObjectIdentity(hash, fanout.Name(), fanout); err != nil {
+			return "", err
+		}
+		if !fanout.IsDir() {
+			continue
+		}
+		children, err := os.ReadDir(filepath.Join(objectsDir, fanout.Name()))
+		if err != nil {
+			return "", err
+		}
+		for _, child := range children {
+			if err := writeCloneObjectIdentity(hash, fanout.Name()+"/"+child.Name(), child); err != nil {
+				return "", err
+			}
+		}
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func writeCloneObjectIdentity(w io.Writer, name string, entry os.DirEntry) error {
+	info, err := entry.Info()
+	if err != nil {
+		return err
+	}
+	_, err = io.WriteString(w, name+"|"+entry.Type().String()+"|"+strconv.FormatInt(info.Size(), 10)+"|"+strconv.FormatInt(info.ModTime().UnixNano(), 10)+"\n")
+	return err
 }
 
 // CheckWorktreeIndexes reports the first linked worktree whose index git
@@ -238,6 +295,7 @@ func RepairBareClone(ctx context.Context, barePath, taskBranch string) (RepairRe
 }
 
 func repairBareCloneLocked(ctx context.Context, barePath, taskBranch string) (RepairReport, error) {
+	invalidateCloneHealth(barePath)
 	var report RepairReport
 
 	releaseDeadWorktreeRefs(ctx, barePath, &report)

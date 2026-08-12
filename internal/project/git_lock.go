@@ -106,6 +106,20 @@ var FetchTTL time.Duration
 // for the network round trip.
 var lastFetchAt sync.Map // map[string]time.Time
 
+// CloneHealthTTL bounds how long a successful ref-reachable object check can
+// be reused. Worktree preparation and run-environment admission happen back to
+// back and both need the same proof; without this cache they each run a full
+// fsck over the same clone before one agent can start. Production wiring sets
+// this alongside FetchTTL. Zero keeps tests and standalone callers uncached.
+var CloneHealthTTL time.Duration
+
+type cloneHealthEntry struct {
+	checkedAt  time.Time
+	generation string
+}
+
+var lastCloneHealthAt sync.Map // map[string]cloneHealthEntry
+
 // fetchTTLNow is indirected so tests can control freshness without sleeping.
 var fetchTTLNow = time.Now
 
@@ -123,4 +137,30 @@ func fetchIsFresh(barePath string) bool {
 
 func markFetched(barePath string) {
 	lastFetchAt.Store(filepath.Clean(barePath), fetchTTLNow())
+}
+
+func cloneHealthIsFresh(barePath, generation string) bool {
+	if CloneHealthTTL <= 0 {
+		return false
+	}
+	v, ok := lastCloneHealthAt.Load(filepath.Clean(barePath))
+	if !ok {
+		return false
+	}
+	entry, ok := v.(cloneHealthEntry)
+	return ok && entry.generation == generation && fetchTTLNow().Sub(entry.checkedAt) < CloneHealthTTL
+}
+
+func markCloneHealthy(barePath, generation string) {
+	if CloneHealthTTL <= 0 {
+		return
+	}
+	lastCloneHealthAt.Store(filepath.Clean(barePath), cloneHealthEntry{
+		checkedAt:  fetchTTLNow(),
+		generation: generation,
+	})
+}
+
+func invalidateCloneHealth(barePath string) {
+	lastCloneHealthAt.Delete(filepath.Clean(barePath))
 }

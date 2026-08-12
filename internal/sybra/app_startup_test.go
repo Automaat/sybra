@@ -20,7 +20,7 @@ import (
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
-// preventFetchTTLLeak guards against Startup's project.FetchTTL = 60s
+// preventFetchTTLLeak guards against Startup's project fetch/health TTL
 // mutation leaking into other tests sharing this package's test binary — the
 // same discipline internal/project/git_test.go's TestFetchOriginTTLSkipsRepeatFetch
 // applies when it mutates that global directly. Without this, a Startup call
@@ -29,8 +29,10 @@ import (
 // rely on FetchOrigin always doing a real fetch.
 func preventFetchTTLLeak(t *testing.T) {
 	t.Helper()
-	orig := project.FetchTTL
-	t.Cleanup(func() { project.FetchTTL = orig })
+	origFetch, origHealth := project.FetchTTL, project.CloneHealthTTL
+	t.Cleanup(func() {
+		project.FetchTTL, project.CloneHealthTTL = origFetch, origHealth
+	})
 }
 
 func TestAppStartupWiresSubsystemsAndServices(t *testing.T) {

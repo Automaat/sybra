@@ -334,6 +334,20 @@ func TestJitterDispatch_DisabledIsNoop(t *testing.T) {
 	}
 }
 
+func TestJitterRunDispatch_ManualHeadlessSkipsDelay(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.dispatchJitterMs = 10_000
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := m.jitterRunDispatchContext(ctx, RunConfig{Mode: "headless", SkipDispatchJitter: true}); err != nil {
+		t.Fatalf("manual dispatch should skip jitter, got %v", err)
+	}
+	if err := m.jitterRunDispatchContext(ctx, RunConfig{Mode: "headless"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("automated dispatch should retain jitter, got %v", err)
+	}
+}
+
 // TestJitterDispatch_SleepsWithinBound verifies the sleep is uniformly bounded
 // by [0, dispatchJitterMs] rather than always waiting the full window.
 func TestJitterDispatch_SleepsWithinBound(t *testing.T) {

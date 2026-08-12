@@ -464,8 +464,9 @@ func PrependSupervisorSteer(tasks *task.Manager, taskID, prompt string) (string,
 }
 
 type startOptions struct {
-	admissionGate bool
-	manualDrain   bool
+	admissionGate      bool
+	manualDrain        bool
+	skipDispatchJitter bool
 	// outputSchema is the workflow step's OutputSchema, threaded onto the
 	// implementation RunConfig so a run_agent step with output_schema reaches
 	// the provider with --json-schema / --output-schema. Empty for the
@@ -482,6 +483,13 @@ func (o *Orchestrator) StartAgent(taskID, mode, prompt string, includeTaskDescri
 	return ag, err
 }
 
+// StartManualAgent dispatches an explicit operator request without randomized
+// provider-gate jitter. Preparation and all admission checks still apply.
+func (o *Orchestrator) StartManualAgent(taskID, mode, prompt string, includeTaskDescription, oneShot bool) (*agent.Agent, error) {
+	ag, _, err := o.startAgent(o.baseCtx(), taskID, mode, prompt, includeTaskDescription, oneShot, "", workflow.AgentAssignment{}, startOptions{skipDispatchJitter: true})
+	return ag, err
+}
+
 // StartQueuedManualItem replays a previously queued manual start once the app
 // drain has observed available capacity. Unlike StartAgent, it never silently
 // re-queues on a transient pool-busy race; the caller re-offers the original
@@ -491,7 +499,10 @@ func (o *Orchestrator) StartQueuedManualItem(ctx context.Context, it agentqueue.
 		return nil, fmt.Errorf("task %s: queued manual replay requires manual queue item", it.TaskID)
 	}
 	mode := FirstNonEmpty(it.Mode, "headless")
-	ag, _, err := o.startAgent(ctx, it.TaskID, mode, it.Prompt, it.IncludeTaskDescription, false, "", workflow.AgentAssignment{}, startOptions{manualDrain: true})
+	ag, _, err := o.startAgent(ctx, it.TaskID, mode, it.Prompt, it.IncludeTaskDescription, false, "", workflow.AgentAssignment{}, startOptions{
+		manualDrain:        true,
+		skipDispatchJitter: true,
+	})
 	return ag, err
 }
 
@@ -778,6 +789,7 @@ func (o *Orchestrator) implementationRunConfig(p implementationRunParams) agent.
 		RequestedSkill:          requestedWorkflowSkill(p.prompt),
 		RequirePermissions:      p.requirePerm,
 		HeadlessPermissionMode:  p.posture,
+		SkipDispatchJitter:      p.opts.skipDispatchJitter,
 		OneShot:                 p.oneShot,
 		ResumeSessionID:         p.resumeSessionID,
 		ExtraEnv:                p.extraEnv,

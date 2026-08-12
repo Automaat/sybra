@@ -684,6 +684,7 @@ func (a *App) taskEventEmitter(store *task.Store) func(string, any) {
 
 func configureProjectGitDefaults(worktreesDir string) {
 	project.FetchTTL = 60 * time.Second
+	project.CloneHealthTTL = 60 * time.Second
 	project.QuarantineDir = filepath.Join(config.HomeDir(), "quarantine")
 	project.WorktreesDir = worktreesDir
 }
@@ -899,7 +900,7 @@ func (a *App) dumpGoroutineStacks() string {
 // User-triggered starts are never one-shot — that flag is reserved for workflow
 // steps that expect a single turn.
 func (a *App) StartAgent(taskID, mode, prompt string, includeTaskDescription bool) (*agent.Agent, error) {
-	return a.agentOrch.StartAgent(taskID, mode, prompt, includeTaskDescription, false)
+	return a.agentOrch.StartManualAgent(taskID, mode, prompt, includeTaskDescription, false)
 }
 
 // StartK8sPocAgent starts a project-less headless run directly through

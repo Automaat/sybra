@@ -55,10 +55,8 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 }
 
 func (m *Manager) RunContext(ctx context.Context, cfg RunConfig) (*Agent, error) {
-	if cfg.Mode == "headless" {
-		if err := m.jitterDispatchContext(ctx); err != nil {
-			return nil, err
-		}
+	if err := m.jitterRunDispatchContext(ctx, cfg); err != nil {
+		return nil, err
 	}
 
 	cfg, prov, err := m.prepareRunConfig(cfg) //nolint:contextcheck // provider gating emits via manager-owned app lifecycle, not per-run ctx
@@ -443,6 +441,16 @@ func (m *Manager) jitterDispatchContext(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+func (m *Manager) jitterRunDispatchContext(ctx context.Context, cfg RunConfig) error {
+	if cfg.Mode != "headless" || cfg.SkipDispatchJitter {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return m.jitterDispatchContext(ctx)
 }
 
 // warnUnenforceableAllowedTools reports a step whose allowed_tools list the

@@ -149,6 +149,7 @@ func (r *Handler) StartFixReviewAgent(t task.Task) error {
 		// the Manager applies agent.role_effort and then the baseline.
 		ReasoningEffort:        t.ReasoningEffort,
 		HeadlessPermissionMode: posture,
+		SkipDispatchJitter:     true,
 		SandboxMode:            agentorch.ResolveSandboxMode(t, r.cfg),
 		// MaxTurns intentionally not inherited: fix-review agents need
 		// enough turns to fetch the PR, apply fixes, and commit.
@@ -217,6 +218,7 @@ func (r *Handler) StartReviewAgent(t task.Task, force bool) error {
 	prompt := StaffCodeReviewPrompt(current.ProjectID, current.PRNumber)
 
 	cfg := r.agents.ApplyABVariant(StaffCodeReviewRunConfig(current, prompt, dir, posture, agentorch.ResolveSandboxMode(current, r.cfg)), r.abTestingConfig(), current.ID, string(agent.RoleReview))
+	cfg.SkipDispatchJitter = force
 	var release func()
 	if r.verification != nil && dir != config.HomeDir() {
 		lease, prepErr := r.verification.Prepare(context.Background(), current.ID, string(agent.RoleReview), dir)
