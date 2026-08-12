@@ -399,6 +399,16 @@ func TestResumePreservesCursorWhenEveryCommandWasAcknowledged(t *testing.T) {
 	if err := service.AckCommands(t.Context(), replacement.SessionID, first.Sequence); err != nil {
 		t.Fatalf("idempotent acknowledgement of inherited cursor: %v", err)
 	}
+	secondReplacement, err := service.Register(t.Context(), RegisterRequest{
+		WorkerID: "worker-acked-resume", ResumeSessionID: replacement.SessionID, LastCommandAck: first.Sequence,
+		Negotiation: executioncontract.Negotiation{
+			ProtocolMin: executioncontract.CurrentVersion(), ProtocolMax: executioncontract.CurrentVersion(), BuildVersion: "worker-test",
+		},
+	})
+	if err != nil {
+		t.Fatalf("second-generation resume with no transferred rows: %v", err)
+	}
+	replacement = secondReplacement
 	stop := start
 	stop.CommandID, stop.IdempotencyKey, stop.Type, stop.Payload = "command:after-resume", "stop:after-resume", executioncontract.CommandStop, nil
 	next, err := service.Enqueue(t.Context(), replacement.SessionID, nil, stop)
@@ -411,6 +421,9 @@ func TestResumePreservesCursorWhenEveryCommandWasAcknowledged(t *testing.T) {
 	commands, err := service.PollCommands(t.Context(), replacement.SessionID, first.Sequence, 10, 0)
 	if err != nil || len(commands) != 1 || commands[0].Sequence != next.Sequence {
 		t.Fatalf("commands after inherited cursor = %+v, %v", commands, err)
+	}
+	if err := service.AckCommands(t.Context(), replacement.SessionID, next.Sequence); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -425,6 +438,11 @@ func TestIdempotencyReplayCannotCrossUnrelatedSession(t *testing.T) {
 	}
 	if _, err := service.Enqueue(t.Context(), sessionB.SessionID, &spec, start); !errors.Is(err, ErrStaleSession) {
 		t.Fatalf("cross-session start replay error = %v, want ErrStaleSession", err)
+	}
+	differentKey := start
+	differentKey.CommandID, differentKey.IdempotencyKey = "command:different-key", "start:different-key"
+	if _, err := service.Enqueue(t.Context(), sessionB.SessionID, &spec, differentKey); !errors.Is(err, ErrStaleSession) {
+		t.Fatalf("cross-session effect replay error = %v, want ErrStaleSession", err)
 	}
 	stop := start
 	stop.CommandID, stop.IdempotencyKey, stop.Type, stop.Payload = "command:idempotency-stop", "stop:idempotency", executioncontract.CommandStop, nil

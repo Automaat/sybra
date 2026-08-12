@@ -127,7 +127,7 @@ func (s *Service) Register(ctx context.Context, request RegisterRequest) (Sessio
 			if err := tx.QueryRowContext(ctx, s.db.Rebind(`SELECT COALESCE(MAX(sequence), 0) FROM worker_commands WHERE session_id = ?`), request.ResumeSessionID).Scan(&maxSequence); err != nil {
 				return err
 			}
-			if request.LastCommandAck < priorAck || request.LastCommandAck > maxSequence {
+			if request.LastCommandAck < priorAck || request.LastCommandAck > max(maxSequence, priorAck) {
 				return errors.New("worker control: resume command cursor is outside the durable range")
 			}
 		}
@@ -243,24 +243,25 @@ func (s *Service) Enqueue(ctx context.Context, sessionID string, spec *execution
 			}
 		}
 		if spec != nil && envelope.Type == executioncontract.CommandStart {
-			var priorRun, taskID, workflowID, stepID string
-			var priorSpec string
-			var taskGeneration uint64
-			var workflowGeneration int64
-			err = tx.QueryRowContext(ctx, s.db.Rebind(`SELECT run_id, task_id, task_generation, workflow_id, workflow_generation, step_id, run_spec_json
-                FROM remote_runs WHERE effect_id = ?`), spec.EffectID).
-				Scan(&priorRun, &taskID, &taskGeneration, &workflowID, &workflowGeneration, &stepID, &priorSpec)
 			specJSON, _ := json.Marshal(spec)
+			var priorRun, priorSpec string
+			err = tx.QueryRowContext(ctx, s.db.Rebind(`SELECT run_id, run_spec_json FROM remote_runs WHERE effect_id = ?`), spec.EffectID).
+				Scan(&priorRun, &priorSpec)
 			switch {
 			case err == nil:
-				if priorRun != spec.RunID || taskID != spec.Fence.TaskID || taskGeneration != spec.Fence.TaskGeneration ||
-					workflowID != spec.Fence.WorkflowID || workflowGeneration != spec.Fence.WorkflowGeneration || stepID != spec.Fence.StepID ||
-					priorSpec != string(specJSON) {
+				if priorRun != spec.RunID || priorSpec != string(specJSON) {
 					return errors.New("worker control: effect id already belongs to another fenced run")
 				}
-				if err := tx.QueryRowContext(ctx, s.db.Rebind(`SELECT sequence FROM worker_commands WHERE run_id = ? AND command_type = ? ORDER BY sequence LIMIT 1`),
-					spec.RunID, executioncontract.CommandStart).Scan(&sequence); err != nil {
+				var startSession string
+				var startAcknowledged sql.NullInt64
+				if err := tx.QueryRowContext(ctx, s.db.Rebind(`SELECT sequence, session_id, acknowledged_at FROM worker_commands WHERE run_id = ? AND command_type = ? ORDER BY sequence LIMIT 1`),
+					spec.RunID, executioncontract.CommandStart).Scan(&sequence, &startSession, &startAcknowledged); err != nil {
 					return err
+				}
+				if startSession != sessionID {
+					if err := s.validateCrossSessionReplay(ctx, tx, sessionID, sequence, startAcknowledged.Valid, envelope); err != nil {
+						return err
+					}
 				}
 				return nil
 			case errors.Is(err, sql.ErrNoRows):
