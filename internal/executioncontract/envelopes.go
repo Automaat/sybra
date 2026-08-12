@@ -9,7 +9,10 @@ import (
 	"time"
 )
 
-var sha256Digest = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
+var (
+	sha256Digest = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
+	contractID   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$`)
+)
 
 type CommandType string
 
@@ -79,6 +82,9 @@ func validateStartCommandPayload(data json.RawMessage) error {
 	}
 	if payload.Spec != nil {
 		return payload.Spec.Validate()
+	}
+	if !contractID.MatchString(payload.RunSpecRef) {
+		return errors.New("execution contract: run spec reference must be a logical contract id")
 	}
 	return nil
 }

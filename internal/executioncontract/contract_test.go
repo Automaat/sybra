@@ -179,6 +179,8 @@ func TestStartCommandRejectsProcessLocalPayload(t *testing.T) {
 	for _, payload := range []string{
 		`{"dir":"/leader/private/worktree","extraEnv":["OPENAI_API_KEY=master"]}`,
 		`{"runSpecRef":"run-1","process":{"pid":123}}`,
+		`{"runSpecRef":"/leader/private/run-spec.json"}`,
+		`{"runSpecRef":"../shared/run-spec"}`,
 	} {
 		command := CommandEnvelope{
 			Version: CurrentVersion(), BuildVersion: "test", CommandID: "command", RunID: "run",
