@@ -5,15 +5,24 @@ builtin: true
 trigger:
   on: task.created
   conditions:
-    - field: task.tags
-      operator: not_contains
-      value: review
+    # The review tag is also a normal category tag for tasks that change the
+    # review subsystem. PR context, not that overloaded tag, owns the inbound
+    # review lane. Without this inverse of pr-review's pr_number guard, a task
+    # tagged review with no PR matches neither workflow and remains in todo
+    # forever while every scheduler reconciliation is a no-op.
+    - field: task.pr_number
+      operator: equals
+      value: ""
     # Handoff tasks arrive with a finished plan from an external tool (e.g.
     # Orca) and are driven by simple-task-handoff straight to implementation.
     # Excluding them here keeps triage/planning from also firing on create.
     - field: task.tags
       operator: not_contains
       value: handoff
+    # Legacy handoff-pr records may not also carry the generic handoff tag.
+    - field: task.tags
+      operator: not_contains
+      value: handoff-pr
     # renovate-fix tasks are driven by pr.event (pr-fix workflow) and must
     # never enter the plan/implement/review pipeline — that would open a
     # duplicate PR and burn ~$7 + ~70 min on a trivial CI fix.
