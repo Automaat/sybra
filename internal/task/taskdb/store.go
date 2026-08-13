@@ -50,6 +50,10 @@ type SQLStore struct {
 	db *db.DB
 }
 
+func (s *SQLStore) WithTaskLock(ctx context.Context, id string, fn func() error) error {
+	return s.db.WithAdvisoryLock(ctx, db.NamedLockKey("task", id), fn)
+}
+
 // NewSQLStore returns the database-backed task store.
 func NewSQLStore(database *db.DB) (*SQLStore, error) {
 	if database == nil {

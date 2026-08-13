@@ -12,6 +12,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"hash/fnv"
 	"net/url"
 	"path/filepath"
 	"strconv"
@@ -200,6 +201,36 @@ func (d *DB) InTxLocked(ctx context.Context, key LockKey, fn func(*sql.Tx) error
 		}
 		return fn(tx)
 	})
+}
+
+// NamedLockKey deterministically maps a namespace and identifier onto the
+// signed advisory-lock keyspace.
+func NamedLockKey(namespace, id string) LockKey {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(namespace))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(id))
+	return LockKey(h.Sum64() & (^uint64(0) >> 1))
+}
+
+// WithAdvisoryLock holds a session-scoped cross-process lock across fn. SQLite
+// callers already serialize writers and use their process-local domain lock.
+func (d *DB) WithAdvisoryLock(ctx context.Context, key LockKey, fn func() error) error {
+	if d.dialect != Postgres {
+		return fn()
+	}
+	conn, err := d.sqlDB.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", int64(key)); err != nil {
+		return fmt.Errorf("acquire advisory lock %d: %w", key, err)
+	}
+	defer func() {
+		_, _ = conn.ExecContext(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock($1)", int64(key))
+	}()
+	return fn()
 }
 
 // InTx runs fn inside a transaction, rolling back on error or panic. Stores use it for any write that must land whole.

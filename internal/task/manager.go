@@ -245,6 +245,11 @@ func (m *Manager) lock(id string) func() {
 func (m *Manager) WithMutationLock(id string, fn func() error) error {
 	unlock := m.lock(id)
 	defer unlock()
+	if exclusive, ok := m.persist.(interface {
+		WithExclusive(string, func() error) error
+	}); ok {
+		return exclusive.WithExclusive(id, fn)
+	}
 	return fn()
 }
 
@@ -254,7 +259,13 @@ func (m *Manager) UpdateFnByWhileLocked(id, actor string, fn func(cur Task) (Upd
 	if err := requireActor(actor); err != nil {
 		return Task{}, err
 	}
-	t, _, err := m.persist.UpdateFieldsBy(id, actor, func(cur Task) (Update, error) {
+	update := m.persist.UpdateFieldsBy
+	if exclusive, ok := m.persist.(interface {
+		UpdateFieldsByExclusive(string, string, func(Task) (Update, error)) (Task, Status, error)
+	}); ok {
+		update = exclusive.UpdateFieldsByExclusive
+	}
+	t, _, err := update(id, actor, func(cur Task) (Update, error) {
 		u, err := fn(cur)
 		if err != nil {
 			return Update{}, err

@@ -59,7 +59,7 @@ func (p *Persistence) ListForNode(node string, closedSince time.Time) ([]task.Ta
 func (p *Persistence) PutBy(t task.Task, actor string, changed []string) (task.Task, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), taskCallTimeout)
 	defer cancel()
-	if err := p.store.PutBy(ctx, t, SidecarsFromTask(t), actor, changed); err != nil {
+	if err := p.store.WithTaskLock(ctx, t.ID, func() error { return p.store.PutBy(ctx, t, SidecarsFromTask(t), actor, changed) }); err != nil {
 		return task.Task{}, err
 	}
 	return t, nil
@@ -68,7 +68,12 @@ func (p *Persistence) PutBy(t task.Task, actor string, changed []string) (task.T
 func (p *Persistence) CreateBy(t task.Task, actor string) (task.Task, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), taskCallTimeout)
 	defer cancel()
-	saved, err := p.store.CreateBy(ctx, t, SidecarsFromTask(t), actor)
+	var saved task.Task
+	err := p.store.WithTaskLock(ctx, t.ID, func() error {
+		var createErr error
+		saved, createErr = p.store.CreateBy(ctx, t, SidecarsFromTask(t), actor)
+		return createErr
+	})
 	if errors.Is(err, ErrIDCollision) {
 		return task.Task{}, fmt.Errorf("%w: %w", task.ErrCreateIDCollision, err)
 	}
@@ -76,22 +81,49 @@ func (p *Persistence) CreateBy(t task.Task, actor string) (task.Task, error) {
 }
 
 func (p *Persistence) UpdateFieldsBy(id, actor string, compute func(cur task.Task) (task.Update, error)) (task.Task, task.Status, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), taskCallTimeout)
+	defer cancel()
+	var saved task.Task
 	var prevStatus task.Status
-	saved, err := p.PutFnBy(id, actor, func(cur task.Task) (task.Task, []string, error) {
-		prevStatus = cur.Status
+	err := p.store.WithTaskLock(ctx, id, func() error {
+		var updateErr error
+		saved, updateErr = p.updateFieldsUnlocked(ctx, id, actor, compute, &prevStatus)
+		return updateErr
+	})
+	return saved, prevStatus, err
+}
+
+func (p *Persistence) updateFieldsUnlocked(ctx context.Context, id, actor string, compute func(cur task.Task) (task.Update, error), prevStatus *task.Status) (task.Task, error) {
+	return p.store.PutFnBy(ctx, id, actor, func(cur task.Task) (task.Task, []string, error) {
+		*prevStatus = cur.Status
 		u, err := compute(cur)
 		if err != nil {
 			return task.Task{}, nil, err
 		}
 		return task.ApplyUpdate(cur, u)
 	})
-	return saved, prevStatus, err
+}
+
+func (p *Persistence) WithExclusive(id string, fn func() error) error {
+	ctx, cancel := context.WithTimeout(context.Background(), taskCallTimeout)
+	defer cancel()
+	return p.store.WithTaskLock(ctx, id, fn)
+}
+
+func (p *Persistence) UpdateFieldsByExclusive(id, actor string, compute func(cur task.Task) (task.Update, error)) (task.Task, task.Status, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), taskCallTimeout)
+	defer cancel()
+	var prev task.Status
+	saved, err := p.updateFieldsUnlocked(ctx, id, actor, compute, &prev)
+	return saved, prev, err
 }
 
 func (p *Persistence) PutFnBy(id, actor string, fn func(cur task.Task) (task.Task, []string, error)) (task.Task, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), taskCallTimeout)
 	defer cancel()
-	return p.store.PutFnBy(ctx, id, actor, fn)
+	var saved task.Task
+	err := p.store.WithTaskLock(ctx, id, func() error { var e error; saved, e = p.store.PutFnBy(ctx, id, actor, fn); return e })
+	return saved, err
 }
 
 func (p *Persistence) DeleteBy(id, actor string) error {

@@ -142,7 +142,14 @@ func importGitLocked(ctx context.Context, target string, spec executioncontract.
 		}
 		return nonGit, nil
 	}
-	if canonicalBase != spec.Workspace.BaseSHA {
+	recovering := false
+	if canonicalBase == manifest.Workspace.FinalSHA {
+		recovering, err = partialPublicationIsRepairable(ctx, target, checkout)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if canonicalBase != spec.Workspace.BaseSHA && !recovering {
 		return nil, ErrStale
 	}
 	// Recheck leader state and the worktree compare-and-swap immediately before
@@ -151,11 +158,21 @@ func importGitLocked(ctx context.Context, target string, spec executioncontract.
 	if err != nil {
 		return nil, err
 	}
-	if current != spec.Fence || canonicalBase != spec.Workspace.BaseSHA {
+	validRecoveryBase := recovering && canonicalBase == manifest.Workspace.FinalSHA
+	if current != spec.Fence || (canonicalBase != spec.Workspace.BaseSHA && !validRecoveryBase) {
 		return nil, ErrStale
 	}
-	if err := requireBaseAndClean(ctx, target, spec.Workspace.BaseSHA); err != nil {
-		return nil, err
+	if !recovering {
+		if err := requireBaseAndClean(ctx, target, spec.Workspace.BaseSHA); err != nil {
+			return nil, err
+		}
+	} else {
+		for _, member := range untracked {
+			_ = os.Remove(filepath.Join(target, filepath.FromSlash(member.Path)))
+		}
+		if err := gitexec.Run(ctx, gitexec.Options{Dir: target}, "reset", "--hard", manifest.Workspace.FinalSHA); err != nil {
+			return nil, err
+		}
 	}
 	if before != nil {
 		if err := before(nonGit); err != nil {
@@ -192,6 +209,47 @@ func importGitLocked(ctx context.Context, target string, spec executioncontract.
 		}
 	}
 	return nonGit, nil
+}
+
+func partialPublicationIsRepairable(ctx context.Context, target, expected string) (bool, error) {
+	actualStatus, err := gitexec.RawOutput(ctx, gitexec.Options{Dir: target}, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+	if err != nil {
+		return false, err
+	}
+	expectedStatus, err := gitexec.RawOutput(ctx, gitexec.Options{Dir: expected}, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+	if err != nil {
+		return false, err
+	}
+	expectedSet := map[string]bool{}
+	for record := range strings.SplitSeq(strings.TrimSuffix(string(expectedStatus), "\x00"), "\x00") {
+		expectedSet[record] = true
+	}
+	for record := range strings.SplitSeq(strings.TrimSuffix(string(actualStatus), "\x00"), "\x00") {
+		if record == "" {
+			continue
+		}
+		if !expectedSet[record] {
+			return false, nil
+		}
+		path := strings.TrimSpace(record[3:])
+		actual, readErr := os.ReadFile(filepath.Join(target, filepath.FromSlash(path)))
+		if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+			return false, readErr
+		}
+		want, wantErr := os.ReadFile(filepath.Join(expected, filepath.FromSlash(path)))
+		if wantErr == nil && slices.Equal(actual, want) {
+			continue
+		}
+		base, baseErr := gitexec.RawOutput(ctx, gitexec.Options{Dir: target}, "show", "HEAD:"+path)
+		if baseErr == nil && slices.Equal(actual, base) {
+			continue
+		}
+		if errors.Is(readErr, os.ErrNotExist) {
+			continue
+		}
+		return false, nil
+	}
+	return true, nil
 }
 
 func partitionArtifacts(manifest executioncontract.ArtifactManifest, pkg executioncontract.ArtifactPackage) (staged, unstaged []byte, untracked, nonGit []executioncontract.ArtifactMember) {
