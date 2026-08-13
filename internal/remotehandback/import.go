@@ -27,10 +27,19 @@ type Guard func(context.Context) (executioncontract.GenerationFence, string, err
 // alone cannot prevent a concurrent local completion from being reset away.
 type Lock func(context.Context, string, func() error) error
 
+// BeforePublish runs after complete isolated Git validation and the final
+// leader guard, but before canonical Git mutation. It shares the caller's
+// canonical locks and may atomically publish non-Git domain outputs.
+type BeforePublish func([]executioncontract.ArtifactMember) error
+
 // ImportGit applies committed, dirty, and untracked Git state only after the
 // complete package has been materialized in an isolated staging clone. It
 // returns declared non-Git artifacts for their leader-owned domain importers.
 func ImportGit(ctx context.Context, target string, spec executioncontract.RunSpec, manifest executioncontract.ArtifactManifest, content []byte, guard Guard, lock Lock) ([]executioncontract.ArtifactMember, error) {
+	return ImportGitWithBeforePublish(ctx, target, spec, manifest, content, guard, lock, nil)
+}
+
+func ImportGitWithBeforePublish(ctx context.Context, target string, spec executioncontract.RunSpec, manifest executioncontract.ArtifactManifest, content []byte, guard Guard, lock Lock, before BeforePublish) ([]executioncontract.ArtifactMember, error) {
 	pkg, err := executioncontract.ValidateArtifactPackage(manifest, content)
 	if err != nil {
 		return nil, err
@@ -44,14 +53,14 @@ func ImportGit(ctx context.Context, target string, spec executioncontract.RunSpe
 	var imported []executioncontract.ArtifactMember
 	err = lock(ctx, target, func() error {
 		var importErr error
-		imported, importErr = importGitLocked(ctx, target, spec, manifest, pkg, guard)
+		imported, importErr = importGitLocked(ctx, target, spec, manifest, pkg, guard, before)
 		return importErr
 	})
 	return imported, err
 }
 
 //nolint:funlen // Validate, stage, recheck, publish, and rollback are one canonical mutation transaction.
-func importGitLocked(ctx context.Context, target string, spec executioncontract.RunSpec, manifest executioncontract.ArtifactManifest, pkg executioncontract.ArtifactPackage, guard Guard) ([]executioncontract.ArtifactMember, error) {
+func importGitLocked(ctx context.Context, target string, spec executioncontract.RunSpec, manifest executioncontract.ArtifactManifest, pkg executioncontract.ArtifactPackage, guard Guard, before BeforePublish) ([]executioncontract.ArtifactMember, error) {
 	current, canonicalBase, err := guard(ctx)
 	if err != nil {
 		return nil, err
@@ -147,6 +156,11 @@ func importGitLocked(ctx context.Context, target string, spec executioncontract.
 	}
 	if err := requireBaseAndClean(ctx, target, spec.Workspace.BaseSHA); err != nil {
 		return nil, err
+	}
+	if before != nil {
+		if err := before(nonGit); err != nil {
+			return nil, err
+		}
 	}
 	if manifest.Workspace.FinalSHA != spec.Workspace.BaseSHA {
 		if err := gitexec.Run(ctx, gitexec.Options{Dir: target}, "fetch", checkout, manifest.Workspace.FinalSHA); err != nil {

@@ -267,9 +267,14 @@ func (m *Manager) UpdateFnByWhileLocked(id, actor string, fn func(cur Task) (Upd
 	if err != nil {
 		return t, err
 	}
+	return t, nil
+}
+
+// NotifyLockedMutation emits the observable effects intentionally deferred by
+// UpdateFnByWhileLocked. Call it only after WithMutationLock has returned.
+func (m *Manager) NotifyLockedMutation(t Task) {
 	metrics.TaskUpdated()
 	m.emitter.Emit(events.TaskUpdated, eventPath(t))
-	return t, nil
 }
 
 // List returns all tasks (lock-free).

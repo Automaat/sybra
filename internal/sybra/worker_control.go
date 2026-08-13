@@ -35,7 +35,9 @@ func (a *App) importRemoteHandback(ctx context.Context, runID string) error {
 	if err := a.workerControl.BeginArtifactImport(ctx, runID, handback.Manifest.ManifestID); err != nil {
 		return err
 	}
-	return a.tasks.WithMutationLock(handback.Spec.Fence.TaskID, func() error {
+	var notify task.Task
+	notifyNeeded := false
+	err = a.tasks.WithMutationLock(handback.Spec.Fence.TaskID, func() error {
 		t, getErr := a.tasks.Get(handback.Spec.Fence.TaskID)
 		if getErr != nil {
 			return getErr
@@ -68,16 +70,18 @@ func (a *App) importRemoteHandback(ctx context.Context, runID string) error {
 			head, headErr := gitexec.Output(ctx, gitexec.Options{Dir: target}, "rev-parse", "--verify", "HEAD^{commit}")
 			return handback.Spec.Fence, head, headErr
 		}
-		if err := a.importRemoteOutputs(handback, nonGitMembers(handback), true); err != nil {
-			if errors.Is(err, remotehandback.ErrStale) {
-				return a.rejectRemoteHandback(ctx, handback, err)
-			}
-			return err
-		}
 		lock := func(_ context.Context, path string, fn func() error) error {
 			return a.worktrees.WithMutationLock(path, fn)
 		}
-		if _, err := remotehandback.ImportGit(ctx, target, handback.Spec, handback.Manifest, handback.Content, guard, lock); err != nil {
+		before := func(members []executioncontract.ArtifactMember) error {
+			if err := a.importRemoteOutputs(handback, members, true); err != nil {
+				return err
+			}
+			notify, getErr = a.tasks.Get(handback.Spec.Fence.TaskID)
+			notifyNeeded = getErr == nil
+			return getErr
+		}
+		if _, err := remotehandback.ImportGitWithBeforePublish(ctx, target, handback.Spec, handback.Manifest, handback.Content, guard, lock, before); err != nil {
 			if errors.Is(err, remotehandback.ErrStale) {
 				return a.rejectRemoteHandback(ctx, handback, err)
 			}
@@ -85,6 +89,10 @@ func (a *App) importRemoteHandback(ctx context.Context, runID string) error {
 		}
 		return a.workerControl.ResolveArtifact(ctx, runID, handback.Manifest.ManifestID, "imported")
 	})
+	if notifyNeeded {
+		a.tasks.NotifyLockedMutation(notify)
+	}
+	return err
 }
 
 func (a *App) rejectRemoteHandback(ctx context.Context, handback workercontrol.ArtifactHandback, cause error) error {
@@ -168,17 +176,6 @@ func (a *App) importRemoteOutputs(handback workercontrol.ArtifactHandback, membe
 		return err
 	}
 	return nil
-}
-
-func nonGitMembers(handback workercontrol.ArtifactHandback) []executioncontract.ArtifactMember {
-	members := make([]executioncontract.ArtifactMember, 0, len(handback.Package.Members))
-	for i := range handback.Manifest.Artifacts {
-		entry := &handback.Manifest.Artifacts[i]
-		if !strings.HasPrefix(entry.Kind, "git_") {
-			members = append(members, handback.Package.Members[i])
-		}
-	}
-	return members
 }
 
 var errRemoteOutputsAlreadyApplied = errors.New("remote handback: outputs already applied")
