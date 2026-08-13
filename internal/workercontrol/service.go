@@ -1041,7 +1041,8 @@ func (s *Service) Diagnostics(ctx context.Context) ([]Diagnostics, error) {
 		item.SpoolBytes, _ = strconv.ParseInt(parsed.one("spool_bytes"), 10, 64)
 		item.SpoolMaxBytes, _ = strconv.ParseInt(parsed.one("spool_max_bytes"), 10, 64)
 		item.AvailableCapacity = max(item.Capacity-item.ActiveRuns, 0)
-		if item.SpoolMaxBytes > 0 && item.SpoolBytes*100 >= item.SpoolMaxBytes*80 {
+		// max-max/5 is ceil(80% of max) without overflowing large counters.
+		if item.SpoolMaxBytes > 0 && item.SpoolBytes >= item.SpoolMaxBytes-item.SpoolMaxBytes/5 {
 			item.Alerts = append(item.Alerts, "spool_pressure")
 		}
 		if item.PendingEvents > 0 {

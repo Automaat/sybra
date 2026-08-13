@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -258,6 +260,18 @@ func TestDiagnosticsExposeSpoolPressureWithoutPayloads(t *testing.T) {
 		if bytes.Contains(encoded, []byte(forbidden)) {
 			t.Fatalf("diagnostics leaked %q: %s", forbidden, encoded)
 		}
+	}
+}
+
+func TestDiagnosticsSpoolPressureDoesNotOverflow(t *testing.T) {
+	service := New(dbtest.SQLite(t))
+	maximum := strconv.FormatInt(math.MaxInt64, 10)
+	registerPlacementWorker(t, service, "large-spool", []string{
+		"capacity=1", "spool_bytes=" + maximum, "spool_max_bytes=" + maximum,
+	})
+	diagnostics, err := service.Diagnostics(t.Context())
+	if err != nil || len(diagnostics) != 1 || !slices.Contains(diagnostics[0].Alerts, "spool_pressure") {
+		t.Fatalf("large spool diagnostics = %+v, %v", diagnostics, err)
 	}
 }
 
