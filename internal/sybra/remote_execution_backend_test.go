@@ -200,6 +200,37 @@ func TestRemoteReceiptExpiresAfterLaterWorkflowMutation(t *testing.T) {
 	}
 }
 
+func TestRemoteReceiptLegacyTagBackwardCompat(t *testing.T) {
+	// A task updated before generation-scoped receipt tags were introduced carries
+	// the legacy format "remote-handback:<manifestID>" written at WorkflowGeneration
+	// fence time, so the task generation is exactly fence+1 after bookkeeping.
+	const fence = int64(7)
+	handback := workercontrol.ArtifactHandback{
+		Spec:     executioncontract.RunSpec{Fence: executioncontract.GenerationFence{WorkflowGeneration: fence}},
+		Manifest: executioncontract.ArtifactManifest{ManifestID: "manifest-legacy"},
+	}
+	legacyTag := "remote-handback:manifest-legacy"
+
+	// Generation == fence+1: legacy receipt is recognized.
+	current := task.Task{Generation: fence + 1, Tags: []string{legacyTag}}
+	if !remoteReceiptApplied(current, handback) {
+		t.Fatal("legacy receipt tag was not recognized at fence+1 generation")
+	}
+
+	// Generation == fence+2 (a later mutation): legacy receipt expires.
+	current.Generation = fence + 2
+	if remoteReceiptApplied(current, handback) {
+		t.Fatal("legacy receipt tag survived a generation beyond fence+1")
+	}
+
+	// A new-format tag at the current generation takes precedence and is also recognized.
+	current.Generation = fence + 2
+	current.Tags = []string{remoteReceiptTag("manifest-legacy", fence+2)}
+	if !remoteReceiptApplied(current, handback) {
+		t.Fatal("new-format receipt tag was not recognized")
+	}
+}
+
 func TestLeaderExecutionBackendReclaimsExistingEffectAfterRestart(t *testing.T) {
 	database := dbtest.SQLite(t)
 	control := workercontrol.New(database)

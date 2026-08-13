@@ -201,7 +201,15 @@ func remoteSidecarReceiptTag(workflowID, stepID string, generation int64, kind s
 }
 
 func remoteReceiptApplied(current task.Task, handback workercontrol.ArtifactHandback) bool {
-	return slices.Contains(current.Tags, remoteReceiptTag(handback.Manifest.ManifestID, current.Generation))
+	if slices.Contains(current.Tags, remoteReceiptTag(handback.Manifest.ManifestID, current.Generation)) {
+		return true
+	}
+	// Legacy tag format written before generation scoping ("remote-handback:<manifestID>").
+	// Recognised only when the task has advanced exactly one generation past the workflow
+	// fence, matching the semantics under which those tags were written.
+	legacyTag := "remote-handback:" + handback.Manifest.ManifestID
+	return current.Generation == handback.Spec.Fence.WorkflowGeneration+1 &&
+		slices.Contains(current.Tags, legacyTag)
 }
 
 // remoteHandbackOwned accepts the immutable generation fence before the
