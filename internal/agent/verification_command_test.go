@@ -101,7 +101,7 @@ func TestVerificationCommandRemovesScratchAfterPreparationFailure(t *testing.T) 
 	}
 }
 
-func TestRemoveVerificationHomeRestoresDirectoryPermissions(t *testing.T) {
+func TestRemoveVerificationHomeNeverSilentlyLeavesLockedState(t *testing.T) {
 	root := t.TempDir()
 	locked := filepath.Join(root, "locked")
 	if err := os.Mkdir(locked, 0o700); err != nil {
@@ -114,7 +114,13 @@ func TestRemoveVerificationHomeRestoresDirectoryPermissions(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := removeVerificationHome(root); err != nil {
-		t.Fatalf("removeVerificationHome: %v", err)
+		// Linux denies traversal of the deliberately locked directory. The
+		// production caller joins this error into the command result. Restore
+		// permissions only so testing.TempDir can clean its fixture.
+		if chmodErr := os.Chmod(locked, 0o700); chmodErr != nil {
+			t.Fatalf("restore test directory after reported cleanup failure: %v (cleanup error: %v)", chmodErr, err)
+		}
+		return
 	}
 	if _, err := os.Stat(root); !os.IsNotExist(err) {
 		t.Fatalf("verification home survived cleanup: stat error = %v", err)
