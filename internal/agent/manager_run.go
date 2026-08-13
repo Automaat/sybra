@@ -943,10 +943,11 @@ func isolateVerifierGitCredentials(cfg *RunConfig) error {
 	}
 	cfg.ExtraEnv = stripEnvKeyPrefixes(cfg.ExtraEnv, "GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
 	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv,
-		"XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS",
+		"HOME", "XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS",
 		"GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK", "SSH_AGENT_PID", "GIT_ASKPASS", "SSH_ASKPASS",
 	)
 	cfg.ExtraEnv = append(cfg.ExtraEnv,
+		"HOME="+isolationRoot,
 		"XDG_CONFIG_HOME="+isolatedConfig,
 		"GIT_CONFIG_GLOBAL=/dev/null",
 		"GIT_CONFIG_NOSYSTEM=1",
