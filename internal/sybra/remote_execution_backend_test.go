@@ -6,14 +6,20 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	agentdaemon "github.com/Automaat/sybra/internal/agentd"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/executioncontract"
 	"github.com/Automaat/sybra/internal/gitexec"
@@ -134,6 +140,29 @@ func TestLeaderExecutionBackendReclaimsExistingEffectAfterRestart(t *testing.T) 
 	var runCount int
 	if err := database.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM remote_runs WHERE effect_id = ?`, intent).Scan(&runCount); err != nil || runCount != 1 {
 		t.Fatalf("durable runs for recovered effect = %d, %v; want one", runCount, err)
+	}
+	remote, err := control.RemoteRunForEffect(t.Context(), intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := recoveredBackend.Stop(t.Context(), recoveredHandle); err != nil {
+		t.Fatalf("Stop after leader upgrade: %v", err)
+	}
+	if err := recoveredBackend.Stop(t.Context(), recoveredHandle); err != nil {
+		t.Fatalf("replayed Stop after leader upgrade: %v", err)
+	}
+	commands, err := control.PollCommands(t.Context(), session.SessionID, 0, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopBuild := ""
+	for i := range commands {
+		if commands[i].Envelope.Type == executioncontract.CommandStop {
+			stopBuild = commands[i].Envelope.BuildVersion
+		}
+	}
+	if stopBuild != remote.Spec.BuildVersion {
+		t.Fatalf("recovered Stop build identity = %q, want durable run build %q", stopBuild, remote.Spec.BuildVersion)
 	}
 	events := []executioncontract.EventEnvelope{
 		remoteBackendEvent("agent-before-restart", 1, executioncontract.EventStarted, map[string]any{"agentId": "worker-agent"}),
@@ -421,6 +450,173 @@ func TestLeaderManagerCompletesPartitionRecoveryOnceAcrossTwoWorkers(t *testing.
 	got, err := app.tasks.Get(canonical.ID)
 	if err != nil || got.Generation != canonical.Generation || got.Workflow.CurrentStep != canonical.Workflow.CurrentStep {
 		t.Fatalf("backend duplicated workflow transition: %+v, %v", got, err)
+	}
+}
+
+func TestLeaderTwoDaemonsPartitionCompletesProviderAndWorkflowExactlyOnce(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell provider fixture")
+	}
+	root := t.TempDir()
+	dir, _ := remoteBackendRepository(t)
+	bin := filepath.Join(root, "bin")
+	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(root, "provider-runs")
+	provider := filepath.Join(bin, providerid.Claude)
+	providerScript := `#!/bin/sh
+printf 'run\n' >> "$SYBRA_CLUSTER_MARKER"
+printf '%s\n' '{"type":"system","session_id":"partition-session"}'
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"durable output"}]}}'
+printf '%s\n' '{"type":"result","result":"done","session_id":"partition-session","total_cost_usd":0.01}'
+`
+	if err := os.WriteFile(provider, []byte(providerScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("SYBRA_CLUSTER_MARKER", marker)
+	t.Setenv("SYBRA_CLUSTER_TOKEN", "test-token")
+
+	database := dbtest.SQLite(t)
+	control := workercontrol.New(database)
+	control.SetArtifactImporter(func(ctx context.Context, runID string) error {
+		handback, err := control.LoadStagedArtifact(ctx, runID)
+		if err != nil {
+			return err
+		}
+		if err := control.BeginArtifactImport(ctx, runID, handback.Manifest.ManifestID); err != nil {
+			return err
+		}
+		return control.ResolveArtifact(ctx, runID, handback.Manifest.ManifestID, "imported")
+	})
+	var partitioned atomic.Bool
+	baseHandler := control.Handler()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if partitioned.Load() && (request.URL.Path == "/worker/v1/events" || request.URL.Path == "/worker/v1/artifacts") {
+			http.Error(w, "partitioned", http.StatusServiceUnavailable)
+			return
+		}
+		baseHandler.ServeHTTP(w, request)
+	}))
+	t.Cleanup(server.Close)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	daemonDone := make(chan error, 2)
+	for _, node := range []string{"daemon-a", "daemon-b"} {
+		daemon, err := agentdaemon.New(ctx, agentdaemon.Config{
+			LeaderURL: server.URL, TokenEnv: "SYBRA_CLUSTER_TOKEN", NodeID: node, Capacity: 1,
+			Providers: []string{providerid.Claude}, SandboxMode: "report", LeaseSeconds: 30, PollSeconds: 1,
+			TrustedWork: true, EncryptedWork: true,
+			WorkspaceRoot: filepath.Join(root, node, "workspaces"), StateRoot: filepath.Join(root, node, "state"),
+			SpoolMaxBytes: 1 << 20, Repositories: map[string]string{"repo": dir},
+		}, slog.New(slog.DiscardHandler))
+		if err != nil {
+			t.Fatal(err)
+		}
+		go func() { daemonDone <- daemon.Run(ctx) }()
+	}
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		diagnostics, err := control.Diagnostics(t.Context())
+		if err == nil && len(diagnostics) == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("two daemons did not register: %+v, %v", diagnostics, err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	store, err := task.NewStore(filepath.Join(root, "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	canonical := task.Task{ID: "task-e2e-partition", Title: "partition", ProjectID: "repo", Branch: "main", NodeOverride: "daemon-a",
+		Status: task.StatusInProgress, CreatedAt: now, UpdatedAt: now, Generation: 7,
+		Workflow: &workflow.Execution{WorkflowID: "ship", CurrentStep: "implement", State: workflow.ExecWaiting}}
+	if _, err := store.Put(canonical); err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	var transitions atomic.Int32
+	completed := make(chan *agent.Agent, 2)
+	manager := newTestAgentManager(t, t.Context(), func(string, any) {}, discardLogger(), filepath.Join(root, "logs"), agent.ManagerConfig{
+		OnComplete: func(a *agent.Agent) {
+			transitions.Add(1)
+			_, _ = tasks.UpdateFn(canonical.ID, func(cur task.Task) (task.Update, error) {
+				next := *cur.Workflow
+				next.CurrentStep = "review"
+				nextPtr := &next
+				return task.Update{Workflow: &nextPtr}, nil
+			})
+			completed <- a
+		},
+		TaskGeneration: func(taskID string) (int64, bool) { return canonical.Generation, taskID == canonical.ID },
+	})
+	app := &App{tasks: tasks, workerControl: control, agents: manager, logger: discardLogger()}
+	manager.SetExecutionBackend(newLeaderExecutionBackend(app))
+	partitioned.Store(true)
+	intent := canonical.ID + ":ship:7:1:implement:0"
+	running, err := manager.Run(agent.RunConfig{Mode: "headless", Name: "e2e partition", TaskID: canonical.ID, Dir: dir, Prompt: "work",
+		Role: agent.RoleImplementation, IntentID: intent, TaskGeneration: 7, Provider: providerid.Claude, Model: "sonnet", SandboxMode: "report"})
+	if err != nil {
+		rows, _ := database.QueryContext(t.Context(), `SELECT worker_id, capabilities_json FROM worker_sessions`)
+		var capabilities []string
+		if rows != nil {
+			defer rows.Close()
+			for rows.Next() {
+				var worker, encoded string
+				_ = rows.Scan(&worker, &encoded)
+				capabilities = append(capabilities, worker+":"+encoded)
+			}
+		}
+		t.Fatalf("Run: %v; workers=%v", err, capabilities)
+	}
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		if data, readErr := os.ReadFile(marker); readErr == nil && strings.Count(string(data), "run\n") == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("partitioned provider did not finish exactly once")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	partitioned.Store(false)
+	select {
+	case got := <-completed:
+		if got.ID != running.ID {
+			t.Fatalf("completed agent = %s, want %s", got.ID, running.ID)
+		}
+	case <-time.After(30 * time.Second):
+		remote, _ := control.RemoteRunForEffect(t.Context(), intent)
+		events, _ := control.ReplayEvents(t.Context(), remote.Status.RunID, 0, 100)
+		t.Fatalf("durable partition replay did not reach manager completion: status=%+v events=%+v", remote.Status, events)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if transitions.Load() != 1 {
+		t.Fatalf("workflow completion transitions = %d, want one", transitions.Load())
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil || strings.Count(string(data), "run\n") != 1 {
+		t.Fatalf("paid provider runs = %q, %v; want one", data, err)
+	}
+	var runCount int
+	if err := database.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM remote_runs WHERE effect_id = ?`, intent).Scan(&runCount); err != nil || runCount != 1 {
+		t.Fatalf("durable runs = %d, %v; want one", runCount, err)
+	}
+	updated, err := tasks.Get(canonical.ID)
+	if err != nil || updated.Workflow.CurrentStep != "review" {
+		t.Fatalf("canonical workflow = %+v, %v", updated.Workflow, err)
+	}
+	cancel()
+	for range 2 {
+		select {
+		case <-daemonDone:
+		case <-time.After(5 * time.Second):
+			t.Fatal("daemon did not stop")
+		}
 	}
 }
 
