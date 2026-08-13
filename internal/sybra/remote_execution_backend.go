@@ -20,6 +20,7 @@ import (
 
 type remoteExecution struct {
 	mu               sync.RWMutex
+	recoverMu        sync.Mutex
 	runID, sessionID string
 	sink             agent.ExecutionEventSink
 	cancel           context.CancelFunc
@@ -27,6 +28,7 @@ type remoteExecution struct {
 	deadline         time.Time
 	after            uint64
 	observing        bool
+	observerDone     chan struct{}
 }
 
 const remoteTerminalGrace = time.Minute
@@ -92,7 +94,7 @@ func (b *leaderExecutionBackend) Start(ctx context.Context, start agent.Executio
 func (b *leaderExecutionBackend) startRemoteRelay(ctx context.Context, start agent.ExecutionStart, runID, sessionID string, deadline time.Time, command string) (agent.ExecutionHandle, error) {
 	handle := agent.ExecutionHandle("remote:" + runID)
 	runCtx, cancel := context.WithDeadline(ctx, deadline.Add(remoteTerminalGrace))
-	run := &remoteExecution{runID: runID, sessionID: sessionID, sink: start.Sink, cancel: cancel, deadline: deadline, observing: true}
+	run := &remoteExecution{runID: runID, sessionID: sessionID, sink: start.Sink, cancel: cancel, deadline: deadline, observing: true, observerDone: make(chan struct{})}
 	b.store(handle, run)
 	start.Sink.EmitExecutionEvent(ctx, handle, agent.ExecutionEvent{Kind: agent.ExecutionStarted, Command: command})
 	go b.relay(runCtx, handle, run, 0)
@@ -181,12 +183,15 @@ func (b *leaderExecutionBackend) placementRequest(ctx context.Context, start age
 func (b *leaderExecutionBackend) relay(ctx context.Context, handle agent.ExecutionHandle, run *remoteExecution, after uint64) {
 	completed := false
 	defer func() {
-		run.mu.Lock()
-		run.observing = false
-		run.mu.Unlock()
 		if completed {
 			b.remove(handle)
 		}
+		run.mu.Lock()
+		run.observing = false
+		if run.observerDone != nil {
+			close(run.observerDone)
+		}
+		run.mu.Unlock()
 	}()
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
@@ -387,19 +392,32 @@ func (b *leaderExecutionBackend) Recover(ctx context.Context, handle agent.Execu
 	if run.localHandle != "" {
 		return b.local.Recover(ctx, run.localHandle, sink)
 	}
-	run.mu.Lock()
-	run.sink = sink
-	if run.observing {
-		run.mu.Unlock()
-		return nil
+	run.recoverMu.Lock()
+	defer run.recoverMu.Unlock()
+	run.mu.RLock()
+	observing, oldCancel, oldDone := run.observing, run.cancel, run.observerDone
+	run.mu.RUnlock()
+	if observing {
+		oldCancel()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-oldDone:
+		}
 	}
-	run.observing = true
-	after := run.after
+	if _, err := b.load(handle); err != nil {
+		return err
+	}
+	run.mu.RLock()
 	deadline := run.deadline
-	run.mu.Unlock()
+	run.mu.RUnlock()
 	runCtx, cancel := context.WithDeadline(ctx, deadline.Add(remoteTerminalGrace))
 	run.mu.Lock()
+	run.sink = sink
+	run.observing = true
+	after := run.after
 	run.cancel = cancel
+	run.observerDone = make(chan struct{})
 	run.mu.Unlock()
 	go b.relay(runCtx, handle, run, after)
 	return nil
