@@ -160,6 +160,14 @@ func TestValidationRejectsLeaderPathsAndCredentials(t *testing.T) {
 	}
 }
 
+func TestEnvironmentBindingRejectsNonEnvironmentNames(t *testing.T) {
+	for _, name := range []string{"../grant", "A/B", "A=B", "1TOKEN", "A B"} {
+		if err := (EnvironmentBinding{Name: name, Value: "value"}).Validate(); err == nil {
+			t.Fatalf("invalid environment name %q accepted", name)
+		}
+	}
+}
+
 func TestDecodeRunSpecRejectsKnownProcessLocalFields(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("testdata", "v1-run-spec.json"))
 	if err != nil {

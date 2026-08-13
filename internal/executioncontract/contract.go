@@ -18,6 +18,7 @@ var (
 	windowsAbsPath      = regexp.MustCompile(`^[A-Za-z]:[\\/]`)
 	gitObjectID         = regexp.MustCompile(`^[0-9a-fA-F]{40}([0-9a-fA-F]{24})?$`)
 	invalidGitRefChar   = regexp.MustCompile(`[\x00-\x20\x7f~^:?*\[\\]`)
+	environmentName     = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 )
 
 type Version struct {
@@ -285,7 +286,7 @@ func roleAuthorsCode(role string) bool {
 func (b EnvironmentBinding) Validate() error {
 	name := strings.ToUpper(strings.TrimSpace(b.Name))
 	hasValue, hasSecretRef := strings.TrimSpace(b.Value) != "", b.SecretRef != nil
-	if name == "" || hasValue == hasSecretRef {
+	if !environmentName.MatchString(strings.TrimSpace(b.Name)) || hasValue == hasSecretRef {
 		return fmt.Errorf("execution contract: environment %q must set exactly one of value or secretRef", b.Name)
 	}
 	if slices.Contains([]string{"SYBRA_WORKTREE_ROOT", "SYBRA_SIDECAR_ROOT", "SYBRA_ARTIFACT_ROOT", "SYBRA_WORKING_MEMORY_ROOT"}, name) {
