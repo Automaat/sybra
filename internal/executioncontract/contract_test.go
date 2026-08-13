@@ -1,12 +1,16 @@
 package executioncontract
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 )
@@ -269,5 +273,92 @@ func TestTerminalAndArtifactValidationRejectsContradictoryMetadata(t *testing.T)
 	}
 	if err := manifest.Validate(); err == nil {
 		t.Fatal("malformed artifact integrity metadata accepted")
+	}
+}
+
+func TestArtifactPackageRequiresExactOrderedHashedMembership(t *testing.T) {
+	now := time.Now().UTC()
+	data := []byte("evidence")
+	manifest := ArtifactManifest{
+		Version: CurrentVersion(), BuildVersion: "test", RunID: "run", ManifestID: "manifest", IdempotencyKey: "artifact",
+		State: ArtifactsReady, GeneratedAt: now,
+		Fence:     GenerationFence{TaskID: "task", TaskGeneration: 1, WorkflowID: "ship", WorkflowGeneration: 1, StepID: "test"},
+		Workspace: WorkspaceHandback{RepositoryID: "repo", BaseSHA: strings.Repeat("a", 40), BaseRef: "refs/heads/main", FinalSHA: strings.Repeat("a", 40)},
+		Artifacts: []ArtifactEntry{{Name: "evidence", Kind: "evidence", Root: RootArtifact, Path: "report.json", DigestSHA256: fmt.Sprintf("%x", sha256.Sum256(data)), SizeBytes: int64(len(data)), MediaType: "application/json", Sensitivity: SensitivityInternal}},
+	}
+	encoded, _ := json.Marshal(ArtifactPackage{Members: []ArtifactMember{{Root: RootArtifact, Path: "report.json", Content: data}}})
+	if _, err := ValidateArtifactPackage(manifest, encoded); err != nil {
+		t.Fatal(err)
+	}
+	for name, corrupt := range map[string][]byte{
+		"missing": []byte(`{"members":[]}`),
+		"extra":   append(encoded, []byte(` {}`)...),
+		"bytes":   bytes.Replace(encoded, []byte("ZXZpZGVuY2U="), []byte("Y29ycnVwdA=="), 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ValidateArtifactPackage(manifest, corrupt); err == nil {
+				t.Fatal("corrupt package accepted")
+			}
+		})
+	}
+}
+
+func TestRunSpecKeepsWorkingMemoryPrivateToAuthors(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "v1-run-spec.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := DecodeRunSpec(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.Role = "review"
+	if err := spec.Validate(); err == nil || !strings.Contains(err.Error(), "verifier") {
+		t.Fatalf("review memory error = %v", err)
+	}
+	spec.Options.SeedWorkingMemory = false
+	spec.ExpectedOutputs = append(spec.ExpectedOutputs, ExpectedOutput{Name: "notes", Kind: "working_memory", Root: RootWorkingMemory, Path: "NOTES.md", Required: true, Sensitivity: SensitivitySecret})
+	if err := spec.Validate(); err == nil || !strings.Contains(err.Error(), "working-memory") {
+		t.Fatalf("undeclared memory channel error = %v", err)
+	}
+	spec.Role = "implementation"
+	spec.Options.SeedWorkingMemory = true
+	spec.ExpectedOutputs[len(spec.ExpectedOutputs)-1].Sensitivity = SensitivityPublic
+	if err := spec.Validate(); err == nil || !strings.Contains(err.Error(), "remain secret") {
+		t.Fatalf("public working memory error = %v", err)
+	}
+}
+
+func TestRunSpecRejectsUnsupportedSidecarKind(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "v1-run-spec.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := DecodeRunSpec(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.ExpectedOutputs = append(spec.ExpectedOutputs, ExpectedOutput{Name: "custom", Kind: "custom_report", Root: RootSidecar, Path: "custom.md", Sensitivity: SensitivityInternal})
+	if err := spec.Validate(); err == nil || !strings.Contains(err.Error(), "unsupported sidecar") {
+		t.Fatalf("Validate unsupported sidecar = %v", err)
+	}
+}
+
+func TestRunSpecRejectsDaemonRootEnvironmentOverridesAndDuplicates(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "v1-run-spec.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := DecodeRunSpec(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.Environment = []EnvironmentBinding{{Name: "SYBRA_ARTIFACT_ROOT", Value: "/tmp/elsewhere"}}
+	if err := spec.Validate(); err == nil || !strings.Contains(err.Error(), "daemon-owned") {
+		t.Fatalf("root override error = %v", err)
+	}
+	spec.Environment = []EnvironmentBinding{{Name: "FEATURE", Value: "one"}, {Name: "feature", Value: "two"}}
+	if err := spec.Validate(); err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("duplicate environment error = %v", err)
 	}
 }

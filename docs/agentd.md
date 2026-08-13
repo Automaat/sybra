@@ -19,6 +19,9 @@ sandbox_mode: enforce
 workspace_root: /var/lib/sybra-agentd/workspaces
 state_root: /var/lib/sybra-agentd/state
 spool_max_bytes: 67108864
+workspace_retention_hours: 168
+repositories:
+  example-repo: /var/lib/sybra-agentd/clones/example.git
 secret_env:
   run/example/provider-key: ANTHROPIC_API_KEY
 ```
@@ -33,6 +36,15 @@ The leader token is stripped from every provider subprocess. Run-scoped secret
 references are resolved locally and only the requested provider environment
 binding is injected.
 
+Repository locations are daemon-local. The wire contract carries only the
+opaque `repositories` key and an immutable full base SHA. For every accepted
+run the daemon clones that mapping into an isolated logical `worktree` root,
+verifies the SHA is reachable from the declared base ref, and checks out the
+SHA detached; a ref that moves after dispatch cannot change the run's input.
+Agent-facing paths are supplied through `SYBRA_WORKTREE_ROOT`,
+`SYBRA_SIDECAR_ROOT`, `SYBRA_ARTIFACT_ROOT`, and
+`SYBRA_WORKING_MEMORY_ROOT`, never leader host paths.
+
 The state root contains a stable generated node identity, the restart-survival
 process registry, the local approval endpoint identity, and an atomically
 rewritten bounded spool. Event and artifact delivery is at least once. If the
@@ -40,6 +52,28 @@ spool limit is reached, the daemon reports `agentd: durable spool exhausted`
 and stops the affected run rather than dropping output. Capacity overflow and
 draining reject new starts with an explicit terminal event. Existing runs may
 finish while draining.
+
+Completion produces one deterministic, content-addressed package: a Git bundle
+for committed descendants, separate binary patches preserving staged and
+unstaged tracked changes,
+sorted untracked blobs with portable modes, and only outputs declared by the
+run. Each member has a size and SHA-256 digest; packages are bounded to 512
+members, 32 MiB each, and 128 MiB total. `NOTES.md` and evidence scratch are
+Git-excluded before execution. Working memory is returned only through an
+explicit private output on author roles and is never part of Git handback.
+
+The daemon retains a workspace and its durable upload until the leader
+acknowledges the complete package, then deletes both. Unacknowledged or stale
+diagnostic handbacks are retained for `workspace_retention_hours` (seven days
+by default) and then reaped. The leader stores uploads as `staged`, not ready:
+workflow advancement waits for a generation-fenced importer to verify package
+membership/hashes, exact base ancestry, and a clean canonical base before any
+Git mutation. The importer holds the worktree manager's canonical mutation
+lock across both generation checks, quarantine validation, Git publication,
+and declared-output import. Stale/corrupt handbacks are marked rejected and
+retained privately; accepted Git state, sidecars, evidence/artifacts, and
+private working memory flow into their leader-owned stores. Neither outcome is
+workflow completion by itself.
 
 `sandbox_mode: enforce` fails each run closed if the host containment mechanism
 or workspace profile cannot be established. `report` is accepted for rollout

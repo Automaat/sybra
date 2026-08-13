@@ -133,9 +133,13 @@ type ExecutionOptions struct {
 }
 
 type Workspace struct {
-	BaseSHA string        `json:"baseSha"`
-	BaseRef string        `json:"baseRef"`
-	Roots   []LogicalRoot `json:"roots"`
+	// RepositoryID is an opaque, leader-owned repository identity. Daemons
+	// resolve it through local configuration; repository URLs and host paths do
+	// not cross the execution boundary.
+	RepositoryID string        `json:"repositoryId"`
+	BaseSHA      string        `json:"baseSha"`
+	BaseRef      string        `json:"baseRef"`
+	Roots        []LogicalRoot `json:"roots"`
 }
 
 // SecretRef is a worker-scoped capability name, never a credential value.
@@ -160,6 +164,8 @@ type ExpectedOutput struct {
 	Path        string      `json:"path"`
 	Required    bool        `json:"required,omitempty"`
 	Sensitivity Sensitivity `json:"sensitivity"`
+	MaxBytes    int64       `json:"maxBytes,omitempty"`
+	MediaTypes  []string    `json:"mediaTypes,omitempty"`
 }
 
 type RunSpec struct {
@@ -197,6 +203,9 @@ func (s RunSpec) Validate() error {
 	if s.Role == "" || s.Provider.Provider == "" || s.Provider.Model == "" || s.Prompt.Text == "" {
 		return errors.New("execution contract: role, provider, model, and prompt are required")
 	}
+	if s.Options.SeedWorkingMemory && !roleAuthorsCode(s.Role) {
+		return errors.New("execution contract: verifier roles cannot inherit private working memory")
+	}
 	if s.Deadline.IsZero() {
 		return errors.New("execution contract: deadline is required")
 	}
@@ -211,14 +220,21 @@ func (s RunSpec) Validate() error {
 	for _, root := range s.Workspace.Roots {
 		declaredRoots[root] = struct{}{}
 	}
+	seenEnvironment := map[string]bool{}
 	for _, binding := range s.Environment {
 		if err := binding.Validate(); err != nil {
 			return err
 		}
+		name := strings.ToUpper(strings.TrimSpace(binding.Name))
+		if seenEnvironment[name] {
+			return fmt.Errorf("execution contract: duplicate environment binding %q", binding.Name)
+		}
+		seenEnvironment[name] = true
 		if binding.SecretRef != nil && !strings.HasPrefix(binding.SecretRef.Name, "run/"+s.RunID+"/") {
 			return fmt.Errorf("execution contract: environment %q secret reference belongs to another run", binding.Name)
 		}
 	}
+	seenOutputNames, seenOutputPaths := map[string]bool{}, map[string]bool{}
 	for _, output := range s.ExpectedOutputs {
 		_, rootDeclared := declaredRoots[output.Root]
 		if output.Name == "" || output.Kind == "" || !rootDeclared || !logicalPath(output.Path) {
@@ -227,8 +243,43 @@ func (s RunSpec) Validate() error {
 		if !validSensitivity(output.Sensitivity) {
 			return fmt.Errorf("execution contract: invalid output sensitivity %q", output.Sensitivity)
 		}
+		if output.MaxBytes < 0 || output.MaxBytes > MaxArtifactEntrySize {
+			return fmt.Errorf("execution contract: invalid size limit for output %q", output.Name)
+		}
+		for _, mediaType := range output.MediaTypes {
+			if strings.TrimSpace(mediaType) == "" || strings.ContainsAny(mediaType, " \t\r\n") {
+				return fmt.Errorf("execution contract: invalid media type for output %q", output.Name)
+			}
+		}
+		key := string(output.Root) + ":" + output.Path
+		if seenOutputNames[output.Name] || seenOutputPaths[key] {
+			return fmt.Errorf("execution contract: duplicate expected output %q", output.Name)
+		}
+		seenOutputNames[output.Name], seenOutputPaths[key] = true, true
+		if output.Root == RootWorkingMemory && !s.Options.SeedWorkingMemory {
+			return errors.New("execution contract: working-memory output requires author memory seeding")
+		}
+		if output.Root == RootWorkingMemory && output.Sensitivity != SensitivitySecret {
+			return errors.New("execution contract: working-memory output must remain secret")
+		}
+		if output.Root == RootSidecar && !supportedSidecarKind(output.Kind) {
+			return fmt.Errorf("execution contract: unsupported sidecar output kind %q", output.Kind)
+		}
 	}
 	return nil
+}
+
+func supportedSidecarKind(kind string) bool {
+	return slices.Contains([]string{"plan", "plan_contract", "plan_critique", "plan_research", "plan_decision", "plan_brief", "code_review", "current_test_failures", "acceptance_ledger", "spec_decision"}, kind)
+}
+
+func roleAuthorsCode(role string) bool {
+	switch role {
+	case "implementation", "fix-review", "pr-fix", "test-fix", "human-review":
+		return true
+	default:
+		return false
+	}
 }
 
 func (b EnvironmentBinding) Validate() error {
@@ -236,6 +287,9 @@ func (b EnvironmentBinding) Validate() error {
 	hasValue, hasSecretRef := strings.TrimSpace(b.Value) != "", b.SecretRef != nil
 	if name == "" || hasValue == hasSecretRef {
 		return fmt.Errorf("execution contract: environment %q must set exactly one of value or secretRef", b.Name)
+	}
+	if slices.Contains([]string{"SYBRA_WORKTREE_ROOT", "SYBRA_SIDECAR_ROOT", "SYBRA_ARTIFACT_ROOT", "SYBRA_WORKING_MEMORY_ROOT"}, name) {
+		return fmt.Errorf("execution contract: daemon-owned environment %q is forbidden", b.Name)
 	}
 	if masterCredentialName(name) {
 		return fmt.Errorf("execution contract: provider or node credential %q is forbidden", b.Name)
@@ -282,7 +336,7 @@ func sensitiveEnvironmentName(name string) bool {
 }
 
 func validateWorkspace(workspace Workspace) error {
-	if !gitObjectID.MatchString(workspace.BaseSHA) || !validFullGitRef(workspace.BaseRef) || len(workspace.Roots) == 0 {
+	if !contractID.MatchString(workspace.RepositoryID) || !gitObjectID.MatchString(workspace.BaseSHA) || !validFullGitRef(workspace.BaseRef) || len(workspace.Roots) == 0 {
 		return errors.New("execution contract: workspace base SHA/ref and logical roots are required")
 	}
 	seen := map[LogicalRoot]bool{}
@@ -315,11 +369,14 @@ func validRoot(root LogicalRoot) bool {
 
 func logicalPath(value string) bool {
 	normalized := strings.ReplaceAll(value, `\`, "/")
+	if normalized != value || strings.IndexFunc(value, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 {
+		return false
+	}
 	if slices.Contains(strings.Split(normalized, "/"), "..") {
 		return false
 	}
 	clean := path.Clean(normalized)
-	return value != "" && clean != "." && clean != ".." && !strings.HasPrefix(clean, "../") &&
+	return value != "" && clean == value && clean != "." && clean != ".." && !strings.HasPrefix(clean, "../") &&
 		!strings.HasPrefix(clean, "/") && !windowsAbsPath.MatchString(value)
 }
 

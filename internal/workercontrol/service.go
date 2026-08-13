@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -59,6 +61,14 @@ type ArtifactUpload struct {
 	Content   []byte                             `json:"content"`
 }
 
+type ArtifactHandback struct {
+	Spec     executioncontract.RunSpec
+	Manifest executioncontract.ArtifactManifest
+	Package  executioncontract.ArtifactPackage
+	Content  []byte
+	State    string
+}
+
 type Diagnostics struct {
 	WorkerID       string    `json:"workerId"`
 	SessionID      string    `json:"sessionId"`
@@ -72,15 +82,22 @@ type Diagnostics struct {
 }
 
 type Service struct {
-	db       *db.DB
-	now      func() time.Time
-	lease    time.Duration
-	notifyMu sync.Mutex
-	notifyCh chan struct{}
+	db             *db.DB
+	now            func() time.Time
+	lease          time.Duration
+	notifyMu       sync.Mutex
+	notifyCh       chan struct{}
+	importArtifact func(context.Context, string) error
 }
 
 func New(database *db.DB) *Service {
 	return &Service{db: database, now: time.Now, lease: 45 * time.Second, notifyCh: make(chan struct{})}
+}
+
+// SetArtifactImporter late-binds the leader-owned canonical importer after
+// task/worktree stores are initialized.
+func (s *Service) SetArtifactImporter(importer func(context.Context, string) error) {
+	s.importArtifact = importer
 }
 
 func (s *Service) Register(ctx context.Context, request RegisterRequest) (Session, error) {
@@ -144,7 +161,16 @@ func (s *Service) Register(ctx context.Context, request RegisterRequest) (Sessio
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 			sessionID, request.WorkerID, version.Major, version.Minor, request.Negotiation.BuildVersion, string(capabilities),
 			state, int64(lease/time.Second), db.TimeValue(now.Add(lease)), request.LastCommandAck, db.TimeValue(now), db.TimeValue(now))
-		if err != nil || request.ResumeSessionID == "" {
+		if err != nil {
+			return err
+		}
+		if request.ResumeSessionID == "" {
+			// A daemon with no live provider may fall back to a fresh session after
+			// its lease expires. Completed handbacks still belong to the stable
+			// worker identity and must remain uploadable; nonterminal execution is
+			// deliberately not adopted by this path.
+			_, err = tx.ExecContext(ctx, s.db.Rebind(`UPDATE remote_runs SET session_id = ?, updated_at = ? WHERE worker_id = ? AND state = 'terminal' AND artifact_state IN ('pending', 'staged', 'importing')`),
+				sessionID, db.TimeValue(now), request.WorkerID)
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, s.db.Rebind(`UPDATE worker_commands SET acknowledged_at = COALESCE(acknowledged_at, ?) WHERE session_id = ? AND sequence <= ?`),
@@ -155,7 +181,7 @@ func (s *Service) Register(ctx context.Context, request RegisterRequest) (Sessio
 			sessionID, request.ResumeSessionID, request.LastCommandAck); err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, s.db.Rebind(`UPDATE remote_runs SET session_id = ?, updated_at = ? WHERE session_id = ? AND state != 'terminal'`),
+		_, err = tx.ExecContext(ctx, s.db.Rebind(`UPDATE remote_runs SET session_id = ?, updated_at = ? WHERE session_id = ? AND (state != 'terminal' OR artifact_state IN ('pending', 'staged', 'importing'))`),
 			sessionID, db.TimeValue(now), request.ResumeSessionID)
 		return err
 	})
@@ -513,21 +539,49 @@ func (s *Service) UploadArtifact(ctx context.Context, upload ArtifactUpload) err
 	if err := upload.Manifest.Validate(); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidRequest, err)
 	}
-	return s.db.InTx(ctx, func(tx *sql.Tx) error {
+	if upload.Manifest.State != executioncontract.ArtifactsReady {
+		return invalidf("only complete artifact manifests may be staged")
+	}
+	if _, err := executioncontract.ValidateArtifactPackage(upload.Manifest, upload.Content); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidRequest, err)
+	}
+	err := s.db.InTx(ctx, func(tx *sql.Tx) error {
 		if err := s.requireSessionTx(ctx, tx, upload.SessionID, true); err != nil {
 			return err
 		}
-		var runSession string
-		if err := tx.QueryRowContext(ctx, s.db.Rebind(`SELECT session_id FROM remote_runs WHERE run_id = ?`), upload.Manifest.RunID).Scan(&runSession); err != nil {
+		var runSession, specJSON string
+		if err := tx.QueryRowContext(ctx, s.db.Rebind(`SELECT session_id, run_spec_json FROM remote_runs WHERE run_id = ?`), upload.Manifest.RunID).Scan(&runSession, &specJSON); err != nil {
 			return err
 		}
 		if runSession != upload.SessionID {
 			return ErrStaleSession
 		}
+		var spec executioncontract.RunSpec
+		if err := json.Unmarshal([]byte(specJSON), &spec); err != nil {
+			return err
+		}
+		if upload.Manifest.Fence != spec.Fence || upload.Manifest.Workspace.RepositoryID != spec.Workspace.RepositoryID ||
+			upload.Manifest.Workspace.BaseSHA != spec.Workspace.BaseSHA || upload.Manifest.Workspace.BaseRef != spec.Workspace.BaseRef {
+			return invalidf("artifact handback differs from durable run fence or workspace")
+		}
+		if err := validateRequiredOutputs(spec, upload.Manifest); err != nil {
+			return err
+		}
 		encoded, _ := json.Marshal(upload.Manifest)
 		var existingManifest, existingRun string
 		var existingContent []byte
-		err := tx.QueryRowContext(ctx, s.db.Rebind(`SELECT manifest_json, run_id, content FROM worker_artifacts WHERE idempotency_key = ?`),
+		err := tx.QueryRowContext(ctx, s.db.Rebind(`SELECT manifest_json, run_id, content FROM worker_artifacts WHERE run_id = ? ORDER BY imported_at DESC LIMIT 1`),
+			upload.Manifest.RunID).Scan(&existingManifest, &existingRun, &existingContent)
+		if err == nil {
+			if existingManifest != string(encoded) || !bytes.Equal(existingContent, upload.Content) {
+				return invalidf("run already has a different artifact handback")
+			}
+			return nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		err = tx.QueryRowContext(ctx, s.db.Rebind(`SELECT manifest_json, run_id, content FROM worker_artifacts WHERE idempotency_key = ?`),
 			upload.Manifest.IdempotencyKey).Scan(&existingManifest, &existingRun, &existingContent)
 		if err == nil {
 			if existingManifest != string(encoded) || existingRun != upload.Manifest.RunID || !bytes.Equal(existingContent, upload.Content) {
@@ -545,10 +599,167 @@ func (s *Service) UploadArtifact(ctx context.Context, upload ArtifactUpload) err
 		if err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, s.db.Rebind(`UPDATE remote_runs SET artifact_state = ?, updated_at = ? WHERE run_id = ?`),
-			upload.Manifest.State, db.TimeValue(s.now().UTC()), upload.Manifest.RunID)
+		// "staged" is deliberately distinct from the daemon's "ready" claim.
+		// Workflow authority may advance only after the leader importer validates
+		// current generations/base ancestry and applies the package.
+		_, err = tx.ExecContext(ctx, s.db.Rebind(`UPDATE remote_runs SET artifact_state = 'staged', updated_at = ? WHERE run_id = ?`),
+			db.TimeValue(s.now().UTC()), upload.Manifest.RunID)
 		return err
 	})
+	if err != nil {
+		return err
+	}
+	if s.importArtifact != nil {
+		// A daemon may retry after the leader imported the handback but its HTTP
+		// response was lost. The durable resolution is authoritative: replaying an
+		// identical upload must not invoke the importer a second time.
+		var artifactState string
+		if err := s.db.QueryRowContext(ctx, s.db.Rebind(`SELECT artifact_state FROM remote_runs WHERE run_id = ?`), upload.Manifest.RunID).Scan(&artifactState); err != nil {
+			return err
+		}
+		if artifactState != "staged" && artifactState != "importing" {
+			return nil
+		}
+		if err := s.importArtifact(ctx, upload.Manifest.RunID); err != nil {
+			return fmt.Errorf("worker control: import staged artifact: %w", err)
+		}
+	}
+	return nil
+}
+
+func validateRequiredOutputs(spec executioncontract.RunSpec, manifest executioncontract.ArtifactManifest) error {
+	byName := make(map[string]executioncontract.ArtifactEntry, len(manifest.Artifacts))
+	declared := make(map[string]executioncontract.ExpectedOutput, len(spec.ExpectedOutputs))
+	for _, expected := range spec.ExpectedOutputs {
+		declared[expected.Name] = expected
+	}
+	for i := range manifest.Artifacts {
+		entry := &manifest.Artifacts[i]
+		byName[entry.Name] = *entry
+		if _, ok := declared[entry.Name]; ok {
+			continue
+		}
+		builtinGit := (entry.Name == "git-bundle" && entry.Kind == "git_bundle" && entry.Root == executioncontract.RootArtifact && entry.Path == "git/commits.bundle") ||
+			(entry.Name == "git-staged-patch" && entry.Kind == "git_staged_patch" && entry.Root == executioncontract.RootArtifact && entry.Path == "git/staged.patch") ||
+			(entry.Name == "git-unstaged-patch" && entry.Kind == "git_unstaged_patch" && entry.Root == executioncontract.RootArtifact && entry.Path == "git/unstaged.patch") ||
+			(strings.HasPrefix(entry.Name, "untracked:") && entry.Kind == "git_untracked" && entry.Root == executioncontract.RootWorktree && entry.Name == "untracked:"+entry.Path)
+		if !builtinGit {
+			return invalidf("artifact %q was not declared by the run", entry.Name)
+		}
+	}
+	for _, expected := range spec.ExpectedOutputs {
+		entry, present := byName[expected.Name]
+		if !present {
+			if expected.Required {
+				return invalidf("required artifact %q is missing", expected.Name)
+			}
+			continue
+		}
+		if entry.Kind != expected.Kind || entry.Root != expected.Root || entry.Path != expected.Path || entry.Sensitivity != expected.Sensitivity {
+			return invalidf("artifact %q differs from its declared output", expected.Name)
+		}
+		limit := expected.MaxBytes
+		if limit == 0 {
+			limit = executioncontract.MaxArtifactEntrySize
+		}
+		if entry.SizeBytes > limit || (len(expected.MediaTypes) > 0 && !slices.Contains(expected.MediaTypes, entry.MediaType)) {
+			return invalidf("artifact %q exceeds its declared size or media-type policy", expected.Name)
+		}
+	}
+	return nil
+}
+
+// LoadStagedArtifact returns a fully byte-validated package for the
+// leader-owned generation/base importer. Loading does not authorize workflow
+// advancement or mutate canonical state.
+func (s *Service) LoadStagedArtifact(ctx context.Context, runID string) (ArtifactHandback, error) {
+	var specJSON, manifestJSON, state string
+	var content []byte
+	err := s.db.QueryRowContext(ctx, s.db.Rebind(`SELECT r.run_spec_json, r.artifact_state, a.manifest_json, a.content
+		FROM remote_runs r JOIN worker_artifacts a ON a.run_id = r.run_id
+		WHERE r.run_id = ? ORDER BY a.imported_at DESC LIMIT 1`), runID).
+		Scan(&specJSON, &state, &manifestJSON, &content)
+	if err != nil {
+		return ArtifactHandback{}, err
+	}
+	if state != "staged" && state != "importing" {
+		return ArtifactHandback{}, invalidf("artifact handback is not importable")
+	}
+	var out ArtifactHandback
+	if err := json.Unmarshal([]byte(specJSON), &out.Spec); err != nil {
+		return ArtifactHandback{}, err
+	}
+	if err := json.Unmarshal([]byte(manifestJSON), &out.Manifest); err != nil {
+		return ArtifactHandback{}, err
+	}
+	out.Package, err = executioncontract.ValidateArtifactPackage(out.Manifest, content)
+	if err != nil {
+		return ArtifactHandback{}, err
+	}
+	if err := validateRequiredOutputs(out.Spec, out.Manifest); err != nil {
+		return ArtifactHandback{}, err
+	}
+	out.Content = append([]byte(nil), content...)
+	out.State = state
+	return out, nil
+}
+
+// BeginArtifactImport durably journals publication before canonical state is
+// touched. Repeating it after a leader crash is harmless and lets the importer
+// reconcile an operation that may have stopped at any publication boundary.
+func (s *Service) BeginArtifactImport(ctx context.Context, runID, manifestID string) error {
+	return s.db.InTx(ctx, func(tx *sql.Tx) error {
+		var current, storedManifest string
+		if err := tx.QueryRowContext(ctx, s.db.Rebind(`SELECT r.artifact_state, a.manifest_id FROM remote_runs r JOIN worker_artifacts a ON a.run_id = r.run_id WHERE r.run_id = ? ORDER BY a.imported_at DESC LIMIT 1`), runID).Scan(&current, &storedManifest); err != nil {
+			return err
+		}
+		if storedManifest != manifestID {
+			return invalidf("artifact manifest differs from staged handback")
+		}
+		if current == "importing" {
+			return nil
+		}
+		if current != "staged" {
+			return invalidf("artifact handback is not staged")
+		}
+		_, err := tx.ExecContext(ctx, s.db.Rebind(`UPDATE remote_runs SET artifact_state = 'importing', updated_at = ? WHERE run_id = ? AND artifact_state = 'staged'`), db.TimeValue(s.now().UTC()), runID)
+		return err
+	})
+}
+
+// ResolveArtifact records the leader importer's terminal decision. A staged
+// package remains diagnostic/private until retention pruning; it is never
+// treated as imported merely because the daemon called it ready.
+func (s *Service) ResolveArtifact(ctx context.Context, runID, manifestID, state string) error {
+	if state != "imported" && state != "rejected" {
+		return invalidf("artifact resolution must be imported or rejected")
+	}
+	return s.db.InTx(ctx, func(tx *sql.Tx) error {
+		var current, storedManifest string
+		if err := tx.QueryRowContext(ctx, s.db.Rebind(`SELECT r.artifact_state, a.manifest_id FROM remote_runs r JOIN worker_artifacts a ON a.run_id = r.run_id WHERE r.run_id = ? ORDER BY a.imported_at DESC LIMIT 1`), runID).Scan(&current, &storedManifest); err != nil {
+			return err
+		}
+		if storedManifest != manifestID {
+			return invalidf("artifact manifest differs from staged handback")
+		}
+		if current == state {
+			return nil
+		}
+		if current != "staged" && current != "importing" {
+			return invalidf("artifact handback is already resolved")
+		}
+		_, err := tx.ExecContext(ctx, s.db.Rebind(`UPDATE remote_runs SET artifact_state = ?, updated_at = ? WHERE run_id = ? AND artifact_state IN ('staged', 'importing')`), state, db.TimeValue(s.now().UTC()), runID)
+		return err
+	})
+}
+
+func (s *Service) PruneResolvedArtifacts(ctx context.Context, before time.Time) (int64, error) {
+	result, err := s.db.ExecContext(ctx, s.db.Rebind(`DELETE FROM worker_artifacts WHERE imported_at < ? AND run_id IN
+		(SELECT run_id FROM remote_runs WHERE artifact_state IN ('imported', 'rejected'))`), db.TimeValue(before.UTC()))
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 func (s *Service) Drain(ctx context.Context, sessionID string) error {

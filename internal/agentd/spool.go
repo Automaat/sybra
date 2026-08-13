@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/Automaat/sybra/internal/executioncontract"
 	"github.com/Automaat/sybra/internal/fsutil"
@@ -29,6 +30,7 @@ type durableState struct {
 	PendingApprovals map[string]pendingApproval                   `json:"pendingApprovals,omitempty"`
 	Approvals        map[string]durableApproval                   `json:"approvals,omitempty"`
 	Artifacts        map[string]workercontrol.ArtifactUpload      `json:"artifacts,omitempty"`
+	RunSpecs         map[string]executioncontract.RunSpec         `json:"runSpecs,omitempty"`
 }
 
 type durableApproval struct {
@@ -89,6 +91,9 @@ func OpenSpool(root string, maxBytes int64, capacity ...int) (*Spool, error) {
 	if s.state.Artifacts == nil {
 		s.state.Artifacts = make(map[string]workercontrol.ArtifactUpload)
 	}
+	if s.state.RunSpecs == nil {
+		s.state.RunSpecs = make(map[string]executioncontract.RunSpec)
+	}
 	return s, nil
 }
 
@@ -145,6 +150,8 @@ func cloneState(in durableState) durableState {
 		upload.Content = append([]byte(nil), upload.Content...)
 		out.Artifacts[id] = upload
 	}
+	out.RunSpecs = make(map[string]executioncontract.RunSpec, len(in.RunSpecs))
+	maps.Copy(out.RunSpecs, in.RunSpecs)
 	return out
 }
 
@@ -175,6 +182,29 @@ func (s *Spool) ackArtifact(manifestID string) error {
 		delete(state.Artifacts, manifestID)
 		return nil
 	})
+}
+
+func (s *Spool) expireArtifacts(before time.Time) ([]string, error) {
+	s.mu.Lock()
+	expired := make([]string, 0)
+	for manifestID := range s.state.Artifacts {
+		if s.state.Artifacts[manifestID].Manifest.GeneratedAt.Before(before) {
+			expired = append(expired, s.state.Artifacts[manifestID].Manifest.RunID)
+		}
+	}
+	s.mu.Unlock()
+	if len(expired) == 0 {
+		return nil, nil
+	}
+	err := s.update(func(state *durableState) error {
+		for id := range state.Artifacts {
+			if state.Artifacts[id].Manifest.GeneratedAt.Before(before) {
+				delete(state.Artifacts, id)
+			}
+		}
+		return nil
+	})
+	return expired, err
 }
 
 func (s *Spool) stageApproval(toolUseID string, decision durableApproval) error {
@@ -245,6 +275,7 @@ func (s *Spool) approvalIDs(runID string) []string {
 
 func completeRunState(state *durableState, runID string) {
 	delete(state.RunAgents, runID)
+	delete(state.RunSpecs, runID)
 	for toolUseID, request := range state.PendingApprovals {
 		if request.RunID == runID {
 			delete(state.PendingApprovals, toolUseID)

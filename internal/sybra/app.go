@@ -527,6 +527,8 @@ func (a *App) cleanupFailedStartup() {
 // parameter through the entire event/dispatch/workflow fan-out these chains
 // pass through is out of scope for this pass — nolint annotations below
 // point back to this comment.
+//
+//nolint:funlen // Startup ordering and reverse cleanup are intentionally kept in one lifecycle transaction.
 func (a *App) Startup(ctx context.Context) error {
 	if err := a.acquireHomeLock(); err != nil {
 		return err
@@ -627,6 +629,9 @@ func (a *App) Startup(ctx context.Context) error {
 		LiveAgentChecker:  a.agents.HasLiveRegisteredAgentForTask,
 		ProtectedFindings: a.cleanupProtected,
 	})
+	if a.workerControl != nil {
+		a.workerControl.SetArtifactImporter(a.importRemoteHandback)
+	}
 	a.agentOrch = agentorch.New(a.tasks, a.projects, a.agents, a.audit, a.logger, a.worktrees, a.cfg)
 	a.agentOrch.SetContext(appCtx)
 	a.initRunEnvironment()

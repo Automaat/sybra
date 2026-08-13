@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/Automaat/sybra/internal/executioncontract"
 )
 
 func (s *Service) Handler() http.Handler {
@@ -99,10 +101,13 @@ func (s *Service) handleAckEvents(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleArtifact(w http.ResponseWriter, r *http.Request) {
 	var upload ArtifactUpload
-	if !decode(w, r, &upload) {
+	// ArtifactPackage base64-encodes its members, then ArtifactUpload base64-
+	// encodes that package once more. Three times the raw aggregate leaves
+	// bounded room for both expansions plus manifest metadata.
+	if !decodeLimit(w, r, &upload, executioncontract.MaxArtifactTotalSize*3+(4<<20)) {
 		return
 	}
-	respond(w, map[string]bool{"imported": true}, s.UploadArtifact(r.Context(), upload))
+	respond(w, map[string]bool{"staged": true}, s.UploadArtifact(r.Context(), upload))
 }
 
 func (s *Service) handleDrain(w http.ResponseWriter, r *http.Request) {
@@ -121,7 +126,11 @@ func (s *Service) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 }
 
 func decode(w http.ResponseWriter, r *http.Request, target any) bool {
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<20))
+	return decodeLimit(w, r, target, 16<<20)
+}
+
+func decodeLimit(w http.ResponseWriter, r *http.Request, target any, limit int64) bool {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
 	if err := decoder.Decode(target); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid request")
 		return false

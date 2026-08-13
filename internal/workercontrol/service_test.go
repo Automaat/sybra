@@ -2,6 +2,7 @@ package workercontrol
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -99,14 +100,31 @@ func TestDurableWorkerControlBehavior(t *testing.T) {
 		manifest := executioncontract.ArtifactManifest{
 			Version: executioncontract.CurrentVersion(), BuildVersion: "worker-test", RunID: "run-a", ManifestID: "manifest-a",
 			IdempotencyKey: "artifact:run-a:1", State: executioncontract.ArtifactsReady, GeneratedAt: time.Now().UTC(),
+			Fence:     spec.Fence,
+			Workspace: executioncontract.WorkspaceHandback{RepositoryID: spec.Workspace.RepositoryID, BaseSHA: spec.Workspace.BaseSHA, BaseRef: spec.Workspace.BaseRef, FinalSHA: spec.Workspace.BaseSHA},
 			Artifacts: []executioncontract.ArtifactEntry{{
-				Name: "result", Kind: "bundle", Root: executioncontract.RootArtifact, Path: "result.bundle",
-				DigestSHA256: strings.Repeat("a", 64), MediaType: "application/octet-stream", Sensitivity: executioncontract.SensitivityInternal,
+				Name: "git-staged-patch", Kind: "git_staged_patch", Root: executioncontract.RootArtifact, Path: "git/staged.patch",
+				DigestSHA256: fmt.Sprintf("%x", sha256.Sum256([]byte("artifact"))), SizeBytes: int64(len("artifact")), MediaType: "application/octet-stream", Sensitivity: executioncontract.SensitivityInternal,
 			}},
 		}
-		upload := ArtifactUpload{SessionID: replacement.SessionID, Manifest: manifest, Content: []byte("artifact")}
+		content, _ := json.Marshal(executioncontract.ArtifactPackage{Members: []executioncontract.ArtifactMember{{Root: executioncontract.RootArtifact, Path: "git/staged.patch", Content: []byte("artifact")}}})
+		upload := ArtifactUpload{SessionID: replacement.SessionID, Manifest: manifest, Content: content}
+		importCalls := 0
+		restarted.SetArtifactImporter(func(ctx context.Context, runID string) error {
+			importCalls++
+			return restarted.BeginArtifactImport(ctx, runID, manifest.ManifestID)
+		})
+		corrupt := upload
+		corrupt.Content = append([]byte(nil), content...)
+		corrupt.Content[len(corrupt.Content)/2] ^= 1
+		if err := restarted.UploadArtifact(ctx, corrupt); err == nil {
+			t.Fatal("corrupt artifact package was staged")
+		}
 		if err := restarted.UploadArtifact(ctx, upload); err != nil {
 			t.Fatalf("UploadArtifact: %v", err)
+		}
+		if importCalls != 1 {
+			t.Fatalf("production importer calls = %d, want 1", importCalls)
 		}
 		if err := restarted.UploadArtifact(ctx, upload); err != nil {
 			t.Fatalf("idempotent UploadArtifact: %v", err)
@@ -114,6 +132,29 @@ func TestDurableWorkerControlBehavior(t *testing.T) {
 		upload.Content = []byte("different")
 		if err := restarted.UploadArtifact(ctx, upload); err == nil {
 			t.Fatal("artifact idempotency key accepted different content")
+		}
+		handback, err := restarted.LoadStagedArtifact(ctx, "run-a")
+		if err != nil || handback.State != "importing" || handback.Spec.RunID != "run-a" || handback.Manifest.ManifestID != "manifest-a" || len(handback.Package.Members) != 1 {
+			t.Fatalf("LoadStagedArtifact = %+v, %v", handback, err)
+		}
+		if err := restarted.BeginArtifactImport(ctx, "run-a", "manifest-a"); err != nil {
+			t.Fatalf("idempotent BeginArtifactImport: %v", err)
+		}
+		if err := restarted.ResolveArtifact(ctx, "run-a", "manifest-a", "imported"); err != nil {
+			t.Fatal(err)
+		}
+		if err := restarted.ResolveArtifact(ctx, "run-a", "manifest-a", "imported"); err != nil {
+			t.Fatalf("idempotent artifact resolution: %v", err)
+		}
+		upload.Content = content
+		if err := restarted.UploadArtifact(ctx, upload); err != nil {
+			t.Fatalf("idempotent upload after import: %v", err)
+		}
+		if importCalls != 2 {
+			t.Fatalf("importer calls after resolved upload replay = %d, want 2", importCalls)
+		}
+		if removed, err := restarted.PruneResolvedArtifacts(ctx, time.Now().Add(time.Hour)); err != nil || removed != 1 {
+			t.Fatalf("PruneResolvedArtifacts = %d, %v", removed, err)
 		}
 		if err := restarted.Drain(ctx, replacement.SessionID); err != nil {
 			t.Fatalf("Drain: %v", err)
@@ -136,6 +177,35 @@ func TestDurableWorkerControlBehavior(t *testing.T) {
 			if strings.Contains(string(encoded), secret) {
 				t.Fatalf("diagnostics leaked work content %q: %s", secret, encoded)
 			}
+		}
+	})
+}
+
+func TestFreshSessionCanDeliverTerminalHandbackAfterLeaseExpiry(t *testing.T) {
+	dbtest.Each(t, func(t *testing.T, engine dbtest.Engine) {
+		t.Helper()
+		now := time.Now().UTC()
+		service := New(engine.Open(t))
+		service.now = func() time.Time { return now }
+		service.lease = time.Second
+		session := register(t, service, "worker-expired")
+		spec, command := startContract(t, "run-expired", "effect-expired")
+		if _, err := service.Enqueue(t.Context(), session.SessionID, &spec, command); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := service.AppendEvents(t.Context(), EventBatch{SessionID: session.SessionID, Events: []executioncontract.EventEnvelope{event("run-expired", 1, executioncontract.EventTerminal)}}); err != nil {
+			t.Fatal(err)
+		}
+		now = now.Add(2 * time.Second)
+		replacement, err := service.Register(t.Context(), RegisterRequest{WorkerID: "worker-expired", Negotiation: executioncontract.Negotiation{ProtocolMin: executioncontract.CurrentVersion(), ProtocolMax: executioncontract.CurrentVersion(), BuildVersion: "worker-test"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload := []byte("patch")
+		manifest := executioncontract.ArtifactManifest{Version: executioncontract.CurrentVersion(), BuildVersion: "worker-test", RunID: spec.RunID, ManifestID: "manifest-expired", IdempotencyKey: "artifact-expired", State: executioncontract.ArtifactsReady, GeneratedAt: now, Fence: spec.Fence, Workspace: executioncontract.WorkspaceHandback{RepositoryID: spec.Workspace.RepositoryID, BaseSHA: spec.Workspace.BaseSHA, BaseRef: spec.Workspace.BaseRef, FinalSHA: spec.Workspace.BaseSHA}, Artifacts: []executioncontract.ArtifactEntry{{Name: "git-staged-patch", Kind: "git_staged_patch", Root: executioncontract.RootArtifact, Path: "git/staged.patch", DigestSHA256: fmt.Sprintf("%x", sha256.Sum256(payload)), SizeBytes: int64(len(payload)), MediaType: "application/x-git-patch", Sensitivity: executioncontract.SensitivityInternal}}}
+		content, _ := json.Marshal(executioncontract.ArtifactPackage{Members: []executioncontract.ArtifactMember{{Root: executioncontract.RootArtifact, Path: "git/staged.patch", Content: payload}}})
+		if err := service.UploadArtifact(t.Context(), ArtifactUpload{SessionID: replacement.SessionID, Manifest: manifest, Content: content}); err != nil {
+			t.Fatalf("replacement upload: %v", err)
 		}
 	})
 }
@@ -524,7 +594,7 @@ func startContract(t *testing.T, runID, effectID string) (executioncontract.RunS
 		Fence: executioncontract.GenerationFence{TaskID: "task-a", TaskGeneration: 1, WorkflowID: "ship", WorkflowGeneration: 1, StepID: "implement"},
 		Role:  "implementation", Provider: executioncontract.ProviderIntent{Provider: "test", Model: "test-model"},
 		Prompt: executioncontract.Prompt{Text: "sensitive prompt"}, Deadline: now.Add(time.Hour),
-		Workspace: executioncontract.Workspace{BaseSHA: strings.Repeat("a", 40), BaseRef: "refs/heads/main", Roots: []executioncontract.LogicalRoot{executioncontract.RootWorktree}},
+		Workspace: executioncontract.Workspace{RepositoryID: "repo", BaseSHA: strings.Repeat("a", 40), BaseRef: "refs/heads/main", Roots: []executioncontract.LogicalRoot{executioncontract.RootWorktree}},
 	}
 	payload, err := json.Marshal(executioncontract.StartCommandPayload{Spec: &spec})
 	if err != nil {

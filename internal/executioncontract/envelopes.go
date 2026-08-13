@@ -1,12 +1,17 @@
 package executioncontract
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"regexp"
 	"strings"
 	"time"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 var (
@@ -252,17 +257,35 @@ type ArtifactEntry struct {
 	SizeBytes    int64       `json:"sizeBytes"`
 	MediaType    string      `json:"mediaType"`
 	Sensitivity  Sensitivity `json:"sensitivity"`
+	// Mode is the portable Git file mode (100644, 100755, or 120000) when
+	// Kind represents a worktree file. It is zero for non-file payloads.
+	Mode uint32 `json:"mode,omitempty"`
+}
+
+const (
+	MaxArtifactEntries   = 512
+	MaxArtifactEntrySize = int64(32 << 20)
+	MaxArtifactTotalSize = int64(128 << 20)
+)
+
+type WorkspaceHandback struct {
+	RepositoryID string `json:"repositoryId"`
+	BaseSHA      string `json:"baseSha"`
+	BaseRef      string `json:"baseRef"`
+	FinalSHA     string `json:"finalSha"`
 }
 
 type ArtifactManifest struct {
-	Version        Version         `json:"version"`
-	BuildVersion   string          `json:"buildVersion"`
-	RunID          string          `json:"runId"`
-	ManifestID     string          `json:"manifestId"`
-	IdempotencyKey string          `json:"idempotencyKey"`
-	State          ArtifactState   `json:"state"`
-	GeneratedAt    time.Time       `json:"generatedAt"`
-	Artifacts      []ArtifactEntry `json:"artifacts,omitempty"`
+	Version        Version           `json:"version"`
+	BuildVersion   string            `json:"buildVersion"`
+	RunID          string            `json:"runId"`
+	ManifestID     string            `json:"manifestId"`
+	IdempotencyKey string            `json:"idempotencyKey"`
+	State          ArtifactState     `json:"state"`
+	GeneratedAt    time.Time         `json:"generatedAt"`
+	Fence          GenerationFence   `json:"fence"`
+	Workspace      WorkspaceHandback `json:"workspace"`
+	Artifacts      []ArtifactEntry   `json:"artifacts,omitempty"`
 }
 
 func (m ArtifactManifest) Validate() error {
@@ -276,14 +299,86 @@ func (m ArtifactManifest) Validate() error {
 	if m.State != ArtifactsPending && m.State != ArtifactsReady && m.State != ArtifactsFailed {
 		return fmt.Errorf("execution contract: invalid artifact manifest state %q", m.State)
 	}
-	for _, artifact := range m.Artifacts {
+	if m.Fence.TaskID == "" || m.Fence.WorkflowID == "" || m.Fence.StepID == "" || m.Fence.WorkflowGeneration < 0 {
+		return errors.New("execution contract: artifact manifest requires its generation fence")
+	}
+	if !contractID.MatchString(m.Workspace.RepositoryID) || !gitObjectID.MatchString(m.Workspace.BaseSHA) ||
+		!validFullGitRef(m.Workspace.BaseRef) || !gitObjectID.MatchString(m.Workspace.FinalSHA) {
+		return errors.New("execution contract: artifact manifest requires valid workspace handback metadata")
+	}
+	if len(m.Artifacts) > MaxArtifactEntries {
+		return errors.New("execution contract: artifact manifest exceeds entry limit")
+	}
+	seenNames, seenPaths := map[string]bool{}, map[string]bool{}
+	var total int64
+	for i := range m.Artifacts {
+		artifact := &m.Artifacts[i]
 		if strings.TrimSpace(artifact.Name) == "" || strings.TrimSpace(artifact.Kind) == "" || !sha256Digest.MatchString(artifact.DigestSHA256) ||
 			strings.TrimSpace(artifact.MediaType) == "" || artifact.SizeBytes < 0 ||
 			!validRoot(artifact.Root) || !logicalPath(artifact.Path) || !validSensitivity(artifact.Sensitivity) {
 			return fmt.Errorf("execution contract: invalid artifact %q", artifact.Name)
 		}
+		key := string(artifact.Root) + ":" + norm.NFC.String(strings.ToLower(artifact.Path))
+		if seenNames[artifact.Name] || seenPaths[key] {
+			return fmt.Errorf("execution contract: duplicate artifact %q", artifact.Name)
+		}
+		seenNames[artifact.Name], seenPaths[key] = true, true
+		if artifact.SizeBytes > MaxArtifactEntrySize || total > MaxArtifactTotalSize-artifact.SizeBytes {
+			return errors.New("execution contract: artifact payload exceeds size limit")
+		}
+		total += artifact.SizeBytes
+		if artifact.Mode != 0 && artifact.Mode != 0o100644 && artifact.Mode != 0o100755 && artifact.Mode != 0o120000 {
+			return fmt.Errorf("execution contract: invalid artifact mode for %q", artifact.Name)
+		}
 	}
 	return nil
+}
+
+// ArtifactMember is one bounded blob in an artifact package. Path is repeated
+// so package membership can be compared exactly with the signed manifest.
+type ArtifactMember struct {
+	Root    LogicalRoot `json:"root"`
+	Path    string      `json:"path"`
+	Content []byte      `json:"content"`
+}
+
+type ArtifactPackage struct {
+	Members []ArtifactMember `json:"members"`
+}
+
+// ValidateArtifactPackage rejects partial, extra, reordered, corrupt, and
+// oversized packages before any member is written to disk.
+func ValidateArtifactPackage(manifest ArtifactManifest, content []byte) (ArtifactPackage, error) {
+	if err := manifest.Validate(); err != nil {
+		return ArtifactPackage{}, err
+	}
+	if int64(len(content)) > MaxArtifactTotalSize*2 {
+		return ArtifactPackage{}, errors.New("execution contract: encoded artifact package exceeds size limit")
+	}
+	var pkg ArtifactPackage
+	decoder := json.NewDecoder(bytes.NewReader(content))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&pkg); err != nil {
+		return ArtifactPackage{}, fmt.Errorf("execution contract: decode artifact package: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return ArtifactPackage{}, errors.New("execution contract: artifact package has trailing content")
+	}
+	if len(pkg.Members) != len(manifest.Artifacts) {
+		return ArtifactPackage{}, errors.New("execution contract: artifact package is incomplete or has extra members")
+	}
+	for i := range manifest.Artifacts {
+		entry, member := manifest.Artifacts[i], pkg.Members[i]
+		if entry.Root != member.Root || entry.Path != member.Path || int64(len(member.Content)) != entry.SizeBytes {
+			return ArtifactPackage{}, fmt.Errorf("execution contract: artifact member %d differs from manifest", i)
+		}
+		digest := fmt.Sprintf("%x", sha256.Sum256(member.Content))
+		if !strings.EqualFold(digest, entry.DigestSHA256) {
+			return ArtifactPackage{}, fmt.Errorf("execution contract: artifact member %q digest mismatch", entry.Name)
+		}
+	}
+	return pkg, nil
 }
 
 func decodeValidated[T any](data []byte, validate func(T) error) (T, error) {

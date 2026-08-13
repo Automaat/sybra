@@ -11,19 +11,20 @@ import (
 // RemoteRunMetadata supplies durable leader-owned identities and logical
 // workspace facts that are deliberately absent from RunConfig.
 type RemoteRunMetadata struct {
-	BuildVersion       string
-	RunID              string
-	EffectID           string
-	WorkflowID         string
-	WorkflowGeneration int64
-	WorkflowStepID     string
-	Deadline           time.Time
-	WorkspaceBaseSHA   string
-	WorkspaceBaseRef   string
-	WorkspaceRoots     []executioncontract.LogicalRoot
-	Environment        []executioncontract.EnvironmentBinding
-	ExpectedOutputs    []executioncontract.ExpectedOutput
-	Resources          executioncontract.ResourceLimits
+	BuildVersion          string
+	RunID                 string
+	EffectID              string
+	WorkflowID            string
+	WorkflowGeneration    int64
+	WorkflowStepID        string
+	Deadline              time.Time
+	WorkspaceRepositoryID string
+	WorkspaceBaseSHA      string
+	WorkspaceBaseRef      string
+	WorkspaceRoots        []executioncontract.LogicalRoot
+	Environment           []executioncontract.EnvironmentBinding
+	ExpectedOutputs       []executioncontract.ExpectedOutput
+	Resources             executioncontract.ResourceLimits
 }
 
 // RemoteRunSpec converts an already-admitted execution into the explicit wire
@@ -86,7 +87,7 @@ func RemoteRunSpec(start ExecutionStart, metadata RemoteRunMetadata) (executionc
 			SeedWorkingMemory: start.Config.SeedWorkingMemory, ResumeSessionID: start.Config.ResumeSessionID,
 		},
 		Workspace: executioncontract.Workspace{
-			BaseSHA: metadata.WorkspaceBaseSHA, BaseRef: metadata.WorkspaceBaseRef,
+			RepositoryID: metadata.WorkspaceRepositoryID, BaseSHA: metadata.WorkspaceBaseSHA, BaseRef: metadata.WorkspaceBaseRef,
 			Roots: append([]executioncontract.LogicalRoot(nil), metadata.WorkspaceRoots...),
 		},
 		Environment:     append([]executioncontract.EnvironmentBinding(nil), metadata.Environment...),
