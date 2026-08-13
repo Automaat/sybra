@@ -474,7 +474,7 @@ func TestFetchCIStatusViaREST_PaginatesCheckRuns(t *testing.T) {
 		firstPage[i] = fmt.Sprintf(`{"name":"green-%d","status":"completed","conclusion":"success"}`, i)
 	}
 	e := &sequenceExecer{outputs: [][]byte{
-		[]byte(fmt.Sprintf(`{"total_count":101,"check_runs":[%s]}`, strings.Join(firstPage, ","))),
+		fmt.Appendf(nil, `{"total_count":101,"check_runs":[%s]}`, strings.Join(firstPage, ",")),
 		[]byte(`{"total_count":101,"check_runs":[{"name":"late-failure","status":"completed","conclusion":"failure"}]}`),
 		[]byte(`{"total_count":0,"statuses":[]}`),
 	}}
@@ -499,7 +499,7 @@ func TestFetchCIStatusViaREST_PaginatesLegacyStatuses(t *testing.T) {
 	}
 	e := &sequenceExecer{outputs: [][]byte{
 		[]byte(`{"total_count":0,"check_runs":[]}`),
-		[]byte(fmt.Sprintf(`{"total_count":101,"statuses":[%s]}`, strings.Join(firstPage, ","))),
+		fmt.Appendf(nil, `{"total_count":101,"statuses":[%s]}`, strings.Join(firstPage, ",")),
 		[]byte(`{"total_count":101,"statuses":[{"context":"late-failure","state":"failure"}]}`),
 	}}
 
