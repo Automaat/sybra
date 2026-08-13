@@ -323,7 +323,7 @@ scenario_apparmor_profile() {
   if out="$(apparmor_parser -Q -T "$profile" 2>&1)"; then
     pass "apparmor: the profile compiles"
   else
-    fail "apparmor: the profile compiles ($out)"
+    fail "apparmor: the profile does not compile — apparmor_parser rejected it: $out"
   fi
 }
 
