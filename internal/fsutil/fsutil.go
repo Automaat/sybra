@@ -112,6 +112,17 @@ func tempPattern(base string) string {
 // its destination. The temporary file and destination are in the same
 // directory, so the link is atomic and cannot cross filesystems.
 func AtomicWriteNew(path string, data []byte) error {
+	return atomicWriteNew(path, data, nil)
+}
+
+// AtomicWriteNewMode is AtomicWriteNew with an explicit mode applied before
+// publication, so an executable can never be observed in an intermediate
+// non-executable state.
+func AtomicWriteNewMode(path string, data []byte, perm os.FileMode) error {
+	return atomicWriteNew(path, data, &perm)
+}
+
+func atomicWriteNew(path string, data []byte, perm *os.FileMode) error {
 	dir := filepath.Dir(path)
 	f, err := os.CreateTemp(dir, tempPattern(filepath.Base(path)))
 	if err != nil {
@@ -123,6 +134,13 @@ func AtomicWriteNew(path string, data []byte) error {
 		_ = os.Remove(tmp)
 		return err
 	}
+	if perm != nil {
+		if err := f.Chmod(*perm); err != nil {
+			_ = f.Close()
+			_ = os.Remove(tmp)
+			return err
+		}
+	}
 	if err := f.Sync(); err != nil {
 		_ = f.Close()
 		_ = os.Remove(tmp)
@@ -130,6 +148,36 @@ func AtomicWriteNew(path string, data []byte) error {
 	}
 	if err := f.Close(); err != nil {
 		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Link(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Remove(tmp); err != nil {
+		return err
+	}
+	return syncDir(dir)
+}
+
+// AtomicSymlinkNew publishes a symlink at a previously absent path. The
+// temporary link is created in the destination directory and linked into place
+// without replacement, so readers observe either absence or the complete link.
+func AtomicSymlinkNew(path, destination string) error {
+	dir := filepath.Dir(path)
+	temp, err := os.CreateTemp(dir, tempPattern(filepath.Base(path)))
+	if err != nil {
+		return err
+	}
+	tmp := temp.Name()
+	if err := temp.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Remove(tmp); err != nil {
+		return err
+	}
+	if err := os.Symlink(destination, tmp); err != nil {
 		return err
 	}
 	if err := os.Link(tmp, path); err != nil {

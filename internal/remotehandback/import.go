@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/Automaat/sybra/internal/executioncontract"
+	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/gitexec"
 )
 
@@ -135,7 +136,7 @@ func importGitLocked(ctx context.Context, target string, spec executioncontract.
 	}
 	for i, member := range untracked {
 		entry := entryFor(manifest, member.Root, member.Path)
-		if err := writeMember(checkout, staging, member, entry.Mode); err != nil {
+		if err := writeMember(checkout, member, entry.Mode); err != nil {
 			return nil, err
 		}
 		untracked[i] = member
@@ -225,7 +226,7 @@ func importGitLocked(ctx context.Context, target string, spec executioncontract.
 	}
 	for _, member := range untracked {
 		entry := entryFor(manifest, member.Root, member.Path)
-		if err := writeMember(target, staging, member, entry.Mode); err != nil {
+		if err := writeMember(target, member, entry.Mode); err != nil {
 			rollback()
 			return nil, err
 		}
@@ -257,29 +258,18 @@ func recordPublicationState(ctx context.Context, dir string, states map[string]s
 }
 
 // resetPublicationStateFingerprint records the only residue reset --hard can
-// leave from a valid checkpoint: pre-existing untracked members and paths
-// added to the index by the staged patch. This closes the crash window between
-// reset and clean without accepting any state Sybra could not have produced.
+// leave from a valid checkpoint: pre-existing untracked members. Index-added
+// paths are removed by reset. This closes the crash window between reset and
+// clean without accepting any state Sybra could not have produced.
 func resetPublicationStateFingerprint(ctx context.Context, dir string) (string, error) {
-	added, err := gitexec.RawOutput(ctx, gitexec.Options{Dir: dir}, "diff", "--cached", "--name-only", "-z", "--diff-filter=A", "HEAD", "--", ".")
-	if err != nil {
-		return "", err
-	}
 	untracked, err := gitexec.RawOutput(ctx, gitexec.Options{Dir: dir}, "ls-files", "--others", "--exclude-standard", "-z", "--", ".")
 	if err != nil {
 		return "", err
 	}
 	paths := make([]string, 0)
-	seen := make(map[string]struct{})
-	for _, raw := range [][]byte{added, untracked} {
-		for path := range strings.SplitSeq(strings.TrimSuffix(string(raw), "\x00"), "\x00") {
-			if path == "" {
-				continue
-			}
-			if _, exists := seen[path]; !exists {
-				seen[path] = struct{}{}
-				paths = append(paths, path)
-			}
+	for path := range strings.SplitSeq(strings.TrimSuffix(string(untracked), "\x00"), "\x00") {
+		if path != "" {
+			paths = append(paths, path)
 		}
 	}
 	slices.Sort(paths)
@@ -544,7 +534,7 @@ func entryFor(manifest executioncontract.ArtifactManifest, root executioncontrac
 	return executioncontract.ArtifactEntry{}
 }
 
-func writeMember(root, scratch string, member executioncontract.ArtifactMember, mode uint32) error {
+func writeMember(root string, member executioncontract.ArtifactMember, mode uint32) error {
 	full := filepath.Join(root, filepath.FromSlash(member.Path))
 	parent := filepath.Dir(full)
 	if err := os.MkdirAll(parent, 0o700); err != nil {
@@ -567,42 +557,12 @@ func writeMember(root, scratch string, member executioncontract.ArtifactMember, 
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	temporary, err := os.CreateTemp(scratch, ".member-*")
-	if err != nil {
-		return err
-	}
-	temporaryPath := temporary.Name()
-	defer func() { _ = os.Remove(temporaryPath) }()
 	if mode == 0o120000 {
-		if err := temporary.Close(); err != nil {
-			return err
-		}
-		if err := os.Remove(temporaryPath); err != nil {
-			return err
-		}
-		if err := os.Symlink(string(member.Content), temporaryPath); err != nil {
-			return err
-		}
-		return os.Rename(temporaryPath, full)
+		return fsutil.AtomicSymlinkNew(full, string(member.Content))
 	}
 	perm := os.FileMode(0o600)
 	if mode == 0o100755 {
 		perm = 0o700
 	}
-	if err := temporary.Chmod(perm); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if _, err := temporary.Write(member.Content); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := temporary.Sync(); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := temporary.Close(); err != nil {
-		return err
-	}
-	return os.Rename(temporaryPath, full)
+	return fsutil.AtomicWriteNewMode(full, member.Content, perm)
 }

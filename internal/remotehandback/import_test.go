@@ -66,6 +66,12 @@ func TestImportGitReproducesCommittedDirtyAndUntrackedOutcome(t *testing.T) {
 	if _, err := remotehandback.ImportGit(t.Context(), leader, spec, manifest, content, guard, lock); err != nil {
 		t.Fatalf("recover exact already-published handback: %v", err)
 	}
+	// Simulate a crash after recovery reset the tracked/index state but before
+	// it cleaned a previously published untracked member.
+	git(t, leader, "reset", "--hard", manifest.Workspace.FinalSHA)
+	if _, err := remotehandback.ImportGit(t.Context(), leader, spec, manifest, content, guard, lock); err != nil {
+		t.Fatalf("recover post-reset pre-clean checkpoint: %v", err)
+	}
 	head, _ := gitexec.Output(t.Context(), gitexec.Options{Dir: leader}, "rev-parse", "HEAD")
 	if head != manifest.Workspace.FinalSHA {
 		t.Fatalf("leader HEAD = %s, want %s", head, manifest.Workspace.FinalSHA)
