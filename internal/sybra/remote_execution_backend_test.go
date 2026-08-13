@@ -365,12 +365,38 @@ func TestLeaderExecutionBackendVirtualizesSidecarPathAndFollowsResumedSession(t 
 	}
 	run.cancel()
 	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); {
-		if _, err := backend.load(handle); err != nil {
+		run.mu.RLock()
+		observing := run.observing
+		run.mu.RUnlock()
+		if !observing {
+			if _, err := backend.load(handle); err != nil {
+				t.Fatalf("detached handle was not retained: %v", err)
+			}
+			recovered := &recordingExecutionSink{ready: make(chan struct{})}
+			if err := backend.Recover(t.Context(), handle, recovered); err != nil {
+				t.Fatalf("recover detached relay: %v", err)
+			}
+			run.cancel()
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("remote relay did not stop after leader observation was canceled")
+}
+
+func TestRemoteRecoverCanceledContextPreservesObserver(t *testing.T) {
+	run := &remoteExecution{runID: "healthy", sink: &recordingExecutionSink{}, observing: true, observerDone: make(chan struct{}), cancel: func() {}}
+	backend := &leaderExecutionBackend{runs: map[agent.ExecutionHandle]*remoteExecution{"remote:healthy": run}}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := backend.Recover(ctx, "remote:healthy", &recordingExecutionSink{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Recover error = %v, want canceled", err)
+	}
+	run.mu.RLock()
+	defer run.mu.RUnlock()
+	if !run.observing {
+		t.Fatal("canceled recovery destroyed the healthy observer")
+	}
 }
 
 func remoteBackendRepository(t *testing.T) (dir, base string) {

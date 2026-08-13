@@ -385,6 +385,9 @@ func (b *leaderExecutionBackend) Inspect(ctx context.Context, handle agent.Execu
 }
 
 func (b *leaderExecutionBackend) Recover(ctx context.Context, handle agent.ExecutionHandle, sink agent.ExecutionEventSink) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	run, err := b.load(handle)
 	if err != nil {
 		return err
@@ -399,11 +402,9 @@ func (b *leaderExecutionBackend) Recover(ctx context.Context, handle agent.Execu
 	run.mu.RUnlock()
 	if observing {
 		oldCancel()
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-oldDone:
-		}
+		// Once handoff begins it must finish even if the request is canceled;
+		// otherwise a failed Recover call would destroy the healthy observer.
+		<-oldDone
 	}
 	if _, err := b.load(handle); err != nil {
 		return err
@@ -411,7 +412,7 @@ func (b *leaderExecutionBackend) Recover(ctx context.Context, handle agent.Execu
 	run.mu.RLock()
 	deadline := run.deadline
 	run.mu.RUnlock()
-	runCtx, cancel := context.WithDeadline(ctx, deadline.Add(remoteTerminalGrace))
+	runCtx, cancel := context.WithDeadline(context.WithoutCancel(ctx), deadline.Add(remoteTerminalGrace))
 	run.mu.Lock()
 	run.sink = sink
 	run.observing = true
