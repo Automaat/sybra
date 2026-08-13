@@ -140,6 +140,14 @@ terminates TLS is polled over https rather than being rewritten to http; set
 `SYBRA_SERVER_CA` alongside it when that board serves its own certificate, and
 `SYBRA_HEALTH_URL` to name the URL outright (it wins over both).
 
+`SYBRA_SERVER_CA` **pins** that certificate rather than verifying a chain,
+matching what sybra's own client does with the same variable. `cluster
+gen-cert` mints a self-signed leaf whose SANs are only the hosts the leader
+dials, so demanding hostname verification would fail a certificate sybra
+itself accepts — polling `https://127.0.0.1:8080`, the target this guide tells
+you to set, against a certificate issued for the board's own name. The check
+does not read `cluster.tls.cert_file` from the config: name the file here.
+
 **Quarantine** ties a rejection (any phase — build, sandbox smoke, config
 preflight, or repeated health-check failure) to a key derived from the
 source SHA *and* a fingerprint of the live config file. A quarantined

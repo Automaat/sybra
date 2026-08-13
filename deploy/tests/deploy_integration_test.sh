@@ -77,6 +77,7 @@ new_env() {
   ( cd "$root/src" && git init -q && git config user.email t@t.com && git config user.name t && git add -A && git commit -q -m init )
 
   unset FAKE_CHECK_CONFIG FAKE_CHECK_CONFIG_CLI FAKE_NPM_FAIL FAKE_SANDBOX_SMOKE_FAIL FAKE_HEALTH_MODE FAKE_LISTEN_ADDR
+  unset FAKE_TLS_CERT FAKE_TLS_KEY
   unset SYBRA_HEALTH_URL SYBRA_HEALTH_QUARANTINE_THRESHOLD SYBRA_DEPLOY_LOCK_WAIT_SEC
   unset SYBRA_SERVER_TARGET SYBRA_SERVER_CA
   unset SYBRA_HEALTH_TIMEOUT_SEC SYBRA_HEALTH_INTERVAL_SEC
@@ -139,6 +140,37 @@ next_port() {
   echo $((20000 + RANDOM % 20000))
 }
 
+# start_fake_tls_server backgrounds the candidate server with a certificate, so
+# the health check has a real TLS board to authenticate. Prints the pid.
+start_fake_tls_server() {
+  local bin="$1" port="$2" cert="$3" key="$4"
+  export FAKE_LISTEN_ADDR="127.0.0.1:$port" FAKE_TLS_CERT="$cert" FAKE_TLS_KEY="$key"
+  "$bin" >/dev/null 2>&1 &
+  local pid=$!
+  local i=0 rc
+  while (( i < 50 )); do
+    curl -k -fsS -m 1 "https://127.0.0.1:$port/health" >/dev/null 2>&1
+    rc=$?
+    [[ "$rc" -eq 0 || "$rc" -eq 22 ]] && break
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  echo "$pid"
+}
+
+# gen_selfsigned mints a certificate deliberately shaped like `sybra-cli
+# cluster gen-cert`: self-signed, and carrying a name the health check does NOT
+# dial. A check that verified a chain and hostname would reject it; sybra's own
+# client pins the certificate instead, and the health check has to agree.
+gen_selfsigned() {
+  local dir="$1"
+  mkdir -p "$dir"
+  openssl req -x509 -newkey rsa:2048 -nodes -days 2 \
+    -keyout "$dir/key.pem" -out "$dir/cert.pem" \
+    -subj "/CN=sybra-board" -addext "subjectAltName=DNS:sybra-board.invalid" >/dev/null 2>&1
+}
+
 # scenario_health_target_scheme covers the health URL built from
 # SYBRA_SERVER_TARGET rather than the SYBRA_HEALTH_URL override every other
 # scenario sets. The target takes a bare host and port or a full origin, and
@@ -171,14 +203,28 @@ scenario_health_target_scheme() {
     pass "health-scheme: the polled URL never doubles the scheme"
   fi
 
-  # An https origin is never rewritten to http: the check has to fail against
-  # a plain-http server rather than silently connect on the wrong scheme.
+  # An https origin is never rewritten to http: the check has to fail against a
+  # plain-http server rather than silently connect on the wrong scheme. The
+  # whole log line is asserted, not the URL alone — the pre-fix URL
+  # http://https://127.0.0.1:PORT/health *contains* the https one, so a
+  # substring check here would pass against the exact bug it pins.
   port="$(next_port)"
   export SYBRA_SERVER_TARGET="https://127.0.0.1:$port"
   srv="$(start_fake_server "$cur/sybra-server" "$port")"
   run_healthcheck >"$root/health-https.log" 2>&1
+  rc=$?
   stop_fake_server "$srv"
-  assert_contains "health-scheme: an https origin is polled over https" "$(cat "$root/health-https.log")" "https://127.0.0.1:$port/health"
+  assert_contains "health-scheme: an https origin is polled over https" "$(cat "$root/health-https.log")" "for https://127.0.0.1:$port/health to answer"
+  assert_ne "health-scheme: an https origin is never downgraded to http" "0" "$rc"
+
+  # A whitespace-padded target is what an env file produces by accident, and
+  # the Go consumers of this variable trim it before parsing.
+  port="$(next_port)"
+  export SYBRA_SERVER_TARGET=" https://127.0.0.1:$port "
+  srv="$(start_fake_server "$cur/sybra-server" "$port")"
+  run_healthcheck >"$root/health-padded.log" 2>&1
+  stop_fake_server "$srv"
+  assert_contains "health-scheme: a padded target still resolves to one origin" "$(cat "$root/health-padded.log")" "for https://127.0.0.1:$port/health to answer"
 
   # A bare host and port keeps its implied http scheme.
   port="$(next_port)"
@@ -188,6 +234,53 @@ scenario_health_target_scheme() {
   rc=$?
   stop_fake_server "$srv"
   assert_eq "health-scheme: a bare host:port target still passes" "0" "$rc"
+}
+
+# scenario_health_tls_board drives the whole point of honouring the scheme: a
+# board that actually terminates TLS has to reach a healthy release. Its
+# certificate is self-signed and names a host the check never dials, exactly
+# like one `sybra-cli cluster gen-cert` mints, so a check that verified a chain
+# and hostname would fail it while sybra's own pinning client accepts it.
+scenario_health_tls_board() {
+  local root="$1"
+  new_env "$root"
+  if ! command -v openssl >/dev/null 2>&1; then
+    echo "SKIP: health-tls (openssl unavailable)"
+    return 0
+  fi
+  export FAKE_CHECK_CONFIG=ok
+  run_build >"$root/build.log" 2>&1
+  local cur; cur="$(current_target)"
+
+  gen_selfsigned "$root/tls"
+  export FAKE_HEALTH_MODE=ok
+  export SYBRA_HEALTH_TIMEOUT_SEC=5
+  export SYBRA_HEALTH_INTERVAL_SEC=1
+  unset SYBRA_HEALTH_URL
+
+  local port; port="$(next_port)"
+  export SYBRA_SERVER_TARGET="https://127.0.0.1:$port"
+  export SYBRA_SERVER_CA="$root/tls/cert.pem"
+  local srv; srv="$(start_fake_tls_server "$cur/sybra-server" "$port" "$root/tls/cert.pem" "$root/tls/key.pem")"
+  run_healthcheck >"$root/health-tls.log" 2>&1
+  local rc=$?
+  stop_fake_server "$srv"
+
+  assert_eq "health-tls: a TLS board with a pinned certificate passes" "0" "$rc"
+  assert_eq "health-tls: the TLS release is promoted to last-good" "$cur" "$(last_good_target)"
+  assert_contains "health-tls: the resolved TLS posture is logged" "$(cat "$root/health-tls.log")" "tls: pinned to $root/tls/cert.pem"
+
+  # Without the certificate there is nothing to trust, so the start fails
+  # rather than skipping verification.
+  port="$(next_port)"
+  export SYBRA_SERVER_TARGET="https://127.0.0.1:$port"
+  unset SYBRA_SERVER_CA
+  srv="$(start_fake_tls_server "$cur/sybra-server" "$port" "$root/tls/cert.pem" "$root/tls/key.pem")"
+  run_healthcheck >"$root/health-tls-nocert.log" 2>&1
+  rc=$?
+  stop_fake_server "$srv"
+  assert_ne "health-tls: an unpinned self-signed board is not trusted" "0" "$rc"
+  assert_contains "health-tls: the unpinned run reports no TLS material" "$(cat "$root/health-tls-nocert.log")" "tls: none"
 }
 
 # seed_last_good runs one full build+activate+healthy-startup cycle so
@@ -525,6 +618,7 @@ main() {
   scenario_health_check_failure "$TMPBASE/health-failure"
   scenario_rollback_preserves_quarantine "$TMPBASE/rollback-quarantine"
   scenario_health_target_scheme "$TMPBASE/health-scheme"
+  scenario_health_tls_board "$TMPBASE/health-tls"
 
   echo
   echo "== $PASS passed, $FAIL failed =="

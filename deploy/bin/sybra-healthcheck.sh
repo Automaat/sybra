@@ -29,25 +29,80 @@ health_url() {
     return 0
   fi
   local target="${SYBRA_SERVER_TARGET:-127.0.0.1:8080}"
-  target="${target%/}"
-  case "$target" in
-    http://*/* | https://*/*)
-      log "warning: SYBRA_SERVER_TARGET=$target carries a path; health check uses its origin only" >&2
-      local scheme="${target%%://*}" rest="${target#*://}"
-      printf '%s://%s/health\n' "$scheme" "${rest%%/*}"
+  # Trimmed and lowercased because the Go consumers of this same variable parse
+  # it with strings.TrimSpace + url.Parse: one stray space or a capital S in an
+  # env file must not put the script back on the doubled-scheme path.
+  read -r target <<<"$target"
+  local scheme="" rest="$target"
+  if [[ "$target" == *"://"* ]]; then
+    scheme="$(printf '%s' "${target%%://*}" | tr '[:upper:]' '[:lower:]')"
+    rest="${target#*://}"
+  fi
+  case "$scheme" in
+    http | https)
+      if [[ "$rest" == */?* ]]; then
+        log "warning: SYBRA_SERVER_TARGET=$target carries a path; health check uses its origin only" >&2
+      fi
+      rest="${rest%%/*}"
+      if [[ -z "$rest" ]]; then
+        log "warning: SYBRA_SERVER_TARGET=$target names no host; falling back to 127.0.0.1:8080" >&2
+        printf 'http://127.0.0.1:8080/health\n'
+        return 0
+      fi
+      printf '%s://%s/health\n' "$scheme" "$rest"
       ;;
-    http://* | https://*) printf '%s/health\n' "$target" ;;
-    *) printf 'http://%s/health\n' "$target" ;;
+    *) printf 'http://%s/health\n' "${target%/}" ;;
   esac
 }
 
 HEALTH_URL="$(health_url)"
 
-# A board that terminates TLS with its own certificate is reachable only if
-# curl is told about it, the same way an agent's CLI is (SYBRA_SERVER_CA).
+# certificate_key_pin prints the base64 SHA-256 of a certificate's public key,
+# the digest curl --pinnedpubkey compares against. Empty when openssl is not
+# installed, which is the caller's cue to fall back.
+certificate_key_pin() {
+  command -v openssl >/dev/null 2>&1 || return 1
+  openssl x509 -in "$1" -pubkey -noout 2>/dev/null |
+    openssl pkey -pubin -outform der 2>/dev/null |
+    openssl dgst -sha256 -binary 2>/dev/null |
+    openssl base64 2>/dev/null
+}
+
+# tls_probe_args prints the curl arguments for a board serving its own
+# certificate, named by SYBRA_SERVER_CA the way an agent's CLI is told.
+#
+# It pins rather than verifies a chain. `cluster gen-cert` mints a self-signed
+# leaf whose SANs are only the hosts the leader dials, and sybra's own client
+# skips chain and hostname verification and compares the certificate it was
+# given (pinnedTransport in cmd/sybra-cli/httpclient.go). --cacert would demand
+# both, so polling https://127.0.0.1:8080 — the target the deploy docs tell an
+# operator to set — would fail hostname verification against a certificate
+# sybra itself accepts, and the start would count as unhealthy for a board that
+# is answering perfectly well.
+tls_probe_args() {
+  local ca="${SYBRA_SERVER_CA:-}"
+  [[ -n "$ca" ]] || return 0
+  if [[ ! -r "$ca" ]]; then
+    log "warning: SYBRA_SERVER_CA=$ca is not readable; polling without it" >&2
+    return 0
+  fi
+  local pin
+  pin="$(certificate_key_pin "$ca")"
+  if [[ -n "$pin" ]]; then
+    printf '%s\n' "--insecure" "--pinnedpubkey" "sha256//$pin"
+    return 0
+  fi
+  log "warning: openssl is unavailable; verifying $ca as a CA, so the target must match a name in the certificate" >&2
+  printf '%s\n' "--cacert" "$ca"
+}
+
 CURL_TLS_ARGS=()
+TLS_POSTURE="none"
 if [[ -n "${SYBRA_SERVER_CA:-}" ]]; then
-  CURL_TLS_ARGS+=(--cacert "$SYBRA_SERVER_CA")
+  mapfile -t CURL_TLS_ARGS < <(tls_probe_args)
+  if [[ "${#CURL_TLS_ARGS[@]}" -gt 0 ]]; then
+    TLS_POSTURE="pinned to $SYBRA_SERVER_CA"
+  fi
 fi
 TIMEOUT_SEC="${SYBRA_HEALTH_TIMEOUT_SEC:-60}"
 INTERVAL_SEC="${SYBRA_HEALTH_INTERVAL_SEC:-2}"
@@ -57,7 +112,7 @@ wait_for_health() {
   local elapsed=0 log_file
   log_file="$(detail_log_path "$ID" health-check)"
   while (( elapsed < TIMEOUT_SEC )); do
-    if curl -fsS -m 3 "${CURL_TLS_ARGS[@]}" "$HEALTH_URL" >/dev/null 2>>"$log_file"; then
+    if curl -fsS -m 3 ${CURL_TLS_ARGS[@]+"${CURL_TLS_ARGS[@]}"} "$HEALTH_URL" >/dev/null 2>>"$log_file"; then
       return 0
     fi
     sleep "$INTERVAL_SEC"
@@ -105,7 +160,7 @@ main() {
   KEY="$(candidate_key "$SHA")"
   ID="${SHA}-post-$$"
 
-  log "waiting up to ${TIMEOUT_SEC}s for $HEALTH_URL to answer"
+  log "waiting up to ${TIMEOUT_SEC}s for $HEALTH_URL to answer (tls: $TLS_POSTURE)"
   if wait_for_health; then
     promote
     return 0
