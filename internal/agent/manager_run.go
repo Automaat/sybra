@@ -569,6 +569,7 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	if err := m.injectSandboxHome(&cfg); err != nil {
 		return cfg, nil, err
 	}
+	m.injectShellTempPrefix(&cfg)
 	if err := injectScratchEnvironment(&cfg); err != nil {
 		return cfg, nil, err
 	}
@@ -878,12 +879,55 @@ When a command or test needs a disposable HOME, use $SYBRA_SCRATCH_HOME. It
 lives outside the Git worktree. Never create fake homes, caches, or other
 runtime state inside the worktree.`
 
+// shellTempPrefixEnv is zsh's temp-file prefix, and the reason a contained run
+// can use a heredoc at all. zsh writes every heredoc body to a file under
+// $TMPPREFIX, and macOS's system zsh compiles that to /tmp/zsh and never
+// re-derives it from TMPDIR. Both sandboxes grant the per-user temp root but
+// not /tmp, so under enforce every heredoc died with "can't create temp file
+// for here document: operation not permitted" — taking away the ordinary way
+// an agent writes multi-line content and pushing it onto improvised fallbacks
+// (#3377). Pointing the prefix at an already-granted directory restores it.
+const shellTempPrefixEnv = "TMPPREFIX"
+
+// injectShellTempPrefix points shellTempPrefixEnv at a writable directory in
+// the run's sandbox home. The prefix names a file stem, not a directory, so
+// zsh appends its own suffix to produce <sandbox-home>/zsh/zshXXXXXX and only
+// the parent has to exist.
+//
+// Deliberately a peer of scratch-home rather than a directory inside it: the
+// run's own prompt advertises $SYBRA_SCRATCH_HOME as disposable, so an agent
+// that cleans up after itself would delete the prefix directory and lose
+// heredocs for the rest of the run.
+//
+// Fails soft. Losing the prefix costs heredocs under enforce, which is the
+// state every run was already in; refusing to dispatch over it would turn one
+// stray file in an agent-writable directory into a task that can never run
+// again, on every posture including off.
+func (m *Manager) injectShellTempPrefix(cfg *RunConfig) {
+	if strings.TrimSpace(cfg.resolvedSandboxHome) == "" {
+		return
+	}
+	// Strip first. A caller-supplied prefix can name any writable path,
+	// including one inside the worktree, so a directory this cannot create
+	// must leave the run with no prefix at all rather than that one.
+	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, shellTempPrefixEnv)
+	dir := filepath.Join(cfg.resolvedSandboxHome, "zsh")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		m.logger.Warn("agent.shell_temp_prefix.failed", "task_id", cfg.TaskID, "dir", dir, "err", err)
+		return
+	}
+	cfg.ExtraEnv = append(cfg.ExtraEnv, shellTempPrefixEnv+"="+filepath.Join(dir, "zsh"))
+}
+
 // injectScratchEnvironment gives every sandbox-home-backed run an explicit
 // place for fake user homes outside the Git worktree. HOME itself deliberately
 // remains unchanged: provider CLIs use it to find their authenticated
 // ~/.claude, ~/.codex, or ~/.copilot state.
 func injectScratchEnvironment(cfg *RunConfig) error {
 	if strings.TrimSpace(cfg.resolvedSandboxHome) == "" {
+		// A taskless, non-isolated system run keeps the caller's environment
+		// untouched (TestPrepareRunConfig_SandboxHome_SystemRunSkipsInjection),
+		// and runs no agent shell. Every run that does gets a sandbox home.
 		return nil
 	}
 	scratchHome := filepath.Join(cfg.resolvedSandboxHome, "scratch-home")
