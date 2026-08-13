@@ -283,6 +283,31 @@ scenario_health_tls_board() {
   assert_contains "health-tls: the unpinned run reports no TLS material" "$(cat "$root/health-tls-nocert.log")" "tls: none"
 }
 
+# scenario_apparmor_profile checks the artifact every Ubuntu 24.04 agent host
+# installs. A profile that stops compiling, or stops granting the namespace,
+# breaks the process sandbox on every such host at once — and the failure would
+# otherwise only surface as agents refusing to certify, long after the deploy.
+scenario_apparmor_profile() {
+  local profile="$HERE/../apparmor/sybra-bwrap"
+  assert_true "apparmor: the profile ships in the repo" test -f "$profile"
+  assert_contains "apparmor: it grants the user namespace" "$(cat "$profile")" "userns,"
+  assert_contains "apparmor: it attaches to the bwrap binary alone" "$(cat "$profile")" "profile sybra-bwrap /usr/bin/bwrap"
+
+  # The sysctl stays the host's business: a profile that cleared it would hand
+  # unprivileged user namespaces to every other binary on the box.
+  if grep -v '^[[:space:]]*#' "$profile" | grep -q "apparmor_restrict_unprivileged_userns"; then
+    fail "apparmor: the profile writes the host-wide sysctl"
+  else
+    pass "apparmor: the profile leaves the host-wide sysctl alone"
+  fi
+
+  if ! command -v apparmor_parser >/dev/null 2>&1; then
+    echo "SKIP: apparmor: profile does not compile here (apparmor_parser unavailable)"
+    return 0
+  fi
+  assert_true "apparmor: the profile compiles" apparmor_parser -Q -T "$profile"
+}
+
 # seed_last_good runs one full build+activate+healthy-startup cycle so
 # last-good is actually populated — sybra-build.sh's own fallback
 # (keep_last_good_or_fail) only ever consults last-good, never current, so
@@ -619,6 +644,7 @@ main() {
   scenario_rollback_preserves_quarantine "$TMPBASE/rollback-quarantine"
   scenario_health_target_scheme "$TMPBASE/health-scheme"
   scenario_health_tls_board "$TMPBASE/health-tls"
+  scenario_apparmor_profile
 
   echo
   echo "== $PASS passed, $FAIL failed =="

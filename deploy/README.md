@@ -221,7 +221,7 @@ Run on the LXC as root (or fold into `setup-sybra-lxc.yml`). Assumes the
 
 ```bash
 apt-get update && apt-get install -y --no-install-recommends \
-  git openssh-client curl ca-certificates gpg ripgrep
+  git openssh-client curl ca-certificates gpg ripgrep bubblewrap apparmor
 
 # gh CLI (matches the Dockerfile's apt source)
 curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
@@ -271,6 +271,35 @@ cp /opt/sybra/src/deploy/systemd/sybra.env.example /etc/sybra/sybra.env   # then
 systemctl daemon-reload
 systemctl enable --now sybra
 ```
+
+### The bwrap AppArmor profile
+
+Every host that runs agents needs this, or the process sandbox cannot start at
+all. Ubuntu 24.04 sets `kernel.apparmor_restrict_unprivileged_userns=1`, which
+denies unprivileged user namespaces to any binary without a profile permitting
+them — `bwrap` is installed, on PATH, and still fails the moment it maps uids.
+`agent.sandbox_mode: enforce` then refuses to certify the host, and `report`
+leaves every agent unwrapped.
+
+```bash
+install -m 0644 /opt/sybra/src/deploy/apparmor/sybra-bwrap /etc/apparmor.d/sybra-bwrap
+apparmor_parser -r -W /etc/apparmor.d/sybra-bwrap
+```
+
+Verify as the service account, which is who actually builds sandboxes — it
+must print `ok`:
+
+```bash
+sudo -u sybra bwrap --unshare-pid --ro-bind / / --dev /dev --proc /proc \
+  /bin/echo ok
+```
+
+The profile grants the namespace to the `bwrap` binary alone. Leave the sysctl
+itself at `1`: clearing it host-wide would hand unprivileged user namespaces to
+every other binary on the box, which is the containment this profile exists to
+avoid giving up. Re-run both commands after a deploy that changes the profile —
+it ships in the repo (`deploy/apparmor/sybra-bwrap`) with the code that depends
+on it, exactly like the unit and the build scripts.
 
 To run the optional local thin worker after its YAML and secret environment
 from [the agentd runbook](../docs/agentd.md) are installed:
@@ -333,6 +362,11 @@ Rework the playbook from container to service:
   npm globals + reshim), templated as tasks.
 - **Install:** the unit, scripts, and a templated `/etc/sybra/sybra.env` via
   `ansible.builtin.copy` / `template`.
+- **Install:** `deploy/apparmor/sybra-bwrap` into `/etc/apparmor.d/`, from the
+  checkout rather than a copy kept in the playbook, with a handler running
+  `apparmor_parser -r -W` on it. Without it the process sandbox cannot start on
+  any Ubuntu 24.04 host. Do **not** template the sysctl — the profile grants
+  the namespace to `bwrap` alone.
 - **New handler:** `systemctl daemon-reload` + `systemctl restart sybra`
   (replaces `docker restart sybra`). Config/secret tasks keep `notify`-ing it.
 - Keep all the existing secret + hook-config tasks (github-app.pem, klaudiush,
