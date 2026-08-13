@@ -734,7 +734,7 @@ func (d *Daemon) flushEvents(ctx context.Context) error {
 			// A later terminal must not commit in the same response: if that
 			// response is lost, terminal revocation would prevent renewing the
 			// credential needed to reach the event replay/ack path.
-			events = events[:i+1]
+			events = eventPrefixThrough(events, i)
 			break
 		}
 		ack, err := d.client.events(ctx, workercontrol.EventBatch{SessionID: d.currentSession(), Events: events, Authorizations: authorizations})
@@ -758,6 +758,17 @@ func (d *Daemon) flushEvents(ctx context.Context) error {
 		_ = os.RemoveAll(filepath.Join(d.cfg.WorkspaceRoot, upload.Manifest.RunID))
 	}
 	return nil
+}
+
+func eventPrefixThrough(events []executioncontract.EventEnvelope, index int) []executioncontract.EventEnvelope {
+	prefix := make([]executioncontract.EventEnvelope, 0, index+1)
+	for i := range events {
+		prefix = append(prefix, events[i])
+		if i == index {
+			break
+		}
+	}
+	return prefix
 }
 
 func (d *Daemon) currentSession() string { d.mu.RLock(); defer d.mu.RUnlock(); return d.sessionID }
