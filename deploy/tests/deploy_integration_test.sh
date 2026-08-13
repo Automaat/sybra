@@ -333,6 +333,7 @@ scenario_agentd_refresh() {
   local root="$1"
   new_env "$root"
   export SYBRA_AGENTD_CONFIG="$root/sybra-agentd.yaml"
+  export SYBRA_AGENTD_BINARY="$root/sybra-agentd"
   export FAKE_SYSTEMCTL_LOG="$root/systemctl.log"
 
   # Server-only hosts must remain a silent no-op even if a stale unit happens
@@ -346,6 +347,12 @@ scenario_agentd_refresh() {
   bash "$DEPLOY_BIN/sybra-refresh-agentd.sh"
   assert_true "agentd-refresh: disabled unit is not started" test ! -e "$FAKE_SYSTEMCTL_LOG"
 
+  export FAKE_AGENTD_ENABLED=1
+  bash "$DEPLOY_BIN/sybra-refresh-agentd.sh"
+  assert_true "agentd-refresh: rollback without binary is not restarted" test ! -e "$FAKE_SYSTEMCTL_LOG"
+
+  : >"$SYBRA_AGENTD_BINARY"
+  chmod +x "$SYBRA_AGENTD_BINARY"
   export FAKE_AGENTD_ENABLED=1
   bash "$DEPLOY_BIN/sybra-refresh-agentd.sh"
   assert_contains "agentd-refresh: enabled daemon restarts asynchronously" "$(cat "$FAKE_SYSTEMCTL_LOG")" "--no-block restart sybra-agentd.service"

@@ -13,6 +13,8 @@ Type=exec
 User=sybra
 Group=sybra
 WorkingDirectory=/opt/sybra/src
+StateDirectory=sybra-agentd
+StateDirectoryMode=0700
 # Reuse the service account's HOME/PATH/toolchain environment, then layer the
 # daemon-only leader token and provider secrets on top.
 EnvironmentFile=/etc/sybra/sybra.env

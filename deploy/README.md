@@ -249,12 +249,27 @@ install -m 0755 /opt/sybra/src/deploy/bin/sybra-deploy-lib.sh  /opt/sybra/bin/
 install -m 0755 /opt/sybra/src/deploy/bin/sybra-repair-src.sh  /opt/sybra/bin/
 install -m 0755 /opt/sybra/src/deploy/bin/sybra-build.sh       /opt/sybra/bin/
 install -m 0755 /opt/sybra/src/deploy/bin/sybra-healthcheck.sh /opt/sybra/bin/
+install -m 0755 /opt/sybra/src/deploy/bin/sybra-refresh-agentd.sh /opt/sybra/bin/
 install -m 0755 /opt/sybra/src/deploy/bin/sybra-run.sh         /opt/sybra/bin/
 install -m 0644 /opt/sybra/src/deploy/systemd/sybra.service /etc/systemd/system/
 cp /opt/sybra/src/deploy/systemd/sybra.env.example /etc/sybra/sybra.env   # then edit
 systemctl daemon-reload
 systemctl enable --now sybra
 ```
+
+To run the optional local thin worker after its YAML and secret environment
+from [the agentd runbook](../docs/agentd.md) are installed:
+
+```bash
+install -m 0644 /opt/sybra/src/deploy/systemd/sybra-agentd.service /etc/systemd/system/
+install -d -m 0700 -o sybra -g sybra /var/lib/sybra-agentd
+systemctl daemon-reload
+systemctl enable --now sybra-agentd
+```
+
+`StateDirectory=sybra-agentd` also provisions `/var/lib/sybra-agentd` with the
+service account ownership on a fresh host. The explicit `install -d` makes the
+ownership visible before first start and is safe to repeat.
 
 ## Config changes (`config.yaml` / `sybra-config.yaml.j2`)
 

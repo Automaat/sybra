@@ -62,6 +62,9 @@ unit's `KillMode=process` leaves detached provider children alive, while the
 daemon's persistent `state_root` lets the replacement process re-adopt them.
 The leader must use a database backend and `cluster.role: leader`; a standalone
 board deliberately does not expose the durable worker scheduler.
+Install the unit with `systemctl enable --now sybra-agentd`; its
+`StateDirectory=sybra-agentd` provisions `/var/lib/sybra-agentd` for the
+unprivileged service account.
 
 The leader URL must use HTTPS except on loopback. `token_env` and `secret_env`
 name environment variables; secret values are never written to the config.
