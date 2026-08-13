@@ -262,8 +262,15 @@ func (s RunSpec) Validate() error {
 		if output.Root == RootWorkingMemory && output.Sensitivity != SensitivitySecret {
 			return errors.New("execution contract: working-memory output must remain secret")
 		}
+		if output.Root == RootSidecar && !supportedSidecarKind(output.Kind) {
+			return fmt.Errorf("execution contract: unsupported sidecar output kind %q", output.Kind)
+		}
 	}
 	return nil
+}
+
+func supportedSidecarKind(kind string) bool {
+	return slices.Contains([]string{"plan", "plan_contract", "plan_critique", "plan_research", "plan_decision", "plan_brief", "code_review", "current_test_failures", "acceptance_ledger", "spec_decision"}, kind)
 }
 
 func roleAuthorsCode(role string) bool {

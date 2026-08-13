@@ -329,6 +329,21 @@ func TestRunSpecKeepsWorkingMemoryPrivateToAuthors(t *testing.T) {
 	}
 }
 
+func TestRunSpecRejectsUnsupportedSidecarKind(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "v1-run-spec.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := DecodeRunSpec(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.ExpectedOutputs = append(spec.ExpectedOutputs, ExpectedOutput{Name: "custom", Kind: "custom_report", Root: RootSidecar, Path: "custom.md", Sensitivity: SensitivityInternal})
+	if err := spec.Validate(); err == nil || !strings.Contains(err.Error(), "unsupported sidecar") {
+		t.Fatalf("Validate unsupported sidecar = %v", err)
+	}
+}
+
 func TestRunSpecRejectsDaemonRootEnvironmentOverridesAndDuplicates(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("testdata", "v1-run-spec.json"))
 	if err != nil {

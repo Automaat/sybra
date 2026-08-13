@@ -34,43 +34,44 @@ func (a *App) importRemoteHandback(ctx context.Context, runID string) error {
 	if err := a.workerControl.BeginArtifactImport(ctx, runID, handback.Manifest.ManifestID); err != nil {
 		return err
 	}
-	t, err := a.tasks.Get(handback.Spec.Fence.TaskID)
-	if err != nil {
-		return err
-	}
-	target := a.worktrees.PathFor(t)
-	guard := func(context.Context) (executioncontract.GenerationFence, string, error) {
-		current, getErr := a.tasks.Get(handback.Spec.Fence.TaskID)
+	return a.tasks.WithMutationLock(handback.Spec.Fence.TaskID, func() error {
+		t, getErr := a.tasks.Get(handback.Spec.Fence.TaskID)
 		if getErr != nil {
-			return executioncontract.GenerationFence{}, "", getErr
+			return getErr
 		}
-		original := current.Generation >= 0 && uint64(current.Generation) == handback.Spec.Fence.TaskGeneration &&
-			current.Generation == handback.Spec.Fence.WorkflowGeneration
-		_, recoveredOutputs := remoteSidecarsApplied(current, handback)
-		if current.Workflow == nil || current.Workflow.WorkflowID != handback.Spec.Fence.WorkflowID ||
-			current.Workflow.CurrentStep != handback.Spec.Fence.StepID || (!original && !recoveredOutputs) {
-			return executioncontract.GenerationFence{}, "", remotehandback.ErrStale
+		target := a.worktrees.PathFor(t)
+		guard := func(context.Context) (executioncontract.GenerationFence, string, error) {
+			current, currentErr := a.tasks.Get(handback.Spec.Fence.TaskID)
+			if currentErr != nil {
+				return executioncontract.GenerationFence{}, "", currentErr
+			}
+			original := current.Generation >= 0 && uint64(current.Generation) == handback.Spec.Fence.TaskGeneration &&
+				current.Generation == handback.Spec.Fence.WorkflowGeneration
+			_, recoveredOutputs := remoteSidecarsApplied(current, handback)
+			if current.Workflow == nil || current.Workflow.WorkflowID != handback.Spec.Fence.WorkflowID ||
+				current.Workflow.CurrentStep != handback.Spec.Fence.StepID || (!original && !recoveredOutputs) {
+				return executioncontract.GenerationFence{}, "", remotehandback.ErrStale
+			}
+			head, headErr := gitexec.Output(ctx, gitexec.Options{Dir: target}, "rev-parse", "--verify", "HEAD^{commit}")
+			return handback.Spec.Fence, head, headErr
 		}
-		head, headErr := gitexec.Output(ctx, gitexec.Options{Dir: target}, "rev-parse", "--verify", "HEAD^{commit}")
-		return handback.Spec.Fence, head, headErr
-	}
-	lock := func(_ context.Context, path string, fn func() error) error {
-		return a.worktrees.WithMutationLock(path, fn)
-	}
-	members, err := remotehandback.ImportGit(ctx, target, handback.Spec, handback.Manifest, handback.Content, guard, lock)
-	if err != nil {
-		if errors.Is(err, remotehandback.ErrStale) {
-			return a.rejectRemoteHandback(ctx, handback, err)
+		if err := a.importRemoteOutputs(handback, nonGitMembers(handback), true); err != nil {
+			if errors.Is(err, remotehandback.ErrStale) {
+				return a.rejectRemoteHandback(ctx, handback, err)
+			}
+			return err
 		}
-		return err
-	}
-	if err := a.importRemoteOutputs(handback, members); err != nil {
-		if errors.Is(err, remotehandback.ErrStale) {
-			return a.rejectRemoteHandback(ctx, handback, err)
+		lock := func(_ context.Context, path string, fn func() error) error {
+			return a.worktrees.WithMutationLock(path, fn)
 		}
-		return err
-	}
-	return a.workerControl.ResolveArtifact(ctx, runID, handback.Manifest.ManifestID, "imported")
+		if _, err := remotehandback.ImportGit(ctx, target, handback.Spec, handback.Manifest, handback.Content, guard, lock); err != nil {
+			if errors.Is(err, remotehandback.ErrStale) {
+				return a.rejectRemoteHandback(ctx, handback, err)
+			}
+			return err
+		}
+		return a.workerControl.ResolveArtifact(ctx, runID, handback.Manifest.ManifestID, "imported")
+	})
 }
 
 func (a *App) rejectRemoteHandback(ctx context.Context, handback workercontrol.ArtifactHandback, cause error) error {
@@ -84,7 +85,7 @@ func (a *App) rejectRemoteHandback(ctx context.Context, handback workercontrol.A
 	return nil
 }
 
-func (a *App) importRemoteOutputs(handback workercontrol.ArtifactHandback, members []executioncontract.ArtifactMember) error {
+func (a *App) importRemoteOutputs(handback workercontrol.ArtifactHandback, members []executioncontract.ArtifactMember, taskLocked bool) error {
 	byPath := make(map[string]executioncontract.ArtifactEntry, len(handback.Manifest.Artifacts))
 	for i := range handback.Manifest.Artifacts {
 		entry := &handback.Manifest.Artifacts[i]
@@ -130,7 +131,11 @@ func (a *App) importRemoteOutputs(handback workercontrol.ArtifactHandback, membe
 		}
 	}
 	if hasSidecar {
-		_, err := a.tasks.UpdateFnBy(handback.Spec.Fence.TaskID, "remotehandback.import", func(current task.Task) (task.Update, error) {
+		apply := a.tasks.UpdateFnBy
+		if taskLocked {
+			apply = a.tasks.UpdateFnByWhileLocked
+		}
+		_, err := apply(handback.Spec.Fence.TaskID, "remotehandback.import", func(current task.Task) (task.Update, error) {
 			_, alreadyApplied := remoteSidecarsApplied(current, handback)
 			if alreadyApplied {
 				return task.Update{}, errRemoteOutputsAlreadyApplied
@@ -147,6 +152,17 @@ func (a *App) importRemoteOutputs(handback workercontrol.ArtifactHandback, membe
 		return err
 	}
 	return nil
+}
+
+func nonGitMembers(handback workercontrol.ArtifactHandback) []executioncontract.ArtifactMember {
+	members := make([]executioncontract.ArtifactMember, 0, len(handback.Package.Members))
+	for i := range handback.Manifest.Artifacts {
+		entry := &handback.Manifest.Artifacts[i]
+		if !strings.HasPrefix(entry.Kind, "git_") {
+			members = append(members, handback.Package.Members[i])
+		}
+	}
+	return members
 }
 
 var errRemoteOutputsAlreadyApplied = errors.New("remote handback: sidecar outputs already applied")

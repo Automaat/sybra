@@ -147,6 +147,13 @@ func Environment(layout Layout) []string {
 
 //nolint:funlen // Collection keeps package-member and manifest-entry construction in one auditable order.
 func Collect(ctx context.Context, layout Layout, spec executioncontract.RunSpec, build string) (executioncontract.ArtifactManifest, []byte, error) {
+	index, err := gitexec.RawOutput(ctx, gitexec.Options{Dir: layout.Worktree}, "ls-files", "--debug", "--", ".")
+	if err != nil {
+		return executioncontract.ArtifactManifest{}, nil, err
+	}
+	if strings.Contains(string(index), "flags: 20004000") {
+		return executioncontract.ArtifactManifest{}, nil, errors.New("agent workspace: intent-to-add index entries cannot be handed back exactly")
+	}
 	finalSHA, err := gitexec.Output(ctx, gitexec.Options{Dir: layout.Worktree}, "rev-parse", "--verify", "HEAD^{commit}")
 	if err != nil {
 		return executioncontract.ArtifactManifest{}, nil, err

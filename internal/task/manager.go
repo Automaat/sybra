@@ -240,6 +240,38 @@ func (m *Manager) lock(id string) func() {
 	return m.locks.LockLocal(id)
 }
 
+// WithMutationLock holds the same per-task exclusion used by every Manager
+// mutation. UpdateFnByWhileLocked is the only mutation method safe inside fn.
+func (m *Manager) WithMutationLock(id string, fn func() error) error {
+	unlock := m.lock(id)
+	defer unlock()
+	return fn()
+}
+
+// UpdateFnByWhileLocked applies a non-status update while WithMutationLock is
+// held, for publication transactions spanning another canonical store.
+func (m *Manager) UpdateFnByWhileLocked(id, actor string, fn func(cur Task) (Update, error)) (Task, error) {
+	if err := requireActor(actor); err != nil {
+		return Task{}, err
+	}
+	t, _, err := m.persist.UpdateFieldsBy(id, actor, func(cur Task) (Update, error) {
+		u, err := fn(cur)
+		if err != nil {
+			return Update{}, err
+		}
+		if u.Status != nil {
+			return Update{}, fmt.Errorf("task: locked mutation cannot change status")
+		}
+		return u, nil
+	})
+	if err != nil {
+		return t, err
+	}
+	metrics.TaskUpdated()
+	m.emitter.Emit(events.TaskUpdated, eventPath(t))
+	return t, nil
+}
+
 // List returns all tasks (lock-free).
 func (m *Manager) List() ([]Task, error) { return m.persist.List() }
 

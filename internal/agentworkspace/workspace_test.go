@@ -176,6 +176,22 @@ func TestCollectNeverDuplicatesDeclaredWorkingMemoryIntoGit(t *testing.T) {
 	}
 }
 
+func TestCollectRejectsIntentToAddIndexState(t *testing.T) {
+	source, base := repository(t)
+	spec := runSpec(base, true)
+	layout, err := Prepare(t.Context(), filepath.Join(t.TempDir(), "runs"), source, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(layout.Worktree, "intent.txt"), []byte("intent\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	git(t, layout.Worktree, "add", "-N", "intent.txt")
+	if _, _, err := Collect(t.Context(), layout, spec, "test"); err == nil || !strings.Contains(err.Error(), "intent-to-add") {
+		t.Fatalf("Collect intent-to-add = %v", err)
+	}
+}
+
 func repository(t *testing.T) (repoPath, baseSHA string) {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "repo")
