@@ -183,6 +183,7 @@ func TestDurableWorkerControlBehavior(t *testing.T) {
 
 func TestFreshDisabledRegistrationFencesPriorSession(t *testing.T) {
 	dbtest.Each(t, func(t *testing.T, engine dbtest.Engine) {
+		t.Helper()
 		service := New(engine.Open(t))
 		prior := register(t, service, "worker-disabled-fence")
 		if err := service.SetWorkerDisabled(t.Context(), prior.WorkerID, true); err != nil {
