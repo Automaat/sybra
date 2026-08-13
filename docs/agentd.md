@@ -52,6 +52,17 @@ secret_env:
 SYBRA_AGENTD_TOKEN=... sybra-agentd -config /etc/sybra-agentd.yaml
 ```
 
+For the shipped systemd deployment, install
+`deploy/systemd/sybra-agentd.service`, place the YAML at
+`/etc/sybra/sybra-agentd.yaml`, and put only secret environment assignments in
+`/etc/sybra/sybra-agentd.env` (mode `0600`). The release builder stages
+`sybra-agentd` beside `sybra-server`; the leader's final `ExecStartPost` then
+restarts an enabled daemon asynchronously after every healthy activation. The
+unit's `KillMode=process` leaves detached provider children alive, while the
+daemon's persistent `state_root` lets the replacement process re-adopt them.
+The leader must use a database backend and `cluster.role: leader`; a standalone
+board deliberately does not expose the durable worker scheduler.
+
 The leader URL must use HTTPS except on loopback. `token_env` and `secret_env`
 name environment variables; secret values are never written to the config.
 The leader token is stripped from every provider subprocess. Run-scoped secret

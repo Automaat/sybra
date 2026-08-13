@@ -53,11 +53,13 @@ validate it (below) before trusting the deploy.**
 | File | Installed to | Purpose |
 |------|--------------|---------|
 | `systemd/sybra.service` | `/etc/systemd/system/sybra.service` | The unit (KillMode=process, exit-42 restart, ExecStartPre build, ExecStartPost health check, start-rate limit). |
+| `systemd/sybra-agentd.service` | `/etc/systemd/system/sybra-agentd.service` | Optional thin local execution worker. It uses the active release, survives provider processes with KillMode=process, and is refreshed after leader restarts. |
 | `systemd/sybra.env.example` | `/etc/sybra/sybra.env` | Runtime env (listen port, local CLI server target, deploy paths, `PATH` with mise shims + npm globals). |
 | `bin/sybra-deploy-lib.sh` | `/opt/sybra/bin/sybra-deploy-lib.sh` | Shared helpers (logging, host lock, quarantine key/marker, atomic symlink swap) sourced by the two scripts below. |
 | `bin/sybra-repair-src.sh` | `/opt/sybra/bin/sybra-repair-src.sh` | Privileged `ExecStartPre`: repairs `/opt/sybra/src` ownership drift before the unprivileged build/autoupdate path touches `.git/objects`. |
-| `bin/sybra-build.sh` | `/opt/sybra/bin/sybra-build.sh` | `ExecStartPre`: build web + server + CLI from `/opt/sybra/src` into a versioned candidate, preflight it against the live config, atomically activate it, or quarantine + keep last-good. |
+| `bin/sybra-build.sh` | `/opt/sybra/bin/sybra-build.sh` | `ExecStartPre`: build web + server + CLI + agentd from `/opt/sybra/src` into a versioned candidate, preflight it against the live config, atomically activate it, or quarantine + keep last-good. |
 | `bin/sybra-healthcheck.sh` | `/opt/sybra/bin/sybra-healthcheck.sh` | `ExecStartPost`: poll the just-started release's `/health`; promote to last-good on success, or roll back + record a failure (quarantining after repeated failures) on timeout. |
+| `bin/sybra-refresh-agentd.sh` | `/opt/sybra/bin/sybra-refresh-agentd.sh` | Final `ExecStartPost`: asynchronously restart an installed/enabled local agentd onto the newly activated release; no-op on server-only hosts. |
 | `bin/sybra-run.sh` | `/opt/sybra/bin/sybra-run.sh` | `ExecStart`: activate mise toolchain, `exec` whichever release `current` points at. |
 
 Layout on the box:
@@ -67,7 +69,7 @@ Layout on the box:
   src/           git checkout of Automaat/sybra on main   (autoupdate RepoDir)
   review-src/    second, independent checkout for human-review's fallback dir
   bin/           sybra-deploy-lib.sh, sybra-repair-src.sh, sybra-build.sh, sybra-healthcheck.sh, sybra-run.sh
-  releases/<id>/ versioned candidate builds: sybra-server, sybra-cli, web/
+  releases/<id>/ versioned candidate builds: sybra-server, sybra-cli, sybra-agentd, web/
   current        symlink -> releases/<id>, the release ExecStart runs
   last-good      symlink -> releases/<id>, restored automatically on a failed health check
   quarantine/    <sha+config-fingerprint>.reason markers for rejected candidates
@@ -109,7 +111,7 @@ apply.
 `sybra-build.sh` builds into a fresh `releases/<sha>-<timestamp>` directory and
 only ever repoints the `current` symlink — atomically, via `ln -sfn` + `mv -T`
 so it's never briefly missing or half-written — after every phase has passed:
-`mise install`, frontend build, `go build` for both binaries, the linked-worktree
+`mise install`, frontend build, `go build` for all three binaries, the linked-worktree
 sandbox smoke test (when `bwrap` is present), and finally a **config
 preflight**: it runs the freshly-built `sybra-server -check-config` against
 the exact live `config.yaml` (same env, same `SYBRA_HOME`, no side effects —

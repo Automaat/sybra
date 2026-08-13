@@ -30,6 +30,10 @@ ExecStartPre=/opt/sybra/bin/sybra-build.sh
 # deploy/bin/sybra-healthcheck.sh. A failure here fails this start, which is
 # what drives the Restart=on-failure retry below.
 ExecStartPost=/opt/sybra/bin/sybra-healthcheck.sh
+# Once the leader is healthy, asynchronously move an installed local agentd
+# onto the same atomic release. The helper is a no-op when agentd is absent or
+# disabled, so server-only deployments keep their existing behavior.
+ExecStartPost=+/opt/sybra/bin/sybra-refresh-agentd.sh
 TimeoutStartSec=960
 
 ExecStart=/opt/sybra/bin/sybra-run.sh

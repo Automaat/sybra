@@ -309,6 +309,7 @@ scenario_successful_activation() {
   local cur; cur="$(current_target)"
   [[ -n "$cur" ]] && pass "success: current points to a release" || fail "success: current points to a release"
   assert_true "success: candidate server binary is executable" test -x "$cur/sybra-server"
+  assert_true "success: candidate agentd binary is executable" test -x "$cur/sybra-agentd"
   assert_true "success: candidate web bundle staged" test -f "$cur/web/index.html"
   assert_eq "success: nothing quarantined" "0" "$(quarantine_count)"
   assert_true "success: sybra-cli symlink resolves through current" test -x "$SYBRA_HOME/.local/bin/sybra-cli"
@@ -326,6 +327,28 @@ scenario_successful_activation() {
 
   assert_eq "success: healthcheck exits 0" "0" "$rc"
   assert_eq "success: release promoted to last-good" "$cur" "$(last_good_target)"
+}
+
+scenario_agentd_refresh() {
+  local root="$1"
+  new_env "$root"
+  export SYBRA_AGENTD_CONFIG="$root/sybra-agentd.yaml"
+  export FAKE_SYSTEMCTL_LOG="$root/systemctl.log"
+
+  # Server-only hosts must remain a silent no-op even if a stale unit happens
+  # to be enabled: the daemon config is the operator's opt-in boundary.
+  export FAKE_AGENTD_ENABLED=1
+  bash "$DEPLOY_BIN/sybra-refresh-agentd.sh"
+  assert_true "agentd-refresh: absent config does not invoke systemctl" test ! -e "$FAKE_SYSTEMCTL_LOG"
+
+  : >"$SYBRA_AGENTD_CONFIG"
+  export FAKE_AGENTD_ENABLED=0
+  bash "$DEPLOY_BIN/sybra-refresh-agentd.sh"
+  assert_true "agentd-refresh: disabled unit is not started" test ! -e "$FAKE_SYSTEMCTL_LOG"
+
+  export FAKE_AGENTD_ENABLED=1
+  bash "$DEPLOY_BIN/sybra-refresh-agentd.sh"
+  assert_contains "agentd-refresh: enabled daemon restarts asynchronously" "$(cat "$FAKE_SYSTEMCTL_LOG")" "--no-block restart sybra-agentd.service"
 }
 
 scenario_repair_src_preflight() {
@@ -439,6 +462,7 @@ main() {
   scenario_lock_contention "$TMPBASE/lock-contention"
   scenario_repair_src_preflight "$TMPBASE/repair-src"
   scenario_successful_activation "$TMPBASE/success"
+  scenario_agentd_refresh "$TMPBASE/agentd-refresh"
   scenario_health_check_failure "$TMPBASE/health-failure"
   scenario_rollback_preserves_quarantine "$TMPBASE/rollback-quarantine"
 
