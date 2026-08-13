@@ -134,8 +134,8 @@ func TestImportGitHandlesStagedRenameStatus(t *testing.T) {
 	}
 	leader := filepath.Join(t.TempDir(), "leader")
 	git(t, "", "clone", "--no-local", source, leader)
-	guard := func(context.Context) (executioncontract.GenerationFence, string, error) {
-		head, headErr := gitexec.Output(t.Context(), gitexec.Options{Dir: leader}, "rev-parse", "HEAD")
+	guard := func(ctx context.Context) (executioncontract.GenerationFence, string, error) {
+		head, headErr := gitexec.Output(ctx, gitexec.Options{Dir: leader}, "rev-parse", "HEAD")
 		return spec.Fence, head, headErr
 	}
 	lock := func(_ context.Context, _ string, fn func() error) error { return fn() }
@@ -186,8 +186,8 @@ func TestImportGitRecoversAfterStagedNewFileCheckpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	git(t, leader, "apply", "--binary", "--index", "--", patchPath)
-	guard := func(context.Context) (executioncontract.GenerationFence, string, error) {
-		head, headErr := gitexec.Output(t.Context(), gitexec.Options{Dir: leader}, "rev-parse", "HEAD")
+	guard := func(ctx context.Context) (executioncontract.GenerationFence, string, error) {
+		head, headErr := gitexec.Output(ctx, gitexec.Options{Dir: leader}, "rev-parse", "HEAD")
 		return spec.Fence, head, headErr
 	}
 	lock := func(_ context.Context, _ string, fn func() error) error { return fn() }
