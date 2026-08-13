@@ -93,6 +93,19 @@ func Prepare(ctx context.Context, root, source string, spec executioncontract.Ru
 	if err := gitexec.Run(ctx, gitexec.Options{Dir: worktree}, "checkout", "--detach", spec.Workspace.BaseSHA); err != nil {
 		return Layout{}, fmt.Errorf("agent workspace: checkout immutable base: %w", err)
 	}
+	// Remote workspaces must be able to create handback commits without
+	// depending on the daemon account's operator identity or signing setup.
+	// These repository-local values stay inside the disposable checkout.
+	for key, value := range map[string]string{
+		"user.name":      "Sybra Agent",
+		"user.email":     "sybra-agent@example.invalid",
+		"commit.gpgsign": "false",
+		"tag.gpgsign":    "false",
+	} {
+		if err := gitexec.Run(ctx, gitexec.Options{Dir: worktree}, "config", "--local", key, value); err != nil {
+			return Layout{}, fmt.Errorf("agent workspace: configure git identity: %w", err)
+		}
+	}
 	layout := Layout{RunRoot: tmp, Worktree: worktree, Sidecar: filepath.Join(tmp, "sidecar"), Artifact: filepath.Join(tmp, "artifact"), WorkingMemory: worktree}
 	for _, declared := range spec.Workspace.Roots {
 		path := layout.Root(declared)
