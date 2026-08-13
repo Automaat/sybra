@@ -15,6 +15,8 @@ providers: [claude, codex]
 models: [sonnet, gpt-5.4]
 labels: { zone: home }
 trusted_work: false
+encrypted_work: false
+warm_caches: [go-build]
 sandbox_mode: enforce
 workspace_root: /var/lib/sybra-agentd/workspaces
 state_root: /var/lib/sybra-agentd/state
@@ -78,5 +80,16 @@ workflow completion by itself.
 `sandbox_mode: enforce` fails each run closed if the host containment mechanism
 or workspace profile cannot be established. `report` is accepted for rollout
 diagnostics but does not claim containment. Provider health, OS/architecture,
-capacity, sandbox posture, labels, models, build/protocol versions, and trusted
-work eligibility are advertised during registration.
+capacity, sandbox posture, labels, models, mapped repositories, warm-cache
+hints, build/protocol versions, and trusted/encrypted work eligibility are
+advertised during registration.
+
+The leader schedules each run independently. `node_override` is a hard pin and
+fails clearly when that node is unavailable; the legacy `assigned_node` value
+is treated as an affinity and may fall back when policy allows. Active session
+rows are locked while the fenced run and start command are persisted, so the
+same transaction reserves advertised capacity. Terminal runs release capacity
+idempotently. Draining or disabled nodes finish accepted work but receive no
+new placements; diagnostics show their state, active and available capacity,
+and placement results carry per-candidate rejection reasons. A caller must opt
+in explicitly when no eligible daemon may fall back to local execution.
