@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,31 @@ import (
 
 	"github.com/Automaat/sybra/internal/workercontrol"
 )
+
+type leaderHTTPError struct {
+	method string
+	path   string
+	status int
+	detail string
+}
+
+func (e *leaderHTTPError) Error() string {
+	return fmt.Sprintf("leader %s %s: status %d: %s", e.method, e.path, e.status, e.detail)
+}
+
+func isRejectedSession(err error) bool {
+	var responseErr *leaderHTTPError
+	if !errors.As(err, &responseErr) || responseErr.status != http.StatusConflict {
+		return false
+	}
+	var response struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal([]byte(responseErr.detail), &response) != nil {
+		return false
+	}
+	return response.Error == workercontrol.ErrStaleSession.Error() || response.Error == workercontrol.ErrLeaseExpired.Error()
+}
 
 type leaderClient struct {
 	base  string
@@ -49,7 +75,7 @@ func (c *leaderClient) call(ctx context.Context, method, path string, body, resu
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		limited, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-		return fmt.Errorf("leader %s %s: status %d: %s", method, path, response.StatusCode, strings.TrimSpace(string(limited)))
+		return &leaderHTTPError{method: method, path: path, status: response.StatusCode, detail: strings.TrimSpace(string(limited))}
 	}
 	if result == nil {
 		_, _ = io.Copy(io.Discard, response.Body)

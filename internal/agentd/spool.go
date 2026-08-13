@@ -22,6 +22,9 @@ const terminalEventBudgetBytes int64 = 4096
 type durableState struct {
 	NodeID           string                                       `json:"nodeId"`
 	SessionID        string                                       `json:"sessionId,omitempty"`
+	RegistrationID   string                                       `json:"registrationId,omitempty"`
+	RegistrationFrom string                                       `json:"registrationResumeSessionId,omitempty"`
+	RegistrationAck  uint64                                       `json:"registrationLastCommandAck,omitempty"`
 	LastCommandAck   uint64                                       `json:"lastCommandAck,omitempty"`
 	Events           map[string][]executioncontract.EventEnvelope `json:"events,omitempty"`
 	RunAgents        map[string]string                            `json:"runAgents,omitempty"`

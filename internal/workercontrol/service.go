@@ -29,6 +29,7 @@ var (
 
 type RegisterRequest struct {
 	WorkerID        string                        `json:"workerId"`
+	RegistrationID  string                        `json:"registrationId,omitempty"`
 	Negotiation     executioncontract.Negotiation `json:"negotiation"`
 	Capabilities    []string                      `json:"capabilities,omitempty"`
 	LeaseSeconds    int                           `json:"leaseSeconds,omitempty"`
@@ -237,12 +238,18 @@ func (s *Service) SetGrantAuditSink(sink agentgrant.AuditSink) {
 	s.grants.SetAuditSink(sink)
 }
 
+// Register keeps session fencing and ownership migration in one transaction.
+//
+//nolint:funlen // Splitting the transaction would obscure or weaken that atomic boundary.
 func (s *Service) Register(ctx context.Context, request RegisterRequest) (Session, error) {
 	if request.WorkerID == "" || request.Negotiation.BuildVersion == "" {
 		return Session{}, invalidf("worker and build identities are required")
 	}
 	if request.ResumeSessionID == "" && request.LastCommandAck != 0 {
 		return Session{}, invalidf("a fresh session cannot claim a command cursor")
+	}
+	if request.RegistrationID != "" && !validRegistrationID(request.RegistrationID) {
+		return Session{}, invalidf("registration identity is malformed")
 	}
 	version, err := executioncontract.Negotiate(executioncontract.Negotiation{
 		ProtocolMin: executioncontract.CurrentVersion(), ProtocolMax: executioncontract.CurrentVersion(), BuildVersion: "leader",
@@ -265,7 +272,46 @@ func (s *Service) Register(ctx context.Context, request RegisterRequest) (Sessio
 		return Session{}, fmt.Errorf("encode capabilities: %w", err)
 	}
 	state := "active"
+	leaseExpiresAt := now.Add(lease)
+	lastCommandAck := request.LastCommandAck
+	responseCapabilities := append([]string(nil), request.Capabilities...)
 	err = s.db.InTx(ctx, func(tx *sql.Tx) error {
+		if request.RegistrationID != "" {
+			var existingWorker, existingBuild, existingCapabilities, existingState string
+			var existingMajor, existingMinor, existingLease, existingExpiry int64
+			var existingAck uint64
+			err := tx.QueryRowContext(ctx, s.db.Rebind(`SELECT session_id, worker_id, protocol_major, protocol_minor, build_version,
+				capabilities_json, state, lease_seconds, lease_expires_at, last_command_ack
+				FROM worker_sessions WHERE registration_id = ?`), request.RegistrationID).
+				Scan(&sessionID, &existingWorker, &existingMajor, &existingMinor, &existingBuild, &existingCapabilities,
+					&existingState, &existingLease, &existingExpiry, &existingAck)
+			if err == nil {
+				if existingWorker != request.WorkerID || existingMajor != int64(version.Major) || existingMinor != int64(version.Minor) ||
+					existingBuild != request.Negotiation.BuildVersion || existingLease != int64(lease/time.Second) || existingAck != request.LastCommandAck {
+					return invalidf("registration identity was reused for a different request")
+				}
+				if existingState != "active" && existingState != "draining" && existingState != "disabled" {
+					return ErrStaleSession
+				}
+				if err := json.Unmarshal([]byte(existingCapabilities), &responseCapabilities); err != nil {
+					return fmt.Errorf("decode replayed worker capabilities: %w", err)
+				}
+				// Replaying a registration proves the same daemon still owns the
+				// durable operation. Renew the committed successor so a lost HTTP
+				// response that outlives one lease cannot trap retries on an expired
+				// session forever.
+				leaseExpiresAt = now.Add(lease)
+				if _, err := tx.ExecContext(ctx, s.db.Rebind(`UPDATE worker_sessions SET lease_expires_at = ?, heartbeat_at = ? WHERE session_id = ?`),
+					db.TimeValue(leaseExpiresAt), db.TimeValue(now), sessionID); err != nil {
+					return err
+				}
+				state, lastCommandAck = existingState, existingAck
+				return nil
+			}
+			if !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+		}
 		var disabled int
 		if err := tx.QueryRowContext(ctx, s.db.Rebind(`SELECT COUNT(*) FROM worker_disabled WHERE worker_id = ?`), request.WorkerID).Scan(&disabled); err != nil {
 			return err
@@ -274,17 +320,21 @@ func (s *Service) Register(ctx context.Context, request RegisterRequest) (Sessio
 			state = "disabled"
 		}
 		if request.ResumeSessionID != "" {
-			query := `SELECT worker_id, state, last_command_ack, lease_expires_at FROM worker_sessions WHERE session_id = ?`
+			query := `SELECT worker_id, state, last_command_ack FROM worker_sessions WHERE session_id = ?`
 			if s.db.Dialect() == db.Postgres {
 				query += ` FOR UPDATE`
 			}
 			var priorWorker, priorState string
 			var priorAck, maxSequence uint64
-			var priorExpiry int64
-			if err := tx.QueryRowContext(ctx, s.db.Rebind(query), request.ResumeSessionID).Scan(&priorWorker, &priorState, &priorAck, &priorExpiry); err != nil ||
-				priorWorker != request.WorkerID || (priorState != "active" && priorState != "draining" && priorState != "disabled") || !db.TimeFrom(priorExpiry).After(now) {
+			if err := tx.QueryRowContext(ctx, s.db.Rebind(query), request.ResumeSessionID).Scan(&priorWorker, &priorState, &priorAck); err != nil ||
+				priorWorker != request.WorkerID || (priorState != "active" && priorState != "draining" && priorState != "disabled") {
 				return ErrStaleSession
 			}
+			// Resume is also the recovery proof after a lease expires. The opaque
+			// session ID still has to name this worker's current, unreplaced
+			// session; accepting it here lets a disconnected daemon migrate its
+			// durable commands and live runs without falsely starting them again.
+			// Ordinary control/event calls continue to reject expired leases.
 			if disabled == 0 {
 				state = priorState
 			}
@@ -305,9 +355,9 @@ func (s *Service) Register(ctx context.Context, request RegisterRequest) (Sessio
 			return fmt.Errorf("fence prior session: %w", err)
 		}
 		_, err := tx.ExecContext(ctx, s.db.Rebind(`INSERT INTO worker_sessions
-			(session_id, worker_id, protocol_major, protocol_minor, build_version, capabilities_json, state, lease_seconds, lease_expires_at, last_command_ack, created_at, heartbeat_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
-			sessionID, request.WorkerID, version.Major, version.Minor, request.Negotiation.BuildVersion, string(capabilities),
+			(session_id, worker_id, registration_id, protocol_major, protocol_minor, build_version, capabilities_json, state, lease_seconds, lease_expires_at, last_command_ack, created_at, heartbeat_at)
+			VALUES (?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+			sessionID, request.WorkerID, request.RegistrationID, version.Major, version.Minor, request.Negotiation.BuildVersion, string(capabilities),
 			state, int64(lease/time.Second), db.TimeValue(now.Add(lease)), request.LastCommandAck, db.TimeValue(now), db.TimeValue(now))
 		if err != nil {
 			return err
@@ -329,7 +379,11 @@ func (s *Service) Register(ctx context.Context, request RegisterRequest) (Sessio
 			sessionID, request.ResumeSessionID, request.LastCommandAck); err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, s.db.Rebind(`UPDATE remote_runs SET session_id = ?, updated_at = ? WHERE session_id = ? AND (state != 'terminal' OR artifact_state IN ('pending', 'staged', 'importing'))`),
+		// Exact resume transfers every run owned by the replaced session. Even a
+		// resolved terminal handback may still be present in the daemon spool when
+		// the successful HTTP response was lost; it must be able to replay under
+		// the replacement session and reach the existing idempotency record.
+		_, err = tx.ExecContext(ctx, s.db.Rebind(`UPDATE remote_runs SET session_id = ?, updated_at = ? WHERE session_id = ?`),
 			sessionID, db.TimeValue(now), request.ResumeSessionID)
 		return err
 	})
@@ -337,7 +391,20 @@ func (s *Service) Register(ctx context.Context, request RegisterRequest) (Sessio
 		return Session{}, fmt.Errorf("register worker: %w", err)
 	}
 	return Session{SessionID: sessionID, WorkerID: request.WorkerID, Version: version, BuildVersion: request.Negotiation.BuildVersion,
-		Capabilities: request.Capabilities, State: state, LeaseExpiresAt: db.StoredTime(now.Add(lease)), LastCommandAck: request.LastCommandAck}, nil
+		Capabilities: responseCapabilities, State: state, LeaseExpiresAt: db.StoredTime(leaseExpiresAt), LastCommandAck: lastCommandAck}, nil
+}
+
+func validRegistrationID(value string) bool {
+	if len(value) == 0 || len(value) > 128 {
+		return false
+	}
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == ':' || r == '.' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func (s *Service) Heartbeat(ctx context.Context, sessionID string, capabilities []string) (Session, error) {
