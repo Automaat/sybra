@@ -348,6 +348,7 @@ type Agent struct {
 	// portable backends without exposing this canonical Agent to a backend.
 	executionSink           ExecutionEventSink
 	executionHandle         ExecutionHandle
+	backendOwnsCompletion   bool
 	unthrottledOutputEvents bool
 	steerCommandIDs         map[string]struct{}
 	steerDispatching        bool
@@ -368,6 +369,18 @@ func (a *Agent) executionEventTarget() (ExecutionEventSink, ExecutionHandle) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.executionSink, a.executionHandle
+}
+
+func (a *Agent) setBackendOwnsCompletion(value bool) {
+	a.mu.Lock()
+	a.backendOwnsCompletion = value
+	a.mu.Unlock()
+}
+
+func (a *Agent) completionOwnedByBackend() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.backendOwnsCompletion
 }
 
 type foregroundCommand struct {

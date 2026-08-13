@@ -6,22 +6,30 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	agentdaemon "github.com/Automaat/sybra/internal/agentd"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/executioncontract"
 	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/testutil/backendconformance"
 	"github.com/Automaat/sybra/internal/testutil/dbtest"
 	"github.com/Automaat/sybra/internal/workercontrol"
 	"github.com/Automaat/sybra/internal/workflow"
+	"github.com/Automaat/sybra/internal/worktree"
 )
 
 type recordingExecutionSink struct {
@@ -80,6 +88,12 @@ func TestLeaderExecutionBackendReclaimsExistingEffectAfterRestart(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := control.Register(t.Context(), workercontrol.RegisterRequest{
+		WorkerID: "daemon-b", Capabilities: []string{"capacity=1", "provider=claude", "provider_health:claude=healthy", "trusted_work=true", "encrypted_work=true"},
+		Negotiation: executioncontract.Negotiation{ProtocolMin: executioncontract.CurrentVersion(), ProtocolMax: executioncontract.CurrentVersion(), BuildVersion: "worker-test"},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	dir, _ := remoteBackendRepository(t)
 	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
@@ -124,6 +138,33 @@ func TestLeaderExecutionBackendReclaimsExistingEffectAfterRestart(t *testing.T) 
 	if _, err := control.RemoteRunStatus(t.Context(), start.Spec.ID); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("replacement remote run exists: %v", err)
 	}
+	var runCount int
+	if err := database.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM remote_runs WHERE effect_id = ?`, intent).Scan(&runCount); err != nil || runCount != 1 {
+		t.Fatalf("durable runs for recovered effect = %d, %v; want one", runCount, err)
+	}
+	remote, err := control.RemoteRunForEffect(t.Context(), intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := recoveredBackend.Stop(t.Context(), recoveredHandle); err != nil {
+		t.Fatalf("Stop after leader upgrade: %v", err)
+	}
+	if err := recoveredBackend.Stop(t.Context(), recoveredHandle); err != nil {
+		t.Fatalf("replayed Stop after leader upgrade: %v", err)
+	}
+	commands, err := control.PollCommands(t.Context(), session.SessionID, 0, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopBuild := ""
+	for i := range commands {
+		if commands[i].Envelope.Type == executioncontract.CommandStop {
+			stopBuild = commands[i].Envelope.BuildVersion
+		}
+	}
+	if stopBuild != remote.Spec.BuildVersion {
+		t.Fatalf("recovered Stop build identity = %q, want durable run build %q", stopBuild, remote.Spec.BuildVersion)
+	}
 	events := []executioncontract.EventEnvelope{
 		remoteBackendEvent("agent-before-restart", 1, executioncontract.EventStarted, map[string]any{"agentId": "worker-agent"}),
 		remoteBackendEvent("agent-before-restart", 2, executioncontract.EventOutput, map[string]any{"type": "assistant", "message": map[string]any{"content": []any{map[string]any{"type": "text", "text": "replayed"}}}}),
@@ -150,6 +191,10 @@ func TestLeaderExecutionBackendReclaimsExistingEffectAfterRestart(t *testing.T) 
 	}
 	if outputs != 1 || completions != 1 {
 		t.Fatalf("recovered events = output:%d completed:%d (%+v)", outputs, completions, recoveredSink.events)
+	}
+	got, err := app.tasks.Get(canonical.ID)
+	if err != nil || got.Generation != canonical.Generation || got.Workflow.CurrentStep != canonical.Workflow.CurrentStep {
+		t.Fatalf("recovery transport duplicated workflow transition: %+v, %v", got, err)
 	}
 }
 
@@ -296,6 +341,416 @@ func TestLeaderExecutionBackendRelaysOneCanonicalCompletion(t *testing.T) {
 	}
 	if base == "" || handle == "" {
 		t.Fatal("invalid repository or execution identity")
+	}
+}
+
+func TestLeaderManagerCompletesPartitionRecoveryOnceAcrossTwoWorkers(t *testing.T) {
+	database := dbtest.SQLite(t)
+	control := workercontrol.New(database)
+	for _, worker := range []string{"daemon-a", "daemon-b"} {
+		if _, err := control.Register(t.Context(), workercontrol.RegisterRequest{
+			WorkerID: worker, Capabilities: []string{"capacity=1", "provider=claude", "provider_health:claude=healthy", "sandbox=enforce", "trusted_work=true", "encrypted_work=true"},
+			Negotiation: executioncontract.Negotiation{ProtocolMin: executioncontract.CurrentVersion(), ProtocolMax: executioncontract.CurrentVersion(), BuildVersion: "worker-test"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dir, _ := remoteBackendRepository(t)
+	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	canonical := task.Task{ID: "task-manager-partition", Title: "partition", ProjectID: "repo", Branch: "main", Status: task.StatusInProgress,
+		CreatedAt: now, UpdatedAt: now, Generation: 5,
+		Workflow: &workflow.Execution{WorkflowID: "ship", CurrentStep: "implement", State: workflow.ExecWaiting}}
+	if _, err := store.Put(canonical); err != nil {
+		t.Fatal(err)
+	}
+	completed := make(chan *agent.Agent, 2)
+	manager := newTestAgentManager(t, t.Context(), func(string, any) {}, discardLogger(), t.TempDir(), agent.ManagerConfig{
+		OnComplete: func(a *agent.Agent) { completed <- a },
+		TaskGeneration: func(taskID string) (int64, bool) {
+			return canonical.Generation, taskID == canonical.ID
+		},
+	})
+	app := &App{tasks: task.NewManager(store, nil), workerControl: control, agents: manager, logger: discardLogger()}
+	backend := newLeaderExecutionBackend(app)
+	manager.SetExecutionBackend(backend)
+	intent := canonical.ID + ":ship:5:1:implement:0"
+	running, err := manager.Run(agent.RunConfig{
+		Mode: "headless", Name: "remote partition", TaskID: canonical.ID, Dir: dir, Prompt: "work",
+		Role: agent.RoleImplementation, IntentID: intent, TaskGeneration: 5, Provider: providerid.Claude, Model: "sonnet", SandboxMode: "enforce",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var remote workercontrol.RemoteRun
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		remote, err = control.RemoteRunForEffect(t.Context(), intent)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, sql.ErrNoRows) || time.Now().After(deadline) {
+			t.Fatal(err)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	// Model a leader observation partition. Recovery reattaches the existing
+	// durable effect; it must not schedule onto the second eligible daemon.
+	handle := agent.ExecutionHandle("remote:" + remote.Status.RunID)
+	observed, err := backend.load(handle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed.cancel()
+	detached := false
+	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); {
+		observed.mu.RLock()
+		detached = !observed.observing
+		observed.mu.RUnlock()
+		if detached {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if !detached {
+		t.Fatal("leader observer did not detach")
+	}
+	if err := manager.RecoverExecution(t.Context(), running.ID); err != nil {
+		t.Fatal(err)
+	}
+	events := []executioncontract.EventEnvelope{
+		remoteBackendEvent(remote.Status.RunID, 1, executioncontract.EventStarted, map[string]any{"agentId": "worker-agent"}),
+		remoteBackendEvent(remote.Status.RunID, 2, executioncontract.EventOutput, map[string]any{"type": "assistant"}),
+		remoteBackendEvent(remote.Status.RunID, 3, executioncontract.EventTerminal, map[string]any{"state": executioncontract.TerminalSucceeded, "artifactState": executioncontract.ArtifactsFailed}),
+	}
+	if _, err := control.AppendEvents(t.Context(), workercontrol.EventBatch{SessionID: remote.Status.SessionID, Events: events}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-completed:
+		if got.ID != running.ID {
+			t.Fatalf("canonical completion = %+v err=%v", got.View(), got.GetExitErr())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("manager did not complete recovered run")
+	}
+	if _, err := control.AppendEvents(t.Context(), workercontrol.EventBatch{SessionID: remote.Status.SessionID, Events: []executioncontract.EventEnvelope{events[2]}}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case duplicate := <-completed:
+		t.Fatalf("duplicate canonical completion: %+v", duplicate.View())
+	case <-time.After(200 * time.Millisecond):
+	}
+	var runCount int
+	if err := database.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM remote_runs WHERE effect_id = ?`, intent).Scan(&runCount); err != nil || runCount != 1 {
+		t.Fatalf("remote run count = %d, %v", runCount, err)
+	}
+	got, err := app.tasks.Get(canonical.ID)
+	if err != nil || got.Generation != canonical.Generation || got.Workflow.CurrentStep != canonical.Workflow.CurrentStep {
+		t.Fatalf("backend duplicated workflow transition: %+v, %v", got, err)
+	}
+}
+
+func TestLeaderTwoDaemonsPartitionCompletesProviderAndWorkflowExactlyOnce(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell provider fixture")
+	}
+	root := t.TempDir()
+	dir, _ := remoteBackendRepository(t)
+	bin := filepath.Join(root, "bin")
+	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(root, "provider-runs")
+	provider := filepath.Join(bin, providerid.Claude)
+	providerScript := `#!/bin/sh
+printf 'run\n' >> "$SYBRA_CLUSTER_MARKER"
+printf 'remote mutation\n' >> README.md
+printf '%s\n' '{"type":"system","session_id":"partition-session"}'
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"durable output"}]}}'
+printf '%s\n' '{"type":"result","result":"done","session_id":"partition-session","total_cost_usd":0.01}'
+`
+	if err := os.WriteFile(provider, []byte(providerScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("SYBRA_CLUSTER_MARKER", marker)
+	t.Setenv("SYBRA_CLUSTER_TOKEN", "test-token")
+
+	database := dbtest.SQLite(t)
+	control := workercontrol.New(database)
+	var partitioned atomic.Bool
+	baseHandler := control.Handler()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if partitioned.Load() && (request.URL.Path == "/worker/v1/events" || request.URL.Path == "/worker/v1/artifacts") {
+			http.Error(w, "partitioned", http.StatusServiceUnavailable)
+			return
+		}
+		baseHandler.ServeHTTP(w, request)
+	}))
+	t.Cleanup(server.Close)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	daemonDone := make(chan error, 2)
+	for _, node := range []string{"daemon-a", "daemon-b"} {
+		daemon, err := agentdaemon.New(ctx, agentdaemon.Config{
+			LeaderURL: server.URL, TokenEnv: "SYBRA_CLUSTER_TOKEN", NodeID: node, Capacity: 1,
+			Providers: []string{providerid.Claude}, SandboxMode: "report", LeaseSeconds: 30, PollSeconds: 1,
+			TrustedWork: true, EncryptedWork: true,
+			WorkspaceRoot: filepath.Join(root, node, "workspaces"), StateRoot: filepath.Join(root, node, "state"),
+			SpoolMaxBytes: 1 << 20, Repositories: map[string]string{"repo": dir},
+		}, slog.New(slog.DiscardHandler))
+		if err != nil {
+			t.Fatal(err)
+		}
+		go func() { daemonDone <- daemon.Run(ctx) }()
+	}
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		diagnostics, err := control.Diagnostics(t.Context())
+		if err == nil && len(diagnostics) == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("two daemons did not register: %+v, %v", diagnostics, err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	store, err := task.NewStore(filepath.Join(root, "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	canonical := task.Task{ID: "task-e2e-partition", Title: "partition", ProjectID: "repo", Branch: "main", WorktreeDir: dir, NodeOverride: "daemon-a",
+		Status: task.StatusInProgress, CreatedAt: now, UpdatedAt: now, Generation: 7,
+		Workflow: &workflow.Execution{WorkflowID: "ship", CurrentStep: "implement", State: workflow.ExecWaiting}}
+	if _, err := store.Put(canonical); err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	var transitions atomic.Int32
+	completed := make(chan *agent.Agent, 2)
+	manager := newTestAgentManager(t, t.Context(), func(string, any) {}, discardLogger(), filepath.Join(root, "logs"), agent.ManagerConfig{
+		OnComplete: func(a *agent.Agent) {
+			transitions.Add(1)
+			_, _ = tasks.UpdateFn(canonical.ID, func(cur task.Task) (task.Update, error) {
+				next := *cur.Workflow
+				next.CurrentStep = "review"
+				nextPtr := &next
+				return task.Update{Workflow: &nextPtr}, nil
+			})
+			completed <- a
+		},
+		TaskGeneration: func(taskID string) (int64, bool) { return canonical.Generation, taskID == canonical.ID },
+	})
+	app := &App{
+		tasks: tasks, workerControl: control, agents: manager, logger: discardLogger(),
+		worktrees: worktree.New(worktree.Config{WorktreesDir: filepath.Join(root, "leader-worktrees"), Tasks: tasks, Logger: discardLogger()}),
+	}
+	control.SetArtifactImporter(app.importRemoteHandback)
+	leaderBackend := newLeaderExecutionBackend(app)
+	manager.SetExecutionBackend(leaderBackend)
+	partitioned.Store(true)
+	intent := canonical.ID + ":ship:7:1:implement:0"
+	running, err := manager.Run(agent.RunConfig{Mode: "headless", Name: "e2e partition", TaskID: canonical.ID, Dir: dir, Prompt: "work",
+		Role: agent.RoleImplementation, IntentID: intent, TaskGeneration: 7, Provider: providerid.Claude, Model: "sonnet", SandboxMode: "report"})
+	if err != nil {
+		rows, _ := database.QueryContext(t.Context(), `SELECT worker_id, capabilities_json FROM worker_sessions`)
+		var capabilities []string
+		if rows != nil {
+			defer rows.Close()
+			for rows.Next() {
+				var worker, encoded string
+				_ = rows.Scan(&worker, &encoded)
+				capabilities = append(capabilities, worker+":"+encoded)
+			}
+		}
+		t.Fatalf("Run: %v; workers=%v", err, capabilities)
+	}
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		if data, readErr := os.ReadFile(marker); readErr == nil && strings.Count(string(data), "run\n") == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("partitioned provider did not finish exactly once")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	partitioned.Store(false)
+	select {
+	case got := <-completed:
+		if got.ID != running.ID {
+			t.Fatalf("completed agent = %s, want %s", got.ID, running.ID)
+		}
+	case <-time.After(30 * time.Second):
+		remote, _ := control.RemoteRunForEffect(t.Context(), intent)
+		events, _ := control.ReplayEvents(t.Context(), remote.Status.RunID, 0, 100)
+		handle := agent.ExecutionHandle("remote:" + remote.Status.RunID)
+		observing := false
+		if run, loadErr := leaderBackend.load(handle); loadErr == nil {
+			run.mu.RLock()
+			observing = run.observing
+			run.mu.RUnlock()
+		}
+		t.Fatalf("durable partition replay did not reach manager completion: status=%+v agent=%+v observing=%v events=%+v", remote.Status, running.View(), observing, events)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if transitions.Load() != 1 {
+		t.Fatalf("workflow completion transitions = %d, want one", transitions.Load())
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil || strings.Count(string(data), "run\n") != 1 {
+		t.Fatalf("paid provider runs = %q, %v; want one", data, err)
+	}
+	var runCount int
+	if err := database.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM remote_runs WHERE effect_id = ?`, intent).Scan(&runCount); err != nil || runCount != 1 {
+		t.Fatalf("durable runs = %d, %v; want one", runCount, err)
+	}
+	updated, err := tasks.Get(canonical.ID)
+	if err != nil || updated.Workflow.CurrentStep != "review" {
+		t.Fatalf("canonical workflow = %+v, %v", updated.Workflow, err)
+	}
+	readme, err := os.ReadFile(filepath.Join(dir, "README.md"))
+	if err != nil || !strings.Contains(string(readme), "remote mutation\n") {
+		t.Fatalf("production handback did not publish provider mutation: %q, %v", readme, err)
+	}
+	cancel()
+	for range 2 {
+		select {
+		case <-daemonDone:
+		case <-time.After(5 * time.Second):
+			t.Fatal("daemon did not stop")
+		}
+	}
+}
+
+func TestDaemonExecutionBackendCommonConformance(t *testing.T) {
+	backendconformance.Run(t, daemonCommonConformanceFixture)
+}
+
+func daemonCommonConformanceFixture(t *testing.T, emit func(backendconformance.Event)) backendconformance.Fixture {
+	t.Helper()
+	database := dbtest.SQLite(t)
+	control := workercontrol.New(database)
+	if _, err := control.Register(t.Context(), workercontrol.RegisterRequest{
+		WorkerID: "daemon-conformance", Capabilities: []string{"capacity=1", "provider=claude", "provider_health:claude=healthy", "trusted_work=true", "encrypted_work=true"},
+		Negotiation: executioncontract.Negotiation{ProtocolMin: executioncontract.CurrentVersion(), ProtocolMax: executioncontract.CurrentVersion(), BuildVersion: "worker-test"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	dir, _ := remoteBackendRepository(t)
+	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	canonical := task.Task{ID: "task-daemon-conformance", Title: "conformance", ProjectID: "repo", Branch: "main", Status: task.StatusInProgress,
+		CreatedAt: now, UpdatedAt: now, Generation: 1,
+		Workflow: &workflow.Execution{WorkflowID: "ship", CurrentStep: "implement", State: workflow.ExecWaiting}}
+	if _, err := store.Put(canonical); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{tasks: task.NewManager(store, nil), workerControl: control, logger: discardLogger()}
+	backend := &leaderExecutionBackend{app: app, runs: make(map[agent.ExecutionHandle]*remoteExecution)}
+	intent := canonical.ID + ":ship:1:1:implement:0"
+	sink := executionSinkFunc(func(_ context.Context, _ agent.ExecutionHandle, event agent.ExecutionEvent) {
+		emit(backendconformance.Event{Kind: daemonConformanceEventKind(event.Kind), Err: event.Err})
+	})
+	start := agent.ExecutionStart{
+		Spec: agent.ExecutionSpec{ID: "agent-1", TaskID: canonical.ID, Provider: providerid.Claude, Model: "sonnet"},
+		Config: agent.RunConfig{TaskID: canonical.ID, Role: agent.RoleImplementation, Mode: "headless", Prompt: "work", Dir: dir,
+			IntentID: intent, TaskGeneration: 1, Provider: providerid.Claude, Model: "sonnet"},
+		Sink: sink,
+	}
+	var releaseOnce, cancelOnce sync.Once
+	var controlsMu sync.Mutex
+	steered, approved := false, false
+	appendTerminal := func(state executioncontract.TerminalState) {
+		remote, lookupErr := control.RemoteRunForEffect(t.Context(), intent)
+		if lookupErr != nil {
+			return
+		}
+		events := []executioncontract.EventEnvelope{
+			remoteBackendEvent(remote.Status.RunID, 1, executioncontract.EventStarted, map[string]any{"agentId": "worker-agent"}),
+			remoteBackendEvent(remote.Status.RunID, 2, executioncontract.EventOutput, map[string]any{"type": "assistant"}),
+			remoteBackendEvent(remote.Status.RunID, 3, executioncontract.EventTerminal, map[string]any{"state": state, "artifactState": executioncontract.ArtifactsFailed}),
+		}
+		_, _ = control.AppendEvents(t.Context(), workercontrol.EventBatch{SessionID: remote.Status.SessionID, Events: events})
+	}
+	return backendconformance.Fixture{
+		Start: func() (string, error) {
+			handle, startErr := backend.Start(t.Context(), start)
+			return string(handle), startErr
+		},
+		InvalidStart: func() error {
+			invalid := start
+			invalid.Spec.TaskID = ""
+			_, startErr := backend.Start(t.Context(), invalid)
+			return startErr
+		},
+		Stop: func(handle string) error {
+			stopErr := backend.Stop(t.Context(), agent.ExecutionHandle(handle))
+			if stopErr == nil {
+				cancelOnce.Do(func() {
+					go func() { time.Sleep(20 * time.Millisecond); appendTerminal(executioncontract.TerminalCanceled) }()
+				})
+			}
+			return stopErr
+		},
+		Recover: func(handle string, recovered func(backendconformance.Event)) error {
+			recoveredSink := executionSinkFunc(func(_ context.Context, _ agent.ExecutionHandle, event agent.ExecutionEvent) {
+				recovered(backendconformance.Event{Kind: daemonConformanceEventKind(event.Kind), Err: event.Err})
+			})
+			return backend.Recover(t.Context(), agent.ExecutionHandle(handle), recoveredSink)
+		},
+		Inspect: func(handle string) error {
+			_, inspectErr := backend.Inspect(t.Context(), agent.ExecutionHandle(handle))
+			return inspectErr
+		},
+		Release: func() { releaseOnce.Do(func() { appendTerminal(executioncontract.TerminalSucceeded) }) },
+		Steer: func(handle, text string) error {
+			controlErr := backend.Steer(t.Context(), agent.ExecutionHandle(handle), text)
+			if controlErr == nil {
+				controlsMu.Lock()
+				steered = true
+				controlsMu.Unlock()
+			}
+			return controlErr
+		},
+		Approve: func(handle string, answer bool) error {
+			controlErr := backend.RespondApproval(t.Context(), agent.ExecutionHandle(handle), "tool", answer)
+			if controlErr == nil {
+				controlsMu.Lock()
+				approved = true
+				controlsMu.Unlock()
+			}
+			return controlErr
+		},
+		Steered:  func() bool { controlsMu.Lock(); defer controlsMu.Unlock(); return steered },
+		Approved: func() bool { controlsMu.Lock(); defer controlsMu.Unlock(); return approved },
+	}
+}
+
+type executionSinkFunc func(context.Context, agent.ExecutionHandle, agent.ExecutionEvent)
+
+func (f executionSinkFunc) EmitExecutionEvent(ctx context.Context, handle agent.ExecutionHandle, event agent.ExecutionEvent) {
+	f(ctx, handle, event)
+}
+
+func daemonConformanceEventKind(kind agent.ExecutionEventKind) string {
+	switch kind {
+	case agent.ExecutionStarted:
+		return "started"
+	case agent.ExecutionOutput:
+		return "output"
+	case agent.ExecutionCompleted:
+		return "completed"
+	default:
+		return string(kind)
 	}
 }
 

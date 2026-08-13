@@ -196,6 +196,7 @@ func (b *k8sExecutionBackend) Start(ctx context.Context, start ExecutionStart) (
 		return errors.Join(deleteErr, observationErr)
 	}
 	start.startCommand = "kubernetes job/" + jobName
+	start.backendOwnsCompletion = true
 	start.accept = func(acceptCtx context.Context) error {
 		if b.runner == nil {
 			return fmt.Errorf("kubernetes runner is not configured")

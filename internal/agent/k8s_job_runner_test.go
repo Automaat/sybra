@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/providerid"
+	"github.com/Automaat/sybra/internal/testutil/backendconformance"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -523,6 +524,69 @@ func TestK8sExecutionBackendStopDeletesJobAndRecoveryObservesCancellation(t *tes
 		return errors.Is(recovered.completedErr(), context.Canceled)
 	}) {
 		t.Fatalf("recovered sink did not observe cancellation; events = %+v", recovered.events)
+	}
+}
+
+func TestK8sExecutionBackendCommonConformance(t *testing.T) {
+	backendconformance.Run(t, k8sCommonConformanceFixture)
+}
+
+func k8sCommonConformanceFixture(t *testing.T, emit func(backendconformance.Event)) backendconformance.Fixture {
+	t.Helper()
+	client := fake.NewSimpleClientset()
+	pods := newFakePodClient(client.CoreV1().Pods("sybra-poc"))
+	runner := newFakeK8sJobRunner(client, pods, K8sJobRunnerConfig{Namespace: "sybra-poc"})
+	backend := &k8sExecutionBackend{callbackExecutionBackend: newCallbackExecutionBackend("kubernetes"), runner: runner}
+	runCtx, cancel := context.WithCancel(t.Context())
+	var releaseOnce sync.Once
+	jobName := "sybra-agent-agent-1"
+	sink := executionEventSinkFunc(func(_ context.Context, _ ExecutionHandle, event ExecutionEvent) {
+		emit(backendconformance.Event{Kind: executionEventKind(event.Kind), Err: event.Err})
+	})
+	start := ExecutionStart{
+		Spec: ExecutionSpec{ID: "agent-1", TaskID: "task-1", Provider: providerid.Claude}, Sink: sink,
+		stop: func(context.Context) error { cancel(); return nil },
+		inspect: func() ExecutionInspection {
+			return ExecutionInspection{State: "running", Agent: View{ID: "agent-1"}}
+		},
+	}
+	release := func() {
+		releaseOnce.Do(func() {
+			podName := "agent-1-pod"
+			_, _ = client.CoreV1().Pods("sybra-poc").Create(t.Context(), &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: podName, Namespace: "sybra-poc", Labels: map[string]string{"job-name": jobName}},
+			}, metav1.CreateOptions{})
+			pods.logs[podName] = "{\"type\":\"assistant\"}\n"
+			job, err := client.BatchV1().Jobs("sybra-poc").Get(t.Context(), jobName, metav1.GetOptions{})
+			if err == nil {
+				job.Status.Succeeded = 1
+				_, _ = client.BatchV1().Jobs("sybra-poc").UpdateStatus(t.Context(), job, metav1.UpdateOptions{})
+			}
+		})
+	}
+	return backendconformance.Fixture{
+		Start: func() (string, error) {
+			handle, err := backend.Start(runCtx, start)
+			return string(handle), err
+		},
+		InvalidStart: func() error {
+			invalid := start
+			invalid.Spec.ID = ""
+			_, err := backend.Start(runCtx, invalid)
+			return err
+		},
+		Stop: func(handle string) error { return backend.Stop(runCtx, ExecutionHandle(handle)) },
+		Recover: func(handle string, recovered func(backendconformance.Event)) error {
+			recoveredSink := executionEventSinkFunc(func(_ context.Context, _ ExecutionHandle, event ExecutionEvent) {
+				recovered(backendconformance.Event{Kind: executionEventKind(event.Kind), Err: event.Err})
+			})
+			return backend.Recover(t.Context(), ExecutionHandle(handle), recoveredSink)
+		},
+		Inspect: func(handle string) error {
+			_, err := backend.Inspect(t.Context(), ExecutionHandle(handle))
+			return err
+		},
+		Release: release,
 	}
 }
 

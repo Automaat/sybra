@@ -22,6 +22,7 @@ type remoteExecution struct {
 	mu               sync.RWMutex
 	recoverMu        sync.Mutex
 	runID, sessionID string
+	buildVersion     string
 	sink             agent.ExecutionEventSink
 	cancel           context.CancelFunc
 	localHandle      agent.ExecutionHandle
@@ -70,7 +71,7 @@ func (b *leaderExecutionBackend) Start(ctx context.Context, start agent.Executio
 		if err := validateRecoveredRemoteRun(recovered.Spec, start, t.Workflow.WorkflowID, t.Workflow.CurrentStep, t.Generation); err != nil {
 			return "", err
 		}
-		return b.startRemoteRelay(ctx, start, recovered.Status.RunID, recovered.Status.SessionID, recovered.Spec.Deadline, "remote:recovered")
+		return b.startRemoteRelay(ctx, start, recovered.Status.RunID, recovered.Status.SessionID, recovered.Spec.BuildVersion, recovered.Spec.Deadline, "remote:recovered")
 	} else if !errors.Is(recoverErr, sql.ErrNoRows) {
 		return "", recoverErr
 	}
@@ -88,15 +89,17 @@ func (b *leaderExecutionBackend) Start(ctx context.Context, start agent.Executio
 		}
 		return b.startLocal(ctx, start)
 	}
-	return b.startRemoteRelay(ctx, start, request.Spec.RunID, placed.SessionID, request.Spec.Deadline, "remote:"+placed.WorkerID)
+	return b.startRemoteRelay(ctx, start, request.Spec.RunID, placed.SessionID, request.Spec.BuildVersion, request.Spec.Deadline, "remote:"+placed.WorkerID)
 }
 
-func (b *leaderExecutionBackend) startRemoteRelay(ctx context.Context, start agent.ExecutionStart, runID, sessionID string, deadline time.Time, command string) (agent.ExecutionHandle, error) {
+func (b *leaderExecutionBackend) startRemoteRelay(ctx context.Context, start agent.ExecutionStart, runID, sessionID, buildVersion string, deadline time.Time, command string) (agent.ExecutionHandle, error) {
 	handle := agent.ExecutionHandle("remote:" + runID)
 	runCtx, cancel := context.WithDeadline(ctx, deadline.Add(remoteTerminalGrace))
-	run := &remoteExecution{runID: runID, sessionID: sessionID, sink: start.Sink, cancel: cancel, deadline: deadline, observing: true, observerDone: make(chan struct{})}
+	run := &remoteExecution{runID: runID, sessionID: sessionID, buildVersion: buildVersion, sink: start.Sink, cancel: cancel, deadline: deadline, observing: true, observerDone: make(chan struct{})}
 	b.store(handle, run)
-	start.Sink.EmitExecutionEvent(ctx, handle, agent.ExecutionEvent{Kind: agent.ExecutionStarted, Command: command})
+	start.Sink.EmitExecutionEvent(ctx, handle, agent.ExecutionEvent{
+		Kind: agent.ExecutionStarted, Command: command, BackendOwnsCompletion: true,
+	})
 	go b.relay(runCtx, handle, run, 0)
 	return handle, nil
 }
@@ -327,9 +330,14 @@ func (b *leaderExecutionBackend) command(ctx context.Context, handle agent.Execu
 	if err != nil {
 		return err
 	}
-	envelope := executioncontract.CommandEnvelope{Version: executioncontract.CurrentVersion(), BuildVersion: version.Version,
-		CommandID: string(kind) + "-" + uuid.NewString(), RunID: run.runID, IdempotencyKey: key,
-		Type: kind, SentAt: time.Now().UTC(), Payload: body}
+	// Delivery identity must survive a lost response and a leader restart. The
+	// durable run deadline and the semantic idempotency key are stable across
+	// recovery; a changed payload still reaches Enqueue with the same identity
+	// and is rejected by its changed-request fence.
+	commandID := string(kind) + "-" + uuid.NewSHA1(uuid.NameSpaceOID, []byte(run.runID+":"+key)).String()
+	envelope := executioncontract.CommandEnvelope{Version: executioncontract.CurrentVersion(), BuildVersion: run.buildVersion,
+		CommandID: commandID, RunID: run.runID, IdempotencyKey: key,
+		Type: kind, SentAt: run.deadline.UTC(), Payload: body}
 	_, err = b.app.workerControl.Enqueue(ctx, sessionID, nil, envelope)
 	return err
 }

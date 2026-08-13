@@ -175,6 +175,33 @@ func TestSpoolExhaustionIsExplicitAndPreservesPriorState(t *testing.T) {
 	}
 }
 
+func TestRuntimeCapabilitiesReportBoundedSpoolUsage(t *testing.T) {
+	spool, err := OpenSpool(t.TempDir(), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := spool.appendEvent(executioncontract.EventEnvelope{RunID: "run", Sequence: 1, Type: executioncontract.EventOutput, Payload: json.RawMessage(`{"type":"assistant"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	daemon := &Daemon{cfg: Config{SpoolMaxBytes: 1 << 20}, spool: spool, capabilities: []string{"capacity=1"}}
+	capabilities := daemon.runtimeCapabilities()
+	joined := strings.Join(capabilities, " ")
+	if !strings.Contains(joined, "spool_max_bytes=1048576") || strings.Contains(joined, "spool_bytes=0") {
+		t.Fatalf("runtime capabilities = %v", capabilities)
+	}
+	payload, err := json.Marshal(spool.snapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(spool.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := spool.usageBytes(); got != int64(len(payload)) || info.Size() != got+1 {
+		t.Fatalf("reported usage=%d payload=%d disk=%d; want payload units without formatting newline", got, len(payload), info.Size())
+	}
+}
+
 func TestSpoolReservesRoomForTerminalFate(t *testing.T) {
 	spool, err := OpenSpool(t.TempDir(), 12288, 2)
 	if err != nil {

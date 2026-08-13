@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -234,6 +236,42 @@ func TestPlacementCandidateReasonsAreDeterministic(t *testing.T) {
 	want := []string{"label alpha does not match", "label zeta does not match"}
 	if !slices.Equal(result.Candidates[0].Reasons, want) {
 		t.Fatalf("reasons = %v, want %v", result.Candidates[0].Reasons, want)
+	}
+}
+
+func TestDiagnosticsExposeSpoolPressureWithoutPayloads(t *testing.T) {
+	service := New(dbtest.SQLite(t))
+	registerPlacementWorker(t, service, "pressured-node", []string{
+		"capacity=2", "provider=claude", "spool_bytes=85", "spool_max_bytes=100",
+	})
+	diagnostics, err := service.Diagnostics(t.Context())
+	if err != nil || len(diagnostics) != 1 {
+		t.Fatalf("Diagnostics = %+v, %v", diagnostics, err)
+	}
+	got := diagnostics[0]
+	if got.SpoolBytes != 85 || got.SpoolMaxBytes != 100 || !slices.Contains(got.Alerts, "spool_pressure") {
+		t.Fatalf("spool diagnostics = %+v", got)
+	}
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"prompt", "payload", "credential", "artifactBytes"} {
+		if bytes.Contains(encoded, []byte(forbidden)) {
+			t.Fatalf("diagnostics leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestDiagnosticsSpoolPressureDoesNotOverflow(t *testing.T) {
+	service := New(dbtest.SQLite(t))
+	maximum := strconv.FormatInt(math.MaxInt64, 10)
+	registerPlacementWorker(t, service, "large-spool", []string{
+		"capacity=1", "spool_bytes=" + maximum, "spool_max_bytes=" + maximum,
+	})
+	diagnostics, err := service.Diagnostics(t.Context())
+	if err != nil || len(diagnostics) != 1 || !slices.Contains(diagnostics[0].Alerts, "spool_pressure") {
+		t.Fatalf("large spool diagnostics = %+v, %v", diagnostics, err)
 	}
 }
 

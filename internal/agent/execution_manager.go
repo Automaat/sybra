@@ -170,6 +170,7 @@ func (m *Manager) EmitExecutionEvent(ctx context.Context, handle ExecutionHandle
 func (m *Manager) emitExecutionEvent(ctx context.Context, _ ExecutionHandle, event ExecutionEvent, a *Agent, outputStart int, lastEmit *time.Time) bool {
 	switch event.Kind {
 	case ExecutionStarted:
+		a.setBackendOwnsCompletion(event.BackendOwnsCompletion)
 		if event.Command != "" {
 			a.SetCommand(event.Command)
 		}

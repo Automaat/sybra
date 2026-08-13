@@ -113,3 +113,77 @@ idempotently. Draining or disabled nodes finish accepted work but receive no
 new placements; diagnostics show their state, active and available capacity,
 and placement results carry per-candidate rejection reasons. A caller must opt
 in explicitly when no eligible daemon may fall back to local execution.
+
+## Operations runbook
+
+### Enroll and rotate credentials
+
+1. Create a dedicated leader bearer token and expose it to the daemon through
+   the variable named by `token_env`; never put the value in YAML or a unit
+   file argument. Start the daemon and confirm `/worker/v1/diagnostics` shows
+   the expected worker ID, protocol/build, repository capability, sandbox
+   posture, and non-expired lease.
+2. The leader currently accepts one bearer token, so rotate with a coordinated
+   drain rather than assuming an overlap window: drain every daemon, wait for
+   `activeRuns=0` and `pendingEvents=0`, stop them, replace the leader token,
+   replace each daemon's `token_env` value, then restart the daemons. Verify new
+   sessions before restoring placement. A replacement session fences the old
+   session atomically; do not clone a daemon `state_root` onto another machine
+   because it contains the stable identity and delivery cursors. A zero-downtime
+   overlapping rotation requires future multi-token leader support.
+3. Rotate provider secrets independently through `secret_env`. Existing runs
+   retain only their run-scoped files; a new approval/action obtains a fresh
+   scoped grant and never receives the leader token.
+
+### Drain and upgrade
+
+1. POST `/worker/v1/drain` with the current session ID. Confirm diagnostics
+   reports `draining`; new placements must show `worker is draining` while
+   active runs continue delivering events and artifacts.
+2. Wait for `activeRuns=0` and `pendingEvents=0`. Preserve `state_root` and
+   provider process state, replace the binary, then restart with the same
+   configuration. The daemon resumes its session and unacknowledged cursors.
+3. Mixed minor protocol versions are negotiated and supported. A different
+   major is refused during registration/dispatch with the supported range; do
+   not bypass this fence. Upgrade the leader first when a release requires a
+   new major, then drain and roll workers one at a time.
+
+### Recover a stuck or partitioned run
+
+- Connectivity loss alone is not permission to reassign or launch a second
+  provider. Restore the route and allow the daemon to replay its durable spool;
+  exact duplicates are accepted, gaps or changed repeats are rejected. The
+  leader's run/effect record and daemon workspace should be preserved while
+  investigating.
+- If the daemon process restarted but the provider survived, keep the same
+  `state_root`; re-adoption replays provider output after the durable output
+  cursor and emits one terminal fate. If re-adoption is impossible, the daemon
+  emits an explicit failed terminal instead of guessing success.
+- For a stale/replaced session, restart using the persisted resume session and
+  command cursor. Controls and terminal acknowledgements resolve the run's
+  current owner. Never edit cursor rows or `spool.json` by hand; retain them for
+  diagnosis and use a fresh worker identity only after accepted runs are
+  terminal.
+- A corrupt, incomplete, stale-generation, wrong-base, or branch-moved
+  handback is rejected before canonical mutation. Keep the rejected staging
+  record and workspace until the cause is understood; retry from the same
+  immutable base or dispatch a new fenced workflow effect.
+
+### Spool exhaustion and alerts
+
+Diagnostics expose only counters and now include `spoolBytes`,
+`spoolMaxBytes`, and stable alert codes—never prompts, event bodies, artifact
+bytes, or credentials. Alert on:
+
+- `spool_pressure`: durable spool is at least 80% full. Restore leader
+  connectivity/acknowledgements or drain the node; do not delete the spool.
+- `unacknowledged_events`: output is waiting for leader acknowledgement.
+  Persistent growth indicates a partition or stalled leader consumer.
+- `capacity_saturated`: all advertised run slots are occupied. Scale or wait;
+  it is not evidence that a run is stuck.
+
+At the hard limit the daemon fails the affected run explicitly while retaining
+reserved room for its terminal event. Recovery is to restore delivery and let
+acknowledgements compact the spool. Copy `state_root` for diagnosis before any
+operator-directed retirement; deleting it can discard unacknowledged output
+and removes the evidence needed to distinguish replay from a new run.
