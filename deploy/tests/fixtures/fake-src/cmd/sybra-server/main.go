@@ -38,6 +38,15 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"status":"ok"}`)
 	})
+	// A board that terminates TLS is the case sybra-healthcheck.sh has to
+	// authenticate by pinning, so the stand-in has to be able to serve it.
+	if cert, key := os.Getenv("FAKE_TLS_CERT"), os.Getenv("FAKE_TLS_KEY"); cert != "" && key != "" {
+		if err := http.ListenAndServeTLS(addr, cert, key, mux); err != nil {
+			fmt.Fprintln(os.Stderr, "listen tls:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		fmt.Fprintln(os.Stderr, "listen:", err)
 		os.Exit(1)
