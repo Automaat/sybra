@@ -135,11 +135,11 @@ printf '%s\n' '{"type":"result","result":"done","session_id":"partition-session"
 			if !errors.Is(err, context.Canceled) {
 				t.Fatalf("daemon exit = %v", err)
 			}
-		case <-time.After(5 * time.Second):
+		case <-time.After(scaledDeadline(5 * time.Second)):
 			t.Fatal("daemon did not stop")
 		}
 	}
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), scaledDeadline(5*time.Second))
 	defer shutdownCancel()
 	_ = first.approvals.Shutdown(shutdownCtx)
 	_ = second.approvals.Shutdown(shutdownCtx)
@@ -147,7 +147,7 @@ printf '%s\n' '{"type":"result","result":"done","session_id":"partition-session"
 
 func waitForWorkers(t *testing.T, control *workercontrol.Service, count int) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(scaledDeadline(5 * time.Second))
 	for time.Now().Before(deadline) {
 		if diagnostics, err := control.Diagnostics(t.Context()); err == nil && len(diagnostics) == count {
 			return
@@ -159,7 +159,7 @@ func waitForWorkers(t *testing.T, control *workercontrol.Service, count int) {
 
 func waitForLeaderTerminal(t *testing.T, control *workercontrol.Service, runID string) []executioncontract.EventEnvelope {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(scaledDeadline(10 * time.Second))
 	for time.Now().Before(deadline) {
 		events, err := control.ReplayEvents(t.Context(), runID, 0, 100)
 		if err == nil && len(events) > 0 && events[len(events)-1].Type == executioncontract.EventTerminal {
