@@ -730,6 +730,12 @@ func (d *Daemon) flushEvents(ctx context.Context) error {
 				WorkflowGeneration: spec.Fence.WorkflowGeneration, Action: "approval.request", ReplayKey: event.IdempotencyKey,
 			}
 			authorizations[event.IdempotencyKey] = request
+			// Put the authorized request in its own durable delivery boundary.
+			// A later terminal must not commit in the same response: if that
+			// response is lost, terminal revocation would prevent renewing the
+			// credential needed to reach the event replay/ack path.
+			events = events[:i+1]
+			break
 		}
 		ack, err := d.client.events(ctx, workercontrol.EventBatch{SessionID: d.currentSession(), Events: events, Authorizations: authorizations})
 		if err != nil {
