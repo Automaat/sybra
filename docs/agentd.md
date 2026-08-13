@@ -49,7 +49,7 @@ secret_env:
 ```
 
 ```bash
-SYBRA_AGENTD_TOKEN=... sybra-agentd -config /etc/sybra-agentd.yaml
+SYBRA_AGENTD_TOKEN=... sybra-agentd -config /etc/sybra/sybra-agentd.yaml
 ```
 
 For the shipped systemd deployment, install
