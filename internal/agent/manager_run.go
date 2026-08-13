@@ -878,17 +878,46 @@ When a command or test needs a disposable HOME, use $SYBRA_SCRATCH_HOME. It
 lives outside the Git worktree. Never create fake homes, caches, or other
 runtime state inside the worktree.`
 
+// shellTempPrefixEnv is zsh's temp-file prefix, and the reason a contained run
+// can use a heredoc at all. zsh writes every heredoc body to a file under
+// $TMPPREFIX, and macOS's system zsh compiles that to /tmp/zsh and never
+// re-derives it from TMPDIR. Both sandboxes grant the per-user temp root but
+// not /tmp, so under enforce every heredoc died with "can't create temp file
+// for here document: operation not permitted" — taking away the ordinary way
+// an agent writes multi-line content and pushing it onto improvised fallbacks
+// (#3377). Pointing the prefix at an already-granted directory restores it.
+const shellTempPrefixEnv = "TMPPREFIX"
+
+// injectShellTempPrefix points shellTempPrefixEnv at a writable directory
+// under root. The prefix names a file stem, not a directory, so zsh appends
+// its own suffix to produce <root>/zsh/zshXXXXXX; the parent must exist.
+func injectShellTempPrefix(cfg *RunConfig, root string) error {
+	dir := filepath.Join(root, "zsh")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("agent.Run: create shell temp directory %q: %w", dir, err)
+	}
+	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, shellTempPrefixEnv)
+	cfg.ExtraEnv = append(cfg.ExtraEnv, shellTempPrefixEnv+"="+filepath.Join(dir, "zsh"))
+	return nil
+}
+
 // injectScratchEnvironment gives every sandbox-home-backed run an explicit
 // place for fake user homes outside the Git worktree. HOME itself deliberately
 // remains unchanged: provider CLIs use it to find their authenticated
 // ~/.claude, ~/.codex, or ~/.copilot state.
 func injectScratchEnvironment(cfg *RunConfig) error {
 	if strings.TrimSpace(cfg.resolvedSandboxHome) == "" {
+		// A taskless, non-isolated system run keeps the caller's environment
+		// untouched (TestPrepareRunConfig_SandboxHome_SystemRunSkipsInjection),
+		// and runs no agent shell. Every run that does gets a sandbox home.
 		return nil
 	}
 	scratchHome := filepath.Join(cfg.resolvedSandboxHome, "scratch-home")
 	if err := os.MkdirAll(scratchHome, 0o700); err != nil {
 		return fmt.Errorf("agent.Run: create task scratch directory %q: %w", scratchHome, err)
+	}
+	if err := injectShellTempPrefix(cfg, scratchHome); err != nil {
+		return err
 	}
 	// Do not replace TMPDIR/TMP/TEMP here. Provider and harness control files
 	// may already live beneath the caller's process temp root; changing that
