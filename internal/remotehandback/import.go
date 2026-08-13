@@ -136,7 +136,7 @@ func importGitLocked(ctx context.Context, target string, spec executioncontract.
 	}
 	for i, member := range untracked {
 		entry := entryFor(manifest, member.Root, member.Path)
-		if err := writeMember(checkout, member, entry.Mode); err != nil {
+		if err := writeMember(checkout, staging, member, entry.Mode); err != nil {
 			return nil, err
 		}
 		untracked[i] = member
@@ -226,7 +226,7 @@ func importGitLocked(ctx context.Context, target string, spec executioncontract.
 	}
 	for _, member := range untracked {
 		entry := entryFor(manifest, member.Root, member.Path)
-		if err := writeMember(target, member, entry.Mode); err != nil {
+		if err := writeMember(target, staging, member, entry.Mode); err != nil {
 			rollback()
 			return nil, err
 		}
@@ -534,7 +534,7 @@ func entryFor(manifest executioncontract.ArtifactManifest, root executioncontrac
 	return executioncontract.ArtifactEntry{}
 }
 
-func writeMember(root string, member executioncontract.ArtifactMember, mode uint32) error {
+func writeMember(root, scratch string, member executioncontract.ArtifactMember, mode uint32) error {
 	full := filepath.Join(root, filepath.FromSlash(member.Path))
 	parent := filepath.Dir(full)
 	if err := os.MkdirAll(parent, 0o700); err != nil {
@@ -558,11 +558,11 @@ func writeMember(root string, member executioncontract.ArtifactMember, mode uint
 		return err
 	}
 	if mode == 0o120000 {
-		return fsutil.AtomicSymlinkNew(full, string(member.Content))
+		return fsutil.AtomicSymlinkNewFromDir(full, scratch, string(member.Content))
 	}
 	perm := os.FileMode(0o600)
 	if mode == 0o100755 {
 		perm = 0o700
 	}
-	return fsutil.AtomicWriteNewMode(full, member.Content, perm)
+	return fsutil.AtomicWriteNewModeFromDir(full, scratch, member.Content, perm)
 }

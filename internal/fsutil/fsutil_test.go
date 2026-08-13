@@ -69,6 +69,38 @@ func TestAtomicWriteNew_RefusesExistingFile(t *testing.T) {
 	}
 }
 
+func TestAtomicNewFromDirKeepsScratchOutsideDestination(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	destination := filepath.Join(root, "destination")
+	scratch := filepath.Join(root, "scratch")
+	if err := os.MkdirAll(destination, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(scratch, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(destination, "tool")
+	if err := AtomicWriteNewModeFromDir(file, scratch, []byte("run"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(file)
+	if err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("published file = %v, %v", info, err)
+	}
+	link := filepath.Join(destination, "link")
+	if err := AtomicSymlinkNewFromDir(link, scratch, "tool"); err != nil {
+		t.Fatal(err)
+	}
+	if target, err := os.Readlink(link); err != nil || target != "tool" {
+		t.Fatalf("published symlink = %q, %v", target, err)
+	}
+	entries, err := os.ReadDir(scratch)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("scratch residue = %v, %v", entries, err)
+	}
+}
+
 func TestAtomicWrite_PreservesExistingMode(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

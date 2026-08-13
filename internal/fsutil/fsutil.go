@@ -112,19 +112,27 @@ func tempPattern(base string) string {
 // its destination. The temporary file and destination are in the same
 // directory, so the link is atomic and cannot cross filesystems.
 func AtomicWriteNew(path string, data []byte) error {
-	return atomicWriteNew(path, data, nil)
+	return atomicWriteNew(path, filepath.Dir(path), data, nil)
 }
 
 // AtomicWriteNewMode is AtomicWriteNew with an explicit mode applied before
 // publication, so an executable can never be observed in an intermediate
 // non-executable state.
 func AtomicWriteNewMode(path string, data []byte, perm os.FileMode) error {
-	return atomicWriteNew(path, data, &perm)
+	return atomicWriteNew(path, filepath.Dir(path), data, &perm)
 }
 
-func atomicWriteNew(path string, data []byte, perm *os.FileMode) error {
+// AtomicWriteNewModeFromDir is AtomicWriteNewMode with temporary storage in
+// scratch. Scratch and path must share a filesystem. It is useful when a
+// crash-visible temporary name inside the destination directory would itself
+// be meaningful application state.
+func AtomicWriteNewModeFromDir(path, scratch string, data []byte, perm os.FileMode) error {
+	return atomicWriteNew(path, scratch, data, &perm)
+}
+
+func atomicWriteNew(path, scratch string, data []byte, perm *os.FileMode) error {
 	dir := filepath.Dir(path)
-	f, err := os.CreateTemp(dir, tempPattern(filepath.Base(path)))
+	f, err := os.CreateTemp(scratch, tempPattern(filepath.Base(path)))
 	if err != nil {
 		return err
 	}
@@ -164,30 +172,18 @@ func atomicWriteNew(path string, data []byte, perm *os.FileMode) error {
 // temporary link is created in the destination directory and linked into place
 // without replacement, so readers observe either absence or the complete link.
 func AtomicSymlinkNew(path, destination string) error {
-	dir := filepath.Dir(path)
-	temp, err := os.CreateTemp(dir, tempPattern(filepath.Base(path)))
-	if err != nil {
+	if err := os.Symlink(destination, path); err != nil {
 		return err
 	}
-	tmp := temp.Name()
-	if err := temp.Close(); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	if err := os.Remove(tmp); err != nil {
-		return err
-	}
-	if err := os.Symlink(destination, tmp); err != nil {
-		return err
-	}
-	if err := os.Link(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	if err := os.Remove(tmp); err != nil {
-		return err
-	}
-	return syncDir(dir)
+	return syncDir(filepath.Dir(path))
+}
+
+// AtomicSymlinkNewFromDir matches the scratch-aware file-publication API.
+// Symlink creation is itself one exclusive atomic syscall, so scratch is
+// intentionally unused.
+func AtomicSymlinkNewFromDir(path, scratch, destination string) error {
+	_ = scratch
+	return AtomicSymlinkNew(path, destination)
 }
 
 // RemoveAllForce removes path and everything under it, tolerating read-only
