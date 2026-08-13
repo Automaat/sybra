@@ -17,6 +17,9 @@ import (
 var (
 	sha256Digest = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
 	contractID   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$`)
+	// Repository identities may use Sybra's canonical owner/repo project ID.
+	// Other protocol identities remain path-free under contractID.
+	repositoryID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}(/[A-Za-z0-9][A-Za-z0-9._:-]{0,127})?$`)
 )
 
 type CommandType string
@@ -302,7 +305,7 @@ func (m ArtifactManifest) Validate() error {
 	if m.Fence.TaskID == "" || m.Fence.WorkflowID == "" || m.Fence.StepID == "" || m.Fence.WorkflowGeneration < 0 {
 		return errors.New("execution contract: artifact manifest requires its generation fence")
 	}
-	if !contractID.MatchString(m.Workspace.RepositoryID) || !gitObjectID.MatchString(m.Workspace.BaseSHA) ||
+	if !repositoryID.MatchString(m.Workspace.RepositoryID) || !gitObjectID.MatchString(m.Workspace.BaseSHA) ||
 		!validFullGitRef(m.Workspace.BaseRef) || !gitObjectID.MatchString(m.Workspace.FinalSHA) {
 		return errors.New("execution contract: artifact manifest requires valid workspace handback metadata")
 	}
