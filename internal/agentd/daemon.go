@@ -18,6 +18,7 @@ import (
 	"github.com/Automaat/sybra/internal/agentworkspace"
 	agentevents "github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/executioncontract"
+	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/version"
 	"github.com/Automaat/sybra/internal/workercontrol"
 )
@@ -26,6 +27,7 @@ type Daemon struct {
 	cfg          Config
 	logger       *slog.Logger
 	client       *leaderClient
+	issueGrant   func(context.Context, string, string) (workercontrol.RunGrant, error)
 	spool        *Spool
 	manager      *agent.Manager
 	approvals    *agent.ApprovalServer
@@ -66,6 +68,7 @@ func New(ctx context.Context, cfg Config, logger *slog.Logger) (*Daemon, error) 
 		capabilities: cfg.Capabilities(build), runAgents: make(map[string]string), agentRuns: make(map[string]string),
 		runCancels: make(map[string]context.CancelFunc),
 	}
+	d.issueGrant = d.client.runGrant
 	approvals, err := agent.NewDurableApprovalServer(ctx, d.emitManagerEvent, logger, 0,
 		filepath.Join(cfg.StateRoot, "approval-port"), filepath.Join(cfg.StateRoot, "approval-token"))
 	if err != nil {
@@ -350,7 +353,6 @@ func (d *Daemon) applyCommand(ctx context.Context, envelope executioncontract.Co
 	}
 }
 
-//nolint:funlen // Admission, durable registration, workspace setup, and provider launch form one rollback unit.
 func (d *Daemon) start(ctx context.Context, envelope executioncontract.CommandEnvelope) error {
 	durable := d.spool.snapshot()
 	d.mu.RLock()
@@ -396,23 +398,16 @@ func (d *Daemon) start(ctx context.Context, envelope executioncontract.CommandEn
 		return d.rejectStart(spec.RunID, errors.New("workspace preparation failed"))
 	}
 	keepWorkspace := false
-	defer func() {
-		if !keepWorkspace {
-			_ = os.RemoveAll(layout.RunRoot)
-		}
-	}()
-	runEnv := agentworkspace.Environment(layout)
-	for _, binding := range spec.Environment {
-		value := binding.Value
-		if binding.SecretRef != nil {
-			envName := d.cfg.SecretEnv[binding.SecretRef.Name]
-			if envName == "" {
-				return d.rejectStart(spec.RunID, fmt.Errorf("agentd: unresolved secret capability %q", binding.SecretRef.Name))
-			}
-			value = os.Getenv(envName)
-		}
-		runEnv = append(runEnv, binding.Name+"="+value)
+	defer removeRunWorkspaceUnlessKept(layout.RunRoot, &keepWorkspace)
+	runEnv, err := projectRunEnvironment(layout, *spec, d.cfg.SecretEnv)
+	if err != nil {
+		return d.rejectStart(spec.RunID, err)
 	}
+	grantEnv, err := d.projectRunGrant(ctx, layout, spec.RunID)
+	if err != nil {
+		return d.rejectStart(spec.RunID, err)
+	}
+	runEnv = append(runEnv, grantEnv)
 	runCtx, cancel := context.WithDeadline(ctx, spec.Deadline)
 	_, err = d.manager.RunContext(runCtx, agent.RunConfig{
 		TaskID: spec.RunID, AdmissionTaskKey: spec.RunID, IntentID: spec.IdempotencyKey,
@@ -463,6 +458,54 @@ func (d *Daemon) start(ctx context.Context, envelope executioncontract.CommandEn
 	}
 	keepWorkspace = true
 	return nil
+}
+
+func removeRunWorkspaceUnlessKept(runRoot string, keep *bool) {
+	if !*keep {
+		_ = os.RemoveAll(runRoot)
+	}
+}
+
+func (d *Daemon) projectRunGrant(ctx context.Context, layout agentworkspace.Layout, runID string) (string, error) {
+	runGrant, err := d.issueGrant(ctx, d.currentSession(), runID)
+	if err != nil {
+		return "", errors.New("agentd: issue scoped run grant")
+	}
+	grantPath := filepath.Join(layout.RunRoot, "secrets", "run-grant")
+	if err := os.MkdirAll(filepath.Dir(grantPath), 0o700); err != nil {
+		return "", errors.New("agentd: create run grant directory")
+	}
+	if err := fsutil.AtomicWriteMode(grantPath, []byte(runGrant.Token), 0o400); err != nil {
+		return "", errors.New("agentd: project scoped run grant")
+	}
+	return "SYBRA_RUN_GRANT_FILE=" + grantPath, nil
+}
+
+func projectRunEnvironment(layout agentworkspace.Layout, spec executioncontract.RunSpec, secretEnv map[string]string) ([]string, error) {
+	runEnv := agentworkspace.Environment(layout)
+	secretDir := filepath.Join(layout.RunRoot, "secrets")
+	for _, binding := range spec.Environment {
+		if binding.SecretRef == nil {
+			runEnv = append(runEnv, binding.Name+"="+binding.Value)
+			continue
+		}
+		envName := secretEnv[binding.SecretRef.Name]
+		if envName == "" {
+			return nil, fmt.Errorf("agentd: unresolved secret capability %q", binding.SecretRef.Name)
+		}
+		if err := os.MkdirAll(secretDir, 0o700); err != nil {
+			return nil, errors.New("agentd: create protected run secret directory")
+		}
+		if binding.Name == "" || filepath.Base(binding.Name) != binding.Name || binding.Name == "." || binding.Name == ".." {
+			return nil, errors.New("agentd: invalid protected secret binding name")
+		}
+		secretPath := filepath.Join(secretDir, binding.Name)
+		if err := fsutil.AtomicWriteMode(secretPath, []byte(os.Getenv(envName)), 0o400); err != nil {
+			return nil, errors.New("agentd: project protected run secret")
+		}
+		runEnv = append(runEnv, binding.Name+"_FILE="+secretPath)
+	}
+	return runEnv, nil
 }
 
 func (d *Daemon) secretEnvironmentKeys() []string {
@@ -661,7 +704,43 @@ func (d *Daemon) flushEvents(ctx context.Context) error {
 		if len(events) == 0 {
 			continue
 		}
-		ack, err := d.client.events(ctx, workercontrol.EventBatch{SessionID: d.currentSession(), Events: events})
+		authorizations := make(map[string]workercontrol.RunActionRequest)
+		for i := range events {
+			event := &events[i]
+			var progress struct {
+				Kind string `json:"kind"`
+			}
+			if event.Type != executioncontract.EventProgress || json.Unmarshal(event.Payload, &progress) != nil || progress.Kind != "approval_request" {
+				continue
+			}
+			spec, ok := state.RunSpecs[runID]
+			if !ok {
+				return errors.New("agentd: approval event has no run specification")
+			}
+			grantPath := filepath.Join(d.cfg.WorkspaceRoot, runID, "secrets", "run-grant")
+			// Approval can arrive long after the start-time grant expired. Mint a
+			// fresh bounded grant through the live worker session and rotate the
+			// protected projection before presenting it.
+			grant, grantErr := d.issueGrant(ctx, d.currentSession(), runID)
+			if grantErr != nil {
+				return errors.New("agentd: renew scoped run grant")
+			}
+			if writeErr := fsutil.AtomicWriteMode(grantPath, []byte(grant.Token), 0o400); writeErr != nil {
+				return errors.New("agentd: rotate scoped run grant")
+			}
+			request := workercontrol.RunActionRequest{
+				SessionID: d.currentSession(), Token: grant.Token, TaskID: spec.Fence.TaskID, EffectID: spec.EffectID,
+				WorkflowGeneration: spec.Fence.WorkflowGeneration, Action: "approval.request", ReplayKey: event.IdempotencyKey,
+			}
+			authorizations[event.IdempotencyKey] = request
+			// Put the authorized request in its own durable delivery boundary.
+			// A later terminal must not commit in the same response: if that
+			// response is lost, terminal revocation would prevent renewing the
+			// credential needed to reach the event replay/ack path.
+			events = eventPrefixThrough(events, i)
+			break
+		}
+		ack, err := d.client.events(ctx, workercontrol.EventBatch{SessionID: d.currentSession(), Events: events, Authorizations: authorizations})
 		if err != nil {
 			return err
 		}
@@ -682,6 +761,17 @@ func (d *Daemon) flushEvents(ctx context.Context) error {
 		_ = os.RemoveAll(filepath.Join(d.cfg.WorkspaceRoot, upload.Manifest.RunID))
 	}
 	return nil
+}
+
+func eventPrefixThrough(events []executioncontract.EventEnvelope, index int) []executioncontract.EventEnvelope {
+	prefix := make([]executioncontract.EventEnvelope, 0, index+1)
+	for i := range events {
+		prefix = append(prefix, events[i])
+		if i == index {
+			break
+		}
+	}
+	return prefix
 }
 
 func (d *Daemon) currentSession() string { d.mu.RLock(); defer d.mu.RUnlock(); return d.sessionID }

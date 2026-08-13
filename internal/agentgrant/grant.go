@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -34,9 +35,41 @@ const DefaultTTL = 24 * time.Hour
 
 // Grant is what a presented credential resolves to.
 type Grant struct {
-	TaskID    string    `json:"taskId"`
-	ExpiresAt time.Time `json:"expiresAt"`
+	TaskID             string    `json:"taskId"`
+	RunID              string    `json:"runId,omitempty"`
+	EffectID           string    `json:"effectId,omitempty"`
+	WorkflowGeneration int64     `json:"workflowGeneration,omitempty"`
+	AllowedActions     []string  `json:"allowedActions,omitempty"`
+	ExpiresAt          time.Time `json:"expiresAt"`
+	UsedReplayKeys     []string  `json:"usedReplayKeys,omitempty"`
 }
+
+type Use struct {
+	TaskID             string
+	RunID              string
+	EffectID           string
+	WorkflowGeneration int64
+	Action             string
+	ReplayKey          string
+}
+
+type AuditEvent struct {
+	Kind               string
+	TaskID             string
+	RunID              string
+	EffectID           string
+	WorkflowGeneration int64
+	Action             string
+	Allowed            bool
+}
+
+type AuditSink func(AuditEvent)
+
+var (
+	ErrUnauthorized = errors.New("agent grants: credential is invalid, expired, or revoked")
+	ErrOutOfScope   = errors.New("agent grants: request is outside grant scope")
+	ErrReplay       = errors.New("agent grants: replayed request")
+)
 
 // Store issues and verifies per-run credentials.
 //
@@ -49,6 +82,7 @@ type Store struct {
 
 	mu     sync.Mutex
 	grants map[string]Grant
+	audit  AuditSink
 }
 
 // New opens the store at path, creating its directory. A blank path keeps the
@@ -75,12 +109,42 @@ func New(path string, ttl time.Duration) (*Store, error) {
 
 // Mint returns a fresh credential for one task and stores its digest.
 func (s *Store) Mint(taskID string) (string, error) {
+	return s.MintScoped(Grant{TaskID: taskID})
+}
+
+func (s *Store) SetAuditSink(sink AuditSink) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.audit = sink
+}
+
+// MintScoped issues one short-lived capability. Actions are exact decoded API
+// operation names (for example "task.get"), never URL prefixes.
+func (s *Store) MintScoped(scope Grant) (string, error) {
 	if s == nil {
 		return "", errors.New("agent grants: store is not configured")
 	}
-	if strings.TrimSpace(taskID) == "" {
+	scope.TaskID = strings.TrimSpace(scope.TaskID)
+	scope.RunID = strings.TrimSpace(scope.RunID)
+	scope.EffectID = strings.TrimSpace(scope.EffectID)
+	if scope.TaskID == "" {
 		return "", errors.New("agent grants: a grant needs a task")
 	}
+	scoped := scope.RunID != "" || scope.EffectID != "" || scope.WorkflowGeneration != 0 || len(scope.AllowedActions) > 0
+	if scoped && (scope.RunID == "" || scope.EffectID == "" || len(scope.AllowedActions) == 0) {
+		return "", errors.New("agent grants: scoped grants need run, effect, and actions")
+	}
+	for i := range scope.AllowedActions {
+		scope.AllowedActions[i] = strings.TrimSpace(scope.AllowedActions[i])
+		if scope.AllowedActions[i] == "" {
+			return "", errors.New("agent grants: actions cannot be empty")
+		}
+	}
+	slices.Sort(scope.AllowedActions)
+	scope.AllowedActions = slices.Compact(scope.AllowedActions)
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
 		return "", fmt.Errorf("agent grants: read randomness: %w", err)
@@ -90,11 +154,15 @@ func (s *Store) Mint(taskID string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pruneLocked(time.Now().UTC())
-	s.grants[digest(token)] = Grant{TaskID: taskID, ExpiresAt: time.Now().UTC().Add(s.ttl)}
+	now := time.Now().UTC()
+	scope.ExpiresAt = now.Add(s.ttl)
+	scope.UsedReplayKeys = nil
+	s.grants[digest(token)] = scope
 	if err := s.persistLocked(); err != nil {
 		delete(s.grants, digest(token))
 		return "", err
 	}
+	s.auditLocked(AuditEvent{Kind: "grant.issued", TaskID: scope.TaskID, RunID: scope.RunID, EffectID: scope.EffectID, WorkflowGeneration: scope.WorkflowGeneration, Allowed: true})
 	return token, nil
 }
 
@@ -118,6 +186,59 @@ func (s *Store) Verify(token string) (Grant, bool) {
 	return grant, true
 }
 
+// Authorize validates scope only after the caller has decoded the request into
+// an exact Use. Successful replay keys are consumed durably; a lost response
+// cannot be submitted again under the same grant.
+func (s *Store) Authorize(token string, use Use) error {
+	return s.authorize(token, use, true)
+}
+
+// Check validates a decoded use without consuming its replay key. Callers use
+// this only when their own atomic durable record is the replay authority.
+func (s *Store) Check(token string, use Use) error {
+	return s.authorize(token, use, false)
+}
+
+func (s *Store) authorize(token string, use Use, consume bool) error {
+	if s == nil || strings.TrimSpace(token) == "" {
+		return ErrUnauthorized
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	grant, ok := s.grants[digest(token)]
+	event := AuditEvent{Kind: "grant.used", TaskID: use.TaskID, RunID: use.RunID, EffectID: use.EffectID, WorkflowGeneration: use.WorkflowGeneration, Action: use.Action}
+	if !ok || !time.Now().UTC().Before(grant.ExpiresAt) {
+		s.auditLocked(event)
+		return ErrUnauthorized
+	}
+	if grant.TaskID != use.TaskID || grant.RunID != use.RunID || grant.EffectID != use.EffectID ||
+		grant.WorkflowGeneration != use.WorkflowGeneration || !slices.Contains(grant.AllowedActions, use.Action) {
+		s.auditLocked(event)
+		return ErrOutOfScope
+	}
+	if strings.TrimSpace(use.ReplayKey) == "" {
+		s.auditLocked(event)
+		return ErrOutOfScope
+	}
+	if slices.Contains(grant.UsedReplayKeys, use.ReplayKey) {
+		s.auditLocked(event)
+		return ErrReplay
+	}
+	if !consume {
+		event.Allowed = true
+		s.auditLocked(event)
+		return nil
+	}
+	grant.UsedReplayKeys = append(grant.UsedReplayKeys, use.ReplayKey)
+	s.grants[digest(token)] = grant
+	if err := s.persistLocked(); err != nil {
+		return err
+	}
+	event.Allowed = true
+	s.auditLocked(event)
+	return nil
+}
+
 // Revoke drops every grant issued for a task, which is what the end of its run
 // should do rather than waiting for the expiry.
 func (s *Store) Revoke(taskID string) error {
@@ -126,10 +247,45 @@ func (s *Store) Revoke(taskID string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for stored, grant := range s.grants {
+	for stored := range s.grants {
+		grant := s.grants[stored]
 		if grant.TaskID == taskID {
+			s.auditLocked(AuditEvent{Kind: "grant.revoked", TaskID: grant.TaskID, RunID: grant.RunID, EffectID: grant.EffectID, WorkflowGeneration: grant.WorkflowGeneration, Allowed: true})
 			delete(s.grants, stored)
 		}
+	}
+	return s.persistLocked()
+}
+
+func (s *Store) RevokeRun(runID string) error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for stored := range s.grants {
+		grant := s.grants[stored]
+		if grant.RunID == runID {
+			s.auditLocked(AuditEvent{Kind: "grant.revoked", TaskID: grant.TaskID, RunID: grant.RunID, EffectID: grant.EffectID, WorkflowGeneration: grant.WorkflowGeneration, Allowed: true})
+			delete(s.grants, stored)
+		}
+	}
+	return s.persistLocked()
+}
+
+// RevokeToken drops one grant by the raw credential held by its issuer. It is
+// used to roll back a mint when the surrounding durable operation fails; the
+// token itself is never persisted by the store.
+func (s *Store) RevokeToken(token string) error {
+	if s == nil || strings.TrimSpace(token) == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	stored := digest(token)
+	if grant, ok := s.grants[stored]; ok {
+		s.auditLocked(AuditEvent{Kind: "grant.revoked", TaskID: grant.TaskID, RunID: grant.RunID, EffectID: grant.EffectID, WorkflowGeneration: grant.WorkflowGeneration, Allowed: true})
+		delete(s.grants, stored)
 	}
 	return s.persistLocked()
 }
@@ -145,8 +301,15 @@ func (s *Store) Prune() error {
 	return s.persistLocked()
 }
 
+func (s *Store) auditLocked(event AuditEvent) {
+	if s.audit != nil {
+		s.audit(event)
+	}
+}
+
 func (s *Store) pruneLocked(now time.Time) {
-	for stored, grant := range s.grants {
+	for stored := range s.grants {
+		grant := s.grants[stored]
 		if now.After(grant.ExpiresAt) {
 			delete(s.grants, stored)
 		}

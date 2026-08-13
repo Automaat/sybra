@@ -181,6 +181,67 @@ func TestDurableWorkerControlBehavior(t *testing.T) {
 	})
 }
 
+func TestRunGrantRequiresOwningLiveSessionAndRevokesOnTerminal(t *testing.T) {
+	dbtest.Each(t, func(t *testing.T, engine dbtest.Engine) {
+		t.Helper()
+		database := engine.Open(t)
+		service := New(database)
+		owner := register(t, service, "worker-grant-owner")
+		other := register(t, service, "worker-grant-other")
+		spec, start := startContract(t, "run-grant", "effect-grant")
+		if _, err := service.Enqueue(t.Context(), owner.SessionID, &spec, start); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := service.IssueRunGrant(t.Context(), other.SessionID, spec.RunID); !errors.Is(err, ErrStaleSession) {
+			t.Fatalf("other worker grant = %v, want stale", err)
+		}
+		issued, err := service.IssueRunGrant(t.Context(), owner.SessionID, spec.RunID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		grant, ok := service.grants.Verify(issued.Token)
+		if !ok || grant.TaskID != spec.Fence.TaskID || grant.RunID != spec.RunID || grant.EffectID != spec.EffectID ||
+			grant.WorkflowGeneration != spec.Fence.WorkflowGeneration {
+			t.Fatalf("issued grant = %+v, ok=%v", grant, ok)
+		}
+		action := RunActionRequest{
+			SessionID: owner.SessionID, Token: issued.Token, TaskID: spec.Fence.TaskID, EffectID: spec.EffectID,
+			WorkflowGeneration: spec.Fence.WorkflowGeneration, Action: "approval.request", ReplayKey: spec.RunID + ":1",
+		}
+		wrong := action
+		wrong.SessionID = other.SessionID
+		approval := event(spec.RunID, 1, executioncontract.EventProgress)
+		approval.Payload = json.RawMessage(`{"kind":"approval_request","request":{"toolUseId":"tool-1"}}`)
+		wrongBatch := EventBatch{SessionID: other.SessionID, Events: []executioncontract.EventEnvelope{approval}, Authorizations: map[string]RunActionRequest{approval.IdempotencyKey: wrong}}
+		if _, err := service.AppendEvents(t.Context(), wrongBatch); !errors.Is(err, ErrStaleSession) {
+			t.Fatalf("other session action = %v, want stale", err)
+		}
+		wrong = action
+		wrong.Action = "task.delete"
+		wrongBatch = EventBatch{SessionID: owner.SessionID, Events: []executioncontract.EventEnvelope{approval}, Authorizations: map[string]RunActionRequest{approval.IdempotencyKey: wrong}}
+		if _, err := service.AppendEvents(t.Context(), wrongBatch); err == nil {
+			t.Fatal("unlisted action authorized")
+		}
+		batch := EventBatch{SessionID: owner.SessionID, Events: []executioncontract.EventEnvelope{approval}, Authorizations: map[string]RunActionRequest{approval.IdempotencyKey: action}}
+		if _, err := service.AppendEvents(t.Context(), EventBatch{SessionID: owner.SessionID, Events: []executioncontract.EventEnvelope{approval}}); err == nil {
+			t.Fatal("approval event without scoped authorization was accepted")
+		}
+		if _, err := service.AppendEvents(t.Context(), batch); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := service.AppendEvents(t.Context(), batch); err != nil {
+			t.Fatalf("lost-response event retry was not idempotent: %v", err)
+		}
+		terminal := event(spec.RunID, 2, executioncontract.EventTerminal)
+		if _, err := service.AppendEvents(t.Context(), EventBatch{SessionID: owner.SessionID, Events: []executioncontract.EventEnvelope{terminal}}); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := service.grants.Verify(issued.Token); ok {
+			t.Fatal("terminal run grant remained valid")
+		}
+	})
+}
+
 func TestFreshSessionCanDeliverTerminalHandbackAfterLeaseExpiry(t *testing.T) {
 	dbtest.Each(t, func(t *testing.T, engine dbtest.Engine) {
 		t.Helper()

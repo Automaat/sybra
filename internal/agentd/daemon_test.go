@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/agentworkspace"
 	agentevents "github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/executioncontract"
 	"github.com/Automaat/sybra/internal/gitexec"
@@ -334,6 +335,7 @@ printf '%s\n' '{"type":"result","result":"after restart","session_id":"restart-s
 	if err != nil {
 		t.Fatal(err)
 	}
+	stubRunGrant(first)
 	if err := first.handleCommand(firstCtx, workercontrol.Command{
 		Sequence: 1, Envelope: commandForSpec(t, specWithBase("run-restart", baseSHA), "restart"),
 	}); err != nil {
@@ -382,6 +384,7 @@ func TestDaemonStartFailureBecomesAcknowledgableTerminalOutcome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	stubRunGrant(daemon)
 	spec := validSpec("run-start-failure")
 	spec.Workspace.BaseSHA = baseSHA
 	spec.Environment = []executioncontract.EnvironmentBinding{{
@@ -400,6 +403,53 @@ func TestDaemonStartFailureBecomesAcknowledgableTerminalOutcome(t *testing.T) {
 	}
 	if replayed := daemon.spool.snapshot().Events[spec.RunID]; len(replayed) != 1 {
 		t.Fatalf("replayed start appended %d events, want one terminal", len(replayed))
+	}
+}
+
+func TestProjectRunEnvironmentUsesProtectedFilesAndExcludesWorkerCredential(t *testing.T) {
+	root := t.TempDir()
+	layout := agentworkspace.Layout{
+		RunRoot: filepath.Join(root, "run"), Worktree: filepath.Join(root, "run", "worktree"),
+		Sidecar: filepath.Join(root, "run", "sidecar"), Artifact: filepath.Join(root, "run", "artifact"),
+		WorkingMemory: filepath.Join(root, "run", "worktree"),
+	}
+	for _, dir := range []string{layout.Worktree, layout.Sidecar, layout.Artifact} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("RUN_ONLY_SECRET", "scoped-value")
+	t.Setenv("WORKER_MASTER_TOKEN", "worker-value")
+	spec := validSpec("run-protected-secret")
+	spec.Environment = []executioncontract.EnvironmentBinding{{
+		Name: "SCOPED_INPUT", SecretRef: &executioncontract.SecretRef{Name: "run/run-protected-secret/input"},
+	}}
+	environment, err := projectRunEnvironment(layout, spec, map[string]string{"run/run-protected-secret/input": "RUN_ONLY_SECRET"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(environment, "\n")
+	if strings.Contains(joined, "scoped-value") || strings.Contains(joined, "worker-value") || strings.Contains(joined, "WORKER_MASTER_TOKEN") {
+		t.Fatalf("provider environment leaked a credential: %s", joined)
+	}
+	prefix := "SCOPED_INPUT_FILE="
+	var secretPath string
+	for _, assignment := range environment {
+		if value, ok := strings.CutPrefix(assignment, prefix); ok {
+			secretPath = value
+		}
+	}
+	data, err := os.ReadFile(secretPath)
+	if err != nil || string(data) != "scoped-value" {
+		t.Fatalf("protected secret = %q, %v", data, err)
+	}
+	info, err := os.Stat(secretPath)
+	if err != nil || info.Mode().Perm() != 0o400 {
+		t.Fatalf("protected secret mode = %v, %v", info, err)
+	}
+	spec.Environment[0].Name = "../ESCAPE"
+	if _, err := projectRunEnvironment(layout, spec, map[string]string{"run/run-protected-secret/input": "RUN_ONLY_SECRET"}); err == nil {
+		t.Fatal("path-shaped secret binding name was accepted")
 	}
 }
 
@@ -563,6 +613,7 @@ printf '%s\n' '{"type":"result","result":"done","session_id":"steer-session"}'
 	if err != nil {
 		t.Fatal(err)
 	}
+	stubRunGrant(daemon)
 	start := commandForSpec(t, specWithBase("run-steer", baseSHA), "start-steer")
 	if err := daemon.handleCommand(ctx, workercontrol.Command{Sequence: 1, Envelope: start}); err != nil {
 		t.Fatal(err)
@@ -636,6 +687,12 @@ func commandForSpec(t *testing.T, spec executioncontract.RunSpec, commandID stri
 	return executioncontract.CommandEnvelope{
 		Version: executioncontract.CurrentVersion(), BuildVersion: "test", CommandID: commandID, RunID: spec.RunID,
 		IdempotencyKey: "command-" + commandID, Type: executioncontract.CommandStart, SentAt: time.Now().UTC(), Payload: payload,
+	}
+}
+
+func stubRunGrant(daemon *Daemon) {
+	daemon.issueGrant = func(context.Context, string, string) (workercontrol.RunGrant, error) {
+		return workercontrol.RunGrant{Token: "test-scoped-run-grant", ExpiresAt: time.Now().Add(time.Minute)}, nil
 	}
 }
 

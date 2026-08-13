@@ -21,9 +21,21 @@ func (s *Service) Handler() http.Handler {
 	mux.HandleFunc("GET /worker/v1/events/{runID}", s.handleReplayEvents)
 	mux.HandleFunc("POST /worker/v1/events/{runID}/ack", s.handleAckEvents)
 	mux.HandleFunc("POST /worker/v1/artifacts", s.handleArtifact)
+	mux.HandleFunc("POST /worker/v1/runs/{runID}/grant", s.handleRunGrant)
 	mux.HandleFunc("POST /worker/v1/drain", s.handleDrain)
 	mux.HandleFunc("GET /worker/v1/diagnostics", s.handleDiagnostics)
 	return mux
+}
+
+func (s *Service) handleRunGrant(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		SessionID string `json:"sessionId"`
+	}
+	if !decode(w, r, &request) {
+		return
+	}
+	grant, err := s.IssueRunGrant(r.Context(), request.SessionID, r.PathValue("runID"))
+	respond(w, grant, err)
 }
 
 func (s *Service) handleRegister(w http.ResponseWriter, r *http.Request) {

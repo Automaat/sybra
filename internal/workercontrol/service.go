@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/agentgrant"
 	"github.com/Automaat/sybra/internal/db"
 	"github.com/Automaat/sybra/internal/executioncontract"
 )
@@ -51,8 +52,9 @@ type Command struct {
 }
 
 type EventBatch struct {
-	SessionID string                            `json:"sessionId"`
-	Events    []executioncontract.EventEnvelope `json:"events"`
+	SessionID      string                            `json:"sessionId"`
+	Events         []executioncontract.EventEnvelope `json:"events"`
+	Authorizations map[string]RunActionRequest       `json:"authorizations,omitempty"`
 }
 
 type ArtifactUpload struct {
@@ -88,16 +90,105 @@ type Service struct {
 	notifyMu       sync.Mutex
 	notifyCh       chan struct{}
 	importArtifact func(context.Context, string) error
+	grants         *agentgrant.Store
 }
 
 func New(database *db.DB) *Service {
-	return &Service{db: database, now: time.Now, lease: 45 * time.Second, notifyCh: make(chan struct{})}
+	grants, _ := agentgrant.New("", 15*time.Minute)
+	return NewWithGrantStore(database, grants)
+}
+
+func NewWithGrantStore(database *db.DB, grants *agentgrant.Store) *Service {
+	return &Service{db: database, now: time.Now, lease: 45 * time.Second, notifyCh: make(chan struct{}), grants: grants}
+}
+
+type RunGrant struct {
+	Token     string    `json:"token"`
+	ExpiresAt time.Time `json:"expiresAt"`
+}
+
+type RunActionRequest struct {
+	SessionID          string `json:"sessionId"`
+	Token              string `json:"token"`
+	TaskID             string `json:"taskId"`
+	EffectID           string `json:"effectId"`
+	WorkflowGeneration int64  `json:"workflowGeneration"`
+	Action             string `json:"action"`
+	ReplayKey          string `json:"replayKey"`
+}
+
+func (s *Service) authorizeRunActionTx(ctx context.Context, tx *sql.Tx, runID string, request RunActionRequest) error {
+	query := `SELECT task_id, effect_id, workflow_generation FROM remote_runs WHERE run_id = ? AND session_id = ? AND state IN ('queued', 'running')`
+	if s.db.Dialect() == db.Postgres {
+		query += ` FOR UPDATE`
+	}
+	var taskID, effectID string
+	var generation int64
+	if err := tx.QueryRowContext(ctx, s.db.Rebind(query), runID, request.SessionID).Scan(&taskID, &effectID, &generation); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrStaleSession
+		}
+		return err
+	}
+	if taskID != request.TaskID || effectID != request.EffectID || generation != request.WorkflowGeneration {
+		return ErrInvalidRequest
+	}
+	use := agentgrant.Use{
+		TaskID: taskID, RunID: runID, EffectID: effectID, WorkflowGeneration: generation,
+		Action: request.Action, ReplayKey: request.ReplayKey,
+	}
+	return s.grants.Check(request.Token, use)
+}
+
+func (s *Service) IssueRunGrant(ctx context.Context, sessionID, runID string) (RunGrant, error) {
+	if strings.TrimSpace(runID) == "" {
+		return RunGrant{}, invalidf("run is required")
+	}
+	var token string
+	err := s.db.InTx(ctx, func(tx *sql.Tx) error {
+		if err := s.requireSessionTx(ctx, tx, sessionID, true); err != nil {
+			return err
+		}
+		query := `SELECT run_spec_json FROM remote_runs WHERE run_id = ? AND session_id = ? AND state IN ('queued', 'running')`
+		if s.db.Dialect() == db.Postgres {
+			query += ` FOR UPDATE`
+		}
+		var specJSON string
+		if err := tx.QueryRowContext(ctx, s.db.Rebind(query), runID, sessionID).Scan(&specJSON); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrStaleSession
+			}
+			return err
+		}
+		var spec executioncontract.RunSpec
+		if err := json.Unmarshal([]byte(specJSON), &spec); err != nil {
+			return err
+		}
+		var mintErr error
+		token, mintErr = s.grants.MintScoped(agentgrant.Grant{
+			TaskID: spec.Fence.TaskID, RunID: spec.RunID, EffectID: spec.EffectID, WorkflowGeneration: spec.Fence.WorkflowGeneration,
+			AllowedActions: []string{"approval.request"},
+		})
+		return mintErr
+	})
+	if err != nil {
+		if revokeErr := s.grants.RevokeToken(token); revokeErr != nil {
+			return RunGrant{}, errors.Join(err, fmt.Errorf("revoke uncommitted grant: %w", revokeErr))
+		}
+		return RunGrant{}, err
+	}
+	grant, _ := s.grants.Verify(token)
+	return RunGrant{Token: token, ExpiresAt: grant.ExpiresAt}, nil
 }
 
 // SetArtifactImporter late-binds the leader-owned canonical importer after
 // task/worktree stores are initialized.
 func (s *Service) SetArtifactImporter(importer func(context.Context, string) error) {
 	s.importArtifact = importer
+}
+
+func (s *Service) SetGrantAuditSink(sink agentgrant.AuditSink) {
+	s.grants.SetAuditSink(sink)
 }
 
 func (s *Service) Register(ctx context.Context, request RegisterRequest) (Session, error) {
@@ -415,6 +506,7 @@ func (s *Service) AckCommands(ctx context.Context, sessionID string, through uin
 
 func (s *Service) AppendEvents(ctx context.Context, batch EventBatch) (map[string]uint64, error) {
 	acks := map[string]uint64{}
+	terminalRuns := map[string]bool{}
 	err := s.db.InTx(ctx, func(tx *sql.Tx) error {
 		if err := s.requireSessionTx(ctx, tx, batch.SessionID, true); err != nil {
 			return err
@@ -450,6 +542,19 @@ func (s *Service) AppendEvents(ctx context.Context, batch EventBatch) (map[strin
 			if state == "terminal" {
 				return invalidf("event follows terminal event")
 			}
+			if action, required, err := approvalAuthorization(event, batch.Authorizations); err != nil {
+				return err
+			} else if required {
+				if action.SessionID != batch.SessionID || action.ReplayKey != event.IdempotencyKey {
+					return ErrInvalidRequest
+				}
+				// This event row is the replay record for approval transport. Keep
+				// scope validation non-mutating so a crash before SQL commit cannot
+				// strand the daemon behind a consumed grant key.
+				if err := s.authorizeRunActionTx(ctx, tx, event.RunID, action); err != nil {
+					return err
+				}
+			}
 			if current > 0 {
 				var previousJSON string
 				if err := tx.QueryRowContext(ctx, s.db.Rebind(`SELECT envelope_json FROM worker_events WHERE run_id = ? AND sequence = ?`), event.RunID, current).Scan(&previousJSON); err != nil {
@@ -477,6 +582,7 @@ func (s *Service) AppendEvents(ctx context.Context, batch EventBatch) (map[strin
 			nextState := "running"
 			if event.Type == executioncontract.EventTerminal {
 				nextState = "terminal"
+				terminalRuns[event.RunID] = true
 			}
 			_, err = tx.ExecContext(ctx, s.db.Rebind(`UPDATE remote_runs SET last_event_sequence = ?, state = ?, updated_at = ? WHERE run_id = ?`),
 				event.Sequence, nextState, db.TimeValue(s.now().UTC()), event.RunID)
@@ -487,7 +593,35 @@ func (s *Service) AppendEvents(ctx context.Context, batch EventBatch) (map[strin
 		}
 		return nil
 	})
-	return acks, err
+	if err != nil {
+		return acks, err
+	}
+	for runID := range terminalRuns {
+		if revokeErr := s.grants.RevokeRun(runID); revokeErr != nil {
+			return acks, revokeErr
+		}
+	}
+	return acks, nil
+}
+
+func approvalAuthorization(event executioncontract.EventEnvelope, authorizations map[string]RunActionRequest) (RunActionRequest, bool, error) {
+	if event.Type != executioncontract.EventProgress {
+		return RunActionRequest{}, false, nil
+	}
+	var payload struct {
+		Kind string `json:"kind"`
+	}
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		return RunActionRequest{}, false, fmt.Errorf("%w: decode progress event: %w", ErrInvalidRequest, err)
+	}
+	if payload.Kind != "approval_request" {
+		return RunActionRequest{}, false, nil
+	}
+	action, ok := authorizations[event.IdempotencyKey]
+	if !ok {
+		return RunActionRequest{}, false, invalidf("approval event requires scoped authorization")
+	}
+	return action, true, nil
 }
 
 func (s *Service) ReplayEvents(ctx context.Context, runID string, after uint64, limit int) ([]executioncontract.EventEnvelope, error) {
