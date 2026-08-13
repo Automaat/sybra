@@ -92,6 +92,30 @@ func TestPrepareUsesImmutableBaseAndCollectsDeterministicHandback(t *testing.T) 
 	}
 }
 
+func TestPrepareProvidesDisposableGitIdentityWithoutSigning(t *testing.T) {
+	source, base := repository(t)
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(t.TempDir(), "missing-global-config"))
+	layout, err := Prepare(t.Context(), filepath.Join(t.TempDir(), "runs"), source, runSpec(base, false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(layout.Worktree, "remote-change.txt"), []byte("remote\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	git(t, layout.Worktree, "add", "remote-change.txt")
+	git(t, layout.Worktree, "commit", "-m", "remote handback")
+
+	for key, want := range map[string]string{
+		"user.name": "Sybra Agent", "user.email": "sybra-agent@example.invalid",
+		"commit.gpgsign": "false", "tag.gpgsign": "false",
+	} {
+		got, err := gitexec.Output(t.Context(), gitexec.Options{Dir: layout.Worktree}, "config", "--local", "--get", key)
+		if err != nil || got != want {
+			t.Fatalf("git config %s = %q, %v; want %q", key, got, err, want)
+		}
+	}
+}
+
 func TestPrepareResolvesNonDefaultBranchThroughOrigin(t *testing.T) {
 	source, base := repository(t)
 	git(t, source, "branch", "release", base)
