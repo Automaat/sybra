@@ -884,14 +884,12 @@ Cluster/task-trust policy for multi-node execution backends.
 
 ### ClusterConfig (`cluster`)
 
-ClusterConfig configures leader-follower mode (umbrella #1803). The leader
-owns the canonical task store, polls GitHub and Renovate, and assigns work to
-followers by per-project homing; followers execute assigned tasks and stream
-state back. Default role "standalone" preserves single-node behavior, so the
-block requires zero migration. Role is "standalone", "leader", or "follower"
-(invalid falls back to standalone). BindAddr overrides a follower's
-control-plane bind. LocalHomes pins project ids to this node; TLS carries a
-follower's server cert/key for the TLS + cert-pin transport tier.
+ClusterConfig retains the legacy leader-follower roster during migration to
+per-run agentd scheduling. On a database-backed leader, Followers are only
+affinity/deprecation metadata: canonical tasks are no longer copied to those
+nodes, and daemon workers register through /worker/v1 instead. Standalone
+remains the zero-config local behavior. The follower role and its bind/TLS
+fields remain readable for staged rollback, but are deprecated.
 
 | YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
 |---|---|---|---|---|---|---|---|---|---|
