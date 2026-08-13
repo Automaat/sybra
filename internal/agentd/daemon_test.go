@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,6 +27,204 @@ import (
 	"github.com/Automaat/sybra/internal/testutil/dbtest"
 	"github.com/Automaat/sybra/internal/workercontrol"
 )
+
+func TestDaemonReregistersAfterSessionRejection(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("AGENTD_TEST_TOKEN", "secret")
+	control := workercontrol.New(dbtest.SQLite(t))
+	controlHandler := control.Handler()
+	var registrations atomic.Int32
+	var rejected atomic.Bool
+	replacementCommitted := make(chan struct{})
+	releaseLostResponse := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/worker/v1/register" {
+			attempt := registrations.Add(1)
+			if attempt == 2 {
+				// Commit the replacement but hide its response. The daemon must
+				// retry the same durable registration identity and discover it.
+				recorder := httptest.NewRecorder()
+				controlHandler.ServeHTTP(recorder, r)
+				close(replacementCommitted)
+				<-releaseLostResponse
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			controlHandler.ServeHTTP(w, r)
+			return
+		}
+		if r.URL.Path == "/worker/v1/commands" && registrations.Load() == 1 && rejected.CompareAndSwap(false, true) {
+			diagnostics, err := control.Diagnostics(r.Context())
+			if err != nil || activeSession(diagnostics) == "" {
+				http.Error(w, "missing active session", http.StatusInternalServerError)
+				return
+			}
+			spec, command := recoveryStartContract(t)
+			if _, err := control.Enqueue(r.Context(), activeSession(diagnostics), &spec, command); err != nil {
+				http.Error(w, "enqueue recovery fixture", http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": workercontrol.ErrLeaseExpired.Error()})
+			return
+		}
+		controlHandler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(server.Close)
+	cfg := Config{
+		LeaderURL: server.URL, TokenEnv: "AGENTD_TEST_TOKEN", NodeID: "node-recover", Capacity: 1,
+		Providers: []string{providerid.Claude}, SandboxMode: "report", WorkspaceRoot: filepath.Join(root, "workspaces"),
+		StateRoot: filepath.Join(root, "state"), SpoolMaxBytes: 1 << 20, LeaseSeconds: 30, PollSeconds: 1,
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	daemon, err := New(ctx, cfg, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- daemon.Run(ctx) }()
+	select {
+	case <-replacementCommitted:
+		if err := daemon.spool.update(func(state *durableState) error {
+			state.OutputCounts["during-registration-retry"]++
+			state.LastCommandAck++
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		close(releaseLostResponse)
+	case err := <-done:
+		t.Fatalf("daemon exited before replacement commit: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("replacement registration was not attempted")
+	}
+
+	var diagnostics []workercontrol.Diagnostics
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case err := <-done:
+			t.Fatalf("daemon exited during session recovery: %v", err)
+		case <-time.After(10 * time.Millisecond):
+		}
+		diagnostics, err = control.Diagnostics(t.Context())
+		state := daemon.spool.snapshot()
+		if registrations.Load() == 3 && err == nil && activeSession(diagnostics) == state.SessionID {
+			break
+		}
+	}
+	if registrations.Load() != 3 {
+		t.Fatalf("registrations = %d, want initial, lost response, and idempotent retry", registrations.Load())
+	}
+	state := daemon.spool.snapshot()
+	if state.SessionID == "" || state.LastCommandAck != 1 {
+		t.Fatalf("recovered durable session = %+v", state)
+	}
+	if err != nil || activeSession(diagnostics) != state.SessionID {
+		t.Fatalf("diagnostics = %+v, %v; want recovered session %s", diagnostics, err, state.SessionID)
+	}
+}
+
+func TestFreshRegistrationRetryResetsObsoleteCommandCursor(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("AGENTD_TEST_TOKEN", "secret")
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/worker/v1/register" {
+			http.NotFound(w, r)
+			return
+		}
+		var request workercontrol.RegisterRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		switch attempts.Add(1) {
+		case 1:
+			if request.ResumeSessionID != "stale-session" || request.LastCommandAck != 7 {
+				http.Error(w, "expected exact stale resume", http.StatusBadRequest)
+				return
+			}
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": workercontrol.ErrStaleSession.Error()})
+		case 2:
+			if request.ResumeSessionID != "" || request.LastCommandAck != 0 {
+				http.Error(w, "expected fresh registration", http.StatusBadRequest)
+				return
+			}
+			w.WriteHeader(http.StatusInternalServerError) // committed response lost
+		case 3:
+			if request.ResumeSessionID != "" || request.LastCommandAck != 0 {
+				http.Error(w, "fresh retry changed identity", http.StatusBadRequest)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(workercontrol.Session{SessionID: "fresh-session", State: "active", LastCommandAck: 0})
+		default:
+			http.Error(w, "unexpected registration", http.StatusInternalServerError)
+		}
+	}))
+	t.Cleanup(server.Close)
+	daemon, err := New(t.Context(), Config{
+		LeaderURL: server.URL, TokenEnv: "AGENTD_TEST_TOKEN", NodeID: "node-fresh-retry", Capacity: 1,
+		Providers: []string{providerid.Claude}, SandboxMode: "report", WorkspaceRoot: filepath.Join(root, "workspaces"),
+		StateRoot: filepath.Join(root, "state"), SpoolMaxBytes: 1 << 20, LeaseSeconds: 30, PollSeconds: 1,
+	}, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := daemon.spool.update(func(state *durableState) error {
+		state.SessionID, state.LastCommandAck = "stale-session", 7
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := daemon.register(t.Context()); err == nil {
+		t.Fatal("lost fresh-registration response unexpectedly succeeded")
+	}
+	if err := daemon.register(t.Context()); err != nil {
+		t.Fatalf("retry fresh registration: %v", err)
+	}
+	state := daemon.spool.snapshot()
+	if state.SessionID != "fresh-session" || state.LastCommandAck != 0 || state.RegistrationID != "" {
+		t.Fatalf("fresh registration state = %+v", state)
+	}
+}
+
+func recoveryStartContract(t *testing.T) (executioncontract.RunSpec, executioncontract.CommandEnvelope) {
+	t.Helper()
+	now := time.Now().UTC()
+	spec := executioncontract.RunSpec{
+		Version: executioncontract.CurrentVersion(), BuildVersion: "leader-test", RunID: "run-recovery",
+		EffectID: "effect-recovery", IdempotencyKey: "start:effect-recovery",
+		Fence: executioncontract.GenerationFence{TaskID: "task-recovery", TaskGeneration: 1, WorkflowID: "ship", WorkflowGeneration: 1, StepID: "implement"},
+		Role:  "implementation", Provider: executioncontract.ProviderIntent{Provider: "test", Model: "test-model"},
+		Prompt: executioncontract.Prompt{Text: "recovery fixture"}, Deadline: now.Add(time.Hour),
+		Workspace: executioncontract.Workspace{RepositoryID: "repo", BaseSHA: strings.Repeat("a", 40), BaseRef: "refs/heads/main", Roots: []executioncontract.LogicalRoot{executioncontract.RootWorktree}},
+	}
+	payload, err := json.Marshal(executioncontract.StartCommandPayload{Spec: &spec})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return spec, executioncontract.CommandEnvelope{
+		Version: executioncontract.CurrentVersion(), BuildVersion: "leader-test", CommandID: "command:recovery",
+		RunID: spec.RunID, IdempotencyKey: spec.IdempotencyKey, Type: executioncontract.CommandStart, SentAt: now, Payload: payload,
+	}
+}
+
+func activeSession(diagnostics []workercontrol.Diagnostics) string {
+	var active string
+	for _, item := range diagnostics {
+		if item.State != "active" {
+			continue
+		}
+		if active != "" {
+			return ""
+		}
+		active = item.SessionID
+	}
+	return active
+}
 
 func TestDaemonExecutesFakeProviderThroughDurableProtocol(t *testing.T) {
 	if runtime.GOOS == "windows" {

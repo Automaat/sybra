@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -97,6 +98,9 @@ func TestDurableWorkerControlBehavior(t *testing.T) {
 		if _, err := restarted.AppendEvents(ctx, EventBatch{SessionID: replacement.SessionID, Events: []executioncontract.EventEnvelope{event("run-a", 3, executioncontract.EventOutput)}}); err != nil {
 			t.Fatalf("replacement could not continue event cursor: %v", err)
 		}
+		if _, err := restarted.AppendEvents(ctx, EventBatch{SessionID: replacement.SessionID, Events: []executioncontract.EventEnvelope{event("run-a", 4, executioncontract.EventTerminal)}}); err != nil {
+			t.Fatalf("replacement could not complete event stream: %v", err)
+		}
 		manifest := executioncontract.ArtifactManifest{
 			Version: executioncontract.CurrentVersion(), BuildVersion: "worker-test", RunID: "run-a", ManifestID: "manifest-a",
 			IdempotencyKey: "artifact:run-a:1", State: executioncontract.ArtifactsReady, GeneratedAt: time.Now().UTC(),
@@ -146,9 +150,20 @@ func TestDurableWorkerControlBehavior(t *testing.T) {
 		if err := restarted.ResolveArtifact(ctx, "run-a", "manifest-a", "imported"); err != nil {
 			t.Fatalf("idempotent artifact resolution: %v", err)
 		}
+		secondReplacement, err := restarted.Register(ctx, RegisterRequest{
+			WorkerID: "worker-a", ResumeSessionID: replacement.SessionID, LastCommandAck: first.Sequence,
+			Negotiation: executioncontract.Negotiation{
+				ProtocolMin: executioncontract.CurrentVersion(), ProtocolMax: executioncontract.CurrentVersion(), BuildVersion: "worker-test",
+			},
+		})
+		if err != nil {
+			t.Fatalf("resume after resolved artifact: %v", err)
+		}
+		replacement = secondReplacement
+		upload.SessionID = replacement.SessionID
 		upload.Content = content
 		if err := restarted.UploadArtifact(ctx, upload); err != nil {
-			t.Fatalf("idempotent upload after import: %v", err)
+			t.Fatalf("idempotent upload after import and session replacement: %v", err)
 		}
 		if importCalls != 2 {
 			t.Fatalf("importer calls after resolved upload replay = %d, want 2", importCalls)
@@ -362,23 +377,34 @@ func TestNegotiatedLeaseIsStableAndSafelyCapped(t *testing.T) {
 	}
 }
 
-func TestExpiredSessionCannotEnterDrainOrResume(t *testing.T) {
+func TestExpiredSessionCannotEnterDrainButCanResume(t *testing.T) {
 	database := dbtest.SQLite(t)
 	service := New(database)
 	now := time.Now().UTC()
 	service.now = func() time.Time { return now }
 	session := register(t, service, "worker-expired-drain")
+	spec, start := startContract(t, "run-expired-resume", "effect-expired-resume")
+	if _, err := service.Enqueue(t.Context(), session.SessionID, &spec, start); err != nil {
+		t.Fatal(err)
+	}
 	service.now = func() time.Time { return now.Add(time.Minute) }
 	if err := service.Drain(t.Context(), session.SessionID); !errors.Is(err, ErrLeaseExpired) {
 		t.Fatalf("expired drain error = %v, want ErrLeaseExpired", err)
 	}
-	if _, err := service.Register(t.Context(), RegisterRequest{
+	replacement, err := service.Register(t.Context(), RegisterRequest{
 		WorkerID: "worker-expired-drain", ResumeSessionID: session.SessionID,
 		Negotiation: executioncontract.Negotiation{
 			ProtocolMin: executioncontract.CurrentVersion(), ProtocolMax: executioncontract.CurrentVersion(), BuildVersion: "worker-test",
 		},
-	}); err == nil {
-		t.Fatal("expired session resumed")
+	})
+	if err != nil {
+		t.Fatalf("expired current session did not resume: %v", err)
+	}
+	if replacement.SessionID == session.SessionID {
+		t.Fatal("resume reused the expired session identity")
+	}
+	if _, err := service.AppendEvents(t.Context(), EventBatch{SessionID: replacement.SessionID, Events: []executioncontract.EventEnvelope{event(spec.RunID, 1, executioncontract.EventTerminal)}}); err != nil {
+		t.Fatalf("replacement did not inherit expired session run: %v", err)
 	}
 }
 
@@ -541,6 +567,60 @@ func TestResumeRejectsStaleSessionAndInvalidCursor(t *testing.T) {
 	if _, err := service.PollCommands(t.Context(), replacement.SessionID, 0, 10, 0); err != nil {
 		t.Fatalf("replacement session was disrupted: %v", err)
 	}
+}
+
+func TestRegistrationReplayReturnsCommittedReplacement(t *testing.T) {
+	dbtest.Each(t, func(t *testing.T, engine dbtest.Engine) {
+		t.Helper()
+		service := New(engine.Open(t))
+		now := time.Now().UTC()
+		service.now = func() time.Time { return now }
+		prior := register(t, service, "worker-registration-replay")
+		spec, start := startContract(t, "run-registration-replay", "effect-registration-replay")
+		if _, err := service.Enqueue(t.Context(), prior.SessionID, &spec, start); err != nil {
+			t.Fatal(err)
+		}
+		request := RegisterRequest{
+			WorkerID: "worker-registration-replay", RegistrationID: "registration-lost-response",
+			ResumeSessionID: prior.SessionID,
+			Capabilities:    []string{"spool_bytes=1", "spool_max_bytes=1024"},
+			Negotiation: executioncontract.Negotiation{
+				ProtocolMin: executioncontract.CurrentVersion(), ProtocolMax: executioncontract.CurrentVersion(), BuildVersion: "worker-test",
+			},
+		}
+		committed, err := service.Register(t.Context(), request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		now = now.Add(2 * service.lease)
+		replayRequest := request
+		replayRequest.Capabilities = []string{"spool_bytes=512", "spool_max_bytes=1024"}
+		replayed, err := service.Register(t.Context(), replayRequest)
+		if err != nil || replayed.SessionID != committed.SessionID || replayed.LastCommandAck != committed.LastCommandAck {
+			t.Fatalf("registration replay = %+v, %v; want %+v", replayed, err, committed)
+		}
+		if !slices.Equal(replayed.Capabilities, committed.Capabilities) {
+			t.Fatalf("registration replay capabilities = %v, want committed %v", replayed.Capabilities, committed.Capabilities)
+		}
+		if !replayed.LeaseExpiresAt.After(now) {
+			t.Fatalf("registration replay lease = %v, want renewed after %v", replayed.LeaseExpiresAt, now)
+		}
+		if _, err := service.AppendEvents(t.Context(), EventBatch{SessionID: replayed.SessionID, Events: []executioncontract.EventEnvelope{event(spec.RunID, 1, executioncontract.EventTerminal)}}); err != nil {
+			t.Fatalf("replayed registration did not retain run ownership: %v", err)
+		}
+		changed := request
+		changed.LastCommandAck = 1
+		if _, err := service.Register(t.Context(), changed); !errors.Is(err, ErrInvalidRequest) {
+			t.Fatalf("changed registration replay = %v, want invalid request", err)
+		}
+		var sessions int
+		if err := service.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM worker_sessions WHERE worker_id = ?`, request.WorkerID).Scan(&sessions); err != nil {
+			t.Fatal(err)
+		}
+		if sessions != 2 {
+			t.Fatalf("session rows = %d, want predecessor plus one replacement", sessions)
+		}
+	})
 }
 
 func TestResumePreservesCursorWhenEveryCommandWasAcknowledged(t *testing.T) {

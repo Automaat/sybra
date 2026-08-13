@@ -34,6 +34,7 @@ type Daemon struct {
 	capabilities []string
 
 	approvalMu sync.Mutex
+	recoveryMu sync.Mutex
 	mu         sync.RWMutex
 	sessionID  string
 	runAgents  map[string]string
@@ -186,32 +187,37 @@ func (d *Daemon) Run(ctx context.Context) error {
 		return err
 	}
 	d.pruneExpiredWorkspaces()
-	heartbeat := time.NewTicker(time.Duration(max(d.cfg.LeaseSeconds/3, 1)) * time.Second)
-	defer heartbeat.Stop()
+	go d.heartbeatLoop(ctx)
 	for {
-		if err := d.flushEvents(ctx); err != nil {
+		flushSession := d.currentSession()
+		if err := d.flushEvents(ctx, flushSession); err != nil {
+			if isRejectedSession(err) {
+				if recoverErr := d.recoverRejectedSession(ctx, flushSession, err); recoverErr != nil {
+					d.logger.Warn("agentd.session.recover", "source", "events", "err", recoverErr)
+					time.Sleep(time.Second)
+				}
+				continue
+			}
 			d.logger.Warn("agentd.events.retry", "err", err)
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-heartbeat.C:
-			d.pruneExpiredWorkspaces()
-			session, err := d.client.heartbeat(ctx, d.currentSession(), d.runtimeCapabilities())
-			if err != nil {
-				d.logger.Warn("agentd.heartbeat", "err", err)
-			} else {
-				d.mu.Lock()
-				d.draining = session.State == "draining"
-				d.mu.Unlock()
-			}
 		default:
 		}
 		state := d.spool.snapshot()
-		commands, err := d.client.poll(ctx, d.currentSession(), state.LastCommandAck, d.cfg.PollSeconds)
+		pollSession := d.currentSession()
+		commands, err := d.client.poll(ctx, pollSession, state.LastCommandAck, d.cfg.PollSeconds)
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
+			}
+			if isRejectedSession(err) {
+				if recoverErr := d.recoverRejectedSession(ctx, pollSession, err); recoverErr != nil {
+					d.logger.Warn("agentd.session.recover", "source", "poll", "err", recoverErr)
+					time.Sleep(time.Second)
+				}
+				continue
 			}
 			d.logger.Warn("agentd.poll", "err", err)
 			time.Sleep(time.Second)
@@ -233,11 +239,58 @@ func (d *Daemon) Run(ctx context.Context) error {
 				d.logger.Error("agentd.command_cursor.persist", "sequence", command.Sequence, "err", err)
 				break
 			}
-			if err := d.client.ackCommands(ctx, d.currentSession(), command.Sequence); err != nil {
+			ackSession := d.currentSession()
+			if err := d.client.ackCommands(ctx, ackSession, command.Sequence); err != nil {
+				if isRejectedSession(err) {
+					if recoverErr := d.recoverRejectedSession(ctx, ackSession, err); recoverErr != nil {
+						d.logger.Warn("agentd.session.recover", "source", "command_ack", "err", recoverErr)
+					}
+				}
 				break
 			}
 		}
 	}
+}
+
+func (d *Daemon) heartbeatLoop(ctx context.Context) {
+	heartbeat := time.NewTicker(time.Duration(max(d.cfg.LeaseSeconds/3, 1)) * time.Second)
+	defer heartbeat.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-heartbeat.C:
+		}
+		d.pruneExpiredWorkspaces()
+		sessionID := d.currentSession()
+		session, err := d.client.heartbeat(ctx, sessionID, d.runtimeCapabilities())
+		if err != nil {
+			if isRejectedSession(err) {
+				if recoverErr := d.recoverRejectedSession(ctx, sessionID, err); recoverErr != nil {
+					d.logger.Warn("agentd.session.recover", "source", "heartbeat", "err", recoverErr)
+				}
+				continue
+			}
+			d.logger.Warn("agentd.heartbeat", "err", err)
+			continue
+		}
+		d.mu.Lock()
+		d.draining = session.State == "draining"
+		d.mu.Unlock()
+	}
+}
+
+func (d *Daemon) recoverRejectedSession(ctx context.Context, rejectedSession string, cause error) error {
+	d.recoveryMu.Lock()
+	defer d.recoveryMu.Unlock()
+	if current := d.currentSession(); current != rejectedSession {
+		return nil
+	}
+	if err := d.register(ctx); err != nil {
+		return fmt.Errorf("replace rejected session %s after %v: %w", rejectedSession, cause, err)
+	}
+	d.logger.Info("agentd.session.recovered", "old_session", rejectedSession, "new_session", d.currentSession())
+	return nil
 }
 
 func (d *Daemon) pruneExpiredWorkspaces() {
@@ -275,28 +328,67 @@ func (d *Daemon) pruneExpiredWorkspaces() {
 
 func (d *Daemon) register(ctx context.Context) error {
 	state := d.spool.snapshot()
+	registrationID, registrationFrom, registrationAck, err := d.ensureRegistrationID(state.RegistrationID, state.SessionID, state.LastCommandAck)
+	if err != nil {
+		return fmt.Errorf("agentd registration identity: %w", err)
+	}
+	state = d.spool.snapshot()
 	request := workercontrol.RegisterRequest{
-		WorkerID: d.cfg.NodeID, Capabilities: d.runtimeCapabilities(), LeaseSeconds: d.cfg.LeaseSeconds,
+		WorkerID: d.cfg.NodeID, RegistrationID: registrationID, Capabilities: d.runtimeCapabilities(), LeaseSeconds: d.cfg.LeaseSeconds,
 		Negotiation: executioncontract.Negotiation{
 			ProtocolMin: executioncontract.CurrentVersion(), ProtocolMax: executioncontract.CurrentVersion(), BuildVersion: buildVersion(),
 		},
-		ResumeSessionID: state.SessionID, LastCommandAck: state.LastCommandAck,
+		ResumeSessionID: registrationFrom, LastCommandAck: registrationAck,
 	}
 	session, err := d.client.register(ctx, request)
-	if err != nil && state.SessionID != "" && len(d.manager.ListLiveAgents()) == 0 {
-		request.ResumeSessionID, request.LastCommandAck = "", 0
+	if isRejectedSession(err) && state.SessionID != "" && len(d.manager.ListLiveAgents()) == 0 {
+		registrationID, registrationFrom, registrationAck, idErr := d.ensureRegistrationID("", "", 0)
+		if idErr != nil {
+			return fmt.Errorf("agentd fresh registration identity: %w", idErr)
+		}
+		request.RegistrationID, request.ResumeSessionID, request.LastCommandAck = registrationID, registrationFrom, registrationAck
 		session, err = d.client.register(ctx, request)
 	}
 	if err != nil {
 		return fmt.Errorf("agentd register: %w", err)
 	}
+	localAck := d.spool.snapshot().LastCommandAck
+	if request.ResumeSessionID != "" && localAck > session.LastCommandAck {
+		if err := d.client.ackCommands(ctx, session.SessionID, localAck); err != nil {
+			return fmt.Errorf("reconcile command cursor after registration: %w", err)
+		}
+	}
 	d.mu.Lock()
 	d.sessionID, d.draining = session.SessionID, session.State == "draining"
 	d.mu.Unlock()
 	return d.spool.update(func(state *durableState) error {
-		state.SessionID, state.LastCommandAck = session.SessionID, session.LastCommandAck
+		state.SessionID = session.SessionID
+		if request.ResumeSessionID == "" {
+			state.LastCommandAck = session.LastCommandAck
+		} else {
+			state.LastCommandAck = max(state.LastCommandAck, session.LastCommandAck)
+		}
+		state.RegistrationID, state.RegistrationFrom, state.RegistrationAck = "", "", 0
 		return nil
 	})
+}
+
+func (d *Daemon) ensureRegistrationID(current, resumeSession string, commandAck uint64) (string, string, uint64, error) {
+	if current != "" {
+		state := d.spool.snapshot()
+		return current, state.RegistrationFrom, state.RegistrationAck, nil
+	}
+	registrationID, err := opaqueID("registration")
+	if err != nil {
+		return "", "", 0, err
+	}
+	if err := d.spool.update(func(state *durableState) error {
+		state.RegistrationID, state.RegistrationFrom, state.RegistrationAck = registrationID, resumeSession, commandAck
+		return nil
+	}); err != nil {
+		return "", "", 0, err
+	}
+	return registrationID, resumeSession, commandAck, nil
 }
 
 func (d *Daemon) runtimeCapabilities() []string {
@@ -706,7 +798,7 @@ func (d *Daemon) emitWith(runID string, kind executioncontract.EventType, payloa
 	return nil
 }
 
-func (d *Daemon) flushEvents(ctx context.Context) error {
+func (d *Daemon) flushEvents(ctx context.Context, sessionID string) error {
 	state := d.spool.snapshot()
 	for runID, events := range state.Events {
 		if len(events) == 0 {
@@ -729,15 +821,15 @@ func (d *Daemon) flushEvents(ctx context.Context) error {
 			// Approval can arrive long after the start-time grant expired. Mint a
 			// fresh bounded grant through the live worker session and rotate the
 			// protected projection before presenting it.
-			grant, grantErr := d.issueGrant(ctx, d.currentSession(), runID)
+			grant, grantErr := d.issueGrant(ctx, sessionID, runID)
 			if grantErr != nil {
-				return errors.New("agentd: renew scoped run grant")
+				return fmt.Errorf("agentd: renew scoped run grant: %w", grantErr)
 			}
 			if writeErr := fsutil.AtomicWriteMode(grantPath, []byte(grant.Token), 0o400); writeErr != nil {
 				return errors.New("agentd: rotate scoped run grant")
 			}
 			request := workercontrol.RunActionRequest{
-				SessionID: d.currentSession(), Token: grant.Token, TaskID: spec.Fence.TaskID, EffectID: spec.EffectID,
+				SessionID: sessionID, Token: grant.Token, TaskID: spec.Fence.TaskID, EffectID: spec.EffectID,
 				WorkflowGeneration: spec.Fence.WorkflowGeneration, Action: "approval.request", ReplayKey: event.IdempotencyKey,
 			}
 			authorizations[event.IdempotencyKey] = request
@@ -748,7 +840,7 @@ func (d *Daemon) flushEvents(ctx context.Context) error {
 			events = eventPrefixThrough(events, i)
 			break
 		}
-		ack, err := d.client.events(ctx, workercontrol.EventBatch{SessionID: d.currentSession(), Events: events, Authorizations: authorizations})
+		ack, err := d.client.events(ctx, workercontrol.EventBatch{SessionID: sessionID, Events: events, Authorizations: authorizations})
 		if err != nil {
 			return err
 		}
@@ -759,7 +851,7 @@ func (d *Daemon) flushEvents(ctx context.Context) error {
 	state = d.spool.snapshot()
 	for manifestID := range state.Artifacts {
 		upload := state.Artifacts[manifestID]
-		upload.SessionID = d.currentSession()
+		upload.SessionID = sessionID
 		if err := d.client.artifact(ctx, upload); err != nil {
 			return err
 		}

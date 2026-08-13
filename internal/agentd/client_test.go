@@ -35,3 +35,16 @@ func TestLeaderClientDecodesPerRunEventAcknowledgement(t *testing.T) {
 		t.Fatalf("events ack = %d, %v", ack, err)
 	}
 }
+
+func TestLeaderClientClassifiesRejectedSession(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": workercontrol.ErrLeaseExpired.Error()})
+	}))
+	t.Cleanup(server.Close)
+	client := newLeaderClient(server.URL, "token")
+	_, err := client.poll(t.Context(), "expired", 0, 1)
+	if !isRejectedSession(err) {
+		t.Fatalf("poll error = %v, want rejected session", err)
+	}
+}
