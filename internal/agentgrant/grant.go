@@ -127,10 +127,14 @@ func (s *Store) MintScoped(scope Grant) (string, error) {
 	if s == nil {
 		return "", errors.New("agent grants: store is not configured")
 	}
-	if strings.TrimSpace(scope.TaskID) == "" {
+	scope.TaskID = strings.TrimSpace(scope.TaskID)
+	scope.RunID = strings.TrimSpace(scope.RunID)
+	scope.EffectID = strings.TrimSpace(scope.EffectID)
+	if scope.TaskID == "" {
 		return "", errors.New("agent grants: a grant needs a task")
 	}
-	if scope.RunID != "" && (strings.TrimSpace(scope.EffectID) == "" || len(scope.AllowedActions) == 0) {
+	scoped := scope.RunID != "" || scope.EffectID != "" || scope.WorkflowGeneration != 0 || len(scope.AllowedActions) > 0
+	if scoped && (scope.RunID == "" || scope.EffectID == "" || len(scope.AllowedActions) == 0) {
 		return "", errors.New("agent grants: scoped grants need run, effect, and actions")
 	}
 	for i := range scope.AllowedActions {

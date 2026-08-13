@@ -496,6 +496,9 @@ func projectRunEnvironment(layout agentworkspace.Layout, spec executioncontract.
 		if err := os.MkdirAll(secretDir, 0o700); err != nil {
 			return nil, errors.New("agentd: create protected run secret directory")
 		}
+		if binding.Name == "" || filepath.Base(binding.Name) != binding.Name || binding.Name == "." || binding.Name == ".." {
+			return nil, errors.New("agentd: invalid protected secret binding name")
+		}
 		secretPath := filepath.Join(secretDir, binding.Name)
 		if err := fsutil.AtomicWriteMode(secretPath, []byte(os.Getenv(envName)), 0o400); err != nil {
 			return nil, errors.New("agentd: project protected run secret")

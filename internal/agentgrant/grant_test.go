@@ -55,6 +55,21 @@ func TestScopedGrantRejectsConfusedDeputyStaleGenerationAndReplay(t *testing.T) 
 	}
 }
 
+func TestMintScopedRequiresAllScopedIdentityFields(t *testing.T) {
+	s := store(t, time.Hour)
+	for name, grant := range map[string]Grant{
+		"effect only":  {TaskID: "task", EffectID: "effect"},
+		"actions only": {TaskID: "task", AllowedActions: []string{"task.get"}},
+		"blank run":    {TaskID: "task", RunID: "  ", EffectID: "effect", AllowedActions: []string{"task.get"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := s.MintScoped(grant); err == nil {
+				t.Fatal("incomplete scoped grant was minted")
+			}
+		})
+	}
+}
+
 func TestScopedGrantPersistsDigestReplayStateAndSecretFreeAudit(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "grants.json")
 	s, err := New(path, time.Hour)

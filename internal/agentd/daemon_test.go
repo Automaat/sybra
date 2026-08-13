@@ -447,6 +447,10 @@ func TestProjectRunEnvironmentUsesProtectedFilesAndExcludesWorkerCredential(t *t
 	if err != nil || info.Mode().Perm() != 0o400 {
 		t.Fatalf("protected secret mode = %v, %v", info, err)
 	}
+	spec.Environment[0].Name = "../ESCAPE"
+	if _, err := projectRunEnvironment(layout, spec, map[string]string{"run/run-protected-secret/input": "RUN_ONLY_SECRET"}); err == nil {
+		t.Fatal("path-shaped secret binding name was accepted")
+	}
 }
 
 func TestSpoolAssignsConcurrentPerRunSequencesAtomically(t *testing.T) {
