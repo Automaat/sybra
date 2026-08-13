@@ -101,7 +101,10 @@ func (s *Service) handleAckEvents(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleArtifact(w http.ResponseWriter, r *http.Request) {
 	var upload ArtifactUpload
-	if !decodeLimit(w, r, &upload, executioncontract.MaxArtifactTotalSize*2+(1<<20)) {
+	// ArtifactPackage base64-encodes its members, then ArtifactUpload base64-
+	// encodes that package once more. Three times the raw aggregate leaves
+	// bounded room for both expansions plus manifest metadata.
+	if !decodeLimit(w, r, &upload, executioncontract.MaxArtifactTotalSize*3+(4<<20)) {
 		return
 	}
 	respond(w, map[string]bool{"staged": true}, s.UploadArtifact(r.Context(), upload))

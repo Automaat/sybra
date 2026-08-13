@@ -569,7 +569,7 @@ func (s *Service) UploadArtifact(ctx context.Context, upload ArtifactUpload) err
 		encoded, _ := json.Marshal(upload.Manifest)
 		var existingManifest, existingRun string
 		var existingContent []byte
-		err := tx.QueryRowContext(ctx, s.db.Rebind(`SELECT manifest_json, run_id, content FROM worker_artifacts WHERE run_id = ?`),
+		err := tx.QueryRowContext(ctx, s.db.Rebind(`SELECT manifest_json, run_id, content FROM worker_artifacts WHERE run_id = ? ORDER BY imported_at DESC LIMIT 1`),
 			upload.Manifest.RunID).Scan(&existingManifest, &existingRun, &existingContent)
 		if err == nil {
 			if existingManifest != string(encoded) || !bytes.Equal(existingContent, upload.Content) {
@@ -662,9 +662,9 @@ func validateRequiredOutputs(spec executioncontract.RunSpec, manifest executionc
 func (s *Service) LoadStagedArtifact(ctx context.Context, runID string) (ArtifactHandback, error) {
 	var specJSON, manifestJSON, state string
 	var content []byte
-	err := s.db.QueryRowContext(ctx, `SELECT r.run_spec_json, r.artifact_state, a.manifest_json, a.content
+	err := s.db.QueryRowContext(ctx, s.db.Rebind(`SELECT r.run_spec_json, r.artifact_state, a.manifest_json, a.content
 		FROM remote_runs r JOIN worker_artifacts a ON a.run_id = r.run_id
-		WHERE r.run_id = ? ORDER BY a.imported_at DESC LIMIT 1`, runID).
+		WHERE r.run_id = ? ORDER BY a.imported_at DESC LIMIT 1`), runID).
 		Scan(&specJSON, &state, &manifestJSON, &content)
 	if err != nil {
 		return ArtifactHandback{}, err
@@ -717,8 +717,8 @@ func (s *Service) ResolveArtifact(ctx context.Context, runID, manifestID, state 
 }
 
 func (s *Service) PruneResolvedArtifacts(ctx context.Context, before time.Time) (int64, error) {
-	result, err := s.db.ExecContext(ctx, `DELETE FROM worker_artifacts WHERE imported_at < ? AND run_id IN
-		(SELECT run_id FROM remote_runs WHERE artifact_state IN ('imported', 'rejected'))`, db.TimeValue(before.UTC()))
+	result, err := s.db.ExecContext(ctx, s.db.Rebind(`DELETE FROM worker_artifacts WHERE imported_at < ? AND run_id IN
+		(SELECT run_id FROM remote_runs WHERE artifact_state IN ('imported', 'rejected'))`), db.TimeValue(before.UTC()))
 	if err != nil {
 		return 0, err
 	}
