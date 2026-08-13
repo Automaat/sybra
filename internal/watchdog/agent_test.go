@@ -1295,7 +1295,7 @@ func TestHandleZeroOutputStall_CapturesProcessState(t *testing.T) {
 	if capture.AgentID != "a1" || capture.TaskID != tk.ID || capture.Provider != "claude" || capture.PID != 4242 {
 		t.Fatalf("capture identity = %+v, want agent a1 task %s provider claude pid 4242", capture, tk.ID)
 	}
-	if capture.StallSec != int((20 * time.Minute).Seconds()) || capture.TotalSec != int((20 * time.Minute).Seconds()) {
+	if capture.StallSec != int((20*time.Minute).Seconds()) || capture.TotalSec != int((20*time.Minute).Seconds()) {
 		t.Fatalf("capture timing = %+v, want stall/total 1200s", capture)
 	}
 	if capture.CapturedAt.IsZero() {
