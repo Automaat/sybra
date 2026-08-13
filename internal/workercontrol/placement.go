@@ -139,9 +139,7 @@ func (s *Service) ScheduleStart(ctx context.Context, request PlacementRequest) (
 }
 
 func (s *Service) placementSessionsTx(ctx context.Context, tx *sql.Tx, request PlacementRequest) ([]placementSession, error) {
-	query := `SELECT s.worker_id, s.session_id, s.state, s.capabilities_json,
-		(SELECT COUNT(*) FROM remote_runs r WHERE r.session_id = s.session_id AND r.state != 'terminal')
-		FROM worker_sessions s WHERE s.state IN ('active', 'draining', 'disabled') AND s.lease_expires_at > ? ORDER BY s.worker_id, s.session_id`
+	query := `SELECT worker_id, session_id, state, capabilities_json FROM worker_sessions WHERE state IN ('active', 'draining', 'disabled') AND lease_expires_at > ? ORDER BY worker_id, session_id`
 	if s.db.Dialect() == db.Postgres {
 		query += ` FOR UPDATE`
 	}
@@ -153,7 +151,7 @@ func (s *Service) placementSessionsTx(ctx context.Context, tx *sql.Tx, request P
 	for rows.Next() {
 		var item placementSession
 		var encoded string
-		if err := rows.Scan(&item.workerID, &item.sessionID, &item.state, &encoded, &item.active); err != nil {
+		if err := rows.Scan(&item.workerID, &item.sessionID, &item.state, &encoded); err != nil {
 			return nil, err
 		}
 		var values []string
@@ -170,7 +168,33 @@ func (s *Service) placementSessionsTx(ctx context.Context, tx *sql.Tx, request P
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
+	// Count reservations in a fresh statement after the session locks are
+	// acquired. On PostgreSQL, folding this count into the FOR UPDATE query
+	// would retain that statement's earlier READ COMMITTED snapshot after a
+	// lock wait and could miss the reservation committed by the lock holder.
+	activeRows, err := tx.QueryContext(ctx, `SELECT session_id, COUNT(*) FROM remote_runs WHERE state != 'terminal' GROUP BY session_id`)
+	if err != nil {
+		return nil, err
+	}
+	activeBySession := make(map[string]int)
+	for activeRows.Next() {
+		var sessionID string
+		var active int
+		if err := activeRows.Scan(&sessionID, &active); err != nil {
+			_ = activeRows.Close()
+			return nil, err
+		}
+		activeBySession[sessionID] = active
+	}
+	if err := activeRows.Err(); err != nil {
+		_ = activeRows.Close()
+		return nil, err
+	}
+	if err := activeRows.Close(); err != nil {
+		return nil, err
+	}
 	for i := range out {
+		out[i].active = activeBySession[out[i].sessionID]
 		out[i].candidate = scorePlacement(out[i], request)
 	}
 	return out, nil
