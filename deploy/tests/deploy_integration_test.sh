@@ -674,6 +674,17 @@ scenario_rollback_preserves_quarantine() {
   assert_eq "rollback-quarantine: bad candidate stays quarantined" "1" "$(quarantine_count)"
 }
 
+scenario_agentd_exec_path_wins_over_environment_files() {
+  local unit="$HERE/../systemd/sybra-agentd.service"
+  local exec_start
+  exec_start="$(grep '^ExecStart=' "$unit")"
+
+  assert_contains "agentd-unit: applies toolchain PATH at exec time" "$exec_start" \
+    'ExecStart=/usr/bin/env PATH='
+  assert_contains "agentd-unit: provider Node install precedes mise shims" "$exec_start" \
+    '/mise/installs/node/24/bin:/home/sybra/.local/bin:/home/sybra/.local/share/mise/shims'
+}
+
 main() {
   command -v go >/dev/null 2>&1 || { echo "go toolchain required to build the fixture module" >&2; exit 1; }
 
@@ -688,6 +699,7 @@ main() {
   scenario_repair_src_preflight "$TMPBASE/repair-src"
   scenario_successful_activation "$TMPBASE/success"
   scenario_agentd_refresh "$TMPBASE/agentd-refresh"
+  scenario_agentd_exec_path_wins_over_environment_files
   scenario_health_check_failure "$TMPBASE/health-failure"
   scenario_rollback_preserves_quarantine "$TMPBASE/rollback-quarantine"
   scenario_health_target_scheme "$TMPBASE/health-scheme"
