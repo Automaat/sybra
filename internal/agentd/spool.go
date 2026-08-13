@@ -55,11 +55,13 @@ type Spool struct {
 func (s *Spool) usageBytes() int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	info, err := os.Stat(s.path)
+	data, err := json.Marshal(s.state)
 	if err != nil {
 		return 0
 	}
-	return info.Size()
+	// persistLocked appends one formatting newline after enforcing maxBytes
+	// against this JSON payload. Report the same unit as the configured limit.
+	return int64(len(data))
 }
 
 func OpenSpool(root string, maxBytes int64, capacity ...int) (*Spool, error) {

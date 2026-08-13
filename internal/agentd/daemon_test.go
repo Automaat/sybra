@@ -189,6 +189,17 @@ func TestRuntimeCapabilitiesReportBoundedSpoolUsage(t *testing.T) {
 	if !strings.Contains(joined, "spool_max_bytes=1048576") || strings.Contains(joined, "spool_bytes=0") {
 		t.Fatalf("runtime capabilities = %v", capabilities)
 	}
+	payload, err := json.Marshal(spool.snapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(spool.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := spool.usageBytes(); got != int64(len(payload)) || info.Size() != got+1 {
+		t.Fatalf("reported usage=%d payload=%d disk=%d; want payload units without formatting newline", got, len(payload), info.Size())
+	}
 }
 
 func TestSpoolReservesRoomForTerminalFate(t *testing.T) {
