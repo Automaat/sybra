@@ -173,7 +173,8 @@ func (a *App) importRemoteOutputs(handback workercontrol.ArtifactHandback, membe
 			}
 			tags := append([]string(nil), current.Tags...)
 			tags = append(tags, remoteReceiptTag(handback.Manifest.ManifestID))
-			for _, entry := range handback.Manifest.Artifacts {
+			for i := range handback.Manifest.Artifacts {
+				entry := &handback.Manifest.Artifacts[i]
 				if entry.Root == executioncontract.RootSidecar {
 					tags = append(tags, remoteSidecarReceiptTag(handback.Spec.Fence.WorkflowID, handback.Spec.Fence.StepID, handback.Spec.Fence.WorkflowGeneration+1, entry.Kind))
 				}
