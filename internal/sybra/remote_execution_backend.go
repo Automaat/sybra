@@ -24,7 +24,12 @@ type remoteExecution struct {
 	sink             agent.ExecutionEventSink
 	cancel           context.CancelFunc
 	localHandle      agent.ExecutionHandle
+	deadline         time.Time
+	after            uint64
+	observing        bool
 }
+
+const remoteTerminalGrace = time.Minute
 
 func (r *remoteExecution) emit(ctx context.Context, handle agent.ExecutionHandle, event agent.ExecutionEvent) {
 	r.mu.RLock()
@@ -86,8 +91,8 @@ func (b *leaderExecutionBackend) Start(ctx context.Context, start agent.Executio
 
 func (b *leaderExecutionBackend) startRemoteRelay(ctx context.Context, start agent.ExecutionStart, runID, sessionID string, deadline time.Time, command string) (agent.ExecutionHandle, error) {
 	handle := agent.ExecutionHandle("remote:" + runID)
-	runCtx, cancel := context.WithDeadline(ctx, deadline)
-	run := &remoteExecution{runID: runID, sessionID: sessionID, sink: start.Sink, cancel: cancel}
+	runCtx, cancel := context.WithDeadline(ctx, deadline.Add(remoteTerminalGrace))
+	run := &remoteExecution{runID: runID, sessionID: sessionID, sink: start.Sink, cancel: cancel, deadline: deadline, observing: true}
 	b.store(handle, run)
 	start.Sink.EmitExecutionEvent(ctx, handle, agent.ExecutionEvent{Kind: agent.ExecutionStarted, Command: command})
 	go b.relay(runCtx, handle, run, 0)
@@ -174,7 +179,15 @@ func (b *leaderExecutionBackend) placementRequest(ctx context.Context, start age
 }
 
 func (b *leaderExecutionBackend) relay(ctx context.Context, handle agent.ExecutionHandle, run *remoteExecution, after uint64) {
-	defer b.remove(handle)
+	completed := false
+	defer func() {
+		run.mu.Lock()
+		run.observing = false
+		run.mu.Unlock()
+		if completed {
+			b.remove(handle)
+		}
+	}()
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -198,7 +211,10 @@ func (b *leaderExecutionBackend) relay(ctx context.Context, handle agent.Executi
 						run.emit(ctx, handle, agent.ExecutionEvent{Kind: agent.ExecutionApproval, Approval: &progress.Request})
 					}
 				case executioncontract.EventTerminal:
-					b.completeAfterHandback(ctx, handle, run, event)
+					if !b.completeAfterHandback(ctx, handle, run, event) {
+						return
+					}
+					completed = true
 					ackCtx := context.WithoutCancel(ctx)
 					if sessionID, sessionErr := b.currentSession(ackCtx, run); sessionErr != nil {
 						if b.app.logger != nil {
@@ -211,6 +227,9 @@ func (b *leaderExecutionBackend) relay(ctx context.Context, handle agent.Executi
 					}
 					return
 				}
+				run.mu.Lock()
+				run.after = after
+				run.mu.Unlock()
 			}
 			// Do not acknowledge a prefix before its terminal event has crossed
 			// the manager completion path. A leader crash after acknowledging a
@@ -222,13 +241,17 @@ func (b *leaderExecutionBackend) relay(ctx context.Context, handle agent.Executi
 			// Cancellation tears down only this leader-side observation. The
 			// durable run remains recoverable and its worker-owned terminal event
 			// is still the sole authority for canonical completion.
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				run.emit(ctx, handle, agent.ExecutionEvent{Kind: agent.ExecutionCompleted, Err: ctx.Err()})
+				completed = true
+			}
 			return
 		case <-ticker.C:
 		}
 	}
 }
 
-func (b *leaderExecutionBackend) completeAfterHandback(ctx context.Context, handle agent.ExecutionHandle, run *remoteExecution, event executioncontract.EventEnvelope) {
+func (b *leaderExecutionBackend) completeAfterHandback(ctx context.Context, handle agent.ExecutionHandle, run *remoteExecution, event executioncontract.EventEnvelope) bool {
 	var terminal struct {
 		State         executioncontract.TerminalState `json:"state"`
 		Error         string                          `json:"error"`
@@ -236,11 +259,11 @@ func (b *leaderExecutionBackend) completeAfterHandback(ctx context.Context, hand
 	}
 	if err := json.Unmarshal(event.Payload, &terminal); err != nil {
 		run.emit(ctx, handle, agent.ExecutionEvent{Kind: agent.ExecutionCompleted, Err: err})
-		return
+		return true
 	}
 	if terminal.State != executioncontract.TerminalSucceeded && terminal.State != executioncontract.TerminalFailed && terminal.State != executioncontract.TerminalCanceled {
 		run.emit(ctx, handle, agent.ExecutionEvent{Kind: agent.ExecutionCompleted, Err: fmt.Errorf("invalid remote terminal state %q", terminal.State)})
-		return
+		return true
 	}
 	if terminal.ArtifactState == executioncontract.ArtifactsPending ||
 		(terminal.ArtifactState == executioncontract.ArtifactsFailed && terminal.State == executioncontract.TerminalSucceeded) {
@@ -258,6 +281,9 @@ func (b *leaderExecutionBackend) completeAfterHandback(ctx context.Context, hand
 			}
 			select {
 			case <-ctx.Done():
+				if errors.Is(ctx.Err(), context.Canceled) {
+					return false
+				}
 				terminal.State, terminal.Error = executioncontract.TerminalCanceled, ctx.Err().Error()
 				break artifactWait
 			case <-time.After(100 * time.Millisecond):
@@ -277,6 +303,7 @@ func (b *leaderExecutionBackend) completeAfterHandback(ctx context.Context, hand
 		completionErr = errors.New(firstNonBlank(terminal.Error, "remote execution failed"))
 	}
 	run.emit(ctx, handle, agent.ExecutionEvent{Kind: agent.ExecutionCompleted, Err: completionErr})
+	return true
 }
 
 func (b *leaderExecutionBackend) command(ctx context.Context, handle agent.ExecutionHandle, kind executioncontract.CommandType, payload any, key string) error {
@@ -362,7 +389,19 @@ func (b *leaderExecutionBackend) Recover(ctx context.Context, handle agent.Execu
 	}
 	run.mu.Lock()
 	run.sink = sink
+	if run.observing {
+		run.mu.Unlock()
+		return nil
+	}
+	run.observing = true
+	after := run.after
+	deadline := run.deadline
 	run.mu.Unlock()
+	runCtx, cancel := context.WithDeadline(ctx, deadline.Add(remoteTerminalGrace))
+	run.mu.Lock()
+	run.cancel = cancel
+	run.mu.Unlock()
+	go b.relay(runCtx, handle, run, after)
 	return nil
 }
 

@@ -175,6 +175,7 @@ func TestRemoteRelayCancellationDetachesWithoutCompleting(t *testing.T) {
 		runs: make(map[agent.ExecutionHandle]*remoteExecution),
 	}
 	run := &remoteExecution{runID: "still-running", sink: sink}
+	backend.store("remote:still-running", run)
 	backend.relay(ctx, "remote:still-running", run, 0)
 	sink.mu.Lock()
 	defer sink.mu.Unlock()
@@ -182,6 +183,9 @@ func TestRemoteRelayCancellationDetachesWithoutCompleting(t *testing.T) {
 		if event.Kind == agent.ExecutionCompleted {
 			t.Fatalf("observer cancellation synthesized completion: %+v", event)
 		}
+	}
+	if _, err := backend.load("remote:still-running"); err != nil {
+		t.Fatalf("detached run is no longer recoverable: %v", err)
 	}
 }
 
