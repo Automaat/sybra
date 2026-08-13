@@ -354,8 +354,20 @@ func (m *Manager) injectAmbientReviewGhShim(cfg *RunConfig) {
 		xdg := ambientEnvValue(cfg.ExtraEnv, "XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 		ghConfig := ambientEnvValue(cfg.ExtraEnv, "GH_CONFIG_DIR", filepath.Join(xdg, "gh"))
 		gitConfig := ambientEnvValue(cfg.ExtraEnv, "GIT_CONFIG_GLOBAL", filepath.Join(home, ".gitconfig"))
-		cfg.ReadOnlyPaths = append(cfg.ReadOnlyPaths, ghConfig, filepath.Join(xdg, "git"), gitConfig)
+		cfg.ReadOnlyPaths = appendExistingReadOnlyPaths(cfg.ReadOnlyPaths, ghConfig, filepath.Join(xdg, "git"), gitConfig)
 	}
+}
+
+func appendExistingReadOnlyPaths(paths []string, candidates ...string) []string {
+	for _, candidate := range candidates {
+		if strings.TrimSpace(candidate) == "" {
+			continue
+		}
+		if _, err := os.Stat(candidate); err == nil {
+			paths = append(paths, candidate)
+		}
+	}
+	return paths
 }
 
 func ambientEnvValue(env []string, key, fallback string) string {

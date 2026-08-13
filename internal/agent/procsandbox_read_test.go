@@ -109,6 +109,27 @@ func TestAmbientEnvValueEmptyOverrideUsesFallback(t *testing.T) {
 	}
 }
 
+func TestAmbientReviewAuthOmitsMissingOptionalConfiguration(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	shimDir := t.TempDir()
+	m := &Manager{ghShimDir: shimDir, logger: slog.New(slog.DiscardHandler)}
+	cfg := RunConfig{Role: RoleReview, sandbox: specWithWriteRoots(t), ExtraEnv: []string{
+		"XDG_CONFIG_HOME=", "GH_CONFIG_DIR=", "GIT_CONFIG_GLOBAL=",
+	}}
+	m.injectAmbientReviewGhShim(&cfg)
+
+	for _, absent := range []string{
+		filepath.Join(home, ".config", "gh"),
+		filepath.Join(home, ".config", "git"),
+		filepath.Join(home, ".gitconfig"),
+	} {
+		if slices.Contains(cfg.ReadOnlyPaths, absent) {
+			t.Errorf("missing optional config %q was declared as a required read root: %v", absent, cfg.ReadOnlyPaths)
+		}
+	}
+}
+
 func TestResolveSandboxReadRoots_NeverGrantsOpt(t *testing.T) {
 	m := newReadModeManager("enforce")
 	cfg := &RunConfig{Role: RoleImplementation, sandbox: specWithWriteRoots(t)}
