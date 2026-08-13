@@ -42,6 +42,7 @@ const reviewSummaryQuery = `query($q: String!, $after: String) {
               statusCheckRollup {
                 state
                 contexts(first: 20) {
+                  pageInfo { hasNextPage endCursor }
                   nodes {
                     __typename
                     ... on CheckRun {
@@ -104,6 +105,7 @@ const monitorPRFields = `
             statusCheckRollup {
               state
               contexts(first: 20) {
+                pageInfo { hasNextPage endCursor }
                 nodes {
                   __typename
                   ... on CheckRun {
@@ -328,7 +330,13 @@ func fetchPRForMonitorWith(e execer, repo string, number int) (PullRequest, bool
 	if pr.State != "OPEN" {
 		return PullRequest{}, false, nil
 	}
-	return convertCommonPR(pr, gqlResp.Data.Viewer.Login), true, nil
+	// completePRCheckContexts operates on its slice in place. Use the completed
+	// element rather than the original pointer copied into that slice.
+	completed := []gqlPR{*pr}
+	if err := completePRCheckContexts(context.Background(), e, completed); err != nil {
+		return PullRequest{}, false, fmt.Errorf("complete check contexts for %s#%d: %w", repo, number, err)
+	}
+	return convertCommonPR(&completed[0], gqlResp.Data.Viewer.Login), true, nil
 }
 
 // FetchPRsForMonitor fetches multiple PRs' monitor signals, aliasing them
@@ -478,7 +486,12 @@ func fetchPRBatchWith(e execer, refs []PRRef) []MonitorPRResult {
 		if node.PullRequest == nil || node.PullRequest.State != "OPEN" {
 			continue
 		}
-		results[v.idx].PR = convertCommonPR(node.PullRequest, viewer)
+		completed := []gqlPR{*node.PullRequest}
+		if err := completePRCheckContexts(context.Background(), e, completed); err != nil {
+			results[v.idx].Err = fmt.Errorf("complete check contexts for %s#%d: %w", v.owner+"/"+v.name, v.number, err)
+			continue
+		}
+		results[v.idx].PR = convertCommonPR(&completed[0], viewer)
 		results[v.idx].Open = true
 	}
 	return results
@@ -595,6 +608,9 @@ func fetchReviewSearchWith(e execer, query string) ([]PullRequest, error) {
 		}
 		if viewer == "" {
 			viewer = gqlResp.Data.Viewer.Login
+		}
+		if err := completePRCheckContexts(context.Background(), e, gqlResp.Data.Search.Nodes); err != nil {
+			return nil, err
 		}
 		all = append(all, convertPRs(gqlResp.Data.Search.Nodes, viewer)...)
 		if !gqlResp.Data.Search.PageInfo.HasNextPage {

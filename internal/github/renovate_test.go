@@ -41,9 +41,7 @@ func TestConvertRenovatePRs(t *testing.T) {
 			StatusCheckRollup *gqlStatusCheckRollup `json:"statusCheckRollup"`
 		}{StatusCheckRollup: &gqlStatusCheckRollup{
 			State: "FAILURE",
-			Contexts: struct {
-				Nodes []gqlCheckContext `json:"nodes"`
-			}{Nodes: []gqlCheckContext{
+			Contexts: gqlCheckContextConnection{Nodes: []gqlCheckContext{
 				{Name: "ci/lint", Status: "COMPLETED", Conclusion: "FAILURE"},
 				{Name: "", Status: "COMPLETED", Conclusion: "SUCCESS"}, // empty name skipped
 			}},

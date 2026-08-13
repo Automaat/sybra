@@ -244,6 +244,7 @@ const prQuery = `query($q: String!, $after: String) {
               statusCheckRollup {
                 state
                 contexts(first: 50) {
+                  pageInfo { hasNextPage endCursor }
                   nodes {
                     __typename
                     ... on CheckRun {
@@ -342,11 +343,19 @@ func parseCheckTime(s string) time.Time {
 	return t
 }
 
+type gqlPageInfo struct {
+	HasNextPage bool   `json:"hasNextPage"`
+	EndCursor   string `json:"endCursor"`
+}
+
+type gqlCheckContextConnection struct {
+	Nodes    []gqlCheckContext `json:"nodes"`
+	PageInfo gqlPageInfo       `json:"pageInfo"`
+}
+
 type gqlStatusCheckRollup struct {
-	State    string `json:"state"`
-	Contexts struct {
-		Nodes []gqlCheckContext `json:"nodes"`
-	} `json:"contexts"`
+	State    string                    `json:"state"`
+	Contexts gqlCheckContextConnection `json:"contexts"`
 }
 
 type gqlResponse struct {
@@ -455,6 +464,9 @@ func searchPRsWith(e execer, query string) ([]PullRequest, error) {
 		}
 		if viewer == "" {
 			viewer = gqlResp.Data.Viewer.Login
+		}
+		if err := completePRCheckContexts(context.Background(), e, gqlResp.Data.Search.Nodes); err != nil {
+			return nil, err
 		}
 		all = append(all, convertPRs(gqlResp.Data.Search.Nodes, viewer)...)
 		if !gqlResp.Data.Search.PageInfo.HasNextPage {

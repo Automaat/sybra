@@ -39,6 +39,7 @@ const renovatePRQuery = `query($q: String!, $after: String) {
               statusCheckRollup {
                 state
                 contexts(first: 50) {
+                  pageInfo { hasNextPage endCursor }
                   nodes {
                     __typename
                     ... on CheckRun {
@@ -145,6 +146,9 @@ func searchRenovatePRsWith(ctx context.Context, e execer, query string) ([]Renov
 		}
 		if viewer == "" {
 			viewer = gqlResp.Data.Viewer.Login
+		}
+		if err := completePRCheckContexts(ctx, e, gqlResp.Data.Search.Nodes); err != nil {
+			return nil, err
 		}
 		all = append(all, convertRenovatePRs(gqlResp.Data.Search.Nodes, viewer)...)
 		if !gqlResp.Data.Search.PageInfo.HasNextPage {
