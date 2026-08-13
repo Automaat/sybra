@@ -2,15 +2,38 @@ package workflow
 
 import (
 	"context"
+	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Automaat/sybra/internal/buildcache"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
+
+type miseTrustVerificationRunner struct {
+	trusted  bool
+	commands []string
+}
+
+func (r *miseTrustVerificationRunner) RunVerificationCommand(
+	_ context.Context, _, _, command string, _ []string, _ io.Writer,
+) error {
+	r.commands = append(r.commands, command)
+	if command == "mise trust --yes" {
+		r.trusted = true
+		return nil
+	}
+	if strings.Contains(command, "mise exec") && !r.trusted {
+		return errors.New("mise config is not trusted in ephemeral HOME")
+	}
+	return nil
+}
 
 func newCodegenGateStep() *Step { return &Step{ID: "codegen_gate", Type: StepCodegenGate} }
 
@@ -116,6 +139,28 @@ func TestExecCodegenGate_CleanTreeNoOp(t *testing.T) {
 	}
 	if !strings.Contains(rec.puts[0].content, `"committed": false`) {
 		t.Fatalf("artifact content = %q, want committed=false", rec.puts[0].content)
+	}
+}
+
+func TestExecCodegenGateTrustsMiseInsideVerificationSandbox(t *testing.T) {
+	wt := makeBaseRepo(t, map[string]string{
+		"README.md": "init\n",
+		"mise.toml": "[tools]\ngo = '1.26'\n",
+	})
+	engine, tasks := newCodegenGateEngine(t, wt, []string{"mise exec -- true"})
+	runner := &miseTrustVerificationRunner{}
+	engine.execution.VerificationCommands = runner
+	tasks.Put(TaskInfo{ID: "t1", Status: taskstatus.InProgress})
+
+	out, err := engine.execCodegenGate("t1", newCodegenGateStep())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "clean" {
+		t.Fatalf("Output = %q, want clean", out.Output)
+	}
+	if got, want := runner.commands, []string{"mise trust --yes", "mise exec -- true"}; !slices.Equal(got, want) {
+		t.Fatalf("verification commands = %q, want %q", got, want)
 	}
 }
 

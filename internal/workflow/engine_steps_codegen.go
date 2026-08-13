@@ -45,7 +45,11 @@ func (e *Engine) execCodegenGate(taskID string, step *Step) (StepOutput, error) 
 
 	ctx, cancel := context.WithTimeout(e.ctx, timeout)
 	defer cancel()
-	maybeMiseTrust(ctx, wtPath)
+	// Verification commands run with an ephemeral HOME. Trusting the mise
+	// config in the operator's HOME does not carry into that sandbox, so a
+	// valid `mise exec -- ...` codegen command is rejected as untrusted. Use
+	// the same contained trust preparation as verify_checks.
+	e.maybeMiseTrustContained(ctx, taskID, wtPath, wtPath)
 
 	report := codegenGateReport{Commands: cmds}
 	tail := &boundedTail{max: verifyChecksMaxOutput}
@@ -76,7 +80,7 @@ func (e *Engine) execCodegenGate(taskID string, step *Step) (StepOutput, error) 
 		if failedCmd != "" {
 			reason := "codegen gate failed while running " + trimDiffLine(failedCmd) +
 				" — rerun the repo's format/codegen commands and commit the resulting changes"
-			return e.flagCodegenGate(taskID, step, reason, failedCmd)
+			return e.flagCodegenGate(taskID, step, reason, tailString(output, 400))
 		}
 	}
 
