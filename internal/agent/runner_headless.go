@@ -1136,7 +1136,7 @@ func postResultPipeResolution(reason string) string {
 }
 
 func shouldTrackPostResultWait(a *Agent) bool {
-	return a.PendingPromptCount() == 0 && (!a.convo.hasStdinPipe() || a.isFinalizing())
+	return !a.completionOwnedByBackend() && a.PendingPromptCount() == 0 && (!a.convo.hasStdinPipe() || a.isFinalizing())
 }
 
 func ensurePostResultWaitState(a *Agent) {

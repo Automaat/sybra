@@ -35,12 +35,13 @@ const (
 // failure/cancellation from a clean exit. Backends must emit events in order
 // and exactly one Completed event for sink-driven runs.
 type ExecutionEvent struct {
-	Kind     ExecutionEventKind
-	Provider string
-	Output   []byte
-	Err      error
-	Command  string
-	Approval *ApprovalRequest
+	Kind                  ExecutionEventKind
+	Provider              string
+	Output                []byte
+	Err                   error
+	Command               string
+	BackendOwnsCompletion bool
+	Approval              *ApprovalRequest
 }
 
 // ExecutionEventSink receives process observations. It deliberately exposes
@@ -91,6 +92,9 @@ type ExecutionStart struct {
 	approve      func(string, bool) error
 	inspect      func() ExecutionInspection
 	startCommand string
+	// Provider result output is observational for portable backends. Their
+	// explicit Completed event remains the only terminal authority.
+	backendOwnsCompletion bool
 }
 
 // ExecutionInspection is the backend's point-in-time process view. State is
@@ -189,7 +193,9 @@ func (b *callbackExecutionBackend) Start(ctx context.Context, start ExecutionSta
 		}
 	}
 
-	start.Sink.EmitExecutionEvent(ctx, handle, ExecutionEvent{Kind: ExecutionStarted, Command: start.startCommand})
+	start.Sink.EmitExecutionEvent(ctx, handle, ExecutionEvent{
+		Kind: ExecutionStarted, Command: start.startCommand, BackendOwnsCompletion: start.backendOwnsCompletion,
+	})
 	go func() {
 		start.runExisting(ctx, start.Sink, handle)
 		b.mu.Lock()

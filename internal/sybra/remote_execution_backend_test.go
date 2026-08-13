@@ -29,6 +29,7 @@ import (
 	"github.com/Automaat/sybra/internal/testutil/dbtest"
 	"github.com/Automaat/sybra/internal/workercontrol"
 	"github.com/Automaat/sybra/internal/workflow"
+	"github.com/Automaat/sybra/internal/worktree"
 )
 
 type recordingExecutionSink struct {
@@ -467,6 +468,7 @@ func TestLeaderTwoDaemonsPartitionCompletesProviderAndWorkflowExactlyOnce(t *tes
 	provider := filepath.Join(bin, providerid.Claude)
 	providerScript := `#!/bin/sh
 printf 'run\n' >> "$SYBRA_CLUSTER_MARKER"
+printf 'remote mutation\n' >> README.md
 printf '%s\n' '{"type":"system","session_id":"partition-session"}'
 printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"durable output"}]}}'
 printf '%s\n' '{"type":"result","result":"done","session_id":"partition-session","total_cost_usd":0.01}'
@@ -480,16 +482,6 @@ printf '%s\n' '{"type":"result","result":"done","session_id":"partition-session"
 
 	database := dbtest.SQLite(t)
 	control := workercontrol.New(database)
-	control.SetArtifactImporter(func(ctx context.Context, runID string) error {
-		handback, err := control.LoadStagedArtifact(ctx, runID)
-		if err != nil {
-			return err
-		}
-		if err := control.BeginArtifactImport(ctx, runID, handback.Manifest.ManifestID); err != nil {
-			return err
-		}
-		return control.ResolveArtifact(ctx, runID, handback.Manifest.ManifestID, "imported")
-	})
 	var partitioned atomic.Bool
 	baseHandler := control.Handler()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
@@ -533,7 +525,7 @@ printf '%s\n' '{"type":"result","result":"done","session_id":"partition-session"
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	canonical := task.Task{ID: "task-e2e-partition", Title: "partition", ProjectID: "repo", Branch: "main", NodeOverride: "daemon-a",
+	canonical := task.Task{ID: "task-e2e-partition", Title: "partition", ProjectID: "repo", Branch: "main", WorktreeDir: dir, NodeOverride: "daemon-a",
 		Status: task.StatusInProgress, CreatedAt: now, UpdatedAt: now, Generation: 7,
 		Workflow: &workflow.Execution{WorkflowID: "ship", CurrentStep: "implement", State: workflow.ExecWaiting}}
 	if _, err := store.Put(canonical); err != nil {
@@ -555,8 +547,13 @@ printf '%s\n' '{"type":"result","result":"done","session_id":"partition-session"
 		},
 		TaskGeneration: func(taskID string) (int64, bool) { return canonical.Generation, taskID == canonical.ID },
 	})
-	app := &App{tasks: tasks, workerControl: control, agents: manager, logger: discardLogger()}
-	manager.SetExecutionBackend(newLeaderExecutionBackend(app))
+	app := &App{
+		tasks: tasks, workerControl: control, agents: manager, logger: discardLogger(),
+		worktrees: worktree.New(worktree.Config{WorktreesDir: filepath.Join(root, "leader-worktrees"), Tasks: tasks, Logger: discardLogger()}),
+	}
+	control.SetArtifactImporter(app.importRemoteHandback)
+	leaderBackend := newLeaderExecutionBackend(app)
+	manager.SetExecutionBackend(leaderBackend)
 	partitioned.Store(true)
 	intent := canonical.ID + ":ship:7:1:implement:0"
 	running, err := manager.Run(agent.RunConfig{Mode: "headless", Name: "e2e partition", TaskID: canonical.ID, Dir: dir, Prompt: "work",
@@ -592,7 +589,14 @@ printf '%s\n' '{"type":"result","result":"done","session_id":"partition-session"
 	case <-time.After(30 * time.Second):
 		remote, _ := control.RemoteRunForEffect(t.Context(), intent)
 		events, _ := control.ReplayEvents(t.Context(), remote.Status.RunID, 0, 100)
-		t.Fatalf("durable partition replay did not reach manager completion: status=%+v events=%+v", remote.Status, events)
+		handle := agent.ExecutionHandle("remote:" + remote.Status.RunID)
+		observing := false
+		if run, loadErr := leaderBackend.load(handle); loadErr == nil {
+			run.mu.RLock()
+			observing = run.observing
+			run.mu.RUnlock()
+		}
+		t.Fatalf("durable partition replay did not reach manager completion: status=%+v agent=%+v observing=%v events=%+v", remote.Status, running.View(), observing, events)
 	}
 	time.Sleep(200 * time.Millisecond)
 	if transitions.Load() != 1 {
@@ -609,6 +613,10 @@ printf '%s\n' '{"type":"result","result":"done","session_id":"partition-session"
 	updated, err := tasks.Get(canonical.ID)
 	if err != nil || updated.Workflow.CurrentStep != "review" {
 		t.Fatalf("canonical workflow = %+v, %v", updated.Workflow, err)
+	}
+	readme, err := os.ReadFile(filepath.Join(dir, "README.md"))
+	if err != nil || !strings.Contains(string(readme), "remote mutation\n") {
+		t.Fatalf("production handback did not publish provider mutation: %q, %v", readme, err)
 	}
 	cancel()
 	for range 2 {

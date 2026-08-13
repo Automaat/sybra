@@ -97,7 +97,9 @@ func (b *leaderExecutionBackend) startRemoteRelay(ctx context.Context, start age
 	runCtx, cancel := context.WithDeadline(ctx, deadline.Add(remoteTerminalGrace))
 	run := &remoteExecution{runID: runID, sessionID: sessionID, buildVersion: buildVersion, sink: start.Sink, cancel: cancel, deadline: deadline, observing: true, observerDone: make(chan struct{})}
 	b.store(handle, run)
-	start.Sink.EmitExecutionEvent(ctx, handle, agent.ExecutionEvent{Kind: agent.ExecutionStarted, Command: command})
+	start.Sink.EmitExecutionEvent(ctx, handle, agent.ExecutionEvent{
+		Kind: agent.ExecutionStarted, Command: command, BackendOwnsCompletion: true,
+	})
 	go b.relay(runCtx, handle, run, 0)
 	return handle, nil
 }
