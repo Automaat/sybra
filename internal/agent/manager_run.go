@@ -569,6 +569,7 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	if err := m.injectSandboxHome(&cfg); err != nil {
 		return cfg, nil, err
 	}
+	m.injectShellTempPrefix(&cfg)
 	if err := injectScratchEnvironment(&cfg); err != nil {
 		return cfg, nil, err
 	}
@@ -888,17 +889,31 @@ runtime state inside the worktree.`
 // (#3377). Pointing the prefix at an already-granted directory restores it.
 const shellTempPrefixEnv = "TMPPREFIX"
 
-// injectShellTempPrefix points shellTempPrefixEnv at a writable directory
-// under root. The prefix names a file stem, not a directory, so zsh appends
-// its own suffix to produce <root>/zsh/zshXXXXXX; the parent must exist.
-func injectShellTempPrefix(cfg *RunConfig, root string) error {
-	dir := filepath.Join(root, "zsh")
+// injectShellTempPrefix points shellTempPrefixEnv at a writable directory in
+// the run's sandbox home. The prefix names a file stem, not a directory, so
+// zsh appends its own suffix to produce <sandbox-home>/zsh/zshXXXXXX and only
+// the parent has to exist.
+//
+// Deliberately a peer of scratch-home rather than a directory inside it: the
+// run's own prompt advertises $SYBRA_SCRATCH_HOME as disposable, so an agent
+// that cleans up after itself would delete the prefix directory and lose
+// heredocs for the rest of the run.
+//
+// Fails soft. Losing the prefix costs heredocs under enforce, which is the
+// state every run was already in; refusing to dispatch over it would turn one
+// stray file in an agent-writable directory into a task that can never run
+// again, on every posture including off.
+func (m *Manager) injectShellTempPrefix(cfg *RunConfig) {
+	if strings.TrimSpace(cfg.resolvedSandboxHome) == "" {
+		return
+	}
+	dir := filepath.Join(cfg.resolvedSandboxHome, "zsh")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("agent.Run: create shell temp directory %q: %w", dir, err)
+		m.logger.Warn("agent.shell_temp_prefix.failed", "task_id", cfg.TaskID, "dir", dir, "err", err)
+		return
 	}
 	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, shellTempPrefixEnv)
 	cfg.ExtraEnv = append(cfg.ExtraEnv, shellTempPrefixEnv+"="+filepath.Join(dir, "zsh"))
-	return nil
 }
 
 // injectScratchEnvironment gives every sandbox-home-backed run an explicit
@@ -915,9 +930,6 @@ func injectScratchEnvironment(cfg *RunConfig) error {
 	scratchHome := filepath.Join(cfg.resolvedSandboxHome, "scratch-home")
 	if err := os.MkdirAll(scratchHome, 0o700); err != nil {
 		return fmt.Errorf("agent.Run: create task scratch directory %q: %w", scratchHome, err)
-	}
-	if err := injectShellTempPrefix(cfg, scratchHome); err != nil {
-		return err
 	}
 	// Do not replace TMPDIR/TMP/TEMP here. Provider and harness control files
 	// may already live beneath the caller's process temp root; changing that

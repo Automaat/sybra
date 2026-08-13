@@ -35,7 +35,7 @@ func TestPrepareRunConfig_SandboxHome_Injected(t *testing.T) {
 	want := []string{
 		"SYBRA_HOME=" + sandboxDir,
 		"SYBRA_CONTROL_HOME=/real/home",
-		"TMPPREFIX=" + filepath.Join(sandboxDir, "scratch-home", "zsh", "zsh"),
+		"TMPPREFIX=" + filepath.Join(sandboxDir, "zsh", "zsh"),
 		"SYBRA_SCRATCH_HOME=" + filepath.Join(sandboxDir, "scratch-home"),
 		"GOLANGCI_LINT_CACHE=" + filepath.Join(sandboxDir, "golangci-lint-cache"),
 		"GOCACHE=" + filepath.Join(base, "go-build", "task-1"),
@@ -94,9 +94,9 @@ func TestPrepareRunConfig_ScratchEnvironmentStaysOutsideWorktree(t *testing.T) {
 	}
 	// zsh appends its own suffix to TMPPREFIX, so the prefix itself is a file
 	// stem and only its parent is a directory that has to exist.
-	wantPrefix := filepath.Join(sandboxDir, "scratch-home", "zsh", "zsh")
+	wantPrefix := filepath.Join(sandboxDir, "zsh", "zsh")
 	if !slices.Contains(cfg.ExtraEnv, "TMPPREFIX="+wantPrefix) {
-		t.Fatalf("TMPPREFIX not pointed at the scratch home: %v", cfg.ExtraEnv)
+		t.Fatalf("TMPPREFIX not pointed at the sandbox home: %v", cfg.ExtraEnv)
 	}
 	if info, statErr := os.Stat(filepath.Dir(wantPrefix)); statErr != nil || !info.IsDir() {
 		t.Fatalf("TMPPREFIX parent %q was not created: %v", filepath.Dir(wantPrefix), statErr)
@@ -233,7 +233,7 @@ func TestPrepareRunConfig_SandboxHome_IsolatedSystemRun(t *testing.T) {
 	want := []string{
 		"SYBRA_HOME=" + sandboxDir,
 		"SYBRA_CONTROL_HOME=/real/home",
-		"TMPPREFIX=" + filepath.Join(sandboxDir, "scratch-home", "zsh", "zsh"),
+		"TMPPREFIX=" + filepath.Join(sandboxDir, "zsh", "zsh"),
 		"SYBRA_SCRATCH_HOME=" + filepath.Join(sandboxDir, "scratch-home"),
 		"GOLANGCI_LINT_CACHE=" + filepath.Join(sandboxDir, "golangci-lint-cache"),
 		"GOCACHE=" + filepath.Join(base, "go-build", "system-sybra-orchestrator"),
@@ -376,7 +376,7 @@ func TestPrepareRunConfig_SandboxHome_StripsDuplicateCallerEnv(t *testing.T) {
 		"OTHER=keep-me",
 		"SYBRA_HOME=" + sandboxDir,
 		"SYBRA_CONTROL_HOME=/real/home",
-		"TMPPREFIX=" + filepath.Join(sandboxDir, "scratch-home", "zsh", "zsh"),
+		"TMPPREFIX=" + filepath.Join(sandboxDir, "zsh", "zsh"),
 		"SYBRA_SCRATCH_HOME=" + filepath.Join(sandboxDir, "scratch-home"),
 		"GOLANGCI_LINT_CACHE=" + filepath.Join(sandboxDir, "golangci-lint-cache"),
 		"GOCACHE=" + filepath.Join(base, "go-build", "task-1"),
@@ -414,7 +414,7 @@ func TestPrepareRunConfig_SandboxHome_EmptyControlHomeOmitsVar(t *testing.T) {
 	base := sharedBuildCacheDir()
 	want := []string{
 		"SYBRA_HOME=" + sandboxDir,
-		"TMPPREFIX=" + filepath.Join(sandboxDir, "scratch-home", "zsh", "zsh"),
+		"TMPPREFIX=" + filepath.Join(sandboxDir, "zsh", "zsh"),
 		"SYBRA_SCRATCH_HOME=" + filepath.Join(sandboxDir, "scratch-home"),
 		"GOLANGCI_LINT_CACHE=" + filepath.Join(sandboxDir, "golangci-lint-cache"),
 		"GOCACHE=" + filepath.Join(base, "go-build", "task-1"),

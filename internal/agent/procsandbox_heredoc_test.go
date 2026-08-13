@@ -26,6 +26,7 @@ func TestSandboxEnforce_ZshHeredocSucceeds(t *testing.T) {
 	if err != nil {
 		t.Skip("zsh not installed; heredoc path unexercised on this host")
 	}
+	narrowSandboxTempRoot(t)
 	worktree := t.TempDir()
 	sandboxHome := t.TempDir()
 	m, _ := newTestManager(t, ManagerConfig{
@@ -39,6 +40,9 @@ func TestSandboxEnforce_ZshHeredocSucceeds(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("prepareRunConfig: %v", err)
+	}
+	if strings.HasPrefix(cfg.sandbox.tmp, "/tmp") {
+		t.Skipf("granted temp root %q still covers zsh's default prefix; the run cannot distinguish the fix", cfg.sandbox.tmp)
 	}
 
 	out := filepath.Join(worktree, "heredoc.txt")
@@ -58,6 +62,62 @@ func TestSandboxEnforce_ZshHeredocSucceeds(t *testing.T) {
 	}
 	if got := string(body); got != "first line\nsecond line\n" {
 		t.Fatalf("heredoc body = %q, want both lines", got)
+	}
+
+	// The obvious alternative fix is to grant /tmp instead, which widens containment for every run. Prove the same config still refuses it.
+	denied := filepath.Join("/tmp", "sybra-heredoc-denied-probe")
+	t.Cleanup(func() { _ = os.Remove(denied) })
+	probe := newProviderCmd(context.Background(), &cfg, false, zsh, "-c", "echo leak > "+denied)
+	probe.Env = append(os.Environ(), cfg.ExtraEnv...)
+	if probeOut, probeErr := probe.CombinedOutput(); probeErr == nil {
+		t.Fatalf("write to %q succeeded under enforce: %s", denied, probeOut)
+	}
+	if _, statErr := os.Stat(denied); !os.IsNotExist(statErr) {
+		t.Fatalf("unrelated temp path %q became writable: %v", denied, statErr)
+	}
+}
+
+// TestSandboxEnforce_ZshHeredocSurvivesScratchCleanup guards the other wrong
+// fix. The run's prompt advertises $SYBRA_SCRATCH_HOME as disposable, so an
+// agent that deletes it must not lose heredocs for the rest of the run.
+func TestSandboxEnforce_ZshHeredocSurvivesScratchCleanup(t *testing.T) {
+	if !sandboxExecAvailable() {
+		t.Skip("host sandbox mechanism unavailable; enforce path unexercised on this host")
+	}
+	zsh, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skip("zsh not installed; heredoc path unexercised on this host")
+	}
+	narrowSandboxTempRoot(t)
+	worktree := t.TempDir()
+	sandboxHome := t.TempDir()
+	m, _ := newTestManager(t, ManagerConfig{
+		SandboxHome: func(string) (string, error) { return sandboxHome, nil },
+	})
+	cfg, _, err := m.prepareRunConfig(RunConfig{
+		TaskID:      "task-heredoc-cleanup",
+		Mode:        "headless",
+		Dir:         worktree,
+		SandboxMode: "enforce",
+	})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+	if strings.HasPrefix(cfg.sandbox.tmp, "/tmp") {
+		t.Skipf("granted temp root %q still covers zsh's default prefix; the run cannot distinguish the fix", cfg.sandbox.tmp)
+	}
+
+	out := filepath.Join(worktree, "after-cleanup.txt")
+	script := "rm -rf \"$SYBRA_SCRATCH_HOME\"\ncat > " + out + " << 'EOF'\nstill working\nEOF\n"
+	cmd := newProviderCmd(context.Background(), &cfg, false, zsh, "-c", script)
+	cmd.Env = append(os.Environ(), cfg.ExtraEnv...)
+	combined, runErr := cmd.CombinedOutput()
+	if runErr != nil {
+		t.Fatalf("heredoc after scratch cleanup failed: %v: %s", runErr, combined)
+	}
+	body, readErr := os.ReadFile(out)
+	if readErr != nil || string(body) != "still working\n" {
+		t.Fatalf("heredoc body = %q (err %v), want the written line", body, readErr)
 	}
 }
 
