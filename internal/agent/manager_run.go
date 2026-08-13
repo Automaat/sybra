@@ -931,6 +931,9 @@ func (m *Manager) injectGitHubToken(cfg *RunConfig) {
 // consulting ambient operator configuration that would otherwise be readable
 // through a credential helper.
 func isolateVerifierGitCredentials(cfg *RunConfig) error {
+	ambientHome := ambientEnvValue(cfg.ExtraEnv, "HOME", "")
+	ambientConfig := ambientEnvValue(cfg.ExtraEnv, "XDG_CONFIG_HOME", filepath.Join(ambientHome, ".config"))
+	ambientMiseData := ambientEnvValue(cfg.ExtraEnv, "MISE_DATA_DIR", filepath.Join(ambientHome, ".local", "share", "mise"))
 	isolationRoot := strings.TrimSpace(cfg.resolvedSandboxHome)
 	if isolationRoot == "" {
 		// Taskless verifier probes do not receive a separate sandbox home. Their
@@ -944,22 +947,32 @@ func isolateVerifierGitCredentials(cfg *RunConfig) error {
 	cfg.ExtraEnv = stripEnvKeyPrefixes(cfg.ExtraEnv, "GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
 	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv,
 		"HOME", "XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS",
-		"MISE_NO_CONFIG",
+		"MISE_NO_CONFIG", "MISE_NO_ENV", "MISE_DATA_DIR", "MISE_TRUSTED_CONFIG_PATHS",
 		"GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK", "SSH_AGENT_PID", "GIT_ASKPASS", "SSH_ASKPASS",
 	)
+	trustedMise := []string{cfg.Dir}
+	if ambientConfig != "" {
+		trustedMise = append(trustedMise, filepath.Join(ambientConfig, "mise", "config.toml"))
+	}
+	trustedMise = slices.DeleteFunc(trustedMise, func(path string) bool { return strings.TrimSpace(path) == "" })
 	cfg.ExtraEnv = append(cfg.ExtraEnv,
 		"HOME="+isolationRoot,
 		"XDG_CONFIG_HOME="+isolatedConfig,
 		// On macOS mise discovers its global config from the account database,
-		// not HOME/XDG_CONFIG_HOME. Verification inherits the already-activated
-		// server PATH, so disable further config discovery rather than reading
-		// operator-owned config (which may also contain secrets or env hooks).
-		"MISE_NO_CONFIG=1",
+		// not HOME/XDG_CONFIG_HOME. Trust only that exact file plus the disposable
+		// checkout, suppress config-provided environment values, and reuse the read-only
+		// installed tool store. MISE_NO_CONFIG is insufficient: mise then removes
+		// project-only tools such as golangci-lint from its exec environment.
+		"MISE_NO_ENV=1",
+		"MISE_TRUSTED_CONFIG_PATHS="+strings.Join(trustedMise, string(os.PathListSeparator)),
 		"GIT_CONFIG_GLOBAL=/dev/null",
 		"GIT_CONFIG_NOSYSTEM=1",
 		"GIT_CONFIG_COUNT=0",
 		"GH_TOKEN=", "GITHUB_TOKEN=", "SSH_AUTH_SOCK=", "SSH_AGENT_PID=", "GIT_ASKPASS=", "SSH_ASKPASS=",
 	)
+	if ambientMiseData != "" {
+		cfg.ExtraEnv = append(cfg.ExtraEnv, "MISE_DATA_DIR="+ambientMiseData)
+	}
 	return nil
 }
 

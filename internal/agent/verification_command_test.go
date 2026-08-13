@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -31,7 +32,7 @@ func TestVerificationCommandUsesLeaseScratchAndNoProviderCapacity(t *testing.T) 
 	var output bytes.Buffer
 	err := m.RunVerificationCommand(t.Context(), RunConfig{
 		TaskID: "task-local", Role: RoleTestRunner, Dir: workspace, GitRoots: []string{workspace}, SandboxMode: "off", ExtraEnv: os.Environ(),
-	}, "/bin/sh", []string{"-c", `test -d "$SYBRA_HOME" && test "$HOME" = "$SYBRA_HOME" && test "$XDG_CONFIG_HOME" = "$SYBRA_HOME/.config" && test "$MISE_NO_CONFIG" = 1 && test "$GIT_CONFIG_GLOBAL" = /dev/null && test "$GIT_CONFIG_NOSYSTEM" = 1`}, &output)
+	}, "/bin/sh", []string{"-c", `test -d "$SYBRA_HOME" && test "$HOME" = "$SYBRA_HOME" && test "$XDG_CONFIG_HOME" = "$SYBRA_HOME/.config" && test "$MISE_NO_ENV" = 1 && test -z "$MISE_NO_CONFIG" && test "$GIT_CONFIG_GLOBAL" = /dev/null && test "$GIT_CONFIG_NOSYSTEM" = 1`}, &output)
 	if err != nil {
 		t.Fatalf("RunVerificationCommand: %v (%s)", err, output.String())
 	}
@@ -134,26 +135,38 @@ func TestRemoveVerificationHomeNeverSilentlyLeavesLockedState(t *testing.T) {
 
 func TestIsolateVerifierGitCredentialsDropsAmbientPublishPaths(t *testing.T) {
 	scratch := t.TempDir()
-	cfg := RunConfig{resolvedSandboxHome: scratch, ExtraEnv: []string{
-		"HOME=/operator/home",
+	operatorHome := t.TempDir()
+	workspace := t.TempDir()
+	cfg := RunConfig{Dir: workspace, resolvedSandboxHome: scratch, ExtraEnv: []string{
+		"HOME=" + operatorHome,
 		"MISE_NO_CONFIG=0",
 		"GH_TOKEN=secret", "GITHUB_TOKEN=secret", "SSH_AUTH_SOCK=/agent.sock",
 		"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=credential.helper", "GIT_CONFIG_VALUE_0=sybra",
-		"GIT_CONFIG_GLOBAL=/operator/.gitconfig", "XDG_CONFIG_HOME=/operator/.config",
+		"GIT_CONFIG_GLOBAL=/operator/.gitconfig", "XDG_CONFIG_HOME=" + filepath.Join(operatorHome, ".config"),
 	}}
 	if err := isolateVerifierGitCredentials(&cfg); err != nil {
 		t.Fatal(err)
 	}
 	want := map[string]string{
-		"HOME":           scratch,
-		"MISE_NO_CONFIG": "1",
-		"GH_TOKEN":       "", "GITHUB_TOKEN": "", "SSH_AUTH_SOCK": "",
+		"HOME":          scratch,
+		"MISE_NO_ENV":   "1",
+		"MISE_DATA_DIR": filepath.Join(operatorHome, ".local", "share", "mise"),
+		"GH_TOKEN":      "", "GITHUB_TOKEN": "", "SSH_AUTH_SOCK": "",
 		"GIT_CONFIG_COUNT": "0", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
 		"XDG_CONFIG_HOME": filepath.Join(scratch, ".config"),
 	}
 	for key, value := range want {
 		if got := verificationEnvValue(cfg.ExtraEnv, key); got != value {
 			t.Errorf("%s = %q, want %q", key, got, value)
+		}
+	}
+	if got := verificationEnvValue(cfg.ExtraEnv, "MISE_NO_CONFIG"); got != "" {
+		t.Fatalf("MISE_NO_CONFIG = %q, want unset so project tools remain available", got)
+	}
+	trusted := verificationEnvValue(cfg.ExtraEnv, "MISE_TRUSTED_CONFIG_PATHS")
+	for _, wantPath := range []string{workspace, filepath.Join(operatorHome, ".config", "mise", "config.toml")} {
+		if !slices.Contains(filepath.SplitList(trusted), wantPath) {
+			t.Errorf("MISE_TRUSTED_CONFIG_PATHS = %q, missing %q", trusted, wantPath)
 		}
 	}
 	for _, assignment := range cfg.ExtraEnv {
