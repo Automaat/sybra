@@ -169,6 +169,22 @@ func TestConcurrentLocalFallbackClaimsOneFencedEffect(t *testing.T) {
 	})
 }
 
+func TestPlacementReplayRejectsChangedPolicy(t *testing.T) {
+	dbtest.Each(t, func(t *testing.T, engine dbtest.Engine) {
+		t.Helper()
+		service := New(engine.Open(t))
+		request := placementRequest(t, "run-policy-replay", "effect-policy-replay")
+		request.AllowLocalFallback = true
+		if _, err := service.ScheduleStart(t.Context(), request); err != nil {
+			t.Fatal(err)
+		}
+		request.NodeOverride, request.AllowLocalFallback = "must-run-remotely", false
+		if _, err := service.ScheduleStart(t.Context(), request); !errors.Is(err, ErrInvalidRequest) {
+			t.Fatalf("changed policy replay = %v, want invalid", err)
+		}
+	})
+}
+
 func TestPlacementDrainDisableAndDiagnostics(t *testing.T) {
 	dbtest.Each(t, func(t *testing.T, engine dbtest.Engine) {
 		t.Helper()

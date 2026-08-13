@@ -6,5 +6,6 @@ CREATE TABLE run_placement_decisions (
     session_id TEXT,
     run_spec_json TEXT NOT NULL,
     command_json TEXT NOT NULL,
+    request_json TEXT NOT NULL,
     created_at BIGINT NOT NULL
 );
