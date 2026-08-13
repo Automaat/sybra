@@ -252,7 +252,9 @@ func (s *Service) Register(ctx context.Context, request RegisterRequest) (Sessio
 			}
 		}
 		fenceQuery, fenceArg := `UPDATE worker_sessions SET state = 'replaced' WHERE worker_id = ? AND state = 'active'`, request.WorkerID
-		if state == "draining" || state == "disabled" {
+		if request.ResumeSessionID == "" {
+			fenceQuery = `UPDATE worker_sessions SET state = 'replaced' WHERE worker_id = ? AND state IN ('active', 'draining', 'disabled')`
+		} else if state == "draining" || state == "disabled" {
 			fenceQuery, fenceArg = `UPDATE worker_sessions SET state = 'replaced' WHERE session_id = ? AND state IN ('draining', 'disabled')`, request.ResumeSessionID
 		}
 		if _, err := tx.ExecContext(ctx, s.db.Rebind(fenceQuery), fenceArg); err != nil {
@@ -987,7 +989,9 @@ func (s *Service) Diagnostics(ctx context.Context) ([]Diagnostics, error) {
 		item.Protocol = fmt.Sprintf("%d.%d", major, minor)
 		item.LeaseExpiresAt = db.TimeFrom(lease)
 		var capabilities []string
-		_ = json.Unmarshal([]byte(capabilitiesJSON), &capabilities)
+		if err := json.Unmarshal([]byte(capabilitiesJSON), &capabilities); err != nil {
+			return nil, fmt.Errorf("decode capabilities for worker %q session %q: %w", item.WorkerID, item.SessionID, err)
+		}
 		item.Capacity = parseCapabilities(capabilities).capacity
 		item.AvailableCapacity = max(item.Capacity-item.ActiveRuns, 0)
 		out = append(out, item)

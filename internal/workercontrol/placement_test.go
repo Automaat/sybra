@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -219,6 +220,21 @@ func TestPlacementDrainDisableAndDiagnostics(t *testing.T) {
 			t.Fatalf("diagnostics = %+v, %v", diagnostics, err)
 		}
 	})
+}
+
+func TestPlacementCandidateReasonsAreDeterministic(t *testing.T) {
+	service := New(dbtest.SQLite(t))
+	registerPlacementWorker(t, service, "labels-node", []string{"capacity=1", "provider=claude", "provider_health:claude=healthy", "sandbox=enforce"})
+	request := placementRequest(t, "run-labels", "effect-labels")
+	request.Labels = map[string]string{"zeta": "last", "alpha": "first"}
+	result, err := service.ScheduleStart(t.Context(), request)
+	if !errors.Is(err, ErrNoEligibleWorker) || len(result.Candidates) != 1 {
+		t.Fatalf("label placement = %+v, %v", result, err)
+	}
+	want := []string{"label alpha does not match", "label zeta does not match"}
+	if !slices.Equal(result.Candidates[0].Reasons, want) {
+		t.Fatalf("reasons = %v, want %v", result.Candidates[0].Reasons, want)
+	}
 }
 
 func registerPlacementWorker(t *testing.T, service *Service, worker string, capabilities []string) Session {

@@ -181,6 +181,38 @@ func TestDurableWorkerControlBehavior(t *testing.T) {
 	})
 }
 
+func TestFreshDisabledRegistrationFencesPriorSession(t *testing.T) {
+	dbtest.Each(t, func(t *testing.T, engine dbtest.Engine) {
+		service := New(engine.Open(t))
+		prior := register(t, service, "worker-disabled-fence")
+		if err := service.SetWorkerDisabled(t.Context(), prior.WorkerID, true); err != nil {
+			t.Fatal(err)
+		}
+		replacement := register(t, service, prior.WorkerID)
+		if replacement.State != "disabled" {
+			t.Fatalf("replacement state = %q, want disabled", replacement.State)
+		}
+		var state string
+		if err := service.db.QueryRowContext(t.Context(), `SELECT state FROM worker_sessions WHERE session_id = ?`, prior.SessionID).Scan(&state); err != nil {
+			t.Fatal(err)
+		}
+		if state != "replaced" {
+			t.Fatalf("prior state = %q, want replaced", state)
+		}
+	})
+}
+
+func TestDiagnosticsRejectsCorruptCapabilities(t *testing.T) {
+	service := New(dbtest.SQLite(t))
+	session := register(t, service, "worker-corrupt-diagnostics")
+	if _, err := service.db.ExecContext(t.Context(), `UPDATE worker_sessions SET capabilities_json = ? WHERE session_id = ?`, "{", session.SessionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Diagnostics(t.Context()); err == nil || !strings.Contains(err.Error(), session.SessionID) {
+		t.Fatalf("Diagnostics error = %v, want session-scoped decode error", err)
+	}
+}
+
 func TestRunGrantRequiresOwningLiveSessionAndRevokesOnTerminal(t *testing.T) {
 	dbtest.Each(t, func(t *testing.T, engine dbtest.Engine) {
 		t.Helper()

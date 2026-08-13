@@ -139,7 +139,9 @@ func (s *Service) ScheduleStart(ctx context.Context, request PlacementRequest) (
 }
 
 func (s *Service) placementSessionsTx(ctx context.Context, tx *sql.Tx, request PlacementRequest) ([]placementSession, error) {
-	query := `SELECT worker_id, session_id, state, capabilities_json FROM worker_sessions WHERE state IN ('active', 'draining', 'disabled') AND lease_expires_at > ? ORDER BY worker_id, session_id`
+	query := `SELECT s.worker_id, s.session_id, s.state, s.capabilities_json,
+		(SELECT COUNT(*) FROM remote_runs r WHERE r.session_id = s.session_id AND r.state != 'terminal')
+		FROM worker_sessions s WHERE s.state IN ('active', 'draining', 'disabled') AND s.lease_expires_at > ? ORDER BY s.worker_id, s.session_id`
 	if s.db.Dialect() == db.Postgres {
 		query += ` FOR UPDATE`
 	}
@@ -151,7 +153,7 @@ func (s *Service) placementSessionsTx(ctx context.Context, tx *sql.Tx, request P
 	for rows.Next() {
 		var item placementSession
 		var encoded string
-		if err := rows.Scan(&item.workerID, &item.sessionID, &item.state, &encoded); err != nil {
+		if err := rows.Scan(&item.workerID, &item.sessionID, &item.state, &encoded, &item.active); err != nil {
 			return nil, err
 		}
 		var values []string
@@ -169,9 +171,6 @@ func (s *Service) placementSessionsTx(ctx context.Context, tx *sql.Tx, request P
 		return nil, err
 	}
 	for i := range out {
-		if err := tx.QueryRowContext(ctx, s.db.Rebind(`SELECT COUNT(*) FROM remote_runs WHERE session_id = ? AND state != 'terminal'`), out[i].sessionID).Scan(&out[i].active); err != nil {
-			return nil, err
-		}
 		out[i].candidate = scorePlacement(out[i], request)
 	}
 	return out, nil
@@ -215,7 +214,13 @@ func scorePlacement(session placementSession, request PlacementRequest) Placemen
 			reject(key + " capability does not match")
 		}
 	}
-	for key, want := range request.Labels {
+	labelKeys := make([]string, 0, len(request.Labels))
+	for key := range request.Labels {
+		labelKeys = append(labelKeys, key)
+	}
+	slices.Sort(labelKeys)
+	for _, key := range labelKeys {
+		want := request.Labels[key]
 		if session.capabilities.one("label:"+key) != want {
 			reject("label " + key + " does not match")
 		}
