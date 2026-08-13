@@ -3,25 +3,90 @@
 package agent
 
 import (
+	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
+
+// apparmorUserNamespaceSysctl is the Ubuntu 24.04 knob that denies
+// unprivileged user namespaces to any binary without a matching AppArmor
+// profile. It is named in the refusal because it is the single thing an
+// operator has to act on, and bwrap's own error ("setting up uid map") does
+// not point at it.
+const apparmorUserNamespaceSysctl = "kernel.apparmor_restrict_unprivileged_userns"
+
+// sandboxProbeTimeout bounds the one-time user-namespace probe. The probe
+// execs true inside a read-only bind of / and returns in milliseconds on a
+// healthy host; the bound only stops a wedged host from stalling dispatch.
+const sandboxProbeTimeout = 15 * time.Second
 
 var (
-	bwrapPathOnce sync.Once
-	bwrapPath     string
+	bwrapProbeOnce sync.Once
+	bwrapPath      string
+	bwrapErr       error
+
+	// apparmorSysctlPath is a variable so a test can present a host that does
+	// or does not restrict user namespaces without owning /proc.
+	apparmorSysctlPath = "/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
 )
 
-func sandboxExecAvailable() bool {
-	bwrapPathOnce.Do(func() {
-		if p, err := exec.LookPath("bwrap"); err == nil {
-			bwrapPath = p
+// sandboxMechanismErr reports why this host cannot build a bwrap sandbox, or
+// nil when it can. Presence on PATH is not sufficient evidence: bwrap only
+// fails when it maps uids, so a host that denies unprivileged user namespaces
+// carries a working binary that cannot produce a single sandbox. Probing that
+// once, before dispatch, turns one host problem into one refusal instead of a
+// failed step per run.
+func sandboxMechanismErr() error {
+	bwrapProbeOnce.Do(func() {
+		path, err := exec.LookPath("bwrap")
+		if err != nil {
+			bwrapErr = fmt.Errorf("bwrap is not on PATH: %w", err)
+			return
 		}
+		bwrapPath = path
+		bwrapErr = probeUserNamespace(path)
 	})
-	return bwrapPath != ""
+	return bwrapErr
+}
+
+// probeUserNamespace runs the cheapest possible sandbox: a read-only bind of
+// the host root that execs true. It exercises the uid mapping that the
+// AppArmor restriction denies, without touching the run's own roots.
+//
+// This is a host probe, not a provider spawn: it never carries a run's prompt,
+// environment, or roots, and so is one of the documented non-provider
+// exec.CommandContext sites that do not route through newProviderCmd.
+func probeUserNamespace(path string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), sandboxProbeTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, path, "--ro-bind", "/", "/", "true").CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	detail := strings.TrimSpace(string(out))
+	if detail == "" {
+		detail = err.Error()
+	}
+	if userNamespacesRestricted() {
+		return fmt.Errorf("bwrap cannot create a user namespace on this host (%s): %s=1 denies unprivileged user namespaces to binaries without an AppArmor profile; install a profile for bwrap or set the sysctl to 0", detail, apparmorUserNamespaceSysctl)
+	}
+	return fmt.Errorf("bwrap cannot create a user namespace on this host: %s", detail)
+}
+
+// userNamespacesRestricted reports whether the AppArmor sysctl that Ubuntu
+// 24.04 enables by default is on. A host without the knob reads as false, so
+// the refusal only names the sysctl where it is the plausible cause.
+func userNamespacesRestricted() bool {
+	raw, err := os.ReadFile(apparmorSysctlPath)
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(raw)) != "0"
 }
 
 func sandboxWrapperName() string { return "bwrap" }

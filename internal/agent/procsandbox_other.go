@@ -4,10 +4,12 @@ package agent
 
 import "fmt"
 
-// sandboxExecAvailable always reports false on non-darwin/non-linux hosts:
-// Sybra only supports OS-level sandbox enforcement via sandbox-exec on macOS
-// and bwrap on Linux.
-func sandboxExecAvailable() bool { return false }
+// sandboxMechanismErr always reports unavailable on non-darwin/non-linux
+// hosts: Sybra only supports OS-level sandbox enforcement via sandbox-exec on
+// macOS and bwrap on Linux.
+func sandboxMechanismErr() error {
+	return fmt.Errorf("OS-level sandboxing is unsupported on this platform")
+}
 
 func sandboxWrapperName() string { return "host sandbox wrapper" }
 

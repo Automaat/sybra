@@ -17,6 +17,15 @@ type SandboxPostureObservation struct {
 	Evidence  string
 }
 
+// hostSandboxMechanismErr is a variable so a test can present a host whose
+// wrapper cannot build a sandbox on a platform where it can.
+var hostSandboxMechanismErr = sandboxMechanismErr
+
+// sandboxExecAvailable reports whether this host can actually build the
+// process sandbox. It is the boolean view of the mechanism error, which
+// carries the reason a caller has to show an operator.
+func sandboxExecAvailable() bool { return hostSandboxMechanismErr() == nil }
+
 // ProbeSandboxPosture validates the host mechanism and embedded profile
 // before dispatch, without spawning a provider process.
 func ProbeSandboxPosture(rawMode string) (SandboxPostureObservation, error) {
@@ -30,15 +39,15 @@ func ProbeSandboxPosture(rawMode string) (SandboxPostureObservation, error) {
 		observation.Evidence = "sandbox posture is explicitly off"
 		return observation, nil
 	}
-	if !sandboxExecAvailable() {
-		observation.Evidence = sandboxWrapperName() + " unavailable"
+	if mechanismErr := hostSandboxMechanismErr(); mechanismErr != nil {
+		observation.Evidence = sandboxWrapperName() + " unavailable: " + mechanismErr.Error()
 		if mode == "report" {
 			// Report is observational only and must never block a run or claim
 			// containment, even when the host wrapper is absent.
 			observation.Available = true
 			return observation, nil
 		}
-		return observation, fmt.Errorf("enforce sandbox mode requires %s", sandboxWrapperName())
+		return observation, fmt.Errorf("enforce sandbox mode requires %s: %w", sandboxWrapperName(), mechanismErr)
 	}
 	observation.Available = true
 	if mode == "report" {
