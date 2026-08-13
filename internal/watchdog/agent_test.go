@@ -2,6 +2,7 @@ package watchdog
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"strings"
@@ -11,6 +12,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/artifact"
+	"github.com/Automaat/sybra/internal/procstat"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/watchdogreason"
@@ -1226,6 +1229,117 @@ func TestHandleZeroOutputStall_ReschedulesWithoutParkingProvider(t *testing.T) {
 	}
 	if signaled {
 		t.Fatal("provider health signalled for a silent child; a hung agent must not park the provider for every other task")
+	}
+}
+
+// TestHandleZeroOutputStall_CapturesProcessState proves a zero-output stall
+// persists a process-state artifact before the agent is stopped, with the
+// expected identity/timing/process-sample fields and no captured command
+// arguments.
+func TestHandleZeroOutputStall_CapturesProcessState(t *testing.T) {
+	tasks, tk := newTestTasks(t)
+	store := artifact.New(t.TempDir())
+
+	w := &Watchdog{
+		tasks:     tasks,
+		logger:    slog.New(slog.DiscardHandler),
+		stopAgent: func(string) error { return nil },
+		recordProviderSignal: func(*agent.Agent, provider.Classification) {
+		},
+		artifacts: store,
+		processSampler: func(topN int, owned func(pid, pgid int) bool) procstat.Summary {
+			if topN != watchdogProcessStateTopN {
+				t.Fatalf("topN = %d, want %d", topN, watchdogProcessStateTopN)
+			}
+			if !owned(4242, 0) {
+				t.Fatal("sampler's owned callback did not recognize the agent's own PID")
+			}
+			return procstat.Summary{
+				Available: true,
+				TopCPU:    []procstat.Process{{PID: 4242, Name: "claude", Owned: true}},
+				TopMem:    []procstat.Process{{PID: 4242, Name: "claude", Owned: true}},
+			}
+		},
+	}
+
+	ag := &agent.Agent{ID: "a1", TaskID: tk.ID, Provider: "claude", PID: 4242}
+
+	w.handleZeroOutputStall(ag, 20*time.Minute, 20*time.Minute, task.StatusInProgress)
+
+	metas, err := store.List(tk.ID)
+	if err != nil {
+		t.Fatalf("list artifacts: %v", err)
+	}
+	wantName := "watchdog-process-state-a1.json"
+	var found *artifact.Meta
+	for i := range metas {
+		if metas[i].Name == wantName {
+			found = &metas[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("artifact %q not found among %+v", wantName, metas)
+	}
+	if found.Kind != artifact.KindGeneric {
+		t.Fatalf("kind = %q, want %q", found.Kind, artifact.KindGeneric)
+	}
+
+	data, _, err := store.Read(tk.ID, wantName)
+	if err != nil {
+		t.Fatalf("read artifact: %v", err)
+	}
+	var capture zeroOutputProcessCapture
+	if err := json.Unmarshal(data, &capture); err != nil {
+		t.Fatalf("unmarshal capture: %v", err)
+	}
+	if capture.AgentID != "a1" || capture.TaskID != tk.ID || capture.Provider != "claude" || capture.PID != 4242 {
+		t.Fatalf("capture identity = %+v, want agent a1 task %s provider claude pid 4242", capture, tk.ID)
+	}
+	if capture.StallSec != int((20 * time.Minute).Seconds()) || capture.TotalSec != int((20 * time.Minute).Seconds()) {
+		t.Fatalf("capture timing = %+v, want stall/total 1200s", capture)
+	}
+	if capture.CapturedAt.IsZero() {
+		t.Fatal("CapturedAt is zero")
+	}
+	if !capture.Processes.Available || len(capture.Processes.TopCPU) != 1 {
+		t.Fatalf("Processes = %+v, want the stubbed owned-process sample", capture.Processes)
+	}
+	if strings.Contains(string(data), "--dangerously") || strings.Contains(string(data), "argv") {
+		t.Fatalf("capture unexpectedly contains command-line evidence: %s", data)
+	}
+}
+
+// TestHandleZeroOutputStall_CaptureFailureStillStops proves a nil artifact
+// store (capture unavailable) never blocks the existing stop/retry/tag
+// behavior for a zero-output stall.
+func TestHandleZeroOutputStall_CaptureFailureStillStops(t *testing.T) {
+	tasks, tk := newTestTasks(t)
+
+	stopped := false
+	w := &Watchdog{
+		tasks:     tasks,
+		logger:    slog.New(slog.DiscardHandler),
+		stopAgent: func(string) error { stopped = true; return nil },
+		recordProviderSignal: func(*agent.Agent, provider.Classification) {
+		},
+		artifacts: nil,
+	}
+
+	ag := &agent.Agent{ID: "a1", TaskID: tk.ID, Provider: "claude"}
+	w.handleZeroOutputStall(ag, 20*time.Minute, 20*time.Minute, task.StatusInProgress)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
+	}
+	if !stopped {
+		t.Fatal("stopAgent not called when process-state capture is unavailable")
+	}
+	if ag.GetErrorKind() != agent.ErrorKindSilentHang {
+		t.Fatalf("agent error kind = %q, want %q", ag.GetErrorKind(), agent.ErrorKindSilentHang)
 	}
 }
 

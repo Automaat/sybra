@@ -73,6 +73,46 @@ func TestSampleNilOwnedAndUnavailable(t *testing.T) {
 	})
 }
 
+func TestSampleOwnedFiltersToOwnedOnly(t *testing.T) {
+	restore := stubSampler(t, []Process{
+		{PID: 11, PGID: 101, Name: "worker", CPUPercent: 1, MemPercent: 1},
+		{PID: 12, PGID: 102, Name: "browser", CPUPercent: 90, MemPercent: 90},
+		{PID: 13, PGID: 101, Name: "child", CPUPercent: 2, MemPercent: 2},
+	}, true)
+	defer restore()
+
+	got := SampleOwned(5, func(pid, pgid int) bool { return pid == 11 || pgid == 101 })
+
+	if !got.Available {
+		t.Fatal("Available = false, want true")
+	}
+	wantCPU := []Process{
+		{PID: 13, PGID: 101, Name: "child", CPUPercent: 2, MemPercent: 2, Owned: true},
+		{PID: 11, PGID: 101, Name: "worker", CPUPercent: 1, MemPercent: 1, Owned: true},
+	}
+	if !reflect.DeepEqual(got.TopCPU, wantCPU) {
+		t.Fatalf("TopCPU = %#v, want %#v", got.TopCPU, wantCPU)
+	}
+	for _, p := range got.TopMem {
+		if !p.Owned {
+			t.Fatalf("unowned process %+v leaked into SampleOwned result", p)
+		}
+	}
+}
+
+func TestSampleOwnedUnavailable(t *testing.T) {
+	restore := stubSampler(t, nil, false)
+	defer restore()
+
+	got := SampleOwned(5, nil)
+	if got.Available {
+		t.Fatal("Available = true, want false")
+	}
+	if len(got.TopCPU) != 0 || len(got.TopMem) != 0 {
+		t.Fatalf("expected empty slices, got TopCPU=%d TopMem=%d", len(got.TopCPU), len(got.TopMem))
+	}
+}
+
 func TestParseProcessOutputSkipsMalformedRows(t *testing.T) {
 	t.Parallel()
 
