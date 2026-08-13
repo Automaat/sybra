@@ -102,3 +102,9 @@ func (c *leaderClient) events(ctx context.Context, batch workercontrol.EventBatc
 func (c *leaderClient) artifact(ctx context.Context, upload workercontrol.ArtifactUpload) error {
 	return c.call(ctx, http.MethodPost, "/worker/v1/artifacts", upload, &map[string]any{})
 }
+
+func (c *leaderClient) runGrant(ctx context.Context, sessionID, runID string) (workercontrol.RunGrant, error) {
+	var grant workercontrol.RunGrant
+	err := c.call(ctx, http.MethodPost, "/worker/v1/runs/"+url.PathEscape(runID)+"/grant", map[string]string{"sessionId": sessionID}, &grant)
+	return grant, err
+}

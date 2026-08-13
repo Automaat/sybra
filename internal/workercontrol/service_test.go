@@ -181,6 +181,38 @@ func TestDurableWorkerControlBehavior(t *testing.T) {
 	})
 }
 
+func TestRunGrantRequiresOwningLiveSessionAndRevokesOnTerminal(t *testing.T) {
+	dbtest.Each(t, func(t *testing.T, engine dbtest.Engine) {
+		database := engine.Open(t)
+		service := New(database)
+		owner := register(t, service, "worker-grant-owner")
+		other := register(t, service, "worker-grant-other")
+		spec, start := startContract(t, "run-grant", "effect-grant")
+		if _, err := service.Enqueue(t.Context(), owner.SessionID, &spec, start); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := service.IssueRunGrant(t.Context(), other.SessionID, spec.RunID); !errors.Is(err, ErrStaleSession) {
+			t.Fatalf("other worker grant = %v, want stale", err)
+		}
+		issued, err := service.IssueRunGrant(t.Context(), owner.SessionID, spec.RunID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		grant, ok := service.grants.Verify(issued.Token)
+		if !ok || grant.TaskID != spec.Fence.TaskID || grant.RunID != spec.RunID || grant.EffectID != spec.EffectID ||
+			grant.WorkflowGeneration != spec.Fence.WorkflowGeneration {
+			t.Fatalf("issued grant = %+v, ok=%v", grant, ok)
+		}
+		terminal := event(spec.RunID, 1, executioncontract.EventTerminal)
+		if _, err := service.AppendEvents(t.Context(), EventBatch{SessionID: owner.SessionID, Events: []executioncontract.EventEnvelope{terminal}}); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := service.grants.Verify(issued.Token); ok {
+			t.Fatal("terminal run grant remained valid")
+		}
+	})
+}
+
 func TestFreshSessionCanDeliverTerminalHandbackAfterLeaseExpiry(t *testing.T) {
 	dbtest.Each(t, func(t *testing.T, engine dbtest.Engine) {
 		t.Helper()

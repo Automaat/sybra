@@ -405,6 +405,18 @@ func (d *Daemon) start(ctx context.Context, envelope executioncontract.CommandEn
 	if err != nil {
 		return d.rejectStart(spec.RunID, err)
 	}
+	runGrant, err := d.client.runGrant(ctx, d.currentSession(), spec.RunID)
+	if err != nil {
+		return d.rejectStart(spec.RunID, errors.New("agentd: issue scoped run grant"))
+	}
+	grantPath := filepath.Join(layout.RunRoot, "secrets", "run-grant")
+	if err := os.MkdirAll(filepath.Dir(grantPath), 0o700); err != nil {
+		return d.rejectStart(spec.RunID, errors.New("agentd: create run grant directory"))
+	}
+	if err := fsutil.AtomicWriteMode(grantPath, []byte(runGrant.Token), 0o400); err != nil {
+		return d.rejectStart(spec.RunID, errors.New("agentd: project scoped run grant"))
+	}
+	runEnv = append(runEnv, "SYBRA_RUN_GRANT_FILE="+grantPath)
 	runCtx, cancel := context.WithDeadline(ctx, spec.Deadline)
 	_, err = d.manager.RunContext(runCtx, agent.RunConfig{
 		TaskID: spec.RunID, AdmissionTaskKey: spec.RunID, IntentID: spec.IdempotencyKey,

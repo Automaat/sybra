@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/agentgrant"
 	"github.com/Automaat/sybra/internal/db"
 	"github.com/Automaat/sybra/internal/executioncontract"
 )
@@ -88,16 +89,56 @@ type Service struct {
 	notifyMu       sync.Mutex
 	notifyCh       chan struct{}
 	importArtifact func(context.Context, string) error
+	grants         *agentgrant.Store
 }
 
 func New(database *db.DB) *Service {
-	return &Service{db: database, now: time.Now, lease: 45 * time.Second, notifyCh: make(chan struct{})}
+	grants, _ := agentgrant.New("", 15*time.Minute)
+	return &Service{db: database, now: time.Now, lease: 45 * time.Second, notifyCh: make(chan struct{}), grants: grants}
+}
+
+type RunGrant struct {
+	Token     string    `json:"token"`
+	ExpiresAt time.Time `json:"expiresAt"`
+}
+
+func (s *Service) IssueRunGrant(ctx context.Context, sessionID, runID string) (RunGrant, error) {
+	if strings.TrimSpace(runID) == "" {
+		return RunGrant{}, invalidf("run is required")
+	}
+	if _, err := s.session(ctx, sessionID); err != nil {
+		return RunGrant{}, err
+	}
+	var specJSON string
+	if err := s.db.QueryRowContext(ctx, `SELECT run_spec_json FROM remote_runs WHERE run_id = ? AND session_id = ? AND state IN ('queued', 'running')`, runID, sessionID).Scan(&specJSON); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return RunGrant{}, ErrStaleSession
+		}
+		return RunGrant{}, err
+	}
+	var spec executioncontract.RunSpec
+	if err := json.Unmarshal([]byte(specJSON), &spec); err != nil {
+		return RunGrant{}, err
+	}
+	token, err := s.grants.MintScoped(agentgrant.Grant{
+		TaskID: spec.Fence.TaskID, RunID: spec.RunID, EffectID: spec.EffectID, WorkflowGeneration: spec.Fence.WorkflowGeneration,
+		AllowedActions: []string{"approval.request", "artifact.upload"},
+	})
+	if err != nil {
+		return RunGrant{}, err
+	}
+	grant, _ := s.grants.Verify(token)
+	return RunGrant{Token: token, ExpiresAt: grant.ExpiresAt}, nil
 }
 
 // SetArtifactImporter late-binds the leader-owned canonical importer after
 // task/worktree stores are initialized.
 func (s *Service) SetArtifactImporter(importer func(context.Context, string) error) {
 	s.importArtifact = importer
+}
+
+func (s *Service) SetGrantAuditSink(sink agentgrant.AuditSink) {
+	s.grants.SetAuditSink(sink)
 }
 
 func (s *Service) Register(ctx context.Context, request RegisterRequest) (Session, error) {
@@ -415,6 +456,7 @@ func (s *Service) AckCommands(ctx context.Context, sessionID string, through uin
 
 func (s *Service) AppendEvents(ctx context.Context, batch EventBatch) (map[string]uint64, error) {
 	acks := map[string]uint64{}
+	terminalRuns := map[string]bool{}
 	err := s.db.InTx(ctx, func(tx *sql.Tx) error {
 		if err := s.requireSessionTx(ctx, tx, batch.SessionID, true); err != nil {
 			return err
@@ -477,6 +519,7 @@ func (s *Service) AppendEvents(ctx context.Context, batch EventBatch) (map[strin
 			nextState := "running"
 			if event.Type == executioncontract.EventTerminal {
 				nextState = "terminal"
+				terminalRuns[event.RunID] = true
 			}
 			_, err = tx.ExecContext(ctx, s.db.Rebind(`UPDATE remote_runs SET last_event_sequence = ?, state = ?, updated_at = ? WHERE run_id = ?`),
 				event.Sequence, nextState, db.TimeValue(s.now().UTC()), event.RunID)
@@ -487,7 +530,15 @@ func (s *Service) AppendEvents(ctx context.Context, batch EventBatch) (map[strin
 		}
 		return nil
 	})
-	return acks, err
+	if err != nil {
+		return acks, err
+	}
+	for runID := range terminalRuns {
+		if revokeErr := s.grants.RevokeRun(runID); revokeErr != nil {
+			return acks, revokeErr
+		}
+	}
+	return acks, nil
 }
 
 func (s *Service) ReplayEvents(ctx context.Context, runID string, after uint64, limit int) ([]executioncontract.EventEnvelope, error) {

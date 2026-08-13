@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/agentgrant"
 	"github.com/Automaat/sybra/internal/agentqueue"
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/attachment"
@@ -1919,6 +1920,19 @@ func (a *App) initDatabase(ctx context.Context) error {
 	}
 	a.database = database
 	a.workerControl = workercontrol.New(database)
+	a.workerControl.SetGrantAuditSink(func(event agentgrant.AuditEvent) {
+		eventType := audit.EventRunGrantUsed
+		switch event.Kind {
+		case "grant.issued":
+			eventType = audit.EventRunGrantIssued
+		case "grant.revoked":
+			eventType = audit.EventRunGrantRevoked
+		}
+		_ = a.audit.Log(audit.Event{Type: eventType, TaskID: event.TaskID, Data: map[string]any{
+			"run_id": event.RunID, "effect_id": event.EffectID, "workflow_generation": event.WorkflowGeneration,
+			"action": event.Action, "allowed": event.Allowed,
+		}})
+	})
 	a.logger.Info("db.ready", "backend", backend, "dsn", db.RedactDSN(dsn), "schema_version", version)
 	return nil
 }
