@@ -80,6 +80,28 @@ func TestImportGitReproducesCommittedDirtyAndUntrackedOutcome(t *testing.T) {
 	if !strings.Contains(status, "A  staged.txt") || !strings.Contains(status, " M tracked.txt") || !strings.Contains(status, "?? untracked.txt") {
 		t.Fatalf("leader status = %q", status)
 	}
+	// Removing the last untracked member recreates a legitimate publication
+	// checkpoint. A concurrent mode-only edit must keep it from being treated as
+	// Sybra's checkpoint and overwritten during recovery.
+	if err := os.Remove(filepath.Join(leader, "untracked.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(leader, "staged.txt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := remotehandback.ImportGit(t.Context(), leader, spec, manifest, content, guard, lock); !errors.Is(err, remotehandback.ErrStale) {
+		t.Fatalf("mode-tampered partial state error = %v, want stale", err)
+	}
+	info, err := os.Stat(filepath.Join(leader, "staged.txt"))
+	if err != nil || info.Mode().Perm()&0o111 == 0 {
+		t.Fatalf("stale recovery overwrote concurrent mode: %v, %v", info, err)
+	}
+	if err := os.Chmod(filepath.Join(leader, "staged.txt"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(leader, "untracked.txt"), []byte("loose\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(leader, "tracked.txt"), []byte("concurrent edit\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -89,6 +111,90 @@ func TestImportGitReproducesCommittedDirtyAndUntrackedOutcome(t *testing.T) {
 	got, err := os.ReadFile(filepath.Join(leader, "tracked.txt"))
 	if err != nil || string(got) != "concurrent edit\n" {
 		t.Fatalf("stale recovery overwrote concurrent edit: %q, %v", got, err)
+	}
+}
+
+func TestImportGitHandlesStagedRenameStatus(t *testing.T) {
+	source, base := repo(t)
+	spec := spec(base)
+	layout, err := agentworkspace.Prepare(t.Context(), filepath.Join(t.TempDir(), "runs"), source, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	git(t, layout.Worktree, "mv", "tracked.txt", "renamed.txt")
+	manifest, content, err := agentworkspace.Collect(t.Context(), layout, spec, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	leader := filepath.Join(t.TempDir(), "leader")
+	git(t, "", "clone", "--no-local", source, leader)
+	guard := func(context.Context) (executioncontract.GenerationFence, string, error) {
+		head, headErr := gitexec.Output(t.Context(), gitexec.Options{Dir: leader}, "rev-parse", "HEAD")
+		return spec.Fence, head, headErr
+	}
+	lock := func(_ context.Context, _ string, fn func() error) error { return fn() }
+	if _, err := remotehandback.ImportGit(t.Context(), leader, spec, manifest, content, guard, lock); err != nil {
+		t.Fatalf("import staged rename: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(leader, "renamed.txt")); err != nil {
+		t.Fatalf("renamed file missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(leader, "tracked.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("old path still exists: %v", err)
+	}
+}
+
+func TestImportGitRecoversAfterStagedNewFileCheckpoint(t *testing.T) {
+	source, base := repo(t)
+	spec := spec(base)
+	layout, err := agentworkspace.Prepare(t.Context(), filepath.Join(t.TempDir(), "runs"), source, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mixed := filepath.Join(layout.Worktree, "mixed.txt")
+	if err := os.WriteFile(mixed, []byte("staged\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	git(t, layout.Worktree, "add", "mixed.txt")
+	if err := os.WriteFile(mixed, []byte("unstaged\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manifest, content, err := agentworkspace.Collect(t.Context(), layout, spec, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg, err := executioncontract.ValidateArtifactPackage(manifest, content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stagedPatch []byte
+	for i, artifact := range manifest.Artifacts {
+		if artifact.Kind == "git_staged_patch" {
+			stagedPatch = pkg.Members[i].Content
+		}
+	}
+	leader := filepath.Join(t.TempDir(), "leader")
+	git(t, "", "clone", "--no-local", source, leader)
+	patchPath := filepath.Join(t.TempDir(), "staged.patch")
+	if err := os.WriteFile(patchPath, stagedPatch, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	git(t, leader, "apply", "--binary", "--index", "--", patchPath)
+	guard := func(context.Context) (executioncontract.GenerationFence, string, error) {
+		head, headErr := gitexec.Output(t.Context(), gitexec.Options{Dir: leader}, "rev-parse", "HEAD")
+		return spec.Fence, head, headErr
+	}
+	lock := func(_ context.Context, _ string, fn func() error) error { return fn() }
+	if _, err := remotehandback.ImportGit(t.Context(), leader, spec, manifest, content, guard, lock); err != nil {
+		t.Fatalf("recover staged checkpoint: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(leader, "mixed.txt"))
+	if err != nil || string(got) != "unstaged\n" {
+		t.Fatalf("mixed file = %q, %v", got, err)
+	}
+	status, err := gitexec.Output(t.Context(), gitexec.Options{Dir: leader}, "status", "--porcelain")
+	if err != nil || !strings.Contains(status, "AM mixed.txt") {
+		t.Fatalf("mixed status = %q, %v", status, err)
 	}
 }
 

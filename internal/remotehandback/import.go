@@ -4,8 +4,12 @@ package remotehandback
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
 	"os"
 	"path/filepath"
 	"slices"
@@ -111,14 +115,20 @@ func importGitLocked(ctx context.Context, target string, spec executioncontract.
 	if err := gitexec.Run(ctx, gitexec.Options{Dir: checkout}, "checkout", "--detach", manifest.Workspace.FinalSHA); err != nil {
 		return nil, err
 	}
+	publicationStates := make(map[string]struct{}, 3+len(untracked))
+	if err := recordPublicationState(ctx, checkout, publicationStates); err != nil {
+		return nil, err
+	}
 	if err := applyPatch(ctx, checkout, stagedPatch, staging, true); err != nil {
 		return nil, err
 	}
-	stagedFiles, err := snapshotChangedFiles(ctx, checkout)
-	if err != nil {
+	if err := recordPublicationState(ctx, checkout, publicationStates); err != nil {
 		return nil, err
 	}
 	if err := applyPatch(ctx, checkout, unstagedPatch, staging, false); err != nil {
+		return nil, err
+	}
+	if err := recordPublicationState(ctx, checkout, publicationStates); err != nil {
 		return nil, err
 	}
 	for i, member := range untracked {
@@ -127,6 +137,9 @@ func importGitLocked(ctx context.Context, target string, spec executioncontract.
 			return nil, err
 		}
 		untracked[i] = member
+		if err := recordPublicationState(ctx, checkout, publicationStates); err != nil {
+			return nil, err
+		}
 	}
 	// Only recognize a journaled publication after the bundle, ancestry,
 	// patches, and untracked members have passed the same isolated validation
@@ -148,7 +161,7 @@ func importGitLocked(ctx context.Context, target string, spec executioncontract.
 	}
 	recovering := false
 	if canonicalBase == manifest.Workspace.FinalSHA {
-		recovering, err = partialPublicationIsRepairable(ctx, target, checkout, stagedFiles)
+		recovering, err = partialPublicationIsRepairable(ctx, target, publicationStates)
 		if err != nil {
 			return nil, err
 		}
@@ -171,10 +184,13 @@ func importGitLocked(ctx context.Context, target string, spec executioncontract.
 			return nil, err
 		}
 	} else {
-		for _, member := range untracked {
-			_ = os.Remove(filepath.Join(target, filepath.FromSlash(member.Path)))
-		}
 		if err := gitexec.Run(ctx, gitexec.Options{Dir: target}, "reset", "--hard", manifest.Workspace.FinalSHA); err != nil {
+			return nil, err
+		}
+		// A crash after applying a staged addition leaves that path untracked
+		// after reset. The exact checkpoint fingerprint above makes it safe to
+		// remove all non-ignored publication residue before deterministic replay.
+		if err := gitexec.Run(ctx, gitexec.Options{Dir: target}, "clean", "-fd", "--", "."); err != nil {
 			return nil, err
 		}
 	}
@@ -215,72 +231,86 @@ func importGitLocked(ctx context.Context, target string, spec executioncontract.
 	return nonGit, nil
 }
 
-func partialPublicationIsRepairable(ctx context.Context, target, expected string, stagedFiles map[string][]byte) (bool, error) {
-	actualStatus, err := gitexec.RawOutput(ctx, gitexec.Options{Dir: target}, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+func partialPublicationIsRepairable(ctx context.Context, target string, expected map[string]struct{}) (bool, error) {
+	fingerprint, err := publicationStateFingerprint(ctx, target)
 	if err != nil {
 		return false, err
 	}
-	expectedStatus, err := gitexec.RawOutput(ctx, gitexec.Options{Dir: expected}, "status", "--porcelain=v1", "-z", "--untracked-files=all")
-	if err != nil {
-		return false, err
-	}
-	expectedSet := map[string]bool{}
-	for record := range strings.SplitSeq(strings.TrimSuffix(string(expectedStatus), "\x00"), "\x00") {
-		if record != "" {
-			expectedSet[strings.TrimSpace(record[3:])] = true
-		}
-	}
-	for record := range strings.SplitSeq(strings.TrimSuffix(string(actualStatus), "\x00"), "\x00") {
-		if record == "" {
-			continue
-		}
-		path := strings.TrimSpace(record[3:])
-		if !expectedSet[path] {
-			return false, nil
-		}
-		actual, readErr := os.ReadFile(filepath.Join(target, filepath.FromSlash(path)))
-		if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
-			return false, readErr
-		}
-		want, wantErr := os.ReadFile(filepath.Join(expected, filepath.FromSlash(path)))
-		if wantErr == nil && slices.Equal(actual, want) {
-			continue
-		}
-		if staged, ok := stagedFiles[path]; ok && slices.Equal(actual, staged) {
-			continue
-		}
-		base, baseErr := gitexec.RawOutput(ctx, gitexec.Options{Dir: target}, "show", "HEAD:"+path)
-		if baseErr == nil && slices.Equal(actual, base) {
-			continue
-		}
-		if errors.Is(readErr, os.ErrNotExist) {
-			continue
-		}
-		return false, nil
-	}
-	return true, nil
+	_, ok := expected[fingerprint]
+	return ok, nil
 }
 
-func snapshotChangedFiles(ctx context.Context, dir string) (map[string][]byte, error) {
-	status, err := gitexec.RawOutput(ctx, gitexec.Options{Dir: dir}, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+func recordPublicationState(ctx context.Context, dir string, states map[string]struct{}) error {
+	fingerprint, err := publicationStateFingerprint(ctx, dir)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	out := map[string][]byte{}
+	states[fingerprint] = struct{}{}
+	return nil
+}
+
+// publicationStateFingerprint describes every state the canonical publisher
+// can leave between its individual Git/file operations. Raw porcelain records
+// preserve index/worktree status and exact path bytes; hashing each member's
+// type, executable bit, and content prevents a concurrent edit with the same
+// status shape from being mistaken for an interrupted publication.
+func publicationStateFingerprint(ctx context.Context, dir string) (string, error) {
+	status, err := gitexec.RawOutput(ctx, gitexec.Options{Dir: dir}, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames")
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.New()
+	writeFingerprintField(digest, status)
 	for record := range strings.SplitSeq(strings.TrimSuffix(string(status), "\x00"), "\x00") {
 		if record == "" {
 			continue
 		}
-		path := strings.TrimSpace(record[3:])
-		data, readErr := os.ReadFile(filepath.Join(dir, filepath.FromSlash(path)))
-		if readErr == nil {
-			out[path] = data
+		if len(record) < 4 {
+			return "", errors.New("remote handback: malformed Git status record")
 		}
-		if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
-			return nil, readErr
+		path := record[3:]
+		writeFingerprintField(digest, []byte(path))
+		full := filepath.Join(dir, filepath.FromSlash(path))
+		info, statErr := os.Lstat(full)
+		if errors.Is(statErr, os.ErrNotExist) {
+			writeFingerprintField(digest, []byte("missing"))
+			continue
 		}
+		if statErr != nil {
+			return "", statErr
+		}
+		mode := "regular"
+		var content []byte
+		switch {
+		case info.Mode()&os.ModeSymlink != 0:
+			mode = "symlink"
+			destination, readErr := os.Readlink(full)
+			if readErr != nil {
+				return "", readErr
+			}
+			content = []byte(destination)
+		case info.Mode().IsRegular():
+			if info.Mode().Perm()&0o111 != 0 {
+				mode = "executable"
+			}
+			content, statErr = os.ReadFile(full)
+			if statErr != nil {
+				return "", statErr
+			}
+		default:
+			return "", fmt.Errorf("remote handback: unsupported publication member type for %q", path)
+		}
+		writeFingerprintField(digest, []byte(mode))
+		writeFingerprintField(digest, content)
 	}
-	return out, nil
+	return hex.EncodeToString(digest.Sum(nil)), nil
+}
+
+func writeFingerprintField(digest hash.Hash, value []byte) {
+	var size [8]byte
+	binary.BigEndian.PutUint64(size[:], uint64(len(value)))
+	_, _ = digest.Write(size[:])
+	_, _ = digest.Write(value)
 }
 
 func partitionArtifacts(manifest executioncontract.ArtifactManifest, pkg executioncontract.ArtifactPackage) (staged, unstaged []byte, untracked, nonGit []executioncontract.ArtifactMember) {
