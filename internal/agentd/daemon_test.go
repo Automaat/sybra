@@ -693,7 +693,7 @@ func specWithBase(runID, baseSHA string) executioncontract.RunSpec {
 	return spec
 }
 
-func testRepository(t *testing.T, root string) (string, string) {
+func testRepository(t *testing.T, root string) (repoPath, baseSHA string) {
 	t.Helper()
 	repo := filepath.Join(root, "source")
 	if err := os.MkdirAll(repo, 0o700); err != nil {

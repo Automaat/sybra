@@ -187,9 +187,9 @@ func (s *Spool) ackArtifact(manifestID string) error {
 func (s *Spool) expireArtifacts(before time.Time) ([]string, error) {
 	s.mu.Lock()
 	expired := make([]string, 0)
-	for _, upload := range s.state.Artifacts {
-		if upload.Manifest.GeneratedAt.Before(before) {
-			expired = append(expired, upload.Manifest.RunID)
+	for manifestID := range s.state.Artifacts {
+		if s.state.Artifacts[manifestID].Manifest.GeneratedAt.Before(before) {
+			expired = append(expired, s.state.Artifacts[manifestID].Manifest.RunID)
 		}
 	}
 	s.mu.Unlock()
@@ -197,8 +197,8 @@ func (s *Spool) expireArtifacts(before time.Time) ([]string, error) {
 		return nil, nil
 	}
 	err := s.update(func(state *durableState) error {
-		for id, upload := range state.Artifacts {
-			if upload.Manifest.GeneratedAt.Before(before) {
+		for id := range state.Artifacts {
+			if state.Artifacts[id].Manifest.GeneratedAt.Before(before) {
 				delete(state.Artifacts, id)
 			}
 		}

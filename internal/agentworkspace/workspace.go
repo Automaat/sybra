@@ -5,6 +5,7 @@ package agentworkspace
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -80,8 +81,8 @@ func Prepare(ctx context.Context, root, source string, spec executioncontract.Ru
 		return Layout{}, fmt.Errorf("agent workspace: immutable base is unavailable: %w", err)
 	}
 	baseRef := spec.Workspace.BaseRef
-	if strings.HasPrefix(baseRef, "refs/heads/") {
-		remoteRef := "refs/remotes/origin/" + strings.TrimPrefix(baseRef, "refs/heads/")
+	if branch, ok := strings.CutPrefix(baseRef, "refs/heads/"); ok {
+		remoteRef := "refs/remotes/origin/" + branch
 		if _, err := gitexec.Output(ctx, gitexec.Options{Dir: worktree}, "rev-parse", "--verify", remoteRef+"^{commit}"); err == nil {
 			baseRef = remoteRef
 		}
@@ -144,6 +145,7 @@ func Environment(layout Layout) []string {
 	}
 }
 
+//nolint:funlen // Collection keeps package-member and manifest-entry construction in one auditable order.
 func Collect(ctx context.Context, layout Layout, spec executioncontract.RunSpec, build string) (executioncontract.ArtifactManifest, []byte, error) {
 	finalSHA, err := gitexec.Output(ctx, gitexec.Options{Dir: layout.Worktree}, "rev-parse", "--verify", "HEAD^{commit}")
 	if err != nil {
@@ -285,7 +287,7 @@ func Collect(ctx context.Context, layout Layout, spec executioncontract.RunSpec,
 	_, _ = manifestDigest.Write(content)
 	manifest := executioncontract.ArtifactManifest{
 		Version: executioncontract.CurrentVersion(), BuildVersion: build, RunID: spec.RunID,
-		ManifestID: "manifest-" + fmt.Sprintf("%x", manifestDigest.Sum(nil)), IdempotencyKey: spec.RunID + ":artifacts:v1",
+		ManifestID: "manifest-" + hex.EncodeToString(manifestDigest.Sum(nil)), IdempotencyKey: spec.RunID + ":artifacts:v1",
 		State: executioncontract.ArtifactsReady, GeneratedAt: time.Now().UTC(), Fence: spec.Fence,
 		Workspace: executioncontract.WorkspaceHandback{RepositoryID: spec.Workspace.RepositoryID, BaseSHA: spec.Workspace.BaseSHA, BaseRef: spec.Workspace.BaseRef, FinalSHA: finalSHA},
 		Artifacts: entries,
@@ -306,7 +308,7 @@ func splitNUL(data []byte) []string {
 	return parts
 }
 
-func readRegularOrSymlink(root, rel string) ([]byte, uint32, error) {
+func readRegularOrSymlink(root, rel string) (data []byte, mode uint32, err error) {
 	full := filepath.Join(root, filepath.FromSlash(rel))
 	rootReal, err := filepath.EvalSymlinks(root)
 	if err != nil {
@@ -331,8 +333,8 @@ func readRegularOrSymlink(root, rel string) ([]byte, uint32, error) {
 	if !info.Mode().IsRegular() {
 		return nil, 0, errors.New("agent workspace: output must be a regular file or symlink")
 	}
-	data, err := os.ReadFile(full)
-	mode := uint32(0o100644)
+	data, err = os.ReadFile(full)
+	mode = uint32(0o100644)
 	if info.Mode()&0o111 != 0 {
 		mode = 0o100755
 	}

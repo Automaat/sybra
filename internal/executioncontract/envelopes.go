@@ -311,7 +311,8 @@ func (m ArtifactManifest) Validate() error {
 	}
 	seenNames, seenPaths := map[string]bool{}, map[string]bool{}
 	var total int64
-	for _, artifact := range m.Artifacts {
+	for i := range m.Artifacts {
+		artifact := &m.Artifacts[i]
 		if strings.TrimSpace(artifact.Name) == "" || strings.TrimSpace(artifact.Kind) == "" || !sha256Digest.MatchString(artifact.DigestSHA256) ||
 			strings.TrimSpace(artifact.MediaType) == "" || artifact.SizeBytes < 0 ||
 			!validRoot(artifact.Root) || !logicalPath(artifact.Path) || !validSensitivity(artifact.Sensitivity) {

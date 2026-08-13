@@ -527,6 +527,8 @@ func (a *App) cleanupFailedStartup() {
 // parameter through the entire event/dispatch/workflow fan-out these chains
 // pass through is out of scope for this pass — nolint annotations below
 // point back to this comment.
+//
+//nolint:funlen // Startup ordering and reverse cleanup are intentionally kept in one lifecycle transaction.
 func (a *App) Startup(ctx context.Context) error {
 	if err := a.acquireHomeLock(); err != nil {
 		return err

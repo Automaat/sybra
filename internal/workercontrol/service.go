@@ -66,6 +66,7 @@ type ArtifactHandback struct {
 	Manifest executioncontract.ArtifactManifest
 	Package  executioncontract.ArtifactPackage
 	Content  []byte
+	State    string
 }
 
 type Diagnostics struct {
@@ -168,7 +169,7 @@ func (s *Service) Register(ctx context.Context, request RegisterRequest) (Sessio
 			// its lease expires. Completed handbacks still belong to the stable
 			// worker identity and must remain uploadable; nonterminal execution is
 			// deliberately not adopted by this path.
-			_, err = tx.ExecContext(ctx, s.db.Rebind(`UPDATE remote_runs SET session_id = ?, updated_at = ? WHERE worker_id = ? AND state = 'terminal' AND artifact_state IN ('pending', 'staged')`),
+			_, err = tx.ExecContext(ctx, s.db.Rebind(`UPDATE remote_runs SET session_id = ?, updated_at = ? WHERE worker_id = ? AND state = 'terminal' AND artifact_state IN ('pending', 'staged', 'importing')`),
 				sessionID, db.TimeValue(now), request.WorkerID)
 			return err
 		}
@@ -180,7 +181,7 @@ func (s *Service) Register(ctx context.Context, request RegisterRequest) (Sessio
 			sessionID, request.ResumeSessionID, request.LastCommandAck); err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, s.db.Rebind(`UPDATE remote_runs SET session_id = ?, updated_at = ? WHERE session_id = ? AND (state != 'terminal' OR artifact_state IN ('pending', 'staged'))`),
+		_, err = tx.ExecContext(ctx, s.db.Rebind(`UPDATE remote_runs SET session_id = ?, updated_at = ? WHERE session_id = ? AND (state != 'terminal' OR artifact_state IN ('pending', 'staged', 'importing'))`),
 			sessionID, db.TimeValue(now), request.ResumeSessionID)
 		return err
 	})
@@ -616,7 +617,7 @@ func (s *Service) UploadArtifact(ctx context.Context, upload ArtifactUpload) err
 		if err := s.db.QueryRowContext(ctx, s.db.Rebind(`SELECT artifact_state FROM remote_runs WHERE run_id = ?`), upload.Manifest.RunID).Scan(&artifactState); err != nil {
 			return err
 		}
-		if artifactState != "staged" {
+		if artifactState != "staged" && artifactState != "importing" {
 			return nil
 		}
 		if err := s.importArtifact(ctx, upload.Manifest.RunID); err != nil {
@@ -632,15 +633,17 @@ func validateRequiredOutputs(spec executioncontract.RunSpec, manifest executionc
 	for _, expected := range spec.ExpectedOutputs {
 		declared[expected.Name] = expected
 	}
-	for _, entry := range manifest.Artifacts {
-		byName[entry.Name] = entry
+	for i := range manifest.Artifacts {
+		entry := &manifest.Artifacts[i]
+		byName[entry.Name] = *entry
 		if _, ok := declared[entry.Name]; ok {
 			continue
 		}
-		if !((entry.Name == "git-bundle" && entry.Kind == "git_bundle" && entry.Root == executioncontract.RootArtifact && entry.Path == "git/commits.bundle") ||
+		builtinGit := (entry.Name == "git-bundle" && entry.Kind == "git_bundle" && entry.Root == executioncontract.RootArtifact && entry.Path == "git/commits.bundle") ||
 			(entry.Name == "git-staged-patch" && entry.Kind == "git_staged_patch" && entry.Root == executioncontract.RootArtifact && entry.Path == "git/staged.patch") ||
 			(entry.Name == "git-unstaged-patch" && entry.Kind == "git_unstaged_patch" && entry.Root == executioncontract.RootArtifact && entry.Path == "git/unstaged.patch") ||
-			(strings.HasPrefix(entry.Name, "untracked:") && entry.Kind == "git_untracked" && entry.Root == executioncontract.RootWorktree && entry.Name == "untracked:"+entry.Path)) {
+			(strings.HasPrefix(entry.Name, "untracked:") && entry.Kind == "git_untracked" && entry.Root == executioncontract.RootWorktree && entry.Name == "untracked:"+entry.Path)
+		if !builtinGit {
 			return invalidf("artifact %q was not declared by the run", entry.Name)
 		}
 	}
@@ -679,8 +682,8 @@ func (s *Service) LoadStagedArtifact(ctx context.Context, runID string) (Artifac
 	if err != nil {
 		return ArtifactHandback{}, err
 	}
-	if state != "staged" {
-		return ArtifactHandback{}, invalidf("artifact handback is not staged")
+	if state != "staged" && state != "importing" {
+		return ArtifactHandback{}, invalidf("artifact handback is not importable")
 	}
 	var out ArtifactHandback
 	if err := json.Unmarshal([]byte(specJSON), &out.Spec); err != nil {
@@ -697,7 +700,31 @@ func (s *Service) LoadStagedArtifact(ctx context.Context, runID string) (Artifac
 		return ArtifactHandback{}, err
 	}
 	out.Content = append([]byte(nil), content...)
+	out.State = state
 	return out, nil
+}
+
+// BeginArtifactImport durably journals publication before canonical state is
+// touched. Repeating it after a leader crash is harmless and lets the importer
+// reconcile an operation that may have stopped at any publication boundary.
+func (s *Service) BeginArtifactImport(ctx context.Context, runID, manifestID string) error {
+	return s.db.InTx(ctx, func(tx *sql.Tx) error {
+		var current, storedManifest string
+		if err := tx.QueryRowContext(ctx, s.db.Rebind(`SELECT r.artifact_state, a.manifest_id FROM remote_runs r JOIN worker_artifacts a ON a.run_id = r.run_id WHERE r.run_id = ? ORDER BY a.imported_at DESC LIMIT 1`), runID).Scan(&current, &storedManifest); err != nil {
+			return err
+		}
+		if storedManifest != manifestID {
+			return invalidf("artifact manifest differs from staged handback")
+		}
+		if current == "importing" {
+			return nil
+		}
+		if current != "staged" {
+			return invalidf("artifact handback is not staged")
+		}
+		_, err := tx.ExecContext(ctx, s.db.Rebind(`UPDATE remote_runs SET artifact_state = 'importing', updated_at = ? WHERE run_id = ? AND artifact_state = 'staged'`), db.TimeValue(s.now().UTC()), runID)
+		return err
+	})
 }
 
 // ResolveArtifact records the leader importer's terminal decision. A staged
@@ -718,10 +745,10 @@ func (s *Service) ResolveArtifact(ctx context.Context, runID, manifestID, state 
 		if current == state {
 			return nil
 		}
-		if current != "staged" {
+		if current != "staged" && current != "importing" {
 			return invalidf("artifact handback is already resolved")
 		}
-		_, err := tx.ExecContext(ctx, s.db.Rebind(`UPDATE remote_runs SET artifact_state = ?, updated_at = ? WHERE run_id = ? AND artifact_state = 'staged'`), state, db.TimeValue(s.now().UTC()), runID)
+		_, err := tx.ExecContext(ctx, s.db.Rebind(`UPDATE remote_runs SET artifact_state = ?, updated_at = ? WHERE run_id = ? AND artifact_state IN ('staged', 'importing')`), state, db.TimeValue(s.now().UTC()), runID)
 		return err
 	})
 }

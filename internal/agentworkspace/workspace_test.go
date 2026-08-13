@@ -176,7 +176,7 @@ func TestCollectNeverDuplicatesDeclaredWorkingMemoryIntoGit(t *testing.T) {
 	}
 }
 
-func repository(t *testing.T) (string, string) {
+func repository(t *testing.T) (repoPath, baseSHA string) {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "repo")
 	if err := os.MkdirAll(dir, 0o700); err != nil {

@@ -50,21 +50,20 @@ func ImportGit(ctx context.Context, target string, spec executioncontract.RunSpe
 	return imported, err
 }
 
+//nolint:funlen // Validate, stage, recheck, publish, and rollback are one canonical mutation transaction.
 func importGitLocked(ctx context.Context, target string, spec executioncontract.RunSpec, manifest executioncontract.ArtifactManifest, pkg executioncontract.ArtifactPackage, guard Guard) ([]executioncontract.ArtifactMember, error) {
 	current, canonicalBase, err := guard(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if current != spec.Fence || canonicalBase != spec.Workspace.BaseSHA || manifest.Fence != spec.Fence || manifest.Workspace.RepositoryID != spec.Workspace.RepositoryID ||
+	if current != spec.Fence || manifest.Fence != spec.Fence || manifest.Workspace.RepositoryID != spec.Workspace.RepositoryID ||
 		manifest.Workspace.BaseSHA != spec.Workspace.BaseSHA || manifest.Workspace.BaseRef != spec.Workspace.BaseRef {
 		return nil, ErrStale
 	}
 	if err := validateOutputs(spec, manifest); err != nil {
 		return nil, err
 	}
-	if err := requireBaseAndClean(ctx, target, spec.Workspace.BaseSHA); err != nil {
-		return nil, err
-	}
+	stagedPatch, unstagedPatch, untracked, nonGit := partitionArtifacts(manifest, pkg)
 	staging, err := os.MkdirTemp(filepath.Dir(target), ".sybra-handback-")
 	if err != nil {
 		return nil, err
@@ -77,13 +76,10 @@ func importGitLocked(ctx context.Context, target string, spec executioncontract.
 	if err := gitexec.Run(ctx, gitexec.Options{Dir: checkout}, "checkout", "--detach", spec.Workspace.BaseSHA); err != nil {
 		return nil, err
 	}
-	var stagedPatch, unstagedPatch []byte
-	untracked := []executioncontract.ArtifactMember{}
-	nonGit := []executioncontract.ArtifactMember{}
-	for i, entry := range manifest.Artifacts {
+	for i := range manifest.Artifacts {
+		entry := &manifest.Artifacts[i]
 		member := pkg.Members[i]
-		switch entry.Kind {
-		case "git_bundle":
+		if entry.Kind == "git_bundle" {
 			bundle := filepath.Join(staging, "commits.bundle")
 			if err := os.WriteFile(bundle, member.Content, 0o600); err != nil {
 				return nil, err
@@ -95,14 +91,6 @@ func importGitLocked(ctx context.Context, target string, spec executioncontract.
 			if err := gitexec.Run(ctx, gitexec.Options{Dir: checkout}, "fetch", bundle, remoteRef+":refs/sybra/import/"+spec.RunID); err != nil {
 				return nil, err
 			}
-		case "git_staged_patch":
-			stagedPatch = member.Content
-		case "git_unstaged_patch":
-			unstagedPatch = member.Content
-		case "git_untracked":
-			untracked = append(untracked, member)
-		default:
-			nonGit = append(nonGit, member)
 		}
 	}
 	if _, err := gitexec.Output(ctx, gitexec.Options{Dir: checkout}, "rev-parse", "--verify", manifest.Workspace.FinalSHA+"^{commit}"); err != nil {
@@ -126,6 +114,27 @@ func importGitLocked(ctx context.Context, target string, spec executioncontract.
 			return nil, err
 		}
 		untracked[i] = member
+	}
+	// Only recognize a journaled publication after the bundle, ancestry,
+	// patches, and untracked members have passed the same isolated validation
+	// as a first import. This prevents a coincidentally matching canonical tree
+	// from bypassing semantic package validation.
+	published, err := matchesPublishedGit(ctx, target, manifest, stagedPatch, unstagedPatch, untracked)
+	if err != nil {
+		return nil, err
+	}
+	if published {
+		current, canonicalBase, err = guard(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if current != spec.Fence || canonicalBase != manifest.Workspace.FinalSHA {
+			return nil, ErrStale
+		}
+		return nonGit, nil
+	}
+	if canonicalBase != spec.Workspace.BaseSHA {
+		return nil, ErrStale
 	}
 	// Recheck leader state and the worktree compare-and-swap immediately before
 	// canonical mutation.
@@ -171,14 +180,105 @@ func importGitLocked(ctx context.Context, target string, spec executioncontract.
 	return nonGit, nil
 }
 
+func partitionArtifacts(manifest executioncontract.ArtifactManifest, pkg executioncontract.ArtifactPackage) (staged, unstaged []byte, untracked, nonGit []executioncontract.ArtifactMember) {
+	for i := range manifest.Artifacts {
+		entry := &manifest.Artifacts[i]
+		member := pkg.Members[i]
+		switch entry.Kind {
+		case "git_bundle":
+		case "git_staged_patch":
+			staged = member.Content
+		case "git_unstaged_patch":
+			unstaged = member.Content
+		case "git_untracked":
+			untracked = append(untracked, member)
+		default:
+			nonGit = append(nonGit, member)
+		}
+	}
+	return staged, unstaged, untracked, nonGit
+}
+
+// matchesPublishedGit recognizes the exact target state of a journaled import.
+// It is intentionally stricter than checking HEAD: dirty/index state and every
+// untracked byte/mode must also match, so an unrelated canonical edit can never
+// be mistaken for crash recovery.
+func matchesPublishedGit(ctx context.Context, target string, manifest executioncontract.ArtifactManifest, stagedPatch, unstagedPatch []byte, untracked []executioncontract.ArtifactMember) (bool, error) {
+	head, err := gitexec.Output(ctx, gitexec.Options{Dir: target}, "rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil {
+		return false, err
+	}
+	if head != manifest.Workspace.FinalSHA {
+		return false, nil
+	}
+	actualStaged, err := gitexec.RawOutput(ctx, gitexec.Options{Dir: target}, "diff", "--cached", "--binary", "--full-index", "HEAD", "--", ".")
+	if err != nil {
+		return false, err
+	}
+	actualUnstaged, err := gitexec.RawOutput(ctx, gitexec.Options{Dir: target}, "diff", "--binary", "--full-index", "--", ".")
+	if err != nil {
+		return false, err
+	}
+	if !slices.Equal(actualStaged, stagedPatch) || !slices.Equal(actualUnstaged, unstagedPatch) {
+		return false, nil
+	}
+	listed, err := gitexec.RawOutput(ctx, gitexec.Options{Dir: target}, "ls-files", "--others", "--exclude-standard", "-z", "--", ".")
+	if err != nil {
+		return false, err
+	}
+	actualPaths := strings.Split(strings.TrimSuffix(string(listed), "\x00"), "\x00")
+	if len(listed) == 0 {
+		actualPaths = nil
+	}
+	expectedPaths := make([]string, 0, len(untracked))
+	for _, member := range untracked {
+		expectedPaths = append(expectedPaths, member.Path)
+		entry := entryFor(manifest, member.Root, member.Path)
+		full := filepath.Join(target, filepath.FromSlash(member.Path))
+		info, statErr := os.Lstat(full)
+		if statErr != nil {
+			if errors.Is(statErr, os.ErrNotExist) {
+				return false, nil
+			}
+			return false, statErr
+		}
+		var content []byte
+		if info.Mode()&os.ModeSymlink != 0 {
+			destination, readErr := os.Readlink(full)
+			if readErr != nil {
+				return false, readErr
+			}
+			content = []byte(destination)
+		} else {
+			content, statErr = os.ReadFile(full)
+			if statErr != nil {
+				return false, statErr
+			}
+		}
+		actualMode := uint32(0o100644)
+		if info.Mode()&os.ModeSymlink != 0 {
+			actualMode = 0o120000
+		} else if info.Mode()&0o111 != 0 {
+			actualMode = 0o100755
+		}
+		if !slices.Equal(content, member.Content) || actualMode != entry.Mode {
+			return false, nil
+		}
+	}
+	slices.Sort(expectedPaths)
+	slices.Sort(actualPaths)
+	return slices.Equal(actualPaths, expectedPaths), nil
+}
+
 func validateOutputs(spec executioncontract.RunSpec, manifest executioncontract.ArtifactManifest) error {
 	entries := make(map[string]executioncontract.ArtifactEntry, len(manifest.Artifacts))
 	declared := make(map[string]bool, len(spec.ExpectedOutputs))
 	for _, expected := range spec.ExpectedOutputs {
 		declared[expected.Name] = true
 	}
-	for _, entry := range manifest.Artifacts {
-		entries[entry.Name] = entry
+	for i := range manifest.Artifacts {
+		entry := &manifest.Artifacts[i]
+		entries[entry.Name] = *entry
 		if declared[entry.Name] ||
 			(entry.Name == "git-bundle" && entry.Kind == "git_bundle" && entry.Root == executioncontract.RootArtifact && entry.Path == "git/commits.bundle") ||
 			(entry.Name == "git-staged-patch" && entry.Kind == "git_staged_patch" && entry.Root == executioncontract.RootArtifact && entry.Path == "git/staged.patch") ||
@@ -246,9 +346,10 @@ func applyPatch(ctx context.Context, dir string, patch []byte, scratch string, i
 }
 
 func entryFor(manifest executioncontract.ArtifactManifest, root executioncontract.LogicalRoot, path string) executioncontract.ArtifactEntry {
-	for _, entry := range manifest.Artifacts {
+	for i := range manifest.Artifacts {
+		entry := &manifest.Artifacts[i]
 		if entry.Root == root && entry.Path == path {
-			return entry
+			return *entry
 		}
 	}
 	return executioncontract.ArtifactEntry{}

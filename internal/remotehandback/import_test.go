@@ -48,11 +48,12 @@ func TestImportGitReproducesCommittedDirtyAndUntrackedOutcome(t *testing.T) {
 	git(t, "", "clone", "--no-local", source, leader)
 	git(t, leader, "checkout", "--detach", base)
 	locked := false
-	guard := func(context.Context) (executioncontract.GenerationFence, string, error) {
+	guard := func(ctx context.Context) (executioncontract.GenerationFence, string, error) {
 		if !locked {
 			return executioncontract.GenerationFence{}, "", errors.New("guard called outside canonical lock")
 		}
-		return spec.Fence, base, nil
+		head, headErr := gitexec.Output(ctx, gitexec.Options{Dir: leader}, "rev-parse", "HEAD")
+		return spec.Fence, head, headErr
 	}
 	lock := func(_ context.Context, _ string, fn func() error) error {
 		locked = true
@@ -61,6 +62,9 @@ func TestImportGitReproducesCommittedDirtyAndUntrackedOutcome(t *testing.T) {
 	}
 	if _, err := remotehandback.ImportGit(t.Context(), leader, spec, manifest, content, guard, lock); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := remotehandback.ImportGit(t.Context(), leader, spec, manifest, content, guard, lock); err != nil {
+		t.Fatalf("recover exact already-published handback: %v", err)
 	}
 	head, _ := gitexec.Output(t.Context(), gitexec.Options{Dir: leader}, "rev-parse", "HEAD")
 	if head != manifest.Workspace.FinalSHA {
@@ -76,6 +80,16 @@ func TestImportGitReproducesCommittedDirtyAndUntrackedOutcome(t *testing.T) {
 	if !strings.Contains(status, "A  staged.txt") || !strings.Contains(status, " M tracked.txt") || !strings.Contains(status, "?? untracked.txt") {
 		t.Fatalf("leader status = %q", status)
 	}
+	if err := os.WriteFile(filepath.Join(leader, "tracked.txt"), []byte("concurrent edit\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := remotehandback.ImportGit(t.Context(), leader, spec, manifest, content, guard, lock); !errors.Is(err, remotehandback.ErrStale) {
+		t.Fatalf("tampered published state error = %v, want stale", err)
+	}
+	got, err := os.ReadFile(filepath.Join(leader, "tracked.txt"))
+	if err != nil || string(got) != "concurrent edit\n" {
+		t.Fatalf("stale recovery overwrote concurrent edit: %q, %v", got, err)
+	}
 }
 
 func TestImportGitRejectsStaleAndCorruptWithoutMutation(t *testing.T) {
@@ -83,6 +97,9 @@ func TestImportGitRejectsStaleAndCorruptWithoutMutation(t *testing.T) {
 	spec := spec(base)
 	layout, err := agentworkspace.Prepare(t.Context(), filepath.Join(t.TempDir(), "runs"), source, spec)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(layout.Worktree, "tracked.txt"), []byte("changed\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	manifest, content, err := agentworkspace.Collect(t.Context(), layout, spec, "test")
@@ -95,7 +112,7 @@ func TestImportGitRejectsStaleAndCorruptWithoutMutation(t *testing.T) {
 	wrong.TaskGeneration++
 	wrongGuard := func(context.Context) (executioncontract.GenerationFence, string, error) { return wrong, base, nil }
 	lock := func(_ context.Context, _ string, fn func() error) error { return fn() }
-	if _, err := remotehandback.ImportGit(t.Context(), leader, spec, manifest, content, wrongGuard, lock); !strings.Contains(err.Error(), "stale") {
+	if _, err := remotehandback.ImportGit(t.Context(), leader, spec, manifest, content, wrongGuard, lock); err == nil || !strings.Contains(err.Error(), "stale") {
 		t.Fatalf("stale error = %v", err)
 	}
 	guardCalls := 0
@@ -106,7 +123,7 @@ func TestImportGitRejectsStaleAndCorruptWithoutMutation(t *testing.T) {
 		}
 		return wrong, base, nil
 	}
-	if _, err := remotehandback.ImportGit(t.Context(), leader, spec, manifest, content, changingGuard, lock); !strings.Contains(err.Error(), "stale") {
+	if _, err := remotehandback.ImportGit(t.Context(), leader, spec, manifest, content, changingGuard, lock); err == nil || !strings.Contains(err.Error(), "stale") {
 		t.Fatalf("generation changed during staging error = %v", err)
 	}
 	corrupt := append([]byte(nil), content...)
@@ -121,7 +138,8 @@ func TestImportGitRejectsStaleAndCorruptWithoutMutation(t *testing.T) {
 	}
 }
 
-func repo(t *testing.T) (string, string) {
+func repo(t *testing.T) (repoPath, baseSHA string) {
+	t.Helper()
 	dir := filepath.Join(t.TempDir(), "repo")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
@@ -141,6 +159,7 @@ func repo(t *testing.T) (string, string) {
 }
 
 func configure(t *testing.T, dir string) {
+	t.Helper()
 	git(t, dir, "config", "user.name", "Test")
 	git(t, dir, "config", "user.email", "test@example.invalid")
 	git(t, dir, "config", "commit.gpgsign", "false")

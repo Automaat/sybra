@@ -31,9 +31,12 @@ func (a *App) importRemoteHandback(ctx context.Context, runID string) error {
 	if err != nil {
 		return err
 	}
+	if err := a.workerControl.BeginArtifactImport(ctx, runID, handback.Manifest.ManifestID); err != nil {
+		return err
+	}
 	t, err := a.tasks.Get(handback.Spec.Fence.TaskID)
 	if err != nil {
-		return a.rejectRemoteHandback(ctx, handback, err)
+		return err
 	}
 	target := a.worktrees.PathFor(t)
 	guard := func(context.Context) (executioncontract.GenerationFence, string, error) {
@@ -41,9 +44,11 @@ func (a *App) importRemoteHandback(ctx context.Context, runID string) error {
 		if getErr != nil {
 			return executioncontract.GenerationFence{}, "", getErr
 		}
-		if current.Generation < 0 || uint64(current.Generation) != handback.Spec.Fence.TaskGeneration || current.Workflow == nil ||
-			current.Workflow.WorkflowID != handback.Spec.Fence.WorkflowID || current.Workflow.CurrentStep != handback.Spec.Fence.StepID ||
-			int64(current.Generation) != handback.Spec.Fence.WorkflowGeneration {
+		original := current.Generation >= 0 && uint64(current.Generation) == handback.Spec.Fence.TaskGeneration &&
+			current.Generation == handback.Spec.Fence.WorkflowGeneration
+		_, recoveredOutputs := remoteSidecarsApplied(current, handback)
+		if current.Workflow == nil || current.Workflow.WorkflowID != handback.Spec.Fence.WorkflowID ||
+			current.Workflow.CurrentStep != handback.Spec.Fence.StepID || (!original && !recoveredOutputs) {
 			return executioncontract.GenerationFence{}, "", remotehandback.ErrStale
 		}
 		head, headErr := gitexec.Output(ctx, gitexec.Options{Dir: target}, "rev-parse", "--verify", "HEAD^{commit}")
@@ -54,10 +59,16 @@ func (a *App) importRemoteHandback(ctx context.Context, runID string) error {
 	}
 	members, err := remotehandback.ImportGit(ctx, target, handback.Spec, handback.Manifest, handback.Content, guard, lock)
 	if err != nil {
-		return a.rejectRemoteHandback(ctx, handback, err)
+		if errors.Is(err, remotehandback.ErrStale) {
+			return a.rejectRemoteHandback(ctx, handback, err)
+		}
+		return err
 	}
 	if err := a.importRemoteOutputs(handback, members); err != nil {
-		return a.rejectRemoteHandback(ctx, handback, err)
+		if errors.Is(err, remotehandback.ErrStale) {
+			return a.rejectRemoteHandback(ctx, handback, err)
+		}
+		return err
 	}
 	return a.workerControl.ResolveArtifact(ctx, runID, handback.Manifest.ManifestID, "imported")
 }
@@ -75,8 +86,9 @@ func (a *App) rejectRemoteHandback(ctx context.Context, handback workercontrol.A
 
 func (a *App) importRemoteOutputs(handback workercontrol.ArtifactHandback, members []executioncontract.ArtifactMember) error {
 	byPath := make(map[string]executioncontract.ArtifactEntry, len(handback.Manifest.Artifacts))
-	for _, entry := range handback.Manifest.Artifacts {
-		byPath[string(entry.Root)+":"+entry.Path] = entry
+	for i := range handback.Manifest.Artifacts {
+		entry := &handback.Manifest.Artifacts[i]
+		byPath[string(entry.Root)+":"+entry.Path] = *entry
 	}
 	update := task.Update{}
 	hasSidecar := false
@@ -119,12 +131,62 @@ func (a *App) importRemoteOutputs(handback workercontrol.ArtifactHandback, membe
 	}
 	if hasSidecar {
 		_, err := a.tasks.UpdateFnBy(handback.Spec.Fence.TaskID, "remotehandback.import", func(current task.Task) (task.Update, error) {
-			if current.Generation < 0 || uint64(current.Generation) != handback.Spec.Fence.TaskGeneration {
+			_, alreadyApplied := remoteSidecarsApplied(current, handback)
+			if alreadyApplied {
+				return task.Update{}, errRemoteOutputsAlreadyApplied
+			}
+			if current.Generation < 0 || uint64(current.Generation) != handback.Spec.Fence.TaskGeneration || current.Workflow == nil ||
+				current.Workflow.WorkflowID != handback.Spec.Fence.WorkflowID || current.Workflow.CurrentStep != handback.Spec.Fence.StepID {
 				return task.Update{}, remotehandback.ErrStale
 			}
 			return update, nil
 		})
+		if errors.Is(err, errRemoteOutputsAlreadyApplied) {
+			return nil
+		}
 		return err
 	}
 	return nil
+}
+
+var errRemoteOutputsAlreadyApplied = errors.New("remote handback: sidecar outputs already applied")
+
+func remoteSidecarsApplied(current task.Task, handback workercontrol.ArtifactHandback) (hasSidecar, applied bool) {
+	applied = true
+	for i := range handback.Manifest.Artifacts {
+		entry := &handback.Manifest.Artifacts[i]
+		if entry.Root != executioncontract.RootSidecar {
+			continue
+		}
+		hasSidecar = true
+		var got string
+		switch entry.Kind {
+		case "plan":
+			got = current.Plan
+		case "plan_contract":
+			got = current.PlanContract
+		case "plan_critique":
+			got = current.PlanCritique
+		case "plan_research":
+			got = current.PlanResearch
+		case "plan_decision":
+			got = current.PlanDecisions
+		case "plan_brief":
+			got = current.PlanBrief
+		case "code_review":
+			got = current.CodeReview
+		case "current_test_failures":
+			got = current.CurrentTestFailures
+		case "acceptance_ledger":
+			got = current.AcceptanceLedger
+		case "spec_decision":
+			got = current.SpecDecision
+		default:
+			return true, false
+		}
+		if got != string(handback.Package.Members[i].Content) {
+			applied = false
+		}
+	}
+	return hasSidecar, hasSidecar && applied
 }

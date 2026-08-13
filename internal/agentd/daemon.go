@@ -252,8 +252,8 @@ func (d *Daemon) pruneExpiredWorkspaces() {
 	for runID := range state.RunAgents {
 		protected[runID] = true
 	}
-	for _, upload := range state.Artifacts {
-		protected[upload.Manifest.RunID] = true
+	for manifestID := range state.Artifacts {
+		protected[state.Artifacts[manifestID].Manifest.RunID] = true
 	}
 	entries, err := os.ReadDir(d.cfg.WorkspaceRoot)
 	if err != nil {
@@ -350,6 +350,7 @@ func (d *Daemon) applyCommand(ctx context.Context, envelope executioncontract.Co
 	}
 }
 
+//nolint:funlen // Admission, durable registration, workspace setup, and provider launch form one rollback unit.
 func (d *Daemon) start(ctx context.Context, envelope executioncontract.CommandEnvelope) error {
 	durable := d.spool.snapshot()
 	d.mu.RLock()

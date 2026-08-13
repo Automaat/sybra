@@ -110,7 +110,10 @@ func TestDurableWorkerControlBehavior(t *testing.T) {
 		content, _ := json.Marshal(executioncontract.ArtifactPackage{Members: []executioncontract.ArtifactMember{{Root: executioncontract.RootArtifact, Path: "git/staged.patch", Content: []byte("artifact")}}})
 		upload := ArtifactUpload{SessionID: replacement.SessionID, Manifest: manifest, Content: content}
 		importCalls := 0
-		restarted.SetArtifactImporter(func(context.Context, string) error { importCalls++; return nil })
+		restarted.SetArtifactImporter(func(ctx context.Context, runID string) error {
+			importCalls++
+			return restarted.BeginArtifactImport(ctx, runID, manifest.ManifestID)
+		})
 		corrupt := upload
 		corrupt.Content = append([]byte(nil), content...)
 		corrupt.Content[len(corrupt.Content)/2] ^= 1
@@ -131,8 +134,11 @@ func TestDurableWorkerControlBehavior(t *testing.T) {
 			t.Fatal("artifact idempotency key accepted different content")
 		}
 		handback, err := restarted.LoadStagedArtifact(ctx, "run-a")
-		if err != nil || handback.Spec.RunID != "run-a" || handback.Manifest.ManifestID != "manifest-a" || len(handback.Package.Members) != 1 {
+		if err != nil || handback.State != "importing" || handback.Spec.RunID != "run-a" || handback.Manifest.ManifestID != "manifest-a" || len(handback.Package.Members) != 1 {
 			t.Fatalf("LoadStagedArtifact = %+v, %v", handback, err)
+		}
+		if err := restarted.BeginArtifactImport(ctx, "run-a", "manifest-a"); err != nil {
+			t.Fatalf("idempotent BeginArtifactImport: %v", err)
 		}
 		if err := restarted.ResolveArtifact(ctx, "run-a", "manifest-a", "imported"); err != nil {
 			t.Fatal(err)
@@ -177,6 +183,7 @@ func TestDurableWorkerControlBehavior(t *testing.T) {
 
 func TestFreshSessionCanDeliverTerminalHandbackAfterLeaseExpiry(t *testing.T) {
 	dbtest.Each(t, func(t *testing.T, engine dbtest.Engine) {
+		t.Helper()
 		now := time.Now().UTC()
 		service := New(engine.Open(t))
 		service.now = func() time.Time { return now }
