@@ -140,6 +140,13 @@ func TestDurableWorkerControlBehavior(t *testing.T) {
 		if err := restarted.ResolveArtifact(ctx, "run-a", "manifest-a", "imported"); err != nil {
 			t.Fatalf("idempotent artifact resolution: %v", err)
 		}
+		upload.Content = content
+		if err := restarted.UploadArtifact(ctx, upload); err != nil {
+			t.Fatalf("idempotent upload after import: %v", err)
+		}
+		if importCalls != 2 {
+			t.Fatalf("importer calls after resolved upload replay = %d, want 2", importCalls)
+		}
 		if removed, err := restarted.PruneResolvedArtifacts(ctx, time.Now().Add(time.Hour)); err != nil || removed != 1 {
 			t.Fatalf("PruneResolvedArtifacts = %d, %v", removed, err)
 		}

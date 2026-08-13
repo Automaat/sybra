@@ -609,6 +609,16 @@ func (s *Service) UploadArtifact(ctx context.Context, upload ArtifactUpload) err
 		return err
 	}
 	if s.importArtifact != nil {
+		// A daemon may retry after the leader imported the handback but its HTTP
+		// response was lost. The durable resolution is authoritative: replaying an
+		// identical upload must not invoke the importer a second time.
+		var artifactState string
+		if err := s.db.QueryRowContext(ctx, s.db.Rebind(`SELECT artifact_state FROM remote_runs WHERE run_id = ?`), upload.Manifest.RunID).Scan(&artifactState); err != nil {
+			return err
+		}
+		if artifactState != "staged" {
+			return nil
+		}
 		if err := s.importArtifact(ctx, upload.Manifest.RunID); err != nil {
 			return fmt.Errorf("worker control: import staged artifact: %w", err)
 		}
