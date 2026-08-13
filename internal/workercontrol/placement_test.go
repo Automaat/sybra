@@ -138,6 +138,37 @@ func TestConcurrentPlacementCannotDuplicateRunOrCapacity(t *testing.T) {
 	})
 }
 
+func TestConcurrentLocalFallbackClaimsOneFencedEffect(t *testing.T) {
+	dbtest.Each(t, func(t *testing.T, engine dbtest.Engine) {
+		t.Helper()
+		service := New(engine.Open(t))
+		request := placementRequest(t, "run-local-race", "effect-local-race")
+		request.AllowLocalFallback = true
+		var wg sync.WaitGroup
+		errs := make(chan error, 12)
+		for range 12 {
+			wg.Go(func() {
+				result, err := service.ScheduleStart(t.Context(), request)
+				if err == nil && !result.LocalFallback {
+					err = errors.New("local fallback was not returned")
+				}
+				errs <- err
+			})
+		}
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		var count int
+		if err := service.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM run_placement_decisions WHERE effect_id = ?`, request.Spec.EffectID).Scan(&count); err != nil || count != 1 {
+			t.Fatalf("local reservations = %d, %v", count, err)
+		}
+	})
+}
+
 func TestPlacementDrainDisableAndDiagnostics(t *testing.T) {
 	dbtest.Each(t, func(t *testing.T, engine dbtest.Engine) {
 		t.Helper()

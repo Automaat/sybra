@@ -106,8 +106,9 @@ func (s *Service) ScheduleStart(ctx context.Context, request PlacementRequest) (
 		}
 		if len(eligible) == 0 {
 			if request.AllowLocalFallback && strings.TrimSpace(request.NodeOverride) == "" {
-				result.LocalFallback = true
-				return nil
+				local, err := s.reserveLocalFallbackTx(ctx, tx, request, result.Candidates)
+				result = local
+				return err
 			}
 			return ErrNoEligibleWorker
 		}
@@ -238,8 +239,22 @@ func scorePlacement(session placementSession, request PlacementRequest) Placemen
 }
 
 func (s *Service) existingPlacementTx(ctx context.Context, tx *sql.Tx, request PlacementRequest) (Placement, bool, error) {
+	var localRunID, localSpec, localCommand string
+	err := tx.QueryRowContext(ctx, s.db.Rebind(`SELECT run_id, run_spec_json, command_json FROM run_placement_decisions WHERE effect_id = ? AND decision = 'local'`), request.Spec.EffectID).
+		Scan(&localRunID, &localSpec, &localCommand)
+	if err == nil {
+		encodedSpec, _ := json.Marshal(request.Spec)
+		encodedCommand, _ := json.Marshal(request.Command)
+		if localRunID != request.Spec.RunID || localSpec != string(encodedSpec) || localCommand != string(encodedCommand) {
+			return Placement{}, false, invalidf("effect id already belongs to another fenced placement")
+		}
+		return Placement{LocalFallback: true}, true, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return Placement{}, false, err
+	}
 	var runID, workerID, sessionID, specJSON string
-	err := tx.QueryRowContext(ctx, s.db.Rebind(`SELECT run_id, worker_id, session_id, run_spec_json FROM remote_runs WHERE effect_id = ?`), request.Spec.EffectID).
+	err = tx.QueryRowContext(ctx, s.db.Rebind(`SELECT run_id, worker_id, session_id, run_spec_json FROM remote_runs WHERE effect_id = ?`), request.Spec.EffectID).
 		Scan(&runID, &workerID, &sessionID, &specJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Placement{}, false, nil
@@ -264,6 +279,36 @@ func (s *Service) existingPlacementTx(ctx context.Context, tx *sql.Tx, request P
 	return Placement{WorkerID: workerID, SessionID: sessionID, Command: Command{Sequence: sequence, Envelope: request.Command}}, true, nil
 }
 
+func (s *Service) reserveLocalFallbackTx(ctx context.Context, tx *sql.Tx, request PlacementRequest, candidates []PlacementCandidate) (Placement, error) {
+	specJSON, err := json.Marshal(request.Spec)
+	if err != nil {
+		return Placement{}, err
+	}
+	commandJSON, err := json.Marshal(request.Command)
+	if err != nil {
+		return Placement{}, err
+	}
+	result, err := tx.ExecContext(ctx, s.db.Rebind(`INSERT INTO run_placement_decisions
+		(effect_id, run_id, decision, run_spec_json, command_json, created_at)
+		VALUES (?, ?, 'local', ?, ?, ?) ON CONFLICT(effect_id) DO NOTHING`), request.Spec.EffectID, request.Spec.RunID,
+		string(specJSON), string(commandJSON), db.TimeValue(s.now().UTC()))
+	if err != nil {
+		return Placement{}, err
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		existing, ok, existingErr := s.existingPlacementTx(ctx, tx, request)
+		if existingErr != nil {
+			return Placement{}, existingErr
+		}
+		if !ok || !existing.LocalFallback {
+			return Placement{}, invalidf("effect placement conflict")
+		}
+		existing.Candidates = candidates
+		return existing, nil
+	}
+	return Placement{LocalFallback: true, Candidates: candidates}, nil
+}
+
 func (s *Service) reserveStartTx(ctx context.Context, tx *sql.Tx, selected placementSession, request PlacementRequest) (Command, error) {
 	specJSON, err := json.Marshal(request.Spec)
 	if err != nil {
@@ -271,6 +316,12 @@ func (s *Service) reserveStartTx(ctx context.Context, tx *sql.Tx, selected place
 	}
 	commandJSON, err := json.Marshal(request.Command)
 	if err != nil {
+		return Command{}, err
+	}
+	if _, err := tx.ExecContext(ctx, s.db.Rebind(`INSERT INTO run_placement_decisions
+		(effect_id, run_id, decision, worker_id, session_id, run_spec_json, command_json, created_at)
+		VALUES (?, ?, 'remote', ?, ?, ?, ?, ?)`), request.Spec.EffectID, request.Spec.RunID, selected.workerID, selected.sessionID,
+		string(specJSON), string(commandJSON), db.TimeValue(s.now().UTC())); err != nil {
 		return Command{}, err
 	}
 	_, err = tx.ExecContext(ctx, s.db.Rebind(`INSERT INTO remote_runs
