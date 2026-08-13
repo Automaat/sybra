@@ -54,7 +54,8 @@ draining reject new starts with an explicit terminal event. Existing runs may
 finish while draining.
 
 Completion produces one deterministic, content-addressed package: a Git bundle
-for committed descendants, a binary patch for staged/unstaged tracked changes,
+for committed descendants, separate binary patches preserving staged and
+unstaged tracked changes,
 sorted untracked blobs with portable modes, and only outputs declared by the
 run. Each member has a size and SHA-256 digest; packages are bounded to 512
 members, 32 MiB each, and 128 MiB total. `NOTES.md` and evidence scratch are
@@ -67,7 +68,12 @@ diagnostic handbacks are retained for `workspace_retention_hours` (seven days
 by default) and then reaped. The leader stores uploads as `staged`, not ready:
 workflow advancement waits for a generation-fenced importer to verify package
 membership/hashes, exact base ancestry, and a clean canonical base before any
-Git mutation. Stale or corrupt packages never update the canonical worktree.
+Git mutation. The importer holds the worktree manager's canonical mutation
+lock across both generation checks, quarantine validation, Git publication,
+and declared-output import. Stale/corrupt handbacks are marked rejected and
+retained privately; accepted Git state, sidecars, evidence/artifacts, and
+private working memory flow into their leader-owned stores. Neither outcome is
+workflow completion by itself.
 
 `sandbox_mode: enforce` fails each run closed if the host containment mechanism
 or workspace profile cannot be established. `report` is accepted for rollout

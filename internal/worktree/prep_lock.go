@@ -61,3 +61,14 @@ func (m *Manager) lockPath(path string) (release func(), err error) {
 		delete(m.paths.held, key)
 	}, nil
 }
+
+// WithMutationLock serializes an external canonical-worktree mutation with
+// every prepare, cleanup, retry, and promotion operation owned by Manager.
+func (m *Manager) WithMutationLock(path string, fn func() error) error {
+	release, err := m.lockPath(path)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return fn()
+}

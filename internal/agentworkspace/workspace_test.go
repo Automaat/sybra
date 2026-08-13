@@ -82,7 +82,7 @@ func TestPrepareUsesImmutableBaseAndCollectsDeterministicHandback(t *testing.T) 
 	if strings.Contains(string(content1), "PRIVATE CANARY") {
 		t.Fatal("private working memory leaked into handback")
 	}
-	wantPaths := []string{"git/dirty.patch", "a.txt", "z.txt"}
+	wantPaths := []string{"git/staged.patch", "git/unstaged.patch", "a.txt", "z.txt"}
 	gotPaths := make([]string, len(pkg.Members))
 	for i := range pkg.Members {
 		gotPaths[i] = pkg.Members[i].Path
@@ -140,6 +140,39 @@ func TestCollectRejectsRequiredMissingAndSymlinkParentEscape(t *testing.T) {
 	spec.ExpectedOutputs[0].Path = "pivot/report.json"
 	if _, _, err := Collect(t.Context(), layout, spec, "test"); err == nil || !strings.Contains(err.Error(), "escapes logical root") {
 		t.Fatalf("symlink escape error = %v", err)
+	}
+}
+
+func TestCollectNeverDuplicatesDeclaredWorkingMemoryIntoGit(t *testing.T) {
+	source, base := repository(t)
+	spec := runSpec(base, true)
+	spec.ExpectedOutputs = []executioncontract.ExpectedOutput{{Name: "private-memory", Kind: "working_memory", Root: executioncontract.RootWorkingMemory, Path: "memory.txt", Required: true, Sensitivity: executioncontract.SensitivitySecret}}
+	layout, err := Prepare(t.Context(), filepath.Join(t.TempDir(), "runs"), source, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(layout.Worktree, "memory.txt"), []byte("PRIVATE MEMORY"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manifest, content, err := Collect(t.Context(), layout, spec, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg, err := executioncontract.ValidateArtifactPackage(manifest, content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, member := range pkg.Members {
+		if member.Path == "memory.txt" {
+			count++
+			if member.Root != executioncontract.RootWorkingMemory {
+				t.Fatalf("working memory leaked through %s", member.Root)
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("working-memory member count = %d, want 1", count)
 	}
 }
 

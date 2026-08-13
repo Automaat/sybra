@@ -103,12 +103,14 @@ func TestDurableWorkerControlBehavior(t *testing.T) {
 			Fence:     spec.Fence,
 			Workspace: executioncontract.WorkspaceHandback{RepositoryID: spec.Workspace.RepositoryID, BaseSHA: spec.Workspace.BaseSHA, BaseRef: spec.Workspace.BaseRef, FinalSHA: spec.Workspace.BaseSHA},
 			Artifacts: []executioncontract.ArtifactEntry{{
-				Name: "git-dirty-patch", Kind: "git_patch", Root: executioncontract.RootArtifact, Path: "git/dirty.patch",
+				Name: "git-staged-patch", Kind: "git_staged_patch", Root: executioncontract.RootArtifact, Path: "git/staged.patch",
 				DigestSHA256: fmt.Sprintf("%x", sha256.Sum256([]byte("artifact"))), SizeBytes: int64(len("artifact")), MediaType: "application/octet-stream", Sensitivity: executioncontract.SensitivityInternal,
 			}},
 		}
-		content, _ := json.Marshal(executioncontract.ArtifactPackage{Members: []executioncontract.ArtifactMember{{Root: executioncontract.RootArtifact, Path: "git/dirty.patch", Content: []byte("artifact")}}})
+		content, _ := json.Marshal(executioncontract.ArtifactPackage{Members: []executioncontract.ArtifactMember{{Root: executioncontract.RootArtifact, Path: "git/staged.patch", Content: []byte("artifact")}}})
 		upload := ArtifactUpload{SessionID: replacement.SessionID, Manifest: manifest, Content: content}
+		importCalls := 0
+		restarted.SetArtifactImporter(func(context.Context, string) error { importCalls++; return nil })
 		corrupt := upload
 		corrupt.Content = append([]byte(nil), content...)
 		corrupt.Content[len(corrupt.Content)/2] ^= 1
@@ -117,6 +119,9 @@ func TestDurableWorkerControlBehavior(t *testing.T) {
 		}
 		if err := restarted.UploadArtifact(ctx, upload); err != nil {
 			t.Fatalf("UploadArtifact: %v", err)
+		}
+		if importCalls != 1 {
+			t.Fatalf("production importer calls = %d, want 1", importCalls)
 		}
 		if err := restarted.UploadArtifact(ctx, upload); err != nil {
 			t.Fatalf("idempotent UploadArtifact: %v", err)
@@ -159,6 +164,34 @@ func TestDurableWorkerControlBehavior(t *testing.T) {
 			if strings.Contains(string(encoded), secret) {
 				t.Fatalf("diagnostics leaked work content %q: %s", secret, encoded)
 			}
+		}
+	})
+}
+
+func TestFreshSessionCanDeliverTerminalHandbackAfterLeaseExpiry(t *testing.T) {
+	dbtest.Each(t, func(t *testing.T, engine dbtest.Engine) {
+		now := time.Now().UTC()
+		service := New(engine.Open(t))
+		service.now = func() time.Time { return now }
+		service.lease = time.Second
+		session := register(t, service, "worker-expired")
+		spec, command := startContract(t, "run-expired", "effect-expired")
+		if _, err := service.Enqueue(t.Context(), session.SessionID, &spec, command); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := service.AppendEvents(t.Context(), EventBatch{SessionID: session.SessionID, Events: []executioncontract.EventEnvelope{event("run-expired", 1, executioncontract.EventTerminal)}}); err != nil {
+			t.Fatal(err)
+		}
+		now = now.Add(2 * time.Second)
+		replacement, err := service.Register(t.Context(), RegisterRequest{WorkerID: "worker-expired", Negotiation: executioncontract.Negotiation{ProtocolMin: executioncontract.CurrentVersion(), ProtocolMax: executioncontract.CurrentVersion(), BuildVersion: "worker-test"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload := []byte("patch")
+		manifest := executioncontract.ArtifactManifest{Version: executioncontract.CurrentVersion(), BuildVersion: "worker-test", RunID: spec.RunID, ManifestID: "manifest-expired", IdempotencyKey: "artifact-expired", State: executioncontract.ArtifactsReady, GeneratedAt: now, Fence: spec.Fence, Workspace: executioncontract.WorkspaceHandback{RepositoryID: spec.Workspace.RepositoryID, BaseSHA: spec.Workspace.BaseSHA, BaseRef: spec.Workspace.BaseRef, FinalSHA: spec.Workspace.BaseSHA}, Artifacts: []executioncontract.ArtifactEntry{{Name: "git-staged-patch", Kind: "git_staged_patch", Root: executioncontract.RootArtifact, Path: "git/staged.patch", DigestSHA256: fmt.Sprintf("%x", sha256.Sum256(payload)), SizeBytes: int64(len(payload)), MediaType: "application/x-git-patch", Sensitivity: executioncontract.SensitivityInternal}}}
+		content, _ := json.Marshal(executioncontract.ArtifactPackage{Members: []executioncontract.ArtifactMember{{Root: executioncontract.RootArtifact, Path: "git/staged.patch", Content: payload}}})
+		if err := service.UploadArtifact(t.Context(), ArtifactUpload{SessionID: replacement.SessionID, Manifest: manifest, Content: content}); err != nil {
+			t.Fatalf("replacement upload: %v", err)
 		}
 	})
 }

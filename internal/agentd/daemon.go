@@ -417,7 +417,9 @@ func (d *Daemon) start(ctx context.Context, envelope executioncontract.CommandEn
 		TaskID: spec.RunID, AdmissionTaskKey: spec.RunID, IntentID: spec.IdempotencyKey,
 		TaskGeneration: spec.Fence.TaskGeneration, Name: spec.RunID, Role: agent.Role(spec.Role), Mode: "headless",
 		Prompt: spec.Prompt.Text, OutputSchema: spec.Prompt.OutputSchema, AllowedTools: spec.Tools.AllowedTools,
-		Dir: layout.Worktree, Provider: spec.Provider.Provider, Model: spec.Provider.Model, ReasoningEffort: spec.Provider.ReasoningEffort,
+		// The sandbox's one auxiliary write root covers this run's isolated
+		// sidecar/artifact siblings; it never grants the shared workspace root.
+		Dir: layout.Worktree, SidecarDir: layout.RunRoot, Provider: spec.Provider.Provider, Model: spec.Provider.Model, ReasoningEffort: spec.Provider.ReasoningEffort,
 		RequirePermissions: spec.Tools.RequirePermissions, HeadlessPermissionMode: spec.Tools.PermissionMode,
 		MaxTurns: spec.Resources.MaxTurns, BashTimeoutMs: spec.Resources.BashTimeoutMillis,
 		HeadlessSteerable: spec.Options.Steerable, ForkSubagent: spec.Options.ForkSubagent,

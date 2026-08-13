@@ -81,15 +81,22 @@ type Diagnostics struct {
 }
 
 type Service struct {
-	db       *db.DB
-	now      func() time.Time
-	lease    time.Duration
-	notifyMu sync.Mutex
-	notifyCh chan struct{}
+	db             *db.DB
+	now            func() time.Time
+	lease          time.Duration
+	notifyMu       sync.Mutex
+	notifyCh       chan struct{}
+	importArtifact func(context.Context, string) error
 }
 
 func New(database *db.DB) *Service {
 	return &Service{db: database, now: time.Now, lease: 45 * time.Second, notifyCh: make(chan struct{})}
+}
+
+// SetArtifactImporter late-binds the leader-owned canonical importer after
+// task/worktree stores are initialized.
+func (s *Service) SetArtifactImporter(importer func(context.Context, string) error) {
+	s.importArtifact = importer
 }
 
 func (s *Service) Register(ctx context.Context, request RegisterRequest) (Session, error) {
@@ -153,7 +160,16 @@ func (s *Service) Register(ctx context.Context, request RegisterRequest) (Sessio
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 			sessionID, request.WorkerID, version.Major, version.Minor, request.Negotiation.BuildVersion, string(capabilities),
 			state, int64(lease/time.Second), db.TimeValue(now.Add(lease)), request.LastCommandAck, db.TimeValue(now), db.TimeValue(now))
-		if err != nil || request.ResumeSessionID == "" {
+		if err != nil {
+			return err
+		}
+		if request.ResumeSessionID == "" {
+			// A daemon with no live provider may fall back to a fresh session after
+			// its lease expires. Completed handbacks still belong to the stable
+			// worker identity and must remain uploadable; nonterminal execution is
+			// deliberately not adopted by this path.
+			_, err = tx.ExecContext(ctx, s.db.Rebind(`UPDATE remote_runs SET session_id = ?, updated_at = ? WHERE worker_id = ? AND state = 'terminal' AND artifact_state IN ('pending', 'staged')`),
+				sessionID, db.TimeValue(now), request.WorkerID)
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, s.db.Rebind(`UPDATE worker_commands SET acknowledged_at = COALESCE(acknowledged_at, ?) WHERE session_id = ? AND sequence <= ?`),
@@ -164,7 +180,7 @@ func (s *Service) Register(ctx context.Context, request RegisterRequest) (Sessio
 			sessionID, request.ResumeSessionID, request.LastCommandAck); err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, s.db.Rebind(`UPDATE remote_runs SET session_id = ?, updated_at = ? WHERE session_id = ? AND state != 'terminal'`),
+		_, err = tx.ExecContext(ctx, s.db.Rebind(`UPDATE remote_runs SET session_id = ?, updated_at = ? WHERE session_id = ? AND (state != 'terminal' OR artifact_state IN ('pending', 'staged'))`),
 			sessionID, db.TimeValue(now), request.ResumeSessionID)
 		return err
 	})
@@ -528,7 +544,7 @@ func (s *Service) UploadArtifact(ctx context.Context, upload ArtifactUpload) err
 	if _, err := executioncontract.ValidateArtifactPackage(upload.Manifest, upload.Content); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidRequest, err)
 	}
-	return s.db.InTx(ctx, func(tx *sql.Tx) error {
+	err := s.db.InTx(ctx, func(tx *sql.Tx) error {
 		if err := s.requireSessionTx(ctx, tx, upload.SessionID, true); err != nil {
 			return err
 		}
@@ -589,6 +605,15 @@ func (s *Service) UploadArtifact(ctx context.Context, upload ArtifactUpload) err
 			db.TimeValue(s.now().UTC()), upload.Manifest.RunID)
 		return err
 	})
+	if err != nil {
+		return err
+	}
+	if s.importArtifact != nil {
+		if err := s.importArtifact(ctx, upload.Manifest.RunID); err != nil {
+			return fmt.Errorf("worker control: import staged artifact: %w", err)
+		}
+	}
+	return nil
 }
 
 func validateRequiredOutputs(spec executioncontract.RunSpec, manifest executioncontract.ArtifactManifest) error {
@@ -603,7 +628,8 @@ func validateRequiredOutputs(spec executioncontract.RunSpec, manifest executionc
 			continue
 		}
 		if !((entry.Name == "git-bundle" && entry.Kind == "git_bundle" && entry.Root == executioncontract.RootArtifact && entry.Path == "git/commits.bundle") ||
-			(entry.Name == "git-dirty-patch" && entry.Kind == "git_patch" && entry.Root == executioncontract.RootArtifact && entry.Path == "git/dirty.patch") ||
+			(entry.Name == "git-staged-patch" && entry.Kind == "git_staged_patch" && entry.Root == executioncontract.RootArtifact && entry.Path == "git/staged.patch") ||
+			(entry.Name == "git-unstaged-patch" && entry.Kind == "git_unstaged_patch" && entry.Root == executioncontract.RootArtifact && entry.Path == "git/unstaged.patch") ||
 			(strings.HasPrefix(entry.Name, "untracked:") && entry.Kind == "git_untracked" && entry.Root == executioncontract.RootWorktree && entry.Name == "untracked:"+entry.Path)) {
 			return invalidf("artifact %q was not declared by the run", entry.Name)
 		}

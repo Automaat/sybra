@@ -22,10 +22,15 @@ var ErrStale = errors.New("remote handback: stale generation or canonical base")
 // window.
 type Guard func(context.Context) (executioncontract.GenerationFence, string, error)
 
+// Lock must serialize every mutation of the canonical worktree for the
+// duration of validate-and-publish. A nil lock is rejected: optimistic checks
+// alone cannot prevent a concurrent local completion from being reset away.
+type Lock func(context.Context, string, func() error) error
+
 // ImportGit applies committed, dirty, and untracked Git state only after the
 // complete package has been materialized in an isolated staging clone. It
 // returns declared non-Git artifacts for their leader-owned domain importers.
-func ImportGit(ctx context.Context, target string, spec executioncontract.RunSpec, manifest executioncontract.ArtifactManifest, content []byte, guard Guard) ([]executioncontract.ArtifactMember, error) {
+func ImportGit(ctx context.Context, target string, spec executioncontract.RunSpec, manifest executioncontract.ArtifactManifest, content []byte, guard Guard, lock Lock) ([]executioncontract.ArtifactMember, error) {
 	pkg, err := executioncontract.ValidateArtifactPackage(manifest, content)
 	if err != nil {
 		return nil, err
@@ -33,6 +38,19 @@ func ImportGit(ctx context.Context, target string, spec executioncontract.RunSpe
 	if guard == nil {
 		return nil, errors.New("remote handback: leader generation guard is required")
 	}
+	if lock == nil {
+		return nil, errors.New("remote handback: canonical worktree lock is required")
+	}
+	var imported []executioncontract.ArtifactMember
+	err = lock(ctx, target, func() error {
+		var importErr error
+		imported, importErr = importGitLocked(ctx, target, spec, manifest, pkg, guard)
+		return importErr
+	})
+	return imported, err
+}
+
+func importGitLocked(ctx context.Context, target string, spec executioncontract.RunSpec, manifest executioncontract.ArtifactManifest, pkg executioncontract.ArtifactPackage, guard Guard) ([]executioncontract.ArtifactMember, error) {
 	current, canonicalBase, err := guard(ctx)
 	if err != nil {
 		return nil, err
@@ -59,7 +77,7 @@ func ImportGit(ctx context.Context, target string, spec executioncontract.RunSpe
 	if err := gitexec.Run(ctx, gitexec.Options{Dir: checkout}, "checkout", "--detach", spec.Workspace.BaseSHA); err != nil {
 		return nil, err
 	}
-	var patch []byte
+	var stagedPatch, unstagedPatch []byte
 	untracked := []executioncontract.ArtifactMember{}
 	nonGit := []executioncontract.ArtifactMember{}
 	for i, entry := range manifest.Artifacts {
@@ -77,8 +95,10 @@ func ImportGit(ctx context.Context, target string, spec executioncontract.RunSpe
 			if err := gitexec.Run(ctx, gitexec.Options{Dir: checkout}, "fetch", bundle, remoteRef+":refs/sybra/import/"+spec.RunID); err != nil {
 				return nil, err
 			}
-		case "git_patch":
-			patch = member.Content
+		case "git_staged_patch":
+			stagedPatch = member.Content
+		case "git_unstaged_patch":
+			unstagedPatch = member.Content
 		case "git_untracked":
 			untracked = append(untracked, member)
 		default:
@@ -94,7 +114,10 @@ func ImportGit(ctx context.Context, target string, spec executioncontract.RunSpe
 	if err := gitexec.Run(ctx, gitexec.Options{Dir: checkout}, "checkout", "--detach", manifest.Workspace.FinalSHA); err != nil {
 		return nil, err
 	}
-	if err := applyPatch(ctx, checkout, patch, staging); err != nil {
+	if err := applyPatch(ctx, checkout, stagedPatch, staging, true); err != nil {
+		return nil, err
+	}
+	if err := applyPatch(ctx, checkout, unstagedPatch, staging, false); err != nil {
 		return nil, err
 	}
 	for i, member := range untracked {
@@ -130,7 +153,11 @@ func ImportGit(ctx context.Context, target string, spec executioncontract.RunSpe
 	if err := gitexec.Run(ctx, gitexec.Options{Dir: target}, "reset", "--hard", manifest.Workspace.FinalSHA); err != nil {
 		return nil, err
 	}
-	if err := applyPatch(ctx, target, patch, staging); err != nil {
+	if err := applyPatch(ctx, target, stagedPatch, staging, true); err != nil {
+		rollback()
+		return nil, err
+	}
+	if err := applyPatch(ctx, target, unstagedPatch, staging, false); err != nil {
 		rollback()
 		return nil, err
 	}
@@ -154,7 +181,8 @@ func validateOutputs(spec executioncontract.RunSpec, manifest executioncontract.
 		entries[entry.Name] = entry
 		if declared[entry.Name] ||
 			(entry.Name == "git-bundle" && entry.Kind == "git_bundle" && entry.Root == executioncontract.RootArtifact && entry.Path == "git/commits.bundle") ||
-			(entry.Name == "git-dirty-patch" && entry.Kind == "git_patch" && entry.Root == executioncontract.RootArtifact && entry.Path == "git/dirty.patch") ||
+			(entry.Name == "git-staged-patch" && entry.Kind == "git_staged_patch" && entry.Root == executioncontract.RootArtifact && entry.Path == "git/staged.patch") ||
+			(entry.Name == "git-unstaged-patch" && entry.Kind == "git_unstaged_patch" && entry.Root == executioncontract.RootArtifact && entry.Path == "git/unstaged.patch") ||
 			(strings.HasPrefix(entry.Name, "untracked:") && entry.Kind == "git_untracked" && entry.Root == executioncontract.RootWorktree && entry.Name == "untracked:"+entry.Path) {
 			continue
 		}
@@ -198,15 +226,23 @@ func requireBaseAndClean(ctx context.Context, target, base string) error {
 	return nil
 }
 
-func applyPatch(ctx context.Context, dir string, patch []byte, scratch string) error {
+func applyPatch(ctx context.Context, dir string, patch []byte, scratch string, index bool) error {
 	if len(patch) == 0 {
 		return nil
 	}
-	path := filepath.Join(scratch, "dirty.patch")
+	name := "unstaged.patch"
+	if index {
+		name = "staged.patch"
+	}
+	path := filepath.Join(scratch, name)
 	if err := os.WriteFile(path, patch, 0o600); err != nil {
 		return err
 	}
-	return gitexec.Run(ctx, gitexec.Options{Dir: dir}, "apply", "--binary", "--", path)
+	args := []string{"apply", "--binary"}
+	if index {
+		args = append(args, "--index")
+	}
+	return gitexec.Run(ctx, gitexec.Options{Dir: dir}, append(args, "--", path)...)
 }
 
 func entryFor(manifest executioncontract.ArtifactManifest, root executioncontract.LogicalRoot, path string) executioncontract.ArtifactEntry {

@@ -21,7 +21,10 @@ import (
 	"github.com/Automaat/sybra/internal/notes"
 )
 
-const dirtyPatchPath = "git/dirty.patch"
+const (
+	stagedPatchPath   = "git/staged.patch"
+	unstagedPatchPath = "git/unstaged.patch"
+)
 
 type Layout struct {
 	RunRoot       string
@@ -184,11 +187,18 @@ func Collect(ctx context.Context, layout Layout, spec executioncontract.RunSpec,
 			return executioncontract.ArtifactManifest{}, nil, err
 		}
 	}
-	patch, err := gitexec.RawOutput(ctx, gitexec.Options{Dir: layout.Worktree}, "diff", "--binary", "--full-index", "HEAD", "--", ".")
+	stagedPatch, err := gitexec.RawOutput(ctx, gitexec.Options{Dir: layout.Worktree}, "diff", "--cached", "--binary", "--full-index", "HEAD", "--", ".")
 	if err != nil {
 		return executioncontract.ArtifactManifest{}, nil, err
 	}
-	if err := add("git-dirty-patch", "git_patch", executioncontract.RootArtifact, dirtyPatchPath, "application/x-git-patch", executioncontract.SensitivityInternal, 0, patch); err != nil {
+	if err := add("git-staged-patch", "git_staged_patch", executioncontract.RootArtifact, stagedPatchPath, "application/x-git-patch", executioncontract.SensitivityInternal, 0, stagedPatch); err != nil {
+		return executioncontract.ArtifactManifest{}, nil, err
+	}
+	unstagedPatch, err := gitexec.RawOutput(ctx, gitexec.Options{Dir: layout.Worktree}, "diff", "--binary", "--full-index", "--", ".")
+	if err != nil {
+		return executioncontract.ArtifactManifest{}, nil, err
+	}
+	if err := add("git-unstaged-patch", "git_unstaged_patch", executioncontract.RootArtifact, unstagedPatchPath, "application/x-git-patch", executioncontract.SensitivityInternal, 0, unstagedPatch); err != nil {
 		return executioncontract.ArtifactManifest{}, nil, err
 	}
 	untrackedRaw, err := gitexec.RawOutput(ctx, gitexec.Options{Dir: layout.Worktree}, "ls-files", "--others", "--exclude-standard", "-z")
@@ -197,8 +207,14 @@ func Collect(ctx context.Context, layout Layout, spec executioncontract.RunSpec,
 	}
 	untracked := splitNUL(untrackedRaw)
 	sort.Strings(untracked)
+	privatePaths := make(map[string]bool)
+	for _, output := range spec.ExpectedOutputs {
+		if output.Root == executioncontract.RootWorkingMemory {
+			privatePaths[output.Path] = true
+		}
+	}
 	for _, rel := range untracked {
-		if rel == notes.FileName || strings.HasPrefix(rel, ".sybra-evidence/") {
+		if rel == notes.FileName || strings.HasPrefix(rel, ".sybra-evidence/") || privatePaths[rel] {
 			continue
 		}
 		data, mode, err := readRegularOrSymlink(layout.Worktree, rel)
