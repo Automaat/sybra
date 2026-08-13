@@ -24,6 +24,13 @@ execution node, point `leader_url` at the leader's `/worker/v1` service, copy
 repository mirrors into the daemon's `repositories` map, then remove the old
 follower service after its in-flight task runs have drained.
 
+An execution node runs agents, so it needs whatever the process sandbox needs.
+With `sandbox_mode: enforce` (below) a stock Ubuntu 24.04 node also needs
+`bubblewrap` **and** the AppArmor profile this repo ships — the distribution
+denies unprivileged user namespaces by default, and without the profile every
+dispatched run fails closed at certification with a working `bwrap` on PATH.
+See "The bwrap AppArmor profile" in [the deploy runbook](../deploy/README.md).
+
 Start it with a dedicated YAML file and a leader token supplied only through an
 environment variable:
 

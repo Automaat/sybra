@@ -1,0 +1,38 @@
+# AppArmor profile granting bwrap an unprivileged user namespace.
+#
+# Ubuntu 24.04 sets kernel.apparmor_restrict_unprivileged_userns=1, which
+# denies unprivileged user namespaces to every binary without a profile that
+# permits them. bwrap sits on PATH and fails only when it maps uids, so an
+# agent host without this profile carries a working binary that cannot build a
+# single sandbox: under agent.sandbox_mode: enforce nothing certifies, and
+# under report every agent is left unwrapped.
+#
+# The grant is deliberately narrow: one executable, rather than a host-wide
+# sysctl every other unprivileged binary would ride on. flags=(unconfined)
+# means the profile confines nothing else — it exists only to attach the userns
+# permission, the same shape the distribution ships for ch-run and other
+# namespace-using tools in /etc/apparmor.d.
+#
+# The grant does reach the process tree bwrap execs, not a single process: with
+# no exec transition rules here, the provider CLI and its descendants keep this
+# label and this permission. That is intended — a sandboxed agent runs under
+# bwrap — but it is why a local/sybra-bwrap override would apply to far more
+# than the wrapper itself.
+#
+# Installed by the one-time provisioning in deploy/README.md. It ships here so
+# every host that runs agents loads the same version as the code that depends
+# on it, rather than a copy kept per deployment.
+#
+# The name is sybra-bwrap rather than bwrap because the distribution ships no
+# bwrap profile today, and a distinct name keeps a future packaged one from
+# being silently overwritten by this file. Should one ever ship, this profile
+# goes away instead of two profiles attaching to the same executable.
+abi <abi/4.0>,
+include <tunables/global>
+
+profile sybra-bwrap /usr/bin/bwrap flags=(unconfined) {
+  userns,
+
+  # Site-specific additions and overrides. See local/README for details.
+  include if exists <local/sybra-bwrap>
+}
