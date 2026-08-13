@@ -197,7 +197,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 			return ctx.Err()
 		case <-heartbeat.C:
 			d.pruneExpiredWorkspaces()
-			session, err := d.client.heartbeat(ctx, d.currentSession(), d.capabilities)
+			session, err := d.client.heartbeat(ctx, d.currentSession(), d.runtimeCapabilities())
 			if err != nil {
 				d.logger.Warn("agentd.heartbeat", "err", err)
 			} else {
@@ -276,7 +276,7 @@ func (d *Daemon) pruneExpiredWorkspaces() {
 func (d *Daemon) register(ctx context.Context) error {
 	state := d.spool.snapshot()
 	request := workercontrol.RegisterRequest{
-		WorkerID: d.cfg.NodeID, Capabilities: d.capabilities, LeaseSeconds: d.cfg.LeaseSeconds,
+		WorkerID: d.cfg.NodeID, Capabilities: d.runtimeCapabilities(), LeaseSeconds: d.cfg.LeaseSeconds,
 		Negotiation: executioncontract.Negotiation{
 			ProtocolMin: executioncontract.CurrentVersion(), ProtocolMax: executioncontract.CurrentVersion(), BuildVersion: buildVersion(),
 		},
@@ -297,6 +297,14 @@ func (d *Daemon) register(ctx context.Context) error {
 		state.SessionID, state.LastCommandAck = session.SessionID, session.LastCommandAck
 		return nil
 	})
+}
+
+func (d *Daemon) runtimeCapabilities() []string {
+	capabilities := append([]string(nil), d.capabilities...)
+	return append(capabilities,
+		fmt.Sprintf("spool_bytes=%d", d.spool.usageBytes()),
+		fmt.Sprintf("spool_max_bytes=%d", d.cfg.SpoolMaxBytes),
+	)
 }
 
 func (d *Daemon) handleCommand(ctx context.Context, command workercontrol.Command) error {

@@ -175,6 +175,22 @@ func TestSpoolExhaustionIsExplicitAndPreservesPriorState(t *testing.T) {
 	}
 }
 
+func TestRuntimeCapabilitiesReportBoundedSpoolUsage(t *testing.T) {
+	spool, err := OpenSpool(t.TempDir(), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := spool.appendEvent(executioncontract.EventEnvelope{RunID: "run", Sequence: 1, Type: executioncontract.EventOutput, Payload: json.RawMessage(`{"type":"assistant"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	daemon := &Daemon{cfg: Config{SpoolMaxBytes: 1 << 20}, spool: spool, capabilities: []string{"capacity=1"}}
+	capabilities := daemon.runtimeCapabilities()
+	joined := strings.Join(capabilities, " ")
+	if !strings.Contains(joined, "spool_max_bytes=1048576") || strings.Contains(joined, "spool_bytes=0") {
+		t.Fatalf("runtime capabilities = %v", capabilities)
+	}
+}
+
 func TestSpoolReservesRoomForTerminalFate(t *testing.T) {
 	spool, err := OpenSpool(t.TempDir(), 12288, 2)
 	if err != nil {

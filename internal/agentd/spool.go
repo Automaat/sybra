@@ -52,6 +52,16 @@ type Spool struct {
 	state           durableState
 }
 
+func (s *Spool) usageBytes() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	info, err := os.Stat(s.path)
+	if err != nil {
+		return 0
+	}
+	return info.Size()
+}
+
 func OpenSpool(root string, maxBytes int64, capacity ...int) (*Spool, error) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, err

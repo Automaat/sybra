@@ -237,6 +237,30 @@ func TestPlacementCandidateReasonsAreDeterministic(t *testing.T) {
 	}
 }
 
+func TestDiagnosticsExposeSpoolPressureWithoutPayloads(t *testing.T) {
+	service := New(dbtest.SQLite(t))
+	registerPlacementWorker(t, service, "pressured-node", []string{
+		"capacity=2", "provider=claude", "spool_bytes=85", "spool_max_bytes=100",
+	})
+	diagnostics, err := service.Diagnostics(t.Context())
+	if err != nil || len(diagnostics) != 1 {
+		t.Fatalf("Diagnostics = %+v, %v", diagnostics, err)
+	}
+	got := diagnostics[0]
+	if got.SpoolBytes != 85 || got.SpoolMaxBytes != 100 || !slices.Contains(got.Alerts, "spool_pressure") {
+		t.Fatalf("spool diagnostics = %+v", got)
+	}
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"prompt", "payload", "credential", "artifactBytes"} {
+		if bytes.Contains(encoded, []byte(forbidden)) {
+			t.Fatalf("diagnostics leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
 func registerPlacementWorker(t *testing.T, service *Service, worker string, capabilities []string) Session {
 	t.Helper()
 	session, err := service.Register(t.Context(), RegisterRequest{

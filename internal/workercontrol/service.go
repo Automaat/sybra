@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -83,6 +84,9 @@ type Diagnostics struct {
 	PendingEvents     int       `json:"pendingEvents"`
 	Capacity          int       `json:"capacity"`
 	AvailableCapacity int       `json:"availableCapacity"`
+	SpoolBytes        int64     `json:"spoolBytes"`
+	SpoolMaxBytes     int64     `json:"spoolMaxBytes"`
+	Alerts            []string  `json:"alerts,omitempty"`
 }
 
 type RemoteRunStatus struct {
@@ -1032,8 +1036,20 @@ func (s *Service) Diagnostics(ctx context.Context) ([]Diagnostics, error) {
 		if err := json.Unmarshal([]byte(capabilitiesJSON), &capabilities); err != nil {
 			return nil, fmt.Errorf("decode capabilities for worker %q session %q: %w", item.WorkerID, item.SessionID, err)
 		}
-		item.Capacity = parseCapabilities(capabilities).capacity
+		parsed := parseCapabilities(capabilities)
+		item.Capacity = parsed.capacity
+		item.SpoolBytes, _ = strconv.ParseInt(parsed.one("spool_bytes"), 10, 64)
+		item.SpoolMaxBytes, _ = strconv.ParseInt(parsed.one("spool_max_bytes"), 10, 64)
 		item.AvailableCapacity = max(item.Capacity-item.ActiveRuns, 0)
+		if item.SpoolMaxBytes > 0 && item.SpoolBytes*100 >= item.SpoolMaxBytes*80 {
+			item.Alerts = append(item.Alerts, "spool_pressure")
+		}
+		if item.PendingEvents > 0 {
+			item.Alerts = append(item.Alerts, "unacknowledged_events")
+		}
+		if item.Capacity > 0 && item.AvailableCapacity == 0 {
+			item.Alerts = append(item.Alerts, "capacity_saturated")
+		}
 		out = append(out, item)
 	}
 	return out, rows.Err()
