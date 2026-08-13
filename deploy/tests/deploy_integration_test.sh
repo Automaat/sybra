@@ -78,6 +78,7 @@ new_env() {
 
   unset FAKE_CHECK_CONFIG FAKE_CHECK_CONFIG_CLI FAKE_NPM_FAIL FAKE_SANDBOX_SMOKE_FAIL FAKE_HEALTH_MODE FAKE_LISTEN_ADDR
   unset SYBRA_HEALTH_URL SYBRA_HEALTH_QUARANTINE_THRESHOLD SYBRA_DEPLOY_LOCK_WAIT_SEC
+  unset SYBRA_SERVER_TARGET SYBRA_SERVER_CA
   unset SYBRA_HEALTH_TIMEOUT_SEC SYBRA_HEALTH_INTERVAL_SEC
 
   export SYBRA_SRC_DIR="$root/src"
@@ -136,6 +137,57 @@ stop_fake_server() {
 
 next_port() {
   echo $((20000 + RANDOM % 20000))
+}
+
+# scenario_health_target_scheme covers the health URL built from
+# SYBRA_SERVER_TARGET rather than the SYBRA_HEALTH_URL override every other
+# scenario sets. The target takes a bare host and port or a full origin, and
+# prefixing http:// to an origin produced http://https://host:port/health,
+# which connects to nothing and failed the start.
+scenario_health_target_scheme() {
+  local root="$1"
+  new_env "$root"
+  export FAKE_CHECK_CONFIG=ok
+  run_build >"$root/build.log" 2>&1
+  local cur; cur="$(current_target)"
+
+  export FAKE_HEALTH_MODE=ok
+  export SYBRA_HEALTH_TIMEOUT_SEC=5
+  export SYBRA_HEALTH_INTERVAL_SEC=1
+  local port; port="$(next_port)"
+  unset SYBRA_HEALTH_URL
+  export SYBRA_SERVER_TARGET="http://127.0.0.1:$port"
+  local srv; srv="$(start_fake_server "$cur/sybra-server" "$port")"
+  run_healthcheck >"$root/health-origin.log" 2>&1
+  local rc=$?
+  stop_fake_server "$srv"
+
+  assert_eq "health-scheme: an http origin target passes the health check" "0" "$rc"
+  assert_eq "health-scheme: release promoted to last-good" "$cur" "$(last_good_target)"
+  assert_contains "health-scheme: the polled URL carries one scheme" "$(cat "$root/health-origin.log")" "http://127.0.0.1:$port/health"
+  if grep -q 'http://http' "$root/health-origin.log"; then
+    fail "health-scheme: the polled URL carries two schemes"
+  else
+    pass "health-scheme: the polled URL never doubles the scheme"
+  fi
+
+  # An https origin is never rewritten to http: the check has to fail against
+  # a plain-http server rather than silently connect on the wrong scheme.
+  port="$(next_port)"
+  export SYBRA_SERVER_TARGET="https://127.0.0.1:$port"
+  srv="$(start_fake_server "$cur/sybra-server" "$port")"
+  run_healthcheck >"$root/health-https.log" 2>&1
+  stop_fake_server "$srv"
+  assert_contains "health-scheme: an https origin is polled over https" "$(cat "$root/health-https.log")" "https://127.0.0.1:$port/health"
+
+  # A bare host and port keeps its implied http scheme.
+  port="$(next_port)"
+  export SYBRA_SERVER_TARGET="127.0.0.1:$port"
+  srv="$(start_fake_server "$cur/sybra-server" "$port")"
+  run_healthcheck >"$root/health-bare.log" 2>&1
+  rc=$?
+  stop_fake_server "$srv"
+  assert_eq "health-scheme: a bare host:port target still passes" "0" "$rc"
 }
 
 # seed_last_good runs one full build+activate+healthy-startup cycle so
@@ -472,6 +524,7 @@ main() {
   scenario_agentd_refresh "$TMPBASE/agentd-refresh"
   scenario_health_check_failure "$TMPBASE/health-failure"
   scenario_rollback_preserves_quarantine "$TMPBASE/rollback-quarantine"
+  scenario_health_target_scheme "$TMPBASE/health-scheme"
 
   echo
   echo "== $PASS passed, $FAIL failed =="

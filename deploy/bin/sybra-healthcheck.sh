@@ -16,7 +16,39 @@ LOG_TAG=sybra-healthcheck
 # shellcheck source=./sybra-deploy-lib.sh
 source "$SCRIPT_DIR/sybra-deploy-lib.sh"
 
-HEALTH_URL="${SYBRA_HEALTH_URL:-http://${SYBRA_SERVER_TARGET:-127.0.0.1:8080}/health}"
+# health_url resolves the URL to poll. SYBRA_SERVER_TARGET takes either a bare
+# host and port or a full origin — the same two forms sybra-cli and the desktop
+# app accept — so a board that terminates TLS names an https origin here.
+# Prefixing http:// unconditionally produced http://https://host:port/health,
+# which connects to nothing: the start counted as unhealthy and, on a first
+# install with no last-good release to roll back to, the unit failed and
+# rebuilt from source on every restart.
+health_url() {
+  if [[ -n "${SYBRA_HEALTH_URL:-}" ]]; then
+    printf '%s\n' "$SYBRA_HEALTH_URL"
+    return 0
+  fi
+  local target="${SYBRA_SERVER_TARGET:-127.0.0.1:8080}"
+  target="${target%/}"
+  case "$target" in
+    http://*/* | https://*/*)
+      log "warning: SYBRA_SERVER_TARGET=$target carries a path; health check uses its origin only" >&2
+      local scheme="${target%%://*}" rest="${target#*://}"
+      printf '%s://%s/health\n' "$scheme" "${rest%%/*}"
+      ;;
+    http://* | https://*) printf '%s/health\n' "$target" ;;
+    *) printf 'http://%s/health\n' "$target" ;;
+  esac
+}
+
+HEALTH_URL="$(health_url)"
+
+# A board that terminates TLS with its own certificate is reachable only if
+# curl is told about it, the same way an agent's CLI is (SYBRA_SERVER_CA).
+CURL_TLS_ARGS=()
+if [[ -n "${SYBRA_SERVER_CA:-}" ]]; then
+  CURL_TLS_ARGS+=(--cacert "$SYBRA_SERVER_CA")
+fi
 TIMEOUT_SEC="${SYBRA_HEALTH_TIMEOUT_SEC:-60}"
 INTERVAL_SEC="${SYBRA_HEALTH_INTERVAL_SEC:-2}"
 QUARANTINE_THRESHOLD="${SYBRA_HEALTH_QUARANTINE_THRESHOLD:-3}"
@@ -25,7 +57,7 @@ wait_for_health() {
   local elapsed=0 log_file
   log_file="$(detail_log_path "$ID" health-check)"
   while (( elapsed < TIMEOUT_SEC )); do
-    if curl -fsS -m 3 "$HEALTH_URL" >/dev/null 2>>"$log_file"; then
+    if curl -fsS -m 3 "${CURL_TLS_ARGS[@]}" "$HEALTH_URL" >/dev/null 2>>"$log_file"; then
       return 0
     fi
     sleep "$INTERVAL_SEC"

@@ -133,6 +133,13 @@ fails that systemd start, which is what drives the actual restart via
 `Restart=on-failure` + `RestartSec=3` — neither script ever calls `systemctl`
 itself.
 
+The URL it polls comes from `SYBRA_SERVER_TARGET`, which takes either a bare
+`host:port` or a full `http(s)://` origin — the same two forms `sybra-cli` and
+the desktop app accept. An origin keeps its own scheme, so a board that
+terminates TLS is polled over https rather than being rewritten to http; set
+`SYBRA_SERVER_CA` alongside it when that board serves its own certificate, and
+`SYBRA_HEALTH_URL` to name the URL outright (it wins over both).
+
 **Quarantine** ties a rejection (any phase — build, sandbox smoke, config
 preflight, or repeated health-check failure) to a key derived from the
 source SHA *and* a fingerprint of the live config file. A quarantined
