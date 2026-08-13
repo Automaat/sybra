@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/buildcache"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 type miseTrustVerificationRunner struct {
@@ -149,7 +150,7 @@ func TestExecCodegenGateTrustsMiseInsideVerificationSandbox(t *testing.T) {
 	engine, tasks := newCodegenGateEngine(t, wt, []string{"mise exec -- true"})
 	runner := &miseTrustVerificationRunner{}
 	engine.execution.VerificationCommands = runner
-	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	tasks.Put(TaskInfo{ID: "t1", Status: taskstatus.InProgress})
 
 	out, err := engine.execCodegenGate("t1", newCodegenGateStep())
 	if err != nil {
