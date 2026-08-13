@@ -96,12 +96,12 @@ func TestDaemonReregistersAfterSessionRejection(t *testing.T) {
 		close(releaseLostResponse)
 	case err := <-done:
 		t.Fatalf("daemon exited before replacement commit: %v", err)
-	case <-time.After(5 * time.Second):
+	case <-time.After(scaledDeadline(5 * time.Second)):
 		t.Fatal("replacement registration was not attempted")
 	}
 
 	var diagnostics []workercontrol.Diagnostics
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(scaledDeadline(5 * time.Second))
 	for time.Now().Before(deadline) {
 		select {
 		case err := <-done:
@@ -275,7 +275,7 @@ printf '%s\n' '{"type":"result","result":"done","session_id":"agentd-session","t
 	go func() { done <- daemon.Run(ctx) }()
 
 	var diagnostics workercontrol.Diagnostics
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(scaledDeadline(5 * time.Second))
 	for time.Now().Before(deadline) {
 		var all []workercontrol.Diagnostics
 		all, err = control.Diagnostics(t.Context())
@@ -300,7 +300,7 @@ printf '%s\n' '{"type":"result","result":"done","session_id":"agentd-session","t
 		t.Fatal(err)
 	}
 	var events []executioncontract.EventEnvelope
-	deadline = time.Now().Add(10 * time.Second)
+	deadline = time.Now().Add(scaledDeadline(10 * time.Second))
 	for time.Now().Before(deadline) {
 		events, err = control.ReplayEvents(t.Context(), spec.RunID, 0, 100)
 		if err == nil && len(events) >= 4 && events[len(events)-1].Type == executioncontract.EventTerminal {
@@ -321,7 +321,7 @@ printf '%s\n' '{"type":"result","result":"done","session_id":"agentd-session","t
 		t.Fatal(err)
 	}
 	var handback workercontrol.ArtifactHandback
-	deadline = time.Now().Add(5 * time.Second)
+	deadline = time.Now().Add(scaledDeadline(5 * time.Second))
 	for time.Now().Before(deadline) {
 		handback, err = control.LoadStagedArtifact(t.Context(), spec.RunID)
 		if err == nil {
@@ -332,7 +332,7 @@ printf '%s\n' '{"type":"result","result":"done","session_id":"agentd-session","t
 	if err != nil || handback.Manifest.Workspace.BaseSHA != baseSHA || len(handback.Package.Members) == 0 {
 		t.Fatalf("staged daemon handback = %+v, %v", handback, err)
 	}
-	deadline = time.Now().Add(5 * time.Second)
+	deadline = time.Now().Add(scaledDeadline(5 * time.Second))
 	for time.Now().Before(deadline) {
 		if _, statErr := os.Stat(filepath.Join(cfg.WorkspaceRoot, spec.RunID)); errors.Is(statErr, os.ErrNotExist) {
 			break
@@ -348,10 +348,10 @@ printf '%s\n' '{"type":"result","result":"done","session_id":"agentd-session","t
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("daemon exit = %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(scaledDeadline(5 * time.Second)):
 		t.Fatal("daemon did not stop")
 	}
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), scaledDeadline(5*time.Second))
 	defer shutdownCancel()
 	if err := daemon.approvals.Shutdown(shutdownCtx); err != nil {
 		t.Fatal(err)
@@ -570,7 +570,7 @@ printf '%s\n' '{"type":"result","result":"after restart","session_id":"restart-s
 		t.Fatal(err)
 	}
 	waitForEventCount(t, first.spool, "run-restart", 2)
-	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 5*time.Second)
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), scaledDeadline(5*time.Second))
 	if err := first.approvals.Shutdown(shutdownCtx); err != nil {
 		t.Fatal(err)
 	}
@@ -926,7 +926,7 @@ func stubRunGrant(daemon *Daemon) {
 
 func waitForEventCount(t *testing.T, spool *Spool, runID string, count int) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(scaledDeadline(5 * time.Second))
 	for time.Now().Before(deadline) {
 		if len(spool.snapshot().Events[runID]) >= count {
 			return
@@ -938,7 +938,7 @@ func waitForEventCount(t *testing.T, spool *Spool, runID string, count int) {
 
 func waitForTerminal(t *testing.T, spool *Spool, runID string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(scaledDeadline(5 * time.Second))
 	for time.Now().Before(deadline) {
 		events := spool.snapshot().Events[runID]
 		if len(events) > 0 && events[len(events)-1].Type == executioncontract.EventTerminal {
@@ -951,7 +951,7 @@ func waitForTerminal(t *testing.T, spool *Spool, runID string) {
 
 func waitForRunningCount(t *testing.T, daemon *Daemon, want int) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(scaledDeadline(5 * time.Second))
 	for time.Now().Before(deadline) {
 		if daemon.manager.RunningCount() == want {
 			return
