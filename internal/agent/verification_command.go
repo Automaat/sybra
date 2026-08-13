@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -60,19 +59,9 @@ func (m *Manager) RunVerificationCommand(ctx context.Context, cfg RunConfig, nam
 }
 
 func removeVerificationHome(root string) error {
-	// A repository command can remove permissions below its writable home.
-	// Restore owner access before removal so cleanup is reliable and a failed
-	// cleanup is reported rather than silently accumulating verifier state.
-	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			_ = os.Chmod(path, 0o700)
-			return nil
-		}
-		if entry.IsDir() {
-			_ = os.Chmod(path, 0o700)
-		}
-		return nil
-	})
+	// Do not walk and chmod repository-controlled paths: a concurrent symlink
+	// swap could escape the scratch root. RemoveAll stays rooted by name, and
+	// its error is propagated by the caller instead of silently leaking state.
 	return os.RemoveAll(root)
 }
 
