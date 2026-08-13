@@ -342,8 +342,9 @@ pipe/survive, persistent claude convo, convo-survive, per-turn
 codex/copilot) routes through one constructor, `newProviderCmd`
 (`runner_core.go`). A `rg exec.CommandContext internal/agent` drift check must
 only ever match `newProviderCmd` itself plus the documented non-provider probe
-sites, so a new spawn site cannot obtain an unsandboxed provider process by
-construction.
+sites (`probeUserNamespace` in `procsandbox_linux.go` is one — it carries no
+prompt, environment, or run roots), so a new spawn site cannot obtain an
+unsandboxed provider process by construction.
 
 `newProviderCmd` wraps the invocation via `wrapInvocation`
 (`procsandbox_darwin.go` / `procsandbox_linux.go`): `sandbox-exec` on darwin,
@@ -367,7 +368,9 @@ into an unexported `RunConfig.sandbox` spec:
   explicit `enforce` posture, never the default rollout posture. This is
   why `report` is safe to ship as the default.
 - `enforce`: wraps the spawn and fails the run closed if the host sandbox
-  mechanism or profile/setup is unavailable. It is **never** reached by
+  mechanism or profile/setup is unavailable — including a mechanism that is
+  installed but cannot build a sandbox, which certification refuses before
+  dispatch rather than leaving one failed step per run. It is **never** reached by
   leaving the key unset — the built-in default is `report`, so every
   deployment that wants containment must set `agent.sandbox_mode: enforce`
   explicitly. Under it the real operator board under `~/.sybra` and the
@@ -385,7 +388,12 @@ which carries only build and start output:
 - `agent.sandbox.enforce` — spawn wrapped.
 - `agent.sandbox.report` — spawn **not** wrapped; allowlist logged only.
 - `agent.sandbox.report.unavailable` — `report` that fell back to unwrapped
-  because `bwrap`/`sandbox-exec` was missing.
+  because `bwrap`/`sandbox-exec` was missing **or** could not build a sandbox;
+  the `err` attribute carries which. On Linux the mechanism is probed, not
+  looked up: Ubuntu 24.04 denies unprivileged user namespaces
+  (`kernel.apparmor_restrict_unprivileged_userns`), so `bwrap` is on PATH and
+  still cannot produce a single sandbox, and a probe failure is re-probed after
+  a minute rather than refusing every later run on a host that recovered.
 - *neither line for a run* — resolved `off`, via config or the per-task
   `sandbox: false` escape hatch; `injectProcessSandbox` returns before it logs
   anything. Absence of both is the widest-blast-radius case, not the quiet one.

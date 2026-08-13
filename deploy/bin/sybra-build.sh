@@ -22,6 +22,25 @@ source "$SCRIPT_DIR/sybra-deploy-lib.sh"
 
 CLI_LINK_DIR="${HOME:-/home/sybra}/.local/bin"
 
+# sandbox_smoke_supported reports whether this host can build a sandbox at all.
+# The smoke test skips itself where the kernel denies the namespace, and a
+# silent skip reads exactly like a pass, so the probe runs here and each of the
+# three cases is logged by name — a green candidate is never mistaken for
+# evidence that enforce works on this host.
+sandbox_smoke_supported() {
+  if ! command -v bwrap >/dev/null 2>&1; then
+    log "sandbox smoke skipped: bwrap is not installed on this host"
+    return 1
+  fi
+  if bwrap --unshare-pid --ro-bind / / --dev /dev --proc /proc true >/dev/null 2>&1; then
+    return 0
+  fi
+  local restrict
+  restrict="$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo unset)"
+  log "sandbox smoke skipped: bwrap cannot build a sandbox here (kernel.apparmor_restrict_unprivileged_userns=$restrict); agents cannot run under enforce on this host"
+  return 1
+}
+
 have_last_good_build() {
   local target
   target="$(resolved_target "$LAST_GOOD_LINK")"
@@ -172,8 +191,8 @@ main() {
       >"$(detail_log_path "$ID" go-build-agentd)" 2>&1 \
     || reject_candidate "go-build-agentd" "go build ./cmd/sybra-agentd failed"
 
-  if command -v bwrap >/dev/null 2>&1; then
-    log "running linked-worktree sandbox smoke"
+  if sandbox_smoke_supported; then
+    log "running linked-worktree sandbox smoke test"
     mise exec -- go test ./internal/agent -run '^TestSandboxEnforce_LinkedWorktreeGitOps$' -count=1 \
         >"$(detail_log_path "$ID" sandbox-smoke)" 2>&1 \
       || reject_candidate "sandbox-smoke" "linux sandbox git smoke test failed"

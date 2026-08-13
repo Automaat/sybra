@@ -31,16 +31,21 @@ var (
 	errSandboxProfile  error
 )
 
-// sandboxExecAvailable reports whether sandbox-exec is on PATH. Every
-// supported macOS release ships it at /usr/bin/sandbox-exec, but a stripped
-// CI image or a future OS removal must be detected rather than assumed.
-func sandboxExecAvailable() bool {
+// sandboxMechanismErr reports why this host cannot build a seatbelt sandbox,
+// or nil when it can. Every supported macOS release ships sandbox-exec at
+// /usr/bin/sandbox-exec, but a stripped CI image or a future OS removal must
+// be detected rather than assumed. Unlike Linux there is no separate kernel
+// permission to probe: the profile is compiled per spawn.
+func sandboxMechanismErr() error {
 	sandboxExecPathOnce.Do(func() {
 		if p, err := exec.LookPath("sandbox-exec"); err == nil {
 			sandboxExecPath = p
 		}
 	})
-	return sandboxExecPath != ""
+	if sandboxExecPath == "" {
+		return fmt.Errorf("sandbox-exec is not on PATH")
+	}
+	return nil
 }
 
 func sandboxWrapperName() string { return "sandbox-exec" }

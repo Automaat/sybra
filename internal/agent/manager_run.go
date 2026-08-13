@@ -1080,13 +1080,13 @@ func (m *Manager) injectProcessSandbox(cfg *RunConfig) error {
 	}
 	gitRoots, gitErr := resolveGitSandboxRoots(gitCtx, worktree)
 
-	if !sandboxExecAvailable() {
+	if mechanismErr := hostSandboxMechanismErr(); mechanismErr != nil {
 		if mode == "enforce" {
-			err := fmt.Errorf("agent.Run: enforce sandbox mode requires %s, which is unavailable on this host", sandboxWrapperName())
+			err := fmt.Errorf("agent.Run: enforce sandbox mode requires %s, which is unavailable on this host: %w", sandboxWrapperName(), mechanismErr)
 			m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
 			return err
 		}
-		m.logger.Warn("agent.sandbox.report.unavailable", "task_id", cfg.TaskID)
+		m.logger.Warn("agent.sandbox.report.unavailable", "task_id", cfg.TaskID, "err", mechanismErr)
 		cfg.sandbox = sandboxSpec{mode: "off"}
 		return nil
 	}
@@ -1206,13 +1206,13 @@ func (m *Manager) injectReadOnlyProcessSandbox(cfg *RunConfig, mode string) erro
 	tmp := os.TempDir()
 	sharedCache := sharedBuildCacheDir()
 
-	if !sandboxExecAvailable() {
+	if mechanismErr := hostSandboxMechanismErr(); mechanismErr != nil {
 		if mode == "enforce" {
-			err := fmt.Errorf("agent.Run: enforce sandbox mode requires %s, which is unavailable on this host", sandboxWrapperName())
+			err := fmt.Errorf("agent.Run: enforce sandbox mode requires %s, which is unavailable on this host: %w", sandboxWrapperName(), mechanismErr)
 			m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
 			return err
 		}
-		m.logger.Warn("agent.sandbox.report.unavailable", "task_id", cfg.TaskID)
+		m.logger.Warn("agent.sandbox.report.unavailable", "task_id", cfg.TaskID, "err", mechanismErr)
 		cfg.sandbox = sandboxSpec{mode: "off"}
 		return nil
 	}

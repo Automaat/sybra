@@ -3,25 +3,152 @@
 package agent
 
 import (
+	"bytes"
+	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
+
+// apparmorUserNamespaceSysctl is the Ubuntu 24.04 knob that denies
+// unprivileged user namespaces to any binary without a matching AppArmor
+// profile. It is named in the refusal because it is the single thing an
+// operator has to act on, and bwrap's own error ("setting up uid map") does
+// not point at it.
+const apparmorUserNamespaceSysctl = "kernel.apparmor_restrict_unprivileged_userns"
+
+// sandboxProbeTimeout bounds the probe. It returns in milliseconds on a
+// healthy host; the bound only stops a wedged host from stalling dispatch. It
+// is a variable so a test can shorten it.
+var sandboxProbeTimeout = 15 * time.Second
+
+// sandboxProbeWaitDelay bounds how long the probe waits for output after the
+// deadline killed the wrapper. bwrap's own children inherit the pipe, so
+// waiting on it alone never returns while a grandchild holds it open — the
+// timeout would bound nothing.
+const sandboxProbeWaitDelay = 2 * time.Second
+
+// sandboxProbeRetryAfter is how long a probe failure stands before the host is
+// probed again. Namespace denial is a static host property, but the same exec
+// also fails transiently (namespace quota exhausted by concurrent runs, fork
+// pressure, a probe that timed out under load). Caching a transient failure
+// for the life of the process would refuse every later run on a host that
+// recovered, so only success and a missing binary are cached outright.
+const sandboxProbeRetryAfter = time.Minute
 
 var (
-	bwrapPathOnce sync.Once
-	bwrapPath     string
+	sandboxProbeMu sync.Mutex
+	bwrapPath      string
+	errBwrapProbe  error
+	bwrapProbed    bool
+	bwrapMissing   bool
+	bwrapProbedAt  time.Time
+
+	// sandboxProbeNow is a variable so a test can age a cached failure without
+	// sleeping.
+	sandboxProbeNow = time.Now
+
+	// apparmorSysctlPath is a variable so a test can present a host that does
+	// or does not restrict user namespaces without owning /proc.
+	apparmorSysctlPath = "/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
 )
 
-func sandboxExecAvailable() bool {
-	bwrapPathOnce.Do(func() {
-		if p, err := exec.LookPath("bwrap"); err == nil {
-			bwrapPath = p
+// sandboxMechanismErr reports why this host cannot build a bwrap sandbox, or
+// nil when it can. Presence on PATH is not sufficient evidence: bwrap only
+// fails when it maps uids, so a host that denies unprivileged user namespaces
+// carries a working binary that cannot produce a single sandbox. Probing that
+// before dispatch turns one host problem into one refusal instead of a failed
+// step per run.
+//
+// The lock is held across the probe so a burst of concurrent dispatches costs
+// one spawn, not one each.
+func sandboxMechanismErr() error {
+	sandboxProbeMu.Lock()
+	defer sandboxProbeMu.Unlock()
+	if bwrapProbed && (errBwrapProbe == nil || bwrapMissing || sandboxProbeNow().Sub(bwrapProbedAt) < sandboxProbeRetryAfter) {
+		return errBwrapProbe
+	}
+	bwrapProbed, bwrapProbedAt = true, sandboxProbeNow()
+	path, err := exec.LookPath("bwrap")
+	if err != nil {
+		bwrapPath, bwrapMissing = "", true
+		errBwrapProbe = fmt.Errorf("bwrap is not on PATH: %w", err)
+		return errBwrapProbe
+	}
+	bwrapPath, bwrapMissing = path, false
+	errBwrapProbe = probeUserNamespace(path)
+	return errBwrapProbe
+}
+
+// probeUserNamespace runs the cheapest sandbox that still exercises every
+// namespace the wrapper asks for: the same --unshare-pid, --dev and --proc a
+// real spawn carries, over a read-only bind of the host root. Probing a
+// narrower sandbox than the one that will be built would certify a host that
+// grants the user namespace and denies the rest.
+//
+// This is a host probe, not a provider spawn: it never carries a run's prompt,
+// environment, or roots, and so is one of the documented non-provider
+// exec.CommandContext sites that do not route through newProviderCmd.
+func probeUserNamespace(path string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), sandboxProbeTimeout)
+	defer cancel()
+	var out bytes.Buffer
+	cmd := exec.CommandContext(ctx, path, "--unshare-pid", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", probeTargetBinary())
+	cmd.Stdout, cmd.Stderr = &out, &out
+	cmd.WaitDelay = sandboxProbeWaitDelay
+	err := cmd.Run()
+	if err == nil {
+		return nil
+	}
+	detail := strings.TrimSpace(out.String())
+	if detail == "" {
+		detail = err.Error()
+	}
+	if namespaceDenied(detail) && userNamespacesRestricted() {
+		return fmt.Errorf("bwrap cannot create a namespace on this host (%s): %s=1 denies unprivileged user namespaces to binaries without an AppArmor profile; install a profile for bwrap or set the sysctl to 0", detail, apparmorUserNamespaceSysctl)
+	}
+	return fmt.Errorf("bwrap cannot build a sandbox on this host: %s", detail)
+}
+
+// probeTargetBinary resolves the trivial command the probe execs inside the
+// sandbox to an absolute path. Passing a bare name would leave the probe at
+// the mercy of the PATH bwrap resolves against, and an `execvp` failure there
+// would be read as a host that cannot build a sandbox. The fallback is the
+// path coreutils ships on every distribution Sybra runs on.
+func probeTargetBinary() string {
+	if path, err := exec.LookPath("true"); err == nil {
+		return path
+	}
+	return "/bin/true"
+}
+
+// namespaceDenied reports whether bwrap failed at the namespace itself. Its
+// exit status is 1 for every failure, including an unrelated one such as a
+// missing target binary, so the sysctl is only named when the output shows the
+// failure the sysctl actually causes — telling an operator to weaken a
+// host-wide restriction to fix a PATH problem is worse than saying nothing.
+func namespaceDenied(detail string) bool {
+	for _, marker := range []string{"setting up uid map", "setting up gid map", "creating new namespace", "no permissions to creating new namespace"} {
+		if strings.Contains(strings.ToLower(detail), marker) {
+			return true
 		}
-	})
-	return bwrapPath != ""
+	}
+	return false
+}
+
+// userNamespacesRestricted reports whether the AppArmor sysctl that Ubuntu
+// 24.04 enables by default is on. A host without the knob reads as false, so
+// the refusal only names the sysctl where it is the plausible cause.
+func userNamespacesRestricted() bool {
+	raw, err := os.ReadFile(apparmorSysctlPath)
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(raw)) != "0"
 }
 
 func sandboxWrapperName() string { return "bwrap" }
