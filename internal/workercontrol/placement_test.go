@@ -1,8 +1,11 @@
 package workercontrol
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -45,6 +48,26 @@ func TestPlacementSharesCapacityAndReleasesOnTerminal(t *testing.T) {
 			t.Fatalf("idempotent placement = %+v, %v", replayed, err)
 		}
 	})
+}
+
+func TestPlacementIsReachableThroughProductionHandler(t *testing.T) {
+	service := New(dbtest.SQLite(t))
+	registerPlacementWorker(t, service, "http-node", []string{"capacity=1", "provider=claude", "provider_health:claude=healthy", "sandbox=enforce"})
+	request := placementRequest(t, "run-http-place", "effect-http-place")
+	body, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	httpRequest := httptest.NewRequest(http.MethodPost, "/worker/v1/runs/schedule", bytes.NewReader(body))
+	service.Handler().ServeHTTP(recorder, httpRequest)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("schedule status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var placed Placement
+	if err := json.Unmarshal(recorder.Body.Bytes(), &placed); err != nil || placed.WorkerID != "http-node" {
+		t.Fatalf("HTTP placement = %+v, %v", placed, err)
+	}
 }
 
 func TestPlacementPinsAffinityTrustHealthAndFallback(t *testing.T) {

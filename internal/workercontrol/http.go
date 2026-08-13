@@ -22,10 +22,20 @@ func (s *Service) Handler() http.Handler {
 	mux.HandleFunc("POST /worker/v1/events/{runID}/ack", s.handleAckEvents)
 	mux.HandleFunc("POST /worker/v1/artifacts", s.handleArtifact)
 	mux.HandleFunc("POST /worker/v1/runs/{runID}/grant", s.handleRunGrant)
+	mux.HandleFunc("POST /worker/v1/runs/schedule", s.handleScheduleRun)
 	mux.HandleFunc("POST /worker/v1/drain", s.handleDrain)
 	mux.HandleFunc("POST /worker/v1/disable", s.handleDisable)
 	mux.HandleFunc("GET /worker/v1/diagnostics", s.handleDiagnostics)
 	return mux
+}
+
+func (s *Service) handleScheduleRun(w http.ResponseWriter, r *http.Request) {
+	var request PlacementRequest
+	if !decode(w, r, &request) {
+		return
+	}
+	placement, err := s.ScheduleStart(r.Context(), request)
+	respond(w, placement, err)
 }
 
 func (s *Service) handleDisable(w http.ResponseWriter, r *http.Request) {
