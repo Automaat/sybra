@@ -399,12 +399,27 @@ func callProbe(ctx context.Context, fn func(context.Context, string) (ProbeResul
 	return r, err
 }
 
-func probeRead(dir string) error {
-	f, err := os.Open(dir)
+func probeRead(path string) error {
+	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("read root %q is neither a regular file nor a directory", path)
+		}
+		var probe [1]byte
+		_, err = f.Read(probe[:])
+		if err == nil || errors.Is(err, io.EOF) {
+			return nil
+		}
+		return err
+	}
 	_, err = f.Readdirnames(1)
 	if err == nil || errors.Is(err, io.EOF) {
 		return nil

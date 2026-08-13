@@ -72,6 +72,31 @@ func TestCertifyEvictsExpiredFingerprintEntries(t *testing.T) {
 	}
 }
 
+func TestCertifySourceReadAcceptsReadableFileRoots(t *testing.T) {
+	workDir := t.TempDir()
+	configFile := filepath.Join(t.TempDir(), "gitconfig")
+	if err := os.WriteFile(configFile, []byte("[user]\n\tname = verifier\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	service := New(Deps{})
+	req := Request{
+		TaskID: "judge", Action: "review.dispatch", WorkDir: workDir,
+		ReadRoots: []string{configFile},
+		Requirements: []autonomy.CapabilityRequirement{{
+			Capability: autonomy.CapabilitySourceRead, Action: "review.dispatch", Scope: "task",
+		}},
+	}
+	if _, err := service.Certify(context.Background(), req); err != nil {
+		t.Fatalf("Certify readable file root: %v", err)
+	}
+}
+
+func TestProbeReadRejectsNonRegularFile(t *testing.T) {
+	if err := probeRead(os.DevNull); err == nil {
+		t.Fatal("probeRead accepted a device as a source root")
+	}
+}
+
 func TestCachedCertificateInvalidatesWhenScratchRootBecomesReadOnly(t *testing.T) {
 	bare, worktree := linkedWorktree(t)
 	scratch := t.TempDir()
