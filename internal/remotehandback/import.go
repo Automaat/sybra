@@ -114,6 +114,10 @@ func importGitLocked(ctx context.Context, target string, spec executioncontract.
 	if err := applyPatch(ctx, checkout, stagedPatch, staging, true); err != nil {
 		return nil, err
 	}
+	stagedFiles, err := snapshotChangedFiles(ctx, checkout)
+	if err != nil {
+		return nil, err
+	}
 	if err := applyPatch(ctx, checkout, unstagedPatch, staging, false); err != nil {
 		return nil, err
 	}
@@ -144,7 +148,7 @@ func importGitLocked(ctx context.Context, target string, spec executioncontract.
 	}
 	recovering := false
 	if canonicalBase == manifest.Workspace.FinalSHA {
-		recovering, err = partialPublicationIsRepairable(ctx, target, checkout)
+		recovering, err = partialPublicationIsRepairable(ctx, target, checkout, stagedFiles)
 		if err != nil {
 			return nil, err
 		}
@@ -211,7 +215,7 @@ func importGitLocked(ctx context.Context, target string, spec executioncontract.
 	return nonGit, nil
 }
 
-func partialPublicationIsRepairable(ctx context.Context, target, expected string) (bool, error) {
+func partialPublicationIsRepairable(ctx context.Context, target, expected string, stagedFiles map[string][]byte) (bool, error) {
 	actualStatus, err := gitexec.RawOutput(ctx, gitexec.Options{Dir: target}, "status", "--porcelain=v1", "-z", "--untracked-files=all")
 	if err != nil {
 		return false, err
@@ -222,22 +226,27 @@ func partialPublicationIsRepairable(ctx context.Context, target, expected string
 	}
 	expectedSet := map[string]bool{}
 	for record := range strings.SplitSeq(strings.TrimSuffix(string(expectedStatus), "\x00"), "\x00") {
-		expectedSet[record] = true
+		if record != "" {
+			expectedSet[strings.TrimSpace(record[3:])] = true
+		}
 	}
 	for record := range strings.SplitSeq(strings.TrimSuffix(string(actualStatus), "\x00"), "\x00") {
 		if record == "" {
 			continue
 		}
-		if !expectedSet[record] {
+		path := strings.TrimSpace(record[3:])
+		if !expectedSet[path] {
 			return false, nil
 		}
-		path := strings.TrimSpace(record[3:])
 		actual, readErr := os.ReadFile(filepath.Join(target, filepath.FromSlash(path)))
 		if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
 			return false, readErr
 		}
 		want, wantErr := os.ReadFile(filepath.Join(expected, filepath.FromSlash(path)))
 		if wantErr == nil && slices.Equal(actual, want) {
+			continue
+		}
+		if staged, ok := stagedFiles[path]; ok && slices.Equal(actual, staged) {
 			continue
 		}
 		base, baseErr := gitexec.RawOutput(ctx, gitexec.Options{Dir: target}, "show", "HEAD:"+path)
@@ -250,6 +259,28 @@ func partialPublicationIsRepairable(ctx context.Context, target, expected string
 		return false, nil
 	}
 	return true, nil
+}
+
+func snapshotChangedFiles(ctx context.Context, dir string) (map[string][]byte, error) {
+	status, err := gitexec.RawOutput(ctx, gitexec.Options{Dir: dir}, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+	if err != nil {
+		return nil, err
+	}
+	out := map[string][]byte{}
+	for record := range strings.SplitSeq(strings.TrimSuffix(string(status), "\x00"), "\x00") {
+		if record == "" {
+			continue
+		}
+		path := strings.TrimSpace(record[3:])
+		data, readErr := os.ReadFile(filepath.Join(dir, filepath.FromSlash(path)))
+		if readErr == nil {
+			out[path] = data
+		}
+		if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+			return nil, readErr
+		}
+	}
+	return out, nil
 }
 
 func partitionArtifacts(manifest executioncontract.ArtifactManifest, pkg executioncontract.ArtifactPackage) (staged, unstaged []byte, untracked, nonGit []executioncontract.ArtifactMember) {

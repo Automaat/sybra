@@ -129,13 +129,13 @@ func (p *Persistence) PutFnBy(id, actor string, fn func(cur task.Task) (task.Tas
 func (p *Persistence) DeleteBy(id, actor string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), taskCallTimeout)
 	defer cancel()
-	return p.store.DeleteBy(ctx, id, actor)
+	return p.store.WithTaskLock(ctx, id, func() error { return p.store.DeleteBy(ctx, id, actor) })
 }
 
 func (p *Persistence) RestoreBy(id, actor string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), taskCallTimeout)
 	defer cancel()
-	return p.store.RestoreBy(ctx, id, actor)
+	return p.store.WithTaskLock(ctx, id, func() error { return p.store.RestoreBy(ctx, id, actor) })
 }
 
 var _ task.Persistence = (*Persistence)(nil)
