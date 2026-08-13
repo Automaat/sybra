@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -24,6 +25,7 @@ import (
 	"github.com/Automaat/sybra/internal/executioncontract"
 	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/providerid"
+	"github.com/Automaat/sybra/internal/remotehandback"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/testutil/backendconformance"
 	"github.com/Automaat/sybra/internal/testutil/dbtest"
@@ -65,6 +67,7 @@ func TestRemotePlanDecisionsOutputImportsIntoCanonicalTask(t *testing.T) {
 	handback.Spec.Fence.TaskID = created.ID
 	handback.Spec.Fence.TaskGeneration = 3
 	handback.Spec.Fence.WorkflowID = "plan-workflow"
+	handback.Spec.Fence.WorkflowGeneration = 3
 	handback.Spec.Fence.StepID = "plan"
 	if err := app.importRemoteOutputs(handback, []executioncontract.ArtifactMember{member}, false); err != nil {
 		t.Fatal(err)
@@ -75,6 +78,125 @@ func TestRemotePlanDecisionsOutputImportsIntoCanonicalTask(t *testing.T) {
 	}
 	if got.PlanDecisions != "# Decisions\n" {
 		t.Fatalf("PlanDecisions = %q", got.PlanDecisions)
+	}
+}
+
+func TestRemotePlanDecisionsOutputAcceptsOwnedRunAfterWorkflowBookkeeping(t *testing.T) {
+	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const (
+		taskID = "task-plan-bookkeeping"
+		runID  = "run-plan-bookkeeping"
+	)
+	created, err := store.Put(task.Task{ID: taskID, Title: "plan", Status: task.StatusPlanning, Generation: 3,
+		Workflow: &workflow.Execution{WorkflowID: "plan-workflow", CurrentStep: "plan", State: workflow.ExecWaiting}, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := task.NewManager(store, nil)
+	for i := range 3 {
+		if _, err := manager.UpdateFnBy(created.ID, "workflow.bookkeeping", func(current task.Task) (task.Update, error) {
+			next := current.Workflow.Clone()
+			next.SetAgentRoute(runID, "plan")
+			next.SetVar(fmt.Sprintf("bookkeeping-%d", i), "recorded")
+			return task.Update{Workflow: &next}, nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	app := &App{tasks: manager}
+	entry := executioncontract.ArtifactEntry{Name: "plan-decisions", Kind: "plan_decisions", Root: executioncontract.RootSidecar, Path: "decisions.md"}
+	handback := workercontrol.ArtifactHandback{Spec: executioncontract.RunSpec{RunID: runID}, Manifest: executioncontract.ArtifactManifest{ManifestID: "manifest-bookkeeping", Artifacts: []executioncontract.ArtifactEntry{entry}}}
+	handback.Spec.Fence = executioncontract.GenerationFence{TaskID: created.ID, TaskGeneration: 3, WorkflowID: "plan-workflow", WorkflowGeneration: 3, StepID: "plan"}
+	member := executioncontract.ArtifactMember{Root: entry.Root, Path: entry.Path, Content: []byte("# Decisions\n")}
+	if err := app.importRemoteOutputs(handback, []executioncontract.ArtifactMember{member}, false); err != nil {
+		t.Fatal(err)
+	}
+	got, err := manager.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PlanDecisions != "# Decisions\n" {
+		t.Fatalf("PlanDecisions = %q", got.PlanDecisions)
+	}
+	if !slices.Contains(got.Tags, remoteSidecarReceiptTag("plan-workflow", "plan", got.Generation, "plan_decisions")) {
+		t.Fatalf("post-import generation receipt missing from tags: generation=%d tags=%v", got.Generation, got.Tags)
+	}
+	if err := app.importRemoteOutputs(handback, []executioncontract.ArtifactMember{member}, false); err != nil {
+		t.Fatalf("idempotent replay: %v", err)
+	}
+	if replayed, err := manager.Get(created.ID); err != nil || replayed.Generation != got.Generation {
+		t.Fatalf("replay changed task generation: got=%d want=%d err=%v", replayed.Generation, got.Generation, err)
+	}
+}
+
+func TestRemotePlanDecisionsOutputRejectsAdvancedUnownedRun(t *testing.T) {
+	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.Put(task.Task{ID: "task-plan-stale", Title: "plan", Status: task.StatusPlanning, Generation: 3,
+		Workflow: &workflow.Execution{WorkflowID: "plan-workflow", CurrentStep: "plan", State: workflow.ExecWaiting}, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := task.NewManager(store, nil)
+	if _, err := manager.UpdateFnBy(created.ID, "workflow.bookkeeping", func(current task.Task) (task.Update, error) {
+		next := current.Workflow.Clone()
+		next.SetVar("bookkeeping", "recorded")
+		return task.Update{Workflow: &next}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{tasks: manager}
+	entry := executioncontract.ArtifactEntry{Name: "plan-decisions", Kind: "plan_decisions", Root: executioncontract.RootSidecar, Path: "decisions.md"}
+	handback := workercontrol.ArtifactHandback{Spec: executioncontract.RunSpec{RunID: "superseded-run"}, Manifest: executioncontract.ArtifactManifest{ManifestID: "manifest-stale", Artifacts: []executioncontract.ArtifactEntry{entry}}}
+	handback.Spec.Fence = executioncontract.GenerationFence{TaskID: created.ID, TaskGeneration: 3, WorkflowID: "plan-workflow", WorkflowGeneration: 3, StepID: "plan"}
+	member := executioncontract.ArtifactMember{Root: entry.Root, Path: entry.Path, Content: []byte("stale")}
+	if err := app.importRemoteOutputs(handback, []executioncontract.ArtifactMember{member}, false); !errors.Is(err, remotehandback.ErrStale) {
+		t.Fatalf("unowned handback error = %v, want stale", err)
+	}
+}
+
+func TestRemotePlanDecisionsOutputRejectsRunRoutedToDifferentStep(t *testing.T) {
+	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.Put(task.Task{ID: "task-plan-wrong-route", Title: "plan", Status: task.StatusPlanning, Generation: 3,
+		Workflow: &workflow.Execution{WorkflowID: "plan-workflow", CurrentStep: "plan", State: workflow.ExecWaiting}, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := task.NewManager(store, nil)
+	if _, err := manager.UpdateFnBy(created.ID, "workflow.bookkeeping", func(current task.Task) (task.Update, error) {
+		next := current.Workflow.Clone()
+		next.SetAgentRoute("stale-run", "implement")
+		return task.Update{Workflow: &next}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{tasks: manager}
+	entry := executioncontract.ArtifactEntry{Name: "plan-decisions", Kind: "plan_decisions", Root: executioncontract.RootSidecar, Path: "decisions.md"}
+	handback := workercontrol.ArtifactHandback{Spec: executioncontract.RunSpec{RunID: "stale-run"}, Manifest: executioncontract.ArtifactManifest{ManifestID: "manifest-wrong-route", Artifacts: []executioncontract.ArtifactEntry{entry}}}
+	handback.Spec.Fence = executioncontract.GenerationFence{TaskID: created.ID, TaskGeneration: 3, WorkflowID: "plan-workflow", WorkflowGeneration: 3, StepID: "plan"}
+	member := executioncontract.ArtifactMember{Root: entry.Root, Path: entry.Path, Content: []byte("stale")}
+	if err := app.importRemoteOutputs(handback, []executioncontract.ArtifactMember{member}, false); !errors.Is(err, remotehandback.ErrStale) {
+		t.Fatalf("different-step handback error = %v, want stale", err)
+	}
+}
+
+func TestRemoteReceiptExpiresAfterLaterWorkflowMutation(t *testing.T) {
+	current := task.Task{Generation: 8, Tags: []string{remoteReceiptTag("manifest-retry", 8)}}
+	handback := workercontrol.ArtifactHandback{Manifest: executioncontract.ArtifactManifest{ManifestID: "manifest-retry"}}
+	if !remoteReceiptApplied(current, handback) {
+		t.Fatal("same-generation recovery receipt was not recognized")
+	}
+	current.Generation++
+	if remoteReceiptApplied(current, handback) {
+		t.Fatal("receipt survived a later workflow mutation")
 	}
 }
 
@@ -579,6 +701,19 @@ printf '%s\n' '{"type":"result","result":"done","session_id":"partition-session"
 			t.Fatal("partitioned provider did not finish exactly once")
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+	// Mirror the production workflow's post-dispatch bookkeeping: persisting
+	// the route and completing the step effect advance task generation while
+	// the immutable remote run still owns this step.
+	for i := range 3 {
+		if _, err := tasks.UpdateFnBy(canonical.ID, "workflow.bookkeeping", func(current task.Task) (task.Update, error) {
+			next := current.Workflow.Clone()
+			next.SetAgentRoute(running.ID, "implement")
+			next.SetVar(fmt.Sprintf("bookkeeping-%d", i), "recorded")
+			return task.Update{Workflow: &next}, nil
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	partitioned.Store(false)
 	select {
