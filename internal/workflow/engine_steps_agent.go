@@ -380,6 +380,7 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	}
 	if step.Config.Role == "review" && wfExec.Variables["bestofn.attempts.manifest"] != "" {
 		assignment.ReadOnlyPaths = bestOfNAttemptReadRoots(wfExec)
+		assignment.GitRoots = slices.Clone(assignment.ReadOnlyPaths)
 	}
 
 	prompt, err := e.renderAssignedPrompt(taskID, step, ctx, assignment, "workflow.consume-steer")

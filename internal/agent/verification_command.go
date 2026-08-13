@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 )
 
@@ -74,6 +75,6 @@ func (m *Manager) certifyPreparedCommand(ctx context.Context, cfg RunConfig) err
 	}
 	return preflight(ctx, RunEnvironment{
 		TaskID: cfg.TaskID, Role: cfg.Role, Dir: cfg.Dir, SandboxMode: cfg.SandboxMode,
-		ScratchRoots: preparedScratchRoots(cfg), LocalCommand: true,
+		GitRoots: slices.Clone(cfg.GitRoots), ScratchRoots: preparedScratchRoots(cfg), LocalCommand: true,
 	})
 }

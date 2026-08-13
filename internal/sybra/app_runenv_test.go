@@ -3,6 +3,8 @@ package sybra
 import (
 	"context"
 	"errors"
+	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/agent"
@@ -13,6 +15,26 @@ import (
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 )
+
+func TestPreparedRunGitRootsExcludeAuxiliaryReadPaths(t *testing.T) {
+	checkout := t.TempDir()
+	environment := agent.RunEnvironment{
+		Dir:           checkout,
+		ReadOnlyPaths: []string{checkout, filepath.Join(t.TempDir(), "gitconfig"), "/usr/bin/gh"},
+	}
+	got := preparedRunGitRoots(environment)
+	if len(got) != 1 || got[0] != checkout {
+		t.Fatalf("preparedRunGitRoots() = %v, want only checkout %q", got, checkout)
+	}
+	if got := preparedRunGitRoots(agent.RunEnvironment{}); got != nil {
+		t.Fatalf("preparedRunGitRoots(empty) = %v, want nil", got)
+	}
+	candidates := []string{"/tmp/attempt-a", "/tmp/attempt-b"}
+	got = preparedRunGitRoots(agent.RunEnvironment{Dir: t.TempDir(), ReadOnlyPaths: candidates, GitRoots: candidates})
+	if !slices.Equal(got, candidates) {
+		t.Fatalf("preparedRunGitRoots(candidates) = %v, want %v", got, candidates)
+	}
+}
 
 func TestAgentRunEnvironmentFailedReadsExitAndStreamDiagnostics(t *testing.T) {
 	tests := []struct {

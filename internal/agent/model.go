@@ -2119,7 +2119,10 @@ type RunConfig struct {
 	ReadOnlyDir bool
 	// ReadOnlyPaths are explicit additional inspection roots for a read-only
 	// role (for example, the candidate worktrees a best-of-N judge compares).
-	ReadOnlyPaths      []string
+	ReadOnlyPaths []string
+	// GitRoots identifies explicit checkout roots within ReadOnlyPaths. When
+	// empty, preflight certifies Dir as the run's checkout.
+	GitRoots           []string
 	Provider           string // "claude", "codex", or "copilot"
 	Model              string // requested model: tier alias or full provider model ID
 	ExperimentID       string

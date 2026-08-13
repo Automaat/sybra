@@ -1217,6 +1217,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		// captured and discarded.
 		ReadOnlyDir:                   r.JudgesWithoutWriting(),
 		ReadOnlyPaths:                 assignment.ReadOnlyPaths,
+		GitRoots:                      assignment.GitRoots,
 		RemoteExpectedOutputs:         append([]executioncontract.ExpectedOutput(nil), assignment.RemoteOutputs...),
 		RemoteDiscardWorkspaceChanges: !r.AuthorsCode(),
 		SidecarDir:                    assignment.RemoteSidecarDir,
