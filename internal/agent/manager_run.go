@@ -944,11 +944,17 @@ func isolateVerifierGitCredentials(cfg *RunConfig) error {
 	cfg.ExtraEnv = stripEnvKeyPrefixes(cfg.ExtraEnv, "GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
 	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv,
 		"HOME", "XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS",
+		"MISE_NO_CONFIG",
 		"GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK", "SSH_AGENT_PID", "GIT_ASKPASS", "SSH_ASKPASS",
 	)
 	cfg.ExtraEnv = append(cfg.ExtraEnv,
 		"HOME="+isolationRoot,
 		"XDG_CONFIG_HOME="+isolatedConfig,
+		// On macOS mise discovers its global config from the account database,
+		// not HOME/XDG_CONFIG_HOME. Verification inherits the already-activated
+		// server PATH, so disable further config discovery rather than reading
+		// operator-owned config (which may also contain secrets or env hooks).
+		"MISE_NO_CONFIG=1",
 		"GIT_CONFIG_GLOBAL=/dev/null",
 		"GIT_CONFIG_NOSYSTEM=1",
 		"GIT_CONFIG_COUNT=0",
