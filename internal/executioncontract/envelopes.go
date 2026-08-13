@@ -17,9 +17,10 @@ import (
 var (
 	sha256Digest = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
 	contractID   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$`)
-	// Repository identities may use Sybra's canonical owner/repo project ID.
-	// Other protocol identities remain path-free under contractID.
-	repositoryID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}(/[A-Za-z0-9][A-Za-z0-9._:-]{0,127})?$`)
+	// Repository identities may use Sybra's canonical GitHub owner/repo
+	// project ID. Other protocol identities remain path-free under contractID.
+	repositoryOwner = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$`)
+	repositoryName  = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,100}$`)
 )
 
 type CommandType string
@@ -305,7 +306,7 @@ func (m ArtifactManifest) Validate() error {
 	if m.Fence.TaskID == "" || m.Fence.WorkflowID == "" || m.Fence.StepID == "" || m.Fence.WorkflowGeneration < 0 {
 		return errors.New("execution contract: artifact manifest requires its generation fence")
 	}
-	if !repositoryID.MatchString(m.Workspace.RepositoryID) || !gitObjectID.MatchString(m.Workspace.BaseSHA) ||
+	if !validRepositoryID(m.Workspace.RepositoryID) || !gitObjectID.MatchString(m.Workspace.BaseSHA) ||
 		!validFullGitRef(m.Workspace.BaseRef) || !gitObjectID.MatchString(m.Workspace.FinalSHA) {
 		return errors.New("execution contract: artifact manifest requires valid workspace handback metadata")
 	}
@@ -335,6 +336,15 @@ func (m ArtifactManifest) Validate() error {
 		}
 	}
 	return nil
+}
+
+func validRepositoryID(id string) bool {
+	if contractID.MatchString(id) {
+		return true
+	}
+	owner, name, ok := strings.Cut(id, "/")
+	return ok && !strings.Contains(name, "/") && repositoryOwner.MatchString(owner) &&
+		repositoryName.MatchString(name) && name != "." && name != ".."
 }
 
 // ArtifactMember is one bounded blob in an artifact package. Path is repeated

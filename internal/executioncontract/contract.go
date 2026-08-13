@@ -340,7 +340,7 @@ func sensitiveEnvironmentName(name string) bool {
 }
 
 func validateWorkspace(workspace Workspace) error {
-	if !repositoryID.MatchString(workspace.RepositoryID) || !gitObjectID.MatchString(workspace.BaseSHA) || !validFullGitRef(workspace.BaseRef) || len(workspace.Roots) == 0 {
+	if !validRepositoryID(workspace.RepositoryID) || !gitObjectID.MatchString(workspace.BaseSHA) || !validFullGitRef(workspace.BaseRef) || len(workspace.Roots) == 0 {
 		return errors.New("execution contract: workspace base SHA/ref and logical roots are required")
 	}
 	seen := map[LogicalRoot]bool{}

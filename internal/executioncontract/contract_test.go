@@ -395,10 +395,6 @@ func TestWorkspaceRepositoryIdentityAcceptsCanonicalProjectID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec.Workspace.RepositoryID = "Automaat/sybra"
-	if err := spec.Validate(); err != nil {
-		t.Fatalf("canonical project repository identity rejected: %v", err)
-	}
 	manifestData, err := os.ReadFile(filepath.Join("testdata", "v1-artifact-manifest.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -407,11 +403,17 @@ func TestWorkspaceRepositoryIdentityAcceptsCanonicalProjectID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manifest.Workspace.RepositoryID = "Automaat/sybra"
-	if err := manifest.Validate(); err != nil {
-		t.Fatalf("canonical project handback identity rejected: %v", err)
+	for _, repository := range []string{"Automaat/sybra", "owner/.github", "owner/_meta", "owner/-archive"} {
+		spec.Workspace.RepositoryID = repository
+		if err := spec.Validate(); err != nil {
+			t.Fatalf("canonical project repository identity %q rejected: %v", repository, err)
+		}
+		manifest.Workspace.RepositoryID = repository
+		if err := manifest.Validate(); err != nil {
+			t.Fatalf("canonical project handback identity %q rejected: %v", repository, err)
+		}
 	}
-	for _, repository := range []string{"/Automaat/sybra", "Automaat/sybra/extra", "Automaat/../sybra", "Automaat/", "../sybra"} {
+	for _, repository := range []string{"/Automaat/sybra", "Automaat/sybra/extra", "Automaat/../sybra", "Automaat/", "../sybra", "owner/.", "owner/..", "-owner/repo"} {
 		bad := spec
 		bad.Workspace.RepositoryID = repository
 		if err := bad.Validate(); err == nil {
