@@ -3,6 +3,7 @@
 package remotehandback
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
@@ -10,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"hash"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -133,7 +135,7 @@ func importGitLocked(ctx context.Context, target string, spec executioncontract.
 	}
 	for i, member := range untracked {
 		entry := entryFor(manifest, member.Root, member.Path)
-		if err := writeMember(checkout, member, entry.Mode); err != nil {
+		if err := writeMember(checkout, staging, member, entry.Mode); err != nil {
 			return nil, err
 		}
 		untracked[i] = member
@@ -223,7 +225,7 @@ func importGitLocked(ctx context.Context, target string, spec executioncontract.
 	}
 	for _, member := range untracked {
 		entry := entryFor(manifest, member.Root, member.Path)
-		if err := writeMember(target, member, entry.Mode); err != nil {
+		if err := writeMember(target, staging, member, entry.Mode); err != nil {
 			rollback()
 			return nil, err
 		}
@@ -246,7 +248,48 @@ func recordPublicationState(ctx context.Context, dir string, states map[string]s
 		return err
 	}
 	states[fingerprint] = struct{}{}
+	resetFingerprint, err := resetPublicationStateFingerprint(ctx, dir)
+	if err != nil {
+		return err
+	}
+	states[resetFingerprint] = struct{}{}
 	return nil
+}
+
+// resetPublicationStateFingerprint records the only residue reset --hard can
+// leave from a valid checkpoint: pre-existing untracked members and paths
+// added to the index by the staged patch. This closes the crash window between
+// reset and clean without accepting any state Sybra could not have produced.
+func resetPublicationStateFingerprint(ctx context.Context, dir string) (string, error) {
+	added, err := gitexec.RawOutput(ctx, gitexec.Options{Dir: dir}, "diff", "--cached", "--name-only", "-z", "--diff-filter=A", "HEAD", "--", ".")
+	if err != nil {
+		return "", err
+	}
+	untracked, err := gitexec.RawOutput(ctx, gitexec.Options{Dir: dir}, "ls-files", "--others", "--exclude-standard", "-z", "--", ".")
+	if err != nil {
+		return "", err
+	}
+	paths := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, raw := range [][]byte{added, untracked} {
+		for path := range strings.SplitSeq(strings.TrimSuffix(string(raw), "\x00"), "\x00") {
+			if path == "" {
+				continue
+			}
+			if _, exists := seen[path]; !exists {
+				seen[path] = struct{}{}
+				paths = append(paths, path)
+			}
+		}
+	}
+	slices.Sort(paths)
+	var status bytes.Buffer
+	for _, path := range paths {
+		status.WriteString("?? ")
+		status.WriteString(path)
+		status.WriteByte(0)
+	}
+	return publicationStateFingerprintForStatus(dir, status.Bytes())
 }
 
 // publicationStateFingerprint describes every state the canonical publisher
@@ -259,16 +302,20 @@ func publicationStateFingerprint(ctx context.Context, dir string) (string, error
 	if err != nil {
 		return "", err
 	}
+	return publicationStateFingerprintForStatus(dir, status)
+}
+
+func publicationStateFingerprintForStatus(dir string, status []byte) (string, error) {
 	digest := sha256.New()
 	writeFingerprintField(digest, status)
 	for record := range strings.SplitSeq(strings.TrimSuffix(string(status), "\x00"), "\x00") {
 		if record == "" {
 			continue
 		}
-		if len(record) < 4 {
+		path, parseErr := publicationStatusPath(record)
+		if parseErr != nil {
 			return "", errors.New("remote handback: malformed Git status record")
 		}
-		path := record[3:]
 		writeFingerprintField(digest, []byte(path))
 		full := filepath.Join(dir, filepath.FromSlash(path))
 		info, statErr := os.Lstat(full)
@@ -304,6 +351,15 @@ func publicationStateFingerprint(ctx context.Context, dir string) (string, error
 		writeFingerprintField(digest, content)
 	}
 	return hex.EncodeToString(digest.Sum(nil)), nil
+}
+
+func publicationStatusPath(record string) (string, error) {
+	reader := strings.NewReader(record)
+	if _, err := reader.Seek(3, io.SeekStart); err != nil || reader.Len() == 0 {
+		return "", errors.New("invalid status record")
+	}
+	path, err := io.ReadAll(reader)
+	return string(path), err
 }
 
 func writeFingerprintField(digest hash.Hash, value []byte) {
@@ -488,7 +544,7 @@ func entryFor(manifest executioncontract.ArtifactManifest, root executioncontrac
 	return executioncontract.ArtifactEntry{}
 }
 
-func writeMember(root string, member executioncontract.ArtifactMember, mode uint32) error {
+func writeMember(root, scratch string, member executioncontract.ArtifactMember, mode uint32) error {
 	full := filepath.Join(root, filepath.FromSlash(member.Path))
 	parent := filepath.Dir(full)
 	if err := os.MkdirAll(parent, 0o700); err != nil {
@@ -511,12 +567,42 @@ func writeMember(root string, member executioncontract.ArtifactMember, mode uint
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	temporary, err := os.CreateTemp(scratch, ".member-*")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer func() { _ = os.Remove(temporaryPath) }()
 	if mode == 0o120000 {
-		return os.Symlink(string(member.Content), full)
+		if err := temporary.Close(); err != nil {
+			return err
+		}
+		if err := os.Remove(temporaryPath); err != nil {
+			return err
+		}
+		if err := os.Symlink(string(member.Content), temporaryPath); err != nil {
+			return err
+		}
+		return os.Rename(temporaryPath, full)
 	}
 	perm := os.FileMode(0o600)
 	if mode == 0o100755 {
 		perm = 0o700
 	}
-	return os.WriteFile(full, member.Content, perm)
+	if err := temporary.Chmod(perm); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(member.Content); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryPath, full)
 }
