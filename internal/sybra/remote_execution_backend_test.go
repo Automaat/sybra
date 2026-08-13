@@ -153,6 +153,55 @@ func TestLeaderExecutionBackendReclaimsExistingEffectAfterRestart(t *testing.T) 
 	}
 }
 
+func TestRecoveredRemoteRunRequiresMatchingTaskGeneration(t *testing.T) {
+	start := agent.ExecutionStart{
+		Spec:   agent.ExecutionSpec{TaskID: "task"},
+		Config: agent.RunConfig{IntentID: "effect", TaskGeneration: 7},
+	}
+	spec := executioncontract.RunSpec{EffectID: "effect", Fence: executioncontract.GenerationFence{
+		TaskID: "task", TaskGeneration: 6, WorkflowID: "ship", WorkflowGeneration: 7, StepID: "review",
+	}}
+	if err := validateRecoveredRemoteRun(spec, start, "ship", "review", 7); err == nil {
+		t.Fatal("recovered run with stale task generation was accepted")
+	}
+}
+
+func TestRemoteRelayCancellationDetachesWithoutCompleting(t *testing.T) {
+	sink := &recordingExecutionSink{ready: make(chan struct{})}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	backend := &leaderExecutionBackend{
+		app:  &App{workerControl: workercontrol.New(dbtest.SQLite(t))},
+		runs: make(map[agent.ExecutionHandle]*remoteExecution),
+	}
+	run := &remoteExecution{runID: "still-running", sink: sink}
+	backend.relay(ctx, "remote:still-running", run, 0)
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	for _, event := range sink.events {
+		if event.Kind == agent.ExecutionCompleted {
+			t.Fatalf("observer cancellation synthesized completion: %+v", event)
+		}
+	}
+}
+
+func TestRemoteCanceledTerminalPreservesObservationDeadline(t *testing.T) {
+	sink := &recordingExecutionSink{ready: make(chan struct{})}
+	ctx, cancel := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+	defer cancel()
+	backend := &leaderExecutionBackend{}
+	run := &remoteExecution{runID: "deadline", sink: sink}
+	event := remoteBackendEvent("deadline", 1, executioncontract.EventTerminal, map[string]any{
+		"state": executioncontract.TerminalCanceled, "error": context.DeadlineExceeded.Error(), "artifactState": executioncontract.ArtifactsFailed,
+	})
+	backend.completeAfterHandback(ctx, "remote:deadline", run, event)
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	if len(sink.events) != 1 || !errors.Is(sink.events[0].Err, context.DeadlineExceeded) {
+		t.Fatalf("completion error = %+v, want deadline exceeded", sink.events)
+	}
+}
+
 func (s *recordingExecutionSink) EmitExecutionEvent(_ context.Context, _ agent.ExecutionHandle, event agent.ExecutionEvent) {
 	s.mu.Lock()
 	s.events = append(s.events, event)

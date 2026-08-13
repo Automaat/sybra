@@ -95,7 +95,8 @@ func (b *leaderExecutionBackend) startRemoteRelay(ctx context.Context, start age
 }
 
 func validateRecoveredRemoteRun(spec executioncontract.RunSpec, start agent.ExecutionStart, workflowID, stepID string, generation int64) error {
-	if spec.EffectID != start.Config.IntentID || spec.Fence.TaskID != start.Spec.TaskID ||
+	if generation < 0 || spec.EffectID != start.Config.IntentID || spec.Fence.TaskID != start.Spec.TaskID ||
+		spec.Fence.TaskGeneration != uint64(generation) ||
 		spec.Fence.WorkflowID != workflowID || spec.Fence.StepID != stepID ||
 		spec.Fence.WorkflowGeneration != generation {
 		return errors.New("remote execution recovery fence does not match the current workflow claim")
@@ -218,7 +219,9 @@ func (b *leaderExecutionBackend) relay(ctx context.Context, handle agent.Executi
 		}
 		select {
 		case <-ctx.Done():
-			run.emit(ctx, handle, agent.ExecutionEvent{Kind: agent.ExecutionCompleted, Err: ctx.Err()})
+			// Cancellation tears down only this leader-side observation. The
+			// durable run remains recoverable and its worker-owned terminal event
+			// is still the sole authority for canonical completion.
 			return
 		case <-ticker.C:
 		}
@@ -267,6 +270,9 @@ func (b *leaderExecutionBackend) completeAfterHandback(ctx context.Context, hand
 	case executioncontract.TerminalSucceeded:
 	case executioncontract.TerminalCanceled:
 		completionErr = context.Canceled
+		if ctx.Err() != nil && terminal.Error == ctx.Err().Error() {
+			completionErr = ctx.Err()
+		}
 	default:
 		completionErr = errors.New(firstNonBlank(terminal.Error, "remote execution failed"))
 	}
