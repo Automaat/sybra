@@ -44,15 +44,15 @@ func (a *App) importRemoteHandback(ctx context.Context, runID string) error {
 		}
 		target := a.worktrees.PathFor(t)
 		receipted := remoteReceiptApplied(t, handback)
-		original := t.Generation >= 0 && uint64(t.Generation) == handback.Spec.Fence.TaskGeneration && t.Generation == handback.Spec.Fence.WorkflowGeneration
-		if t.Workflow == nil || t.Workflow.WorkflowID != handback.Spec.Fence.WorkflowID || t.Workflow.CurrentStep != handback.Spec.Fence.StepID || (!original && !receipted) {
+		owned := remoteHandbackOwned(t, handback)
+		if t.Workflow == nil || t.Workflow.WorkflowID != handback.Spec.Fence.WorkflowID || t.Workflow.CurrentStep != handback.Spec.Fence.StepID || (!owned && !receipted) {
 			return a.rejectRemoteHandback(ctx, handback, remotehandback.ErrStale)
 		}
 		head, headErr := gitexec.Output(ctx, gitexec.Options{Dir: target}, "rev-parse", "--verify", "HEAD^{commit}")
 		if headErr != nil {
 			return headErr
 		}
-		if (original && head != handback.Spec.Workspace.BaseSHA) || (receipted && head != handback.Spec.Workspace.BaseSHA && head != handback.Manifest.Workspace.FinalSHA) {
+		if (owned && !receipted && head != handback.Spec.Workspace.BaseSHA) || (receipted && head != handback.Spec.Workspace.BaseSHA && head != handback.Manifest.Workspace.FinalSHA) {
 			return a.rejectRemoteHandback(ctx, handback, remotehandback.ErrStale)
 		}
 		guard := func(context.Context) (executioncontract.GenerationFence, string, error) {
@@ -60,11 +60,10 @@ func (a *App) importRemoteHandback(ctx context.Context, runID string) error {
 			if currentErr != nil {
 				return executioncontract.GenerationFence{}, "", currentErr
 			}
-			original := current.Generation >= 0 && uint64(current.Generation) == handback.Spec.Fence.TaskGeneration &&
-				current.Generation == handback.Spec.Fence.WorkflowGeneration
+			owned := remoteHandbackOwned(current, handback)
 			recoveredOutputs := remoteReceiptApplied(current, handback)
 			if current.Workflow == nil || current.Workflow.WorkflowID != handback.Spec.Fence.WorkflowID ||
-				current.Workflow.CurrentStep != handback.Spec.Fence.StepID || (!original && !recoveredOutputs) {
+				current.Workflow.CurrentStep != handback.Spec.Fence.StepID || (!owned && !recoveredOutputs) {
 				return executioncontract.GenerationFence{}, "", remotehandback.ErrStale
 			}
 			head, headErr := gitexec.Output(ctx, gitexec.Options{Dir: target}, "rev-parse", "--verify", "HEAD^{commit}")
@@ -167,16 +166,17 @@ func (a *App) importRemoteOutputs(handback workercontrol.ArtifactHandback, membe
 			if alreadyApplied {
 				return task.Update{}, errRemoteOutputsAlreadyApplied
 			}
-			if current.Generation < 0 || uint64(current.Generation) != handback.Spec.Fence.TaskGeneration || current.Workflow == nil ||
-				current.Workflow.WorkflowID != handback.Spec.Fence.WorkflowID || current.Workflow.CurrentStep != handback.Spec.Fence.StepID {
+			if current.Workflow == nil || current.Workflow.WorkflowID != handback.Spec.Fence.WorkflowID ||
+				current.Workflow.CurrentStep != handback.Spec.Fence.StepID || !remoteHandbackOwned(current, handback) {
 				return task.Update{}, remotehandback.ErrStale
 			}
+			postImportGeneration := current.Generation + 1
 			tags := append([]string(nil), current.Tags...)
-			tags = append(tags, remoteReceiptTag(handback.Manifest.ManifestID))
+			tags = append(tags, remoteReceiptTag(handback.Manifest.ManifestID, postImportGeneration))
 			for i := range handback.Manifest.Artifacts {
 				entry := &handback.Manifest.Artifacts[i]
 				if entry.Root == executioncontract.RootSidecar {
-					tags = append(tags, remoteSidecarReceiptTag(handback.Spec.Fence.WorkflowID, handback.Spec.Fence.StepID, handback.Spec.Fence.WorkflowGeneration+1, entry.Kind))
+					tags = append(tags, remoteSidecarReceiptTag(handback.Spec.Fence.WorkflowID, handback.Spec.Fence.StepID, postImportGeneration, entry.Kind))
 				}
 			}
 			update.Tags = &tags
@@ -192,12 +192,56 @@ func (a *App) importRemoteOutputs(handback workercontrol.ArtifactHandback, membe
 
 var errRemoteOutputsAlreadyApplied = errors.New("remote handback: outputs already applied")
 
-func remoteReceiptTag(manifestID string) string { return "remote-handback:" + manifestID }
+func remoteReceiptTag(manifestID string, generation int64) string {
+	return fmt.Sprintf("remote-handback:%s:%d", manifestID, generation)
+}
 
 func remoteSidecarReceiptTag(workflowID, stepID string, generation int64, kind string) string {
 	return fmt.Sprintf("remote-sidecar:%s:%s:%d:%s", workflowID, stepID, generation, kind)
 }
 
 func remoteReceiptApplied(current task.Task, handback workercontrol.ArtifactHandback) bool {
-	return current.Generation == handback.Spec.Fence.WorkflowGeneration+1 && slices.Contains(current.Tags, remoteReceiptTag(handback.Manifest.ManifestID))
+	if slices.Contains(current.Tags, remoteReceiptTag(handback.Manifest.ManifestID, current.Generation)) {
+		return true
+	}
+	// Legacy tag format written before generation scoping ("remote-handback:<manifestID>").
+	// Recognised only when the task has advanced exactly one generation past the workflow
+	// fence, matching the semantics under which those tags were written.
+	legacyTag := "remote-handback:" + handback.Manifest.ManifestID
+	return current.Generation == handback.Spec.Fence.WorkflowGeneration+1 &&
+		slices.Contains(current.Tags, legacyTag)
+}
+
+// remoteHandbackOwned accepts the immutable generation fence before the
+// workflow has persisted its async-agent route, then uses that durable route
+// as the authority after ordinary workflow bookkeeping advances the task
+// generation. A stopped or superseded run loses its route and cannot publish.
+func remoteHandbackOwned(current task.Task, handback workercontrol.ArtifactHandback) bool {
+	if current.Generation >= 0 && uint64(current.Generation) == handback.Spec.Fence.TaskGeneration &&
+		current.Generation == handback.Spec.Fence.WorkflowGeneration {
+		return true
+	}
+	if current.Workflow == nil {
+		return false
+	}
+	routedStep, ok := current.Workflow.AgentRoute(handback.Spec.RunID)
+	if !ok {
+		return false
+	}
+	if routedStep == handback.Spec.Fence.StepID {
+		return true
+	}
+	if parallel := current.Workflow.ParallelInflight[handback.Spec.Fence.StepID]; parallel != nil {
+		if child := parallel.Children[routedStep]; child != nil && child.AgentID == handback.Spec.RunID {
+			return true
+		}
+	}
+	if bestOfN := current.Workflow.BestOfNInflight[handback.Spec.Fence.StepID]; bestOfN != nil {
+		for attemptID, attempt := range bestOfN.Attempts {
+			if attempt != nil && attempt.AgentID == handback.Spec.RunID && routedStep == handback.Spec.Fence.StepID+"::"+attemptID {
+				return true
+			}
+		}
+	}
+	return false
 }
