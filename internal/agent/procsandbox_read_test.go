@@ -103,6 +103,12 @@ func TestAmbientReviewAuthGrantsOnlyGitConfigurationRoots(t *testing.T) {
 	}
 }
 
+func TestAmbientEnvValueEmptyOverrideUsesFallback(t *testing.T) {
+	if got := ambientEnvValue([]string{"XDG_CONFIG_HOME="}, "XDG_CONFIG_HOME", "/default/config"); got != "/default/config" {
+		t.Fatalf("ambientEnvValue empty override = %q, want fallback", got)
+	}
+}
+
 func TestResolveSandboxReadRoots_NeverGrantsOpt(t *testing.T) {
 	m := newReadModeManager("enforce")
 	cfg := &RunConfig{Role: RoleImplementation, sandbox: specWithWriteRoots(t)}

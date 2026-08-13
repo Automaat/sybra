@@ -363,7 +363,11 @@ func ambientEnvValue(env []string, key, fallback string) string {
 	prefix := key + "="
 	for _, assignment := range env {
 		if configured, ok := strings.CutPrefix(assignment, prefix); ok {
-			value = configured
+			if configured = strings.TrimSpace(configured); configured != "" {
+				value = configured
+			} else {
+				value = fallback
+			}
 		}
 	}
 	return strings.TrimSpace(value)
