@@ -343,6 +343,30 @@ func (m *Manager) injectAmbientReviewGhShim(cfg *RunConfig) {
 		return
 	}
 	cfg.ExtraEnv = prependPATH(cfg.ExtraEnv, m.ghShimDir)
+	cfg.ReadOnlyPaths = append(cfg.ReadOnlyPaths, m.ghShimDir)
+	if path, err := exec.LookPath("gh"); err == nil {
+		cfg.ReadOnlyPaths = append(cfg.ReadOnlyPaths, path)
+	}
+	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		// This escape hatch deliberately preserves the operator's GitHub
+		// authority. Keep the read sandbox consistent with that promise without
+		// granting the rest of the home directory.
+		xdg := ambientEnvValue(cfg.ExtraEnv, "XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+		ghConfig := ambientEnvValue(cfg.ExtraEnv, "GH_CONFIG_DIR", filepath.Join(xdg, "gh"))
+		gitConfig := ambientEnvValue(cfg.ExtraEnv, "GIT_CONFIG_GLOBAL", filepath.Join(home, ".gitconfig"))
+		cfg.ReadOnlyPaths = append(cfg.ReadOnlyPaths, ghConfig, filepath.Join(xdg, "git"), gitConfig)
+	}
+}
+
+func ambientEnvValue(env []string, key, fallback string) string {
+	value := fallback
+	prefix := key + "="
+	for _, assignment := range env {
+		if configured, ok := strings.CutPrefix(assignment, prefix); ok {
+			value = configured
+		}
+	}
+	return strings.TrimSpace(value)
 }
 
 func (m *Manager) syncGHVerifierAppToken() error {

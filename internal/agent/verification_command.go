@@ -2,8 +2,10 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -11,14 +13,23 @@ import (
 // RunVerificationCommand runs one deterministic verification command through
 // the same sandbox preparation and process wrapper used for provider CLIs.
 // The caller must supply a disposable writable checkout as cfg.Dir.
-func (m *Manager) RunVerificationCommand(ctx context.Context, cfg RunConfig, name string, args []string, output io.Writer) error {
+func (m *Manager) RunVerificationCommand(ctx context.Context, cfg RunConfig, name string, args []string, output io.Writer) (runErr error) {
 	if cfg.Role != RoleTestRunner || strings.TrimSpace(cfg.TaskID) == "" {
 		return fmt.Errorf("verification command requires a task-scoped test-runner role")
 	}
 	if err := validateRunDir(cfg.Dir); err != nil {
 		return err
 	}
-	cfg.EphemeralSandboxHome = filepath.Join(filepath.Dir(cfg.Dir), "scratch")
+	sandboxHome, err := os.MkdirTemp("", "sybra-verify-scratch-")
+	if err != nil {
+		return fmt.Errorf("verification command: create ephemeral sandbox home: %w", err)
+	}
+	defer func() {
+		if cleanupErr := removeVerificationHome(sandboxHome); cleanupErr != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("verification command: remove ephemeral sandbox home: %w", cleanupErr))
+		}
+	}()
+	cfg.EphemeralSandboxHome = sandboxHome
 	cfg.DisableVerifierControl = true
 	if err := m.injectSandboxHome(&cfg); err != nil {
 		return err
@@ -46,6 +57,23 @@ func (m *Manager) RunVerificationCommand(ctx context.Context, cfg RunConfig, nam
 	cmd.Stdout = output
 	cmd.Stderr = output
 	return cmd.Run()
+}
+
+func removeVerificationHome(root string) error {
+	// A repository command can remove permissions below its writable home.
+	// Restore owner access before removal so cleanup is reliable and a failed
+	// cleanup is reported rather than silently accumulating verifier state.
+	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			_ = os.Chmod(path, 0o700)
+			return nil
+		}
+		if entry.IsDir() {
+			_ = os.Chmod(path, 0o700)
+		}
+		return nil
+	})
+	return os.RemoveAll(root)
 }
 
 func (m *Manager) certifyPreparedCommand(ctx context.Context, cfg RunConfig) error {

@@ -1640,10 +1640,12 @@ func (m *Manager) applySandboxReadMode(cfg *RunConfig) error {
 // exec at all. /opt is deliberately absent: on the server it holds the live
 // deploy checkout (/opt/sybra/src), which the #2780 trace measured as read by
 // exactly zero toolchain steps, so granting it would re-open the one root
-// this restriction exists to close.
+// this restriction exists to close. /nix/store is the immutable, system-wide
+// runtime closure for Nix-backed host tools; granting it is equivalent to the
+// fixed OS roots above and does not expose an operator checkout.
 var systemReadRoots = []string{
 	"/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/var/lib", "/private/var/db",
-	"/System", "/Library", "/dev", "/private/var/select",
+	"/System", "/Library", "/dev", "/private/var/select", "/nix/store",
 }
 
 // toolchainReadSubdirs are home-relative roots that hold the language

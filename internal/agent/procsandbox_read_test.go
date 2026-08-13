@@ -58,6 +58,49 @@ func TestResolveSandboxReadRoots_GrantsToolchainAndEveryWriteRoot(t *testing.T) 
 			t.Errorf("%s missing from read allowlist; basic tooling cannot run without it: %v", want, roots)
 		}
 	}
+	if _, err := os.Stat("/nix/store"); err == nil && !slices.Contains(roots, "/nix/store") {
+		t.Errorf("/nix/store missing from read allowlist; Nix-backed host tools cannot load their runtime dependencies: %v", roots)
+	}
+}
+
+func TestAmbientReviewAuthGrantsOnlyGitConfigurationRoots(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	customConfig := filepath.Join(t.TempDir(), "config")
+	customGitConfig := filepath.Join(t.TempDir(), "gitconfig")
+	for _, path := range []string{
+		filepath.Join(customConfig, "github-cli"),
+		filepath.Join(customConfig, "git"),
+	} {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(customGitConfig, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	shimDir := t.TempDir()
+	m := &Manager{ghShimDir: shimDir, logger: slog.New(slog.DiscardHandler)}
+	cfg := RunConfig{Role: RoleReview, sandbox: specWithWriteRoots(t), ExtraEnv: append(os.Environ(),
+		"XDG_CONFIG_HOME="+customConfig,
+		"GH_CONFIG_DIR="+filepath.Join(customConfig, "github-cli"),
+		"GIT_CONFIG_GLOBAL="+customGitConfig,
+	)}
+	m.injectAmbientReviewGhShim(&cfg)
+	roots := m.resolveSandboxReadRoots(&cfg)
+	for _, want := range []string{
+		shimDir,
+		filepath.Join(customConfig, "github-cli"),
+		filepath.Join(customConfig, "git"),
+		customGitConfig,
+	} {
+		if !slices.Contains(roots, want) {
+			t.Errorf("ambient review auth root %q missing from read allowlist %v", want, roots)
+		}
+	}
+	if slices.Contains(roots, home) {
+		t.Fatalf("ambient review auth granted the whole operator home: %v", roots)
+	}
 }
 
 func TestResolveSandboxReadRoots_NeverGrantsOpt(t *testing.T) {
