@@ -32,9 +32,11 @@ func newProviderCmd(ctx context.Context, cfg *RunConfig, detached bool, name str
 	var cmd *exec.Cmd
 	if detached {
 		// no Context: a cancelled ctx must not kill a detached child
+		// #nosec G702 -- wrappedName is the trusted sandbox/provider boundary.
 		cmd = exec.CommandContext(context.Background(), wrappedName, wrappedArgs...) //nolint:contextcheck // detached child must survive a cancelled parent ctx
 		configureDetached(cmd)
 	} else {
+		// #nosec G702 -- wrappedName is the trusted sandbox/provider boundary.
 		cmd = exec.CommandContext(ctx, wrappedName, wrappedArgs...)
 		configureGracefulShutdown(cmd)
 	}

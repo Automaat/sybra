@@ -3,9 +3,9 @@ package agent
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 )
@@ -17,11 +17,7 @@ func TestVerificationCommandUsesLeaseScratchAndNoProviderCapacity(t *testing.T) 
 	t.Setenv("XDG_CONFIG_HOME", "/operator/secret/config")
 	runDir := t.TempDir()
 	workspace := filepath.Join(runDir, "source")
-	scratch := filepath.Join(runDir, "scratch")
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(scratch, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	m, _ := newTestManager(t)
@@ -33,15 +29,101 @@ func TestVerificationCommandUsesLeaseScratchAndNoProviderCapacity(t *testing.T) 
 	var output bytes.Buffer
 	err := m.RunVerificationCommand(t.Context(), RunConfig{
 		TaskID: "task-local", Role: RoleTestRunner, Dir: workspace, SandboxMode: "off", ExtraEnv: os.Environ(),
-	}, "/bin/sh", []string{"-c", `test "$SYBRA_HOME" = "$1" && test "$XDG_CONFIG_HOME" = "$1/.config" && test "$GIT_CONFIG_GLOBAL" = /dev/null && test "$GIT_CONFIG_NOSYSTEM" = 1`, "sh", scratch}, &output)
+	}, "/bin/sh", []string{"-c", `test -d "$SYBRA_HOME" && test "$XDG_CONFIG_HOME" = "$SYBRA_HOME/.config" && test "$GIT_CONFIG_GLOBAL" = /dev/null && test "$GIT_CONFIG_NOSYSTEM" = 1`}, &output)
 	if err != nil {
 		t.Fatalf("RunVerificationCommand: %v (%s)", err, output.String())
 	}
 	if !observed.LocalCommand || observed.Provider != "" {
 		t.Fatalf("preflight local=%v provider=%q", observed.LocalCommand, observed.Provider)
 	}
-	if !slices.Contains(observed.ScratchRoots, scratch) {
-		t.Fatalf("certified scratch roots %v omit %q", observed.ScratchRoots, scratch)
+	var scratch string
+	for _, root := range observed.ScratchRoots {
+		if strings.HasPrefix(filepath.Base(root), "sybra-verify-scratch-") {
+			scratch = root
+			break
+		}
+	}
+	if scratch == "" {
+		t.Fatalf("certified scratch roots %v omit the ephemeral verification home", observed.ScratchRoots)
+	}
+	if _, err := os.Stat(scratch); !os.IsNotExist(err) {
+		t.Fatalf("ephemeral verification home was not removed: stat error = %v", err)
+	}
+}
+
+func TestVerificationCommandCreatesScratchWhenSiblingIsAbsent(t *testing.T) {
+	runDir := t.TempDir()
+	workspace := filepath.Join(runDir, "source")
+	if err := os.Mkdir(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	m, _ := newTestManager(t)
+	var output bytes.Buffer
+	if err := m.RunVerificationCommand(t.Context(), RunConfig{
+		TaskID: "task-no-scratch", Role: RoleTestRunner, Dir: workspace, ExtraEnv: os.Environ(),
+	}, "/bin/sh", []string{"-c", `test -d "$SYBRA_HOME"`}, &output); err != nil {
+		t.Fatalf("RunVerificationCommand without sibling scratch: %v (%s)", err, output.String())
+	}
+	entries, err := os.ReadDir(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "sybra-verify-scratch-") {
+			t.Fatalf("verification scratch leaked after command: %s", entry.Name())
+		}
+	}
+}
+
+func TestVerificationCommandRemovesScratchAfterPreparationFailure(t *testing.T) {
+	workspace := t.TempDir()
+	m, _ := newTestManager(t)
+	var scratch string
+	m.SetRunEnvironmentPreflight(func(_ context.Context, environment RunEnvironment) error {
+		for _, root := range environment.ScratchRoots {
+			if strings.HasPrefix(filepath.Base(root), "sybra-verify-scratch-") {
+				scratch = root
+			}
+		}
+		return errors.New("preflight rejected")
+	})
+	err := m.RunVerificationCommand(t.Context(), RunConfig{
+		TaskID: "task-preflight-failure", Role: RoleTestRunner, Dir: workspace, ExtraEnv: os.Environ(),
+	}, "/bin/sh", []string{"-c", "exit 0"}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "preflight rejected") {
+		t.Fatalf("RunVerificationCommand error = %v, want preflight failure", err)
+	}
+	if scratch == "" {
+		t.Fatal("preflight did not observe ephemeral verification home")
+	}
+	if _, err := os.Stat(scratch); !os.IsNotExist(err) {
+		t.Fatalf("ephemeral verification home survived failure: stat error = %v", err)
+	}
+}
+
+func TestRemoveVerificationHomeNeverSilentlyLeavesLockedState(t *testing.T) {
+	root := t.TempDir()
+	locked := filepath.Join(root, "locked")
+	if err := os.Mkdir(locked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(locked, "state"), []byte("temporary"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeVerificationHome(root); err != nil {
+		// Linux denies traversal of the deliberately locked directory. The
+		// production caller joins this error into the command result. Restore
+		// permissions only so testing.TempDir can clean its fixture.
+		if chmodErr := os.Chmod(locked, 0o700); chmodErr != nil {
+			t.Fatalf("restore test directory after reported cleanup failure: %v (cleanup error: %v)", chmodErr, err)
+		}
+		return
+	}
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatalf("verification home survived cleanup: stat error = %v", err)
 	}
 }
 
