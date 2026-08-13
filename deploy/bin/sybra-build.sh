@@ -25,6 +25,9 @@ CLI_LINK_DIR="${HOME:-/home/sybra}/.local/bin"
 have_last_good_build() {
   local target
   target="$(resolved_target "$LAST_GOOD_LINK")"
+  # Older last-good releases predate the optional agentd binary. They remain a
+  # valid server rollback target; the daemon unit simply cannot run until a
+  # newer release activates successfully.
   [[ -n "$target" && -x "$target/sybra-server" && -f "$target/web/index.html" ]]
 }
 
@@ -161,6 +164,13 @@ main() {
   CGO_ENABLED=0 mise exec -- go build -trimpath -o "$CANDIDATE_DIR/sybra-cli" ./cmd/sybra-cli \
       >"$(detail_log_path "$ID" go-build-cli)" 2>&1 \
     || reject_candidate "go-build-cli" "go build ./cmd/sybra-cli failed"
+
+  # The thin execution daemon is release-coupled to the leader protocol. Keep
+  # it in the same atomic release as the server so sybra-agentd.service can
+  # restart onto a protocol-compatible binary after every server activation.
+  CGO_ENABLED=0 mise exec -- go build -trimpath -o "$CANDIDATE_DIR/sybra-agentd" ./cmd/sybra-agentd \
+      >"$(detail_log_path "$ID" go-build-agentd)" 2>&1 \
+    || reject_candidate "go-build-agentd" "go build ./cmd/sybra-agentd failed"
 
   if command -v bwrap >/dev/null 2>&1; then
     log "running linked-worktree sandbox smoke"
