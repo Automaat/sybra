@@ -72,15 +72,17 @@ type ArtifactHandback struct {
 }
 
 type Diagnostics struct {
-	WorkerID       string    `json:"workerId"`
-	SessionID      string    `json:"sessionId"`
-	State          string    `json:"state"`
-	BuildVersion   string    `json:"buildVersion"`
-	Protocol       string    `json:"protocol"`
-	LeaseExpiresAt time.Time `json:"leaseExpiresAt"`
-	LastCommandAck uint64    `json:"lastCommandAck"`
-	ActiveRuns     int       `json:"activeRuns"`
-	PendingEvents  int       `json:"pendingEvents"`
+	WorkerID          string    `json:"workerId"`
+	SessionID         string    `json:"sessionId"`
+	State             string    `json:"state"`
+	BuildVersion      string    `json:"buildVersion"`
+	Protocol          string    `json:"protocol"`
+	LeaseExpiresAt    time.Time `json:"leaseExpiresAt"`
+	LastCommandAck    uint64    `json:"lastCommandAck"`
+	ActiveRuns        int       `json:"activeRuns"`
+	PendingEvents     int       `json:"pendingEvents"`
+	Capacity          int       `json:"capacity"`
+	AvailableCapacity int       `json:"availableCapacity"`
 }
 
 type Service struct {
@@ -220,6 +222,13 @@ func (s *Service) Register(ctx context.Context, request RegisterRequest) (Sessio
 	}
 	state := "active"
 	err = s.db.InTx(ctx, func(tx *sql.Tx) error {
+		var disabled int
+		if err := tx.QueryRowContext(ctx, s.db.Rebind(`SELECT COUNT(*) FROM worker_disabled WHERE worker_id = ?`), request.WorkerID).Scan(&disabled); err != nil {
+			return err
+		}
+		if disabled > 0 {
+			state = "disabled"
+		}
 		if request.ResumeSessionID != "" {
 			query := `SELECT worker_id, state, last_command_ack, lease_expires_at FROM worker_sessions WHERE session_id = ?`
 			if s.db.Dialect() == db.Postgres {
@@ -229,10 +238,12 @@ func (s *Service) Register(ctx context.Context, request RegisterRequest) (Sessio
 			var priorAck, maxSequence uint64
 			var priorExpiry int64
 			if err := tx.QueryRowContext(ctx, s.db.Rebind(query), request.ResumeSessionID).Scan(&priorWorker, &priorState, &priorAck, &priorExpiry); err != nil ||
-				priorWorker != request.WorkerID || (priorState != "active" && priorState != "draining") || !db.TimeFrom(priorExpiry).After(now) {
+				priorWorker != request.WorkerID || (priorState != "active" && priorState != "draining" && priorState != "disabled") || !db.TimeFrom(priorExpiry).After(now) {
 				return ErrStaleSession
 			}
-			state = priorState
+			if disabled == 0 {
+				state = priorState
+			}
 			if err := tx.QueryRowContext(ctx, s.db.Rebind(`SELECT COALESCE(MAX(sequence), 0) FROM worker_commands WHERE session_id = ?`), request.ResumeSessionID).Scan(&maxSequence); err != nil {
 				return err
 			}
@@ -241,8 +252,8 @@ func (s *Service) Register(ctx context.Context, request RegisterRequest) (Sessio
 			}
 		}
 		fenceQuery, fenceArg := `UPDATE worker_sessions SET state = 'replaced' WHERE worker_id = ? AND state = 'active'`, request.WorkerID
-		if state == "draining" {
-			fenceQuery, fenceArg = `UPDATE worker_sessions SET state = 'replaced' WHERE session_id = ? AND state = 'draining'`, request.ResumeSessionID
+		if state == "draining" || state == "disabled" {
+			fenceQuery, fenceArg = `UPDATE worker_sessions SET state = 'replaced' WHERE session_id = ? AND state IN ('draining', 'disabled')`, request.ResumeSessionID
 		}
 		if _, err := tx.ExecContext(ctx, s.db.Rebind(fenceQuery), fenceArg); err != nil {
 			return fmt.Errorf("fence prior session: %w", err)
@@ -302,7 +313,7 @@ func (s *Service) Heartbeat(ctx context.Context, sessionID string, capabilities 
 			}
 			return err
 		}
-		if (state != "active" && state != "draining") || !db.TimeFrom(expires).After(now) {
+		if (state != "active" && state != "draining" && state != "disabled") || !db.TimeFrom(expires).After(now) {
 			return ErrStaleSession
 		}
 		_, err := tx.ExecContext(ctx, s.db.Rebind(`UPDATE worker_sessions SET heartbeat_at = ?, lease_expires_at = ?, capabilities_json = ? WHERE session_id = ?`),
@@ -912,9 +923,50 @@ func (s *Service) Drain(ctx context.Context, sessionID string) error {
 	})
 }
 
+// SetWorkerDisabled is the durable operator kill switch for new placement.
+// Accepted work may still report events and hand back artifacts; disabled
+// workers are excluded from scheduling until explicitly enabled.
+func (s *Service) SetWorkerDisabled(ctx context.Context, workerID string, disabled bool) error {
+	workerID = strings.TrimSpace(workerID)
+	if workerID == "" {
+		return invalidf("worker is required")
+	}
+	return s.db.InTx(ctx, func(tx *sql.Tx) error { return s.setWorkerDisabledTx(ctx, tx, workerID, disabled) })
+}
+
+// SetSessionDisabled is the worker-facing form: a session may only disable its
+// own stable worker identity, never another fleet member.
+func (s *Service) SetSessionDisabled(ctx context.Context, sessionID string, disabled bool) error {
+	return s.db.InTx(ctx, func(tx *sql.Tx) error {
+		if err := s.requireSessionTx(ctx, tx, sessionID, true); err != nil {
+			return err
+		}
+		var workerID string
+		if err := tx.QueryRowContext(ctx, s.db.Rebind(`SELECT worker_id FROM worker_sessions WHERE session_id = ?`), sessionID).Scan(&workerID); err != nil {
+			return err
+		}
+		return s.setWorkerDisabledTx(ctx, tx, workerID, disabled)
+	})
+}
+
+func (s *Service) setWorkerDisabledTx(ctx context.Context, tx *sql.Tx, workerID string, disabled bool) error {
+	if disabled {
+		if _, err := tx.ExecContext(ctx, s.db.Rebind(`INSERT INTO worker_disabled (worker_id, disabled_at) VALUES (?, ?) ON CONFLICT(worker_id) DO UPDATE SET disabled_at = excluded.disabled_at`), workerID, db.TimeValue(s.now().UTC())); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, s.db.Rebind(`UPDATE worker_sessions SET state = 'disabled' WHERE worker_id = ? AND state IN ('active', 'draining')`), workerID)
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, s.db.Rebind(`DELETE FROM worker_disabled WHERE worker_id = ?`), workerID); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, s.db.Rebind(`UPDATE worker_sessions SET state = 'active' WHERE session_id = (SELECT session_id FROM worker_sessions WHERE worker_id = ? AND state = 'disabled' ORDER BY created_at DESC LIMIT 1)`), workerID)
+	return err
+}
+
 func (s *Service) Diagnostics(ctx context.Context) ([]Diagnostics, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT s.worker_id, s.session_id, s.state, s.build_version, s.protocol_major,
-        s.protocol_minor, s.lease_expires_at, s.last_command_ack,
+		s.protocol_minor, s.lease_expires_at, s.last_command_ack, s.capabilities_json,
         (SELECT COUNT(*) FROM remote_runs r WHERE r.session_id = s.session_id AND r.state != 'terminal'),
         (SELECT COUNT(*) FROM worker_events e JOIN remote_runs r ON r.run_id = e.run_id WHERE r.session_id = s.session_id AND e.acknowledged_at IS NULL)
         FROM worker_sessions s ORDER BY s.worker_id, s.created_at DESC`)
@@ -927,12 +979,17 @@ func (s *Service) Diagnostics(ctx context.Context) ([]Diagnostics, error) {
 		var item Diagnostics
 		var major, minor int
 		var lease int64
+		var capabilitiesJSON string
 		if err := rows.Scan(&item.WorkerID, &item.SessionID, &item.State, &item.BuildVersion, &major, &minor, &lease,
-			&item.LastCommandAck, &item.ActiveRuns, &item.PendingEvents); err != nil {
+			&item.LastCommandAck, &capabilitiesJSON, &item.ActiveRuns, &item.PendingEvents); err != nil {
 			return nil, err
 		}
 		item.Protocol = fmt.Sprintf("%d.%d", major, minor)
 		item.LeaseExpiresAt = db.TimeFrom(lease)
+		var capabilities []string
+		_ = json.Unmarshal([]byte(capabilitiesJSON), &capabilities)
+		item.Capacity = parseCapabilities(capabilities).capacity
+		item.AvailableCapacity = max(item.Capacity-item.ActiveRuns, 0)
 		out = append(out, item)
 	}
 	return out, rows.Err()
@@ -978,7 +1035,7 @@ func (s *Service) session(ctx context.Context, sessionID string) (Session, error
 	}
 	result.SessionID, result.Version, result.LeaseExpiresAt = sessionID, executioncontract.Version{Major: major, Minor: minor}, db.TimeFrom(lease)
 	_ = json.Unmarshal([]byte(capabilities), &result.Capabilities)
-	if result.State != "active" && result.State != "draining" {
+	if result.State != "active" && result.State != "draining" && result.State != "disabled" {
 		return Session{}, ErrStaleSession
 	}
 	if !result.LeaseExpiresAt.After(s.now().UTC()) {
@@ -1000,7 +1057,7 @@ func (s *Service) requireSessionTx(ctx context.Context, tx *sql.Tx, sessionID st
 		}
 		return err
 	}
-	if state != "active" && (!allowDraining || state != "draining") {
+	if state != "active" && (!allowDraining || (state != "draining" && state != "disabled")) {
 		return ErrStaleSession
 	}
 	if !db.TimeFrom(lease).After(s.now().UTC()) {

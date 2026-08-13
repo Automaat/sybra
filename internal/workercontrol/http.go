@@ -23,8 +23,20 @@ func (s *Service) Handler() http.Handler {
 	mux.HandleFunc("POST /worker/v1/artifacts", s.handleArtifact)
 	mux.HandleFunc("POST /worker/v1/runs/{runID}/grant", s.handleRunGrant)
 	mux.HandleFunc("POST /worker/v1/drain", s.handleDrain)
+	mux.HandleFunc("POST /worker/v1/disable", s.handleDisable)
 	mux.HandleFunc("GET /worker/v1/diagnostics", s.handleDiagnostics)
 	return mux
+}
+
+func (s *Service) handleDisable(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		SessionID string `json:"sessionId"`
+		Disabled  bool   `json:"disabled"`
+	}
+	if !decode(w, r, &request) {
+		return
+	}
+	respond(w, map[string]bool{"disabled": request.Disabled}, s.SetSessionDisabled(r.Context(), request.SessionID, request.Disabled))
 }
 
 func (s *Service) handleRunGrant(w http.ResponseWriter, r *http.Request) {

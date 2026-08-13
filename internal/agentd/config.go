@@ -19,18 +19,20 @@ import (
 )
 
 type Config struct {
-	LeaderURL string            `yaml:"leader_url"`
-	TokenEnv  string            `yaml:"token_env"`
-	NodeID    string            `yaml:"node_id,omitempty"`
-	Labels    map[string]string `yaml:"labels,omitempty"`
-	Capacity  int               `yaml:"capacity"`
-	Providers []string          `yaml:"providers"`
-	Models    []string          `yaml:"models,omitempty"`
-	SecretEnv map[string]string `yaml:"secret_env,omitempty"`
+	LeaderURL  string            `yaml:"leader_url"`
+	TokenEnv   string            `yaml:"token_env"`
+	NodeID     string            `yaml:"node_id,omitempty"`
+	Labels     map[string]string `yaml:"labels,omitempty"`
+	Capacity   int               `yaml:"capacity"`
+	Providers  []string          `yaml:"providers"`
+	Models     []string          `yaml:"models,omitempty"`
+	WarmCaches []string          `yaml:"warm_caches,omitempty"`
+	SecretEnv  map[string]string `yaml:"secret_env,omitempty"`
 	// Repositories maps opaque wire identities to daemon-local clone sources.
 	// Sources and credentials never cross the worker protocol.
 	Repositories  map[string]string `yaml:"repositories,omitempty"`
 	TrustedWork   bool              `yaml:"trusted_work,omitempty"`
+	EncryptedWork bool              `yaml:"encrypted_work,omitempty"`
 	SandboxMode   string            `yaml:"sandbox_mode"`
 	WorkspaceRoot string            `yaml:"workspace_root"`
 	StateRoot     string            `yaml:"state_root"`
@@ -129,6 +131,7 @@ func (c *Config) Capabilities(build string) []string {
 		"protocol=1", "build=" + build, "os=" + runtime.GOOS, "arch=" + runtime.GOARCH,
 		fmt.Sprintf("capacity=%d", c.Capacity), "sandbox=" + c.SandboxMode,
 		fmt.Sprintf("trusted_work=%t", c.TrustedWork),
+		fmt.Sprintf("encrypted_work=%t", c.EncryptedWork),
 	}
 	labelKeys := make([]string, 0, len(c.Labels))
 	for key := range c.Labels {
@@ -149,6 +152,19 @@ func (c *Config) Capabilities(build string) []string {
 	}
 	for _, model := range c.Models {
 		values = append(values, "model="+model)
+	}
+	for _, cache := range c.WarmCaches {
+		if cache = strings.TrimSpace(cache); cache != "" {
+			values = append(values, "cache="+cache)
+		}
+	}
+	repositories := make([]string, 0, len(c.Repositories))
+	for repositoryID := range c.Repositories {
+		repositories = append(repositories, repositoryID)
+	}
+	sort.Strings(repositories)
+	for _, repositoryID := range repositories {
+		values = append(values, "repository="+repositoryID)
 	}
 	return values
 }
