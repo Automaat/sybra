@@ -43,7 +43,7 @@ const sandboxProbeRetryAfter = time.Minute
 var (
 	sandboxProbeMu sync.Mutex
 	bwrapPath      string
-	bwrapErr       error
+	errBwrapProbe  error
 	bwrapProbed    bool
 	bwrapMissing   bool
 	bwrapProbedAt  time.Time
@@ -69,19 +69,19 @@ var (
 func sandboxMechanismErr() error {
 	sandboxProbeMu.Lock()
 	defer sandboxProbeMu.Unlock()
-	if bwrapProbed && (bwrapErr == nil || bwrapMissing || sandboxProbeNow().Sub(bwrapProbedAt) < sandboxProbeRetryAfter) {
-		return bwrapErr
+	if bwrapProbed && (errBwrapProbe == nil || bwrapMissing || sandboxProbeNow().Sub(bwrapProbedAt) < sandboxProbeRetryAfter) {
+		return errBwrapProbe
 	}
 	bwrapProbed, bwrapProbedAt = true, sandboxProbeNow()
 	path, err := exec.LookPath("bwrap")
 	if err != nil {
 		bwrapPath, bwrapMissing = "", true
-		bwrapErr = fmt.Errorf("bwrap is not on PATH: %w", err)
-		return bwrapErr
+		errBwrapProbe = fmt.Errorf("bwrap is not on PATH: %w", err)
+		return errBwrapProbe
 	}
 	bwrapPath, bwrapMissing = path, false
-	bwrapErr = probeUserNamespace(path)
-	return bwrapErr
+	errBwrapProbe = probeUserNamespace(path)
+	return errBwrapProbe
 }
 
 // probeUserNamespace runs the cheapest sandbox that still exercises every
@@ -97,7 +97,7 @@ func probeUserNamespace(path string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), sandboxProbeTimeout)
 	defer cancel()
 	var out bytes.Buffer
-	cmd := exec.CommandContext(ctx, path, "--unshare-pid", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "true")
+	cmd := exec.CommandContext(ctx, path, "--unshare-pid", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", probeTargetBinary())
 	cmd.Stdout, cmd.Stderr = &out, &out
 	cmd.WaitDelay = sandboxProbeWaitDelay
 	err := cmd.Run()
@@ -112,6 +112,18 @@ func probeUserNamespace(path string) error {
 		return fmt.Errorf("bwrap cannot create a namespace on this host (%s): %s=1 denies unprivileged user namespaces to binaries without an AppArmor profile; install a profile for bwrap or set the sysctl to 0", detail, apparmorUserNamespaceSysctl)
 	}
 	return fmt.Errorf("bwrap cannot build a sandbox on this host: %s", detail)
+}
+
+// probeTargetBinary resolves the trivial command the probe execs inside the
+// sandbox to an absolute path. Passing a bare name would leave the probe at
+// the mercy of the PATH bwrap resolves against, and an `execvp` failure there
+// would be read as a host that cannot build a sandbox. The fallback is the
+// path coreutils ships on every distribution Sybra runs on.
+func probeTargetBinary() string {
+	if path, err := exec.LookPath("true"); err == nil {
+		return path
+	}
+	return "/bin/true"
 }
 
 // namespaceDenied reports whether bwrap failed at the namespace itself. Its

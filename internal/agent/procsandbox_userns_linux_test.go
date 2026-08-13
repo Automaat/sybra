@@ -162,13 +162,26 @@ func resetSandboxMechanismProbe(t *testing.T) {
 	reset := func() {
 		sandboxProbeMu.Lock()
 		defer sandboxProbeMu.Unlock()
-		bwrapPath, bwrapErr, bwrapProbed, bwrapMissing = "", nil, false, false
+		bwrapPath, errBwrapProbe, bwrapProbed, bwrapMissing = "", nil, false, false
 		bwrapProbedAt = time.Time{}
 	}
 	reset()
 	// Leaving the cache cleared makes the next caller re-probe the real host
 	// rather than inherit this test's fake wrapper.
 	t.Cleanup(reset)
+}
+
+// The probe's own target has to be absolute. Resolved against whatever PATH
+// bwrap sees, a missing `true` fails with execvp and would be read as a host
+// that cannot build a sandbox.
+func TestProbeTargetBinaryIsAbsolute(t *testing.T) {
+	if got := probeTargetBinary(); !filepath.IsAbs(got) {
+		t.Fatalf("probe target %q is not absolute", got)
+	}
+	t.Setenv("PATH", t.TempDir())
+	if got := probeTargetBinary(); !filepath.IsAbs(got) {
+		t.Fatalf("probe target %q is not absolute with an empty PATH", got)
+	}
 }
 
 func TestProbeUserNamespaceAcceptsWorkingWrapper(t *testing.T) {
