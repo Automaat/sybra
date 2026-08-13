@@ -16,6 +16,7 @@ func TestVerificationCommandUsesLeaseScratchAndNoProviderCapacity(t *testing.T) 
 	t.Setenv("GIT_CONFIG_GLOBAL", "/operator/secret/gitconfig")
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "0")
 	t.Setenv("XDG_CONFIG_HOME", "/operator/secret/config")
+	t.Setenv("MISE_NO_CONFIG", "0")
 	runDir := t.TempDir()
 	workspace := filepath.Join(runDir, "source")
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
@@ -30,7 +31,7 @@ func TestVerificationCommandUsesLeaseScratchAndNoProviderCapacity(t *testing.T) 
 	var output bytes.Buffer
 	err := m.RunVerificationCommand(t.Context(), RunConfig{
 		TaskID: "task-local", Role: RoleTestRunner, Dir: workspace, GitRoots: []string{workspace}, SandboxMode: "off", ExtraEnv: os.Environ(),
-	}, "/bin/sh", []string{"-c", `test -d "$SYBRA_HOME" && test "$HOME" = "$SYBRA_HOME" && test "$XDG_CONFIG_HOME" = "$SYBRA_HOME/.config" && test "$GIT_CONFIG_GLOBAL" = /dev/null && test "$GIT_CONFIG_NOSYSTEM" = 1`}, &output)
+	}, "/bin/sh", []string{"-c", `test -d "$SYBRA_HOME" && test "$HOME" = "$SYBRA_HOME" && test "$XDG_CONFIG_HOME" = "$SYBRA_HOME/.config" && test "$MISE_NO_CONFIG" = 1 && test "$GIT_CONFIG_GLOBAL" = /dev/null && test "$GIT_CONFIG_NOSYSTEM" = 1`}, &output)
 	if err != nil {
 		t.Fatalf("RunVerificationCommand: %v (%s)", err, output.String())
 	}
@@ -135,6 +136,7 @@ func TestIsolateVerifierGitCredentialsDropsAmbientPublishPaths(t *testing.T) {
 	scratch := t.TempDir()
 	cfg := RunConfig{resolvedSandboxHome: scratch, ExtraEnv: []string{
 		"HOME=/operator/home",
+		"MISE_NO_CONFIG=0",
 		"GH_TOKEN=secret", "GITHUB_TOKEN=secret", "SSH_AUTH_SOCK=/agent.sock",
 		"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=credential.helper", "GIT_CONFIG_VALUE_0=sybra",
 		"GIT_CONFIG_GLOBAL=/operator/.gitconfig", "XDG_CONFIG_HOME=/operator/.config",
@@ -143,8 +145,9 @@ func TestIsolateVerifierGitCredentialsDropsAmbientPublishPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]string{
-		"HOME":     scratch,
-		"GH_TOKEN": "", "GITHUB_TOKEN": "", "SSH_AUTH_SOCK": "",
+		"HOME":           scratch,
+		"MISE_NO_CONFIG": "1",
+		"GH_TOKEN":       "", "GITHUB_TOKEN": "", "SSH_AUTH_SOCK": "",
 		"GIT_CONFIG_COUNT": "0", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
 		"XDG_CONFIG_HOME": filepath.Join(scratch, ".config"),
 	}
