@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -20,15 +21,36 @@ import (
 // not point at it.
 const apparmorUserNamespaceSysctl = "kernel.apparmor_restrict_unprivileged_userns"
 
-// sandboxProbeTimeout bounds the one-time user-namespace probe. The probe
-// execs true inside a read-only bind of / and returns in milliseconds on a
-// healthy host; the bound only stops a wedged host from stalling dispatch.
-const sandboxProbeTimeout = 15 * time.Second
+// sandboxProbeTimeout bounds the probe. It returns in milliseconds on a
+// healthy host; the bound only stops a wedged host from stalling dispatch. It
+// is a variable so a test can shorten it.
+var sandboxProbeTimeout = 15 * time.Second
+
+// sandboxProbeWaitDelay bounds how long the probe waits for output after the
+// deadline killed the wrapper. bwrap's own children inherit the pipe, so
+// waiting on it alone never returns while a grandchild holds it open — the
+// timeout would bound nothing.
+const sandboxProbeWaitDelay = 2 * time.Second
+
+// sandboxProbeRetryAfter is how long a probe failure stands before the host is
+// probed again. Namespace denial is a static host property, but the same exec
+// also fails transiently (namespace quota exhausted by concurrent runs, fork
+// pressure, a probe that timed out under load). Caching a transient failure
+// for the life of the process would refuse every later run on a host that
+// recovered, so only success and a missing binary are cached outright.
+const sandboxProbeRetryAfter = time.Minute
 
 var (
-	bwrapProbeOnce sync.Once
+	sandboxProbeMu sync.Mutex
 	bwrapPath      string
 	bwrapErr       error
+	bwrapProbed    bool
+	bwrapMissing   bool
+	bwrapProbedAt  time.Time
+
+	// sandboxProbeNow is a variable so a test can age a cached failure without
+	// sleeping.
+	sandboxProbeNow = time.Now
 
 	// apparmorSysctlPath is a variable so a test can present a host that does
 	// or does not restrict user namespaces without owning /proc.
@@ -39,24 +61,34 @@ var (
 // nil when it can. Presence on PATH is not sufficient evidence: bwrap only
 // fails when it maps uids, so a host that denies unprivileged user namespaces
 // carries a working binary that cannot produce a single sandbox. Probing that
-// once, before dispatch, turns one host problem into one refusal instead of a
-// failed step per run.
+// before dispatch turns one host problem into one refusal instead of a failed
+// step per run.
+//
+// The lock is held across the probe so a burst of concurrent dispatches costs
+// one spawn, not one each.
 func sandboxMechanismErr() error {
-	bwrapProbeOnce.Do(func() {
-		path, err := exec.LookPath("bwrap")
-		if err != nil {
-			bwrapErr = fmt.Errorf("bwrap is not on PATH: %w", err)
-			return
-		}
-		bwrapPath = path
-		bwrapErr = probeUserNamespace(path)
-	})
+	sandboxProbeMu.Lock()
+	defer sandboxProbeMu.Unlock()
+	if bwrapProbed && (bwrapErr == nil || bwrapMissing || sandboxProbeNow().Sub(bwrapProbedAt) < sandboxProbeRetryAfter) {
+		return bwrapErr
+	}
+	bwrapProbed, bwrapProbedAt = true, sandboxProbeNow()
+	path, err := exec.LookPath("bwrap")
+	if err != nil {
+		bwrapPath, bwrapMissing = "", true
+		bwrapErr = fmt.Errorf("bwrap is not on PATH: %w", err)
+		return bwrapErr
+	}
+	bwrapPath, bwrapMissing = path, false
+	bwrapErr = probeUserNamespace(path)
 	return bwrapErr
 }
 
-// probeUserNamespace runs the cheapest possible sandbox: a read-only bind of
-// the host root that execs true. It exercises the uid mapping that the
-// AppArmor restriction denies, without touching the run's own roots.
+// probeUserNamespace runs the cheapest sandbox that still exercises every
+// namespace the wrapper asks for: the same --unshare-pid, --dev and --proc a
+// real spawn carries, over a read-only bind of the host root. Probing a
+// narrower sandbox than the one that will be built would certify a host that
+// grants the user namespace and denies the rest.
 //
 // This is a host probe, not a provider spawn: it never carries a run's prompt,
 // environment, or roots, and so is one of the documented non-provider
@@ -64,18 +96,36 @@ func sandboxMechanismErr() error {
 func probeUserNamespace(path string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), sandboxProbeTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, path, "--ro-bind", "/", "/", "true").CombinedOutput()
+	var out bytes.Buffer
+	cmd := exec.CommandContext(ctx, path, "--unshare-pid", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "true")
+	cmd.Stdout, cmd.Stderr = &out, &out
+	cmd.WaitDelay = sandboxProbeWaitDelay
+	err := cmd.Run()
 	if err == nil {
 		return nil
 	}
-	detail := strings.TrimSpace(string(out))
+	detail := strings.TrimSpace(out.String())
 	if detail == "" {
 		detail = err.Error()
 	}
-	if userNamespacesRestricted() {
-		return fmt.Errorf("bwrap cannot create a user namespace on this host (%s): %s=1 denies unprivileged user namespaces to binaries without an AppArmor profile; install a profile for bwrap or set the sysctl to 0", detail, apparmorUserNamespaceSysctl)
+	if namespaceDenied(detail) && userNamespacesRestricted() {
+		return fmt.Errorf("bwrap cannot create a namespace on this host (%s): %s=1 denies unprivileged user namespaces to binaries without an AppArmor profile; install a profile for bwrap or set the sysctl to 0", detail, apparmorUserNamespaceSysctl)
 	}
-	return fmt.Errorf("bwrap cannot create a user namespace on this host: %s", detail)
+	return fmt.Errorf("bwrap cannot build a sandbox on this host: %s", detail)
+}
+
+// namespaceDenied reports whether bwrap failed at the namespace itself. Its
+// exit status is 1 for every failure, including an unrelated one such as a
+// missing target binary, so the sysctl is only named when the output shows the
+// failure the sysctl actually causes — telling an operator to weaken a
+// host-wide restriction to fix a PATH problem is worse than saying nothing.
+func namespaceDenied(detail string) bool {
+	for _, marker := range []string{"setting up uid map", "setting up gid map", "creating new namespace", "no permissions to creating new namespace"} {
+		if strings.Contains(strings.ToLower(detail), marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // userNamespacesRestricted reports whether the AppArmor sysctl that Ubuntu
