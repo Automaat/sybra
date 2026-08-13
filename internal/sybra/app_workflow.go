@@ -18,6 +18,7 @@ import (
 	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/evidence"
+	"github.com/Automaat/sybra/internal/executioncontract"
 	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/pressure"
 	"github.com/Automaat/sybra/internal/project"
@@ -1126,7 +1127,7 @@ func (a *agentAdapter) directRunInputs(taskID string, role agent.Role) (task.Tas
 	return t, posture, err
 }
 
-func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool, outputSchema, cleanRetryRef string, assignment workflow.AgentAssignment) (agentID, startedDir, baselineRef string, err error) {
+func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool, outputSchema, cleanRetryRef string, assignment workflow.AgentAssignment) (agentID, startedDir, baselineRef string, err error) { //nolint:funlen // Admission, workspace prep, and certified launch share one claim lifetime.
 	// "interactive" is no longer a dispatchable agent.RunConfig.Mode, but a
 	// run_agent step whose mode templates off {{.Task.AgentMode}} (e.g.
 	// simple-task-implement's implement step) echoes whatever legacy value
@@ -1214,8 +1215,11 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		// Non-disposable judge roles remain read-only. Independent verifier roles
 		// are switched below to writable disposable clones whose mutations are
 		// captured and discarded.
-		ReadOnlyDir:   r.JudgesWithoutWriting(),
-		ReadOnlyPaths: assignment.ReadOnlyPaths,
+		ReadOnlyDir:                   r.JudgesWithoutWriting(),
+		ReadOnlyPaths:                 assignment.ReadOnlyPaths,
+		RemoteExpectedOutputs:         append([]executioncontract.ExpectedOutput(nil), assignment.RemoteOutputs...),
+		RemoteDiscardWorkspaceChanges: !r.AuthorsCode(),
+		SidecarDir:                    assignment.RemoteSidecarDir,
 		// fork_subagent is a task-level opt-in, but must never reach a
 		// verifier role (review/test-runner/eval) — a forked subagent's own
 		// token spend would multiply on every independent check, and a
@@ -1223,10 +1227,10 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		ForkSubagent: t.ForkSubagent && r.AuthorsCode(),
 		OutputSchema: outputSchema,
 	}
-	if r.IsVerifier() && a.sandboxes != nil {
+	if len(assignment.RemoteOutputs) > 0 && cfg.SidecarDir == "" && a.sandboxes != nil {
 		sidecarDir, sidecarErr := a.sandboxes.SybraHomeDir(taskID)
 		if sidecarErr != nil {
-			return "", "", "", fmt.Errorf("prepare verifier sidecar directory: %w", sidecarErr)
+			return "", "", "", fmt.Errorf("prepare remote sidecar directory: %w", sidecarErr)
 		}
 		cfg.SidecarDir = sidecarDir
 	}

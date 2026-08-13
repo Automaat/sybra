@@ -72,6 +72,16 @@ func (m *Manager) SetExecutionBackend(backend ExecutionBackend) {
 	m.executionBackend = backend
 }
 
+// LocalExecutionBackend returns the manager-owned local execution adapter for
+// a composite scheduler that must honor an explicit per-run local fallback.
+// Callers must not retain canonical Agent state; the returned backend reports
+// lifecycle observations through the same ExecutionEventSink contract.
+func (m *Manager) LocalExecutionBackend() ExecutionBackend {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.localExecutionBackend
+}
+
 // SetExecutionApprovalResponder wires the local approval transport into the
 // backend control seam. Remote backends can implement RespondApproval without
 // this callback; nil makes local approval explicitly unsupported.
@@ -98,7 +108,15 @@ func (m *Manager) RespondExecutionApproval(agentID, toolUseID string, approved b
 	if err != nil {
 		return err
 	}
-	return execution.backend.RespondApproval(m.ctx, execution.handle, toolUseID, approved)
+	if err := execution.backend.RespondApproval(m.ctx, execution.handle, toolUseID, approved); err != nil {
+		return err
+	}
+	if a, err := m.GetAgent(agentID); err == nil {
+		a.SetAwaitingApproval(false)
+		a.SetState(StateRunning)
+		m.emit(events.AgentState(agentID), a)
+	}
+	return nil
 }
 
 // InspectExecution returns the owning backend's process view without exposing
@@ -163,6 +181,14 @@ func (m *Manager) emitExecutionEvent(ctx context.Context, _ ExecutionHandle, eve
 			providerName = a.Provider
 		}
 		return m.processHeadlessLine(ctx, a, event.Output, lastEmit, providerByName(providerName))
+	case ExecutionApproval:
+		if event.Approval != nil {
+			a.SetAwaitingApproval(true)
+			a.SetState(StatePaused)
+			m.emit(events.AgentApproval(a.ID), *event.Approval)
+			m.emit(events.AgentState(a.ID), a)
+		}
+		return false
 	case ExecutionCompleted:
 		if event.Err != nil {
 			a.SetExitErr(event.Err)

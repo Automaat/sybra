@@ -26,6 +26,7 @@ type ExecutionEventKind string
 const (
 	ExecutionStarted   ExecutionEventKind = "started"
 	ExecutionOutput    ExecutionEventKind = "output"
+	ExecutionApproval  ExecutionEventKind = "approval"
 	ExecutionCompleted ExecutionEventKind = "completed"
 )
 
@@ -39,6 +40,7 @@ type ExecutionEvent struct {
 	Output   []byte
 	Err      error
 	Command  string
+	Approval *ApprovalRequest
 }
 
 // ExecutionEventSink receives process observations. It deliberately exposes

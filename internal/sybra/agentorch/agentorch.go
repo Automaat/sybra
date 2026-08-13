@@ -19,6 +19,7 @@ import (
 	"github.com/Automaat/sybra/internal/bgop"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/evaluation"
+	"github.com/Automaat/sybra/internal/executioncontract"
 	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/pressure"
@@ -802,8 +803,10 @@ func (o *Orchestrator) implementationRunConfig(p implementationRunParams) agent.
 		SandboxMode:     ResolveSandboxMode(p.t, o.cfg),
 		ReasoningEffort: FirstNonEmpty(p.assignment.ReasoningEffort, p.t.ReasoningEffort, ResolveRoleEffort(agent.RoleImplementation, o.cfg)),
 		// Always an implementation run — prime it with the NOTES.md scratchpad.
-		SeedWorkingMemory: true,
-		OutputSchema:      p.opts.outputSchema,
+		SeedWorkingMemory:     true,
+		OutputSchema:          p.opts.outputSchema,
+		RemoteExpectedOutputs: append([]executioncontract.ExpectedOutput(nil), p.assignment.RemoteOutputs...),
+		SidecarDir:            p.assignment.RemoteSidecarDir,
 	}
 }
 

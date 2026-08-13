@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 // importSidecarFixture wires a Store with the test-import-sidecar workflow,
@@ -65,7 +67,7 @@ func TestImportSidecar_RequiredMissingFileFlipsHumanRequired(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{
 		ID:     "t1",
-		Status: "planning",
+		Status: taskstatus.Planning,
 		Workflow: &Execution{
 			WorkflowID:  "test-import-required-sidecar",
 			CurrentStep: "plan",
@@ -83,6 +85,27 @@ func TestImportSidecar_RequiredMissingFileFlipsHumanRequired(t *testing.T) {
 	}
 	if reason := tasks.Reason("t1"); !strings.Contains(reason, "required plan contract sidecar missing after step plan") {
 		t.Fatalf("reason = %q, want required sidecar missing", reason)
+	}
+}
+
+func TestImportSidecarRequiredUsesFencedRemoteReceiptWithoutLeaderFile(t *testing.T) {
+	store := newTestStoreWith(t, "test-import-required-sidecar.yaml")
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{
+		ID: "t1", Generation: 4, Status: "planning", PlanContract: `{"schema_version":"2"}`,
+		Tags: []string{"remote-sidecar:test-import-required-sidecar:plan:4:plan_contract"},
+		Workflow: &Execution{WorkflowID: "test-import-required-sidecar", CurrentStep: "plan",
+			Variables: map[string]string{"contract_path": filepath.Join(t.TempDir(), "absent.json")}},
+	})
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
+	info, _ := tasks.GetTask("t1")
+	engine.importSidecarIfConfigured("t1", "plan", info)
+	got, _ := tasks.GetTask("t1")
+	if got.Status == taskstatus.HumanRequired {
+		t.Fatalf("remote receipt was reread as a missing leader file: %+v", got)
+	}
+	if got.PlanContract != `{"schema_version":"2"}` {
+		t.Fatalf("PlanContract = %q", got.PlanContract)
 	}
 }
 

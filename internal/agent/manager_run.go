@@ -2110,11 +2110,11 @@ func (m *Manager) startAgentRunner(ctx context.Context, a *Agent, cfg RunConfig,
 			return ExecutionInspection{State: string(snapshot.State), Command: snapshot.Command, Agent: snapshot}
 		},
 	}
-	if backend == m.localExecutionBackend {
-		start.runExisting = func(runCtx context.Context, eventSink ExecutionEventSink, handle ExecutionHandle) {
-			a.setExecutionSink(eventSink, handle)
-			m.runHeadless(runCtx, a, cfg)
-		}
+	// Keep the local bridge available to a routing backend so its durable
+	// scheduler can explicitly select local fallback for this individual run.
+	start.runExisting = func(runCtx context.Context, eventSink ExecutionEventSink, handle ExecutionHandle) {
+		a.setExecutionSink(eventSink, handle)
+		m.runHeadless(runCtx, a, cfg)
 	}
 	handle, err := backend.Start(ctx, start)
 	if err != nil {

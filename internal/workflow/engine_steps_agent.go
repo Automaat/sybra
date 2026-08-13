@@ -7,6 +7,7 @@ import (
 	"maps"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/autonomy"
+	"github.com/Automaat/sybra/internal/executioncontract"
 	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/skillinvoke"
 	"github.com/Automaat/sybra/internal/taskstatus"
@@ -153,7 +155,14 @@ func (e *Engine) importOneSidecar(taskID, stepID string, step *Step, info TaskIn
 		e.logger.Warn("workflow.import-sidecar.render", "task_id", taskID, "step", stepID, "err", rErr)
 		return
 	}
-	content, readErr := os.ReadFile(path)
+	var content []byte
+	var readErr error
+	receipt := fmt.Sprintf("remote-sidecar:%s:%s:%d:%s", info.Workflow.WorkflowID, stepID, info.Generation, cfg.Kind)
+	if slices.Contains(info.Tags, receipt) {
+		content = []byte(taskSidecarContent(info, cfg.Kind))
+	} else {
+		content, readErr = os.ReadFile(path)
+	}
 	if readErr != nil {
 		dirVarUnresolved := worktreeDirTemplatePattern.MatchString(cfg.From) && strings.TrimSpace(info.Workflow.Variables[WorkflowVarDir]) == ""
 		if dirVarUnresolved {
@@ -397,6 +406,15 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	if err != nil {
 		return err
 	}
+	for _, output := range step.Config.sidecarImports() {
+		from, renderErr := RenderTemplate(output.From, ctx)
+		if renderErr != nil {
+			return renderErr
+		}
+		assignment.RemoteOutputs = append(assignment.RemoteOutputs, executioncontract.ExpectedOutput{Name: output.Kind, Kind: output.Kind,
+			Root: executioncontract.RootSidecar, Path: filepath.Base(from), Required: output.Required, Sensitivity: executioncontract.SensitivityInternal})
+	}
+	assignment.RemoteSidecarDir = ctx.Vars[WorkflowVarSidecarDir]
 	cleanRetryKey := watchdogHangCleanRetryKey(step.ID)
 	cleanRetryRef := wfExec.Variables[cleanRetryKey]
 	captureTamperDeletionAllowlist(wfExec, step.ID, step.Config.Role, ctx.Task)

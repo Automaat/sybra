@@ -52,6 +52,9 @@ type TaskService struct {
 	audit          audit.Store
 	cfg            *config.Config
 	currentConfig  func() *config.Config
+	// leaderRunPlacement means node metadata chooses an execution daemon, not
+	// a second canonical task owner. Legacy services leave this false.
+	leaderRunPlacement bool
 	// projects and intervention back recordInterventionOnUnblock only; nil in
 	// tests that don't exercise the human-required unblock path (the method
 	// guards on both being non-nil before doing anything).
@@ -928,7 +931,7 @@ func (s *TaskService) startCreatedWorkflow(t task.Task) {
 	if s.workflowEngine == nil || t.Status != task.StatusTodo {
 		return
 	}
-	if cfg := s.config(); cfg != nil && !cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride).Local {
+	if cfg := s.config(); !s.leaderRunPlacement && cfg != nil && !cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride).Local {
 		return
 	}
 	// pr-fix / ordinary existing-PR tasks are driven outside task.created.

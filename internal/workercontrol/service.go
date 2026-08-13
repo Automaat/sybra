@@ -85,6 +85,18 @@ type Diagnostics struct {
 	AvailableCapacity int       `json:"availableCapacity"`
 }
 
+type RemoteRunStatus struct {
+	RunID         string
+	SessionID     string
+	State         string
+	ArtifactState string
+}
+
+type RemoteRun struct {
+	Spec   executioncontract.RunSpec
+	Status RemoteRunStatus
+}
+
 type Service struct {
 	db             *db.DB
 	now            func() time.Time
@@ -102,6 +114,34 @@ func New(database *db.DB) *Service {
 
 func NewWithGrantStore(database *db.DB, grants *agentgrant.Store) *Service {
 	return &Service{db: database, now: time.Now, lease: 45 * time.Second, notifyCh: make(chan struct{}), grants: grants}
+}
+
+func (s *Service) RemoteRunStatus(ctx context.Context, runID string) (RemoteRunStatus, error) {
+	var status RemoteRunStatus
+	status.RunID = runID
+	err := s.db.QueryRowContext(ctx, s.db.Rebind(`SELECT session_id, state, artifact_state FROM remote_runs WHERE run_id = ?`), runID).
+		Scan(&status.SessionID, &status.State, &status.ArtifactState)
+	return status, err
+}
+
+// RemoteRunForEffect returns the immutable run already fenced to effectID.
+// Leader recovery uses it to reattach durable event delivery after a restart;
+// it never reserves capacity or enqueues replacement provider work.
+func (s *Service) RemoteRunForEffect(ctx context.Context, effectID string) (RemoteRun, error) {
+	var run RemoteRun
+	var encoded string
+	err := s.db.QueryRowContext(ctx, s.db.Rebind(`SELECT run_id, session_id, state, artifact_state, run_spec_json FROM remote_runs WHERE effect_id = ?`), effectID).
+		Scan(&run.Status.RunID, &run.Status.SessionID, &run.Status.State, &run.Status.ArtifactState, &encoded)
+	if err != nil {
+		return RemoteRun{}, err
+	}
+	if err := json.Unmarshal([]byte(encoded), &run.Spec); err != nil {
+		return RemoteRun{}, fmt.Errorf("worker control: decode fenced remote run: %w", err)
+	}
+	if err := run.Spec.Validate(); err != nil {
+		return RemoteRun{}, fmt.Errorf("worker control: invalid fenced remote run: %w", err)
+	}
+	return run, nil
 }
 
 type RunGrant struct {
