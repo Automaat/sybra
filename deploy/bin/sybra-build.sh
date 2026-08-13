@@ -22,6 +22,21 @@ source "$SCRIPT_DIR/sybra-deploy-lib.sh"
 
 CLI_LINK_DIR="${HOME:-/home/sybra}/.local/bin"
 
+# report_apparmor_drift compares the profile this checkout ships against the one
+# the host has loaded. Nothing reloads it automatically: auto_update ff-merges
+# main and restarts the unit unattended, so a corrected profile can sit in the
+# checkout while the host keeps enforcing the previously parsed one, and the
+# only symptom is agents failing to certify. The build cannot load it (that
+# needs root), so it says so loudly instead.
+report_apparmor_drift() {
+  local shipped="$SRC/deploy/apparmor/sybra-bwrap"
+  local installed="${SYBRA_APPARMOR_PROFILE:-/etc/apparmor.d/sybra-bwrap}"
+  [[ -f "$shipped" && -f "$installed" ]] || return 0
+  if ! cmp -s "$shipped" "$installed"; then
+    log "apparmor profile drift: $installed differs from $shipped; reload it (see deploy/README.md) or the host keeps the old policy"
+  fi
+}
+
 # sandbox_smoke_supported reports whether this host can build a sandbox at all.
 # The smoke test skips itself where the kernel denies the namespace, and a
 # silent skip reads exactly like a pass, so the probe runs here and each of the
@@ -191,6 +206,7 @@ main() {
       >"$(detail_log_path "$ID" go-build-agentd)" 2>&1 \
     || reject_candidate "go-build-agentd" "go build ./cmd/sybra-agentd failed"
 
+  report_apparmor_drift
   if sandbox_smoke_supported; then
     log "running linked-worktree sandbox smoke test"
     mise exec -- go test ./internal/agent -run '^TestSandboxEnforce_LinkedWorktreeGitOps$' -count=1 \

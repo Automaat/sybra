@@ -81,6 +81,7 @@ new_env() {
   unset SYBRA_HEALTH_URL SYBRA_HEALTH_QUARANTINE_THRESHOLD SYBRA_DEPLOY_LOCK_WAIT_SEC
   unset SYBRA_SERVER_TARGET SYBRA_SERVER_CA
   unset SYBRA_HEALTH_TIMEOUT_SEC SYBRA_HEALTH_INTERVAL_SEC
+  unset SYBRA_APPARMOR_PROFILE
 
   export SYBRA_SRC_DIR="$root/src"
   export SYBRA_RELEASES_DIR="$root/opt/releases"
@@ -289,23 +290,70 @@ scenario_health_tls_board() {
 # otherwise only surface as agents refusing to certify, long after the deploy.
 scenario_apparmor_profile() {
   local profile="$HERE/../apparmor/sybra-bwrap"
+  local runbook="$HERE/../README.md"
   assert_true "apparmor: the profile ships in the repo" test -f "$profile"
-  assert_contains "apparmor: it grants the user namespace" "$(cat "$profile")" "userns,"
-  assert_contains "apparmor: it attaches to the bwrap binary alone" "$(cat "$profile")" "profile sybra-bwrap /usr/bin/bwrap"
 
-  # The sysctl stays the host's business: a profile that cleared it would hand
-  # unprivileged user namespaces to every other binary on the box.
-  if grep -v '^[[:space:]]*#' "$profile" | grep -q "apparmor_restrict_unprivileged_userns"; then
-    fail "apparmor: the profile writes the host-wide sysctl"
+  # Rules only, never comments: the header explains the grant at length, so a
+  # whole-file grep passes just as happily against `# userns,` — a profile that
+  # compiles cleanly, loads, and grants nothing.
+  local rules; rules="$(grep -v '^[[:space:]]*#' "$profile")"
+  if grep -qE '^[[:space:]]*userns,[[:space:]]*$' <<<"$rules"; then
+    pass "apparmor: it grants the user namespace as a rule, not a comment"
   else
-    pass "apparmor: the profile leaves the host-wide sysctl alone"
+    fail "apparmor: it grants the user namespace as a rule, not a comment"
+  fi
+  assert_contains "apparmor: it attaches to the bwrap binary" "$rules" "profile sybra-bwrap /usr/bin/bwrap"
+
+  # The runbook is where a host-wide relaxation could plausibly creep in; the
+  # profile has no syntax that could express one.
+  if grep -qE 'apparmor_restrict_unprivileged_userns[[:space:]]*=[[:space:]]*0' "$runbook"; then
+    fail "apparmor: the runbook clears the host-wide sysctl"
+  else
+    pass "apparmor: the runbook leaves the host-wide sysctl alone"
   fi
 
-  if ! command -v apparmor_parser >/dev/null 2>&1; then
-    echo "SKIP: apparmor: profile does not compile here (apparmor_parser unavailable)"
+  # abi <abi/4.0> resolves against /etc/apparmor.d/abi/4.0, which only apparmor
+  # 4.x (24.04+) ships. Gating on the parser alone turns a 22.04 runner into a
+  # red suite that says nothing about the artifact.
+  if [[ ! -f /etc/apparmor.d/abi/4.0 ]] || ! command -v apparmor_parser >/dev/null 2>&1; then
+    echo "SKIP: apparmor: profile compilation (needs apparmor 4.x tooling)"
     return 0
   fi
-  assert_true "apparmor: the profile compiles" apparmor_parser -Q -T "$profile"
+  local out
+  if out="$(apparmor_parser -Q -T "$profile" 2>&1)"; then
+    pass "apparmor: the profile compiles"
+  else
+    fail "apparmor: the profile compiles ($out)"
+  fi
+}
+
+# scenario_apparmor_drift covers the unattended case: auto_update ff-merges a
+# corrected profile into the checkout and restarts the unit, but nothing
+# reloads host policy, so the host can keep enforcing the previously parsed
+# one. The build says so rather than leaving the operator to infer it from
+# agents that stop certifying.
+scenario_apparmor_drift() {
+  local root="$1"
+  new_env "$root"
+  export FAKE_CHECK_CONFIG=ok
+  mkdir -p "$root/src/deploy/apparmor"
+  cp "$HERE/../apparmor/sybra-bwrap" "$root/src/deploy/apparmor/sybra-bwrap"
+  ( cd "$root/src" && git add -A && git commit -q -m "carry the profile" )
+
+  export SYBRA_APPARMOR_PROFILE="$root/installed-profile"
+  cp "$HERE/../apparmor/sybra-bwrap" "$SYBRA_APPARMOR_PROFILE"
+  run_build >"$root/build-same.log" 2>&1
+  if grep -q "apparmor profile drift" "$root/build-same.log"; then
+    fail "apparmor-drift: an identical profile reported drift"
+  else
+    pass "apparmor-drift: an identical profile is silent"
+  fi
+
+  printf '# stale copy\n' >>"$SYBRA_APPARMOR_PROFILE"
+  bump_commit "$root" "rebuild against the stale profile"
+  run_build >"$root/build-drift.log" 2>&1
+  assert_contains "apparmor-drift: a stale host profile is reported" "$(cat "$root/build-drift.log")" "apparmor profile drift"
+  unset SYBRA_APPARMOR_PROFILE
 }
 
 # seed_last_good runs one full build+activate+healthy-startup cycle so
@@ -645,6 +693,7 @@ main() {
   scenario_health_target_scheme "$TMPBASE/health-scheme"
   scenario_health_tls_board "$TMPBASE/health-tls"
   scenario_apparmor_profile
+  scenario_apparmor_drift "$TMPBASE/apparmor-drift"
 
   echo
   echo "== $PASS passed, $FAIL failed =="

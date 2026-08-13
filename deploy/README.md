@@ -274,32 +274,63 @@ systemctl enable --now sybra
 
 ### The bwrap AppArmor profile
 
-Every host that runs agents needs this, or the process sandbox cannot start at
-all. Ubuntu 24.04 sets `kernel.apparmor_restrict_unprivileged_userns=1`, which
-denies unprivileged user namespaces to any binary without a profile permitting
-them — `bwrap` is installed, on PATH, and still fails the moment it maps uids.
-`agent.sandbox_mode: enforce` then refuses to certify the host, and `report`
-leaves every agent unwrapped.
+**Applies to a bare-metal or VM agent host that restricts user namespaces**,
+which a stock Ubuntu 24.04 install does: it sets
+`kernel.apparmor_restrict_unprivileged_userns=1`, denying unprivileged user
+namespaces to any binary without a profile permitting them. `bwrap` is
+installed, on PATH, and still fails the moment it maps uids, so
+`agent.sandbox_mode: enforce` refuses to certify the host and `report` leaves
+every agent unwrapped. Check first — this whole subsection is a no-op where it
+prints `0`:
+
+```bash
+cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns   # 1 = needed here
+```
+
+The CT 114 LXC reads `0` and builds sandboxes without a profile, so skip this
+there. It also shares the PVE host's AppArmor policy namespace — the profiles
+under `/sys/kernel/security/apparmor/profiles` are the host's — so policy for a
+container belongs on the PVE host, not inside the container.
 
 ```bash
 install -m 0644 /opt/sybra/src/deploy/apparmor/sybra-bwrap /etc/apparmor.d/sybra-bwrap
 apparmor_parser -r -W /etc/apparmor.d/sybra-bwrap
 ```
 
-Verify as the service account, which is who actually builds sandboxes — it
-must print `ok`:
+`/etc/apparmor.d` is what `apparmor.service` loads at boot, so the grant
+survives a reboot on a bare-metal or VM host. Verify all three — `ok` alone
+proves nothing on a host that never restricted namespaces in the first place:
 
 ```bash
+cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns          # still 1
+grep -c '^sybra-bwrap ' /sys/kernel/security/apparmor/profiles      # 1
 sudo -u sybra bwrap --unshare-pid --ro-bind / / --dev /dev --proc /proc \
-  /bin/echo ok
+  /bin/echo ok                                                      # ok
 ```
 
-The profile grants the namespace to the `bwrap` binary alone. Leave the sysctl
-itself at `1`: clearing it host-wide would hand unprivileged user namespaces to
-every other binary on the box, which is the containment this profile exists to
-avoid giving up. Re-run both commands after a deploy that changes the profile —
-it ships in the repo (`deploy/apparmor/sybra-bwrap`) with the code that depends
-on it, exactly like the unit and the build scripts.
+Verified end to end on a stock Ubuntu 24.04.4 host with the sysctl at `1`:
+before the profile, `bwrap: setting up uid map: Permission denied`; after it,
+`ok` as the service account, including a sandbox that writes. Unloading the
+profile (`apparmor_parser -R`) restores the denial.
+
+The grant covers `bwrap` **and the process tree it execs** — the profile adds
+no exec transitions, so the provider CLI and its descendants keep the same
+label and the same `userns` permission. That is the intent; it is not a
+per-process grant, so do not add a `local/sybra-bwrap` override believing it
+touches one binary.
+
+Leave the sysctl itself at `1`. Clearing it host-wide would hand unprivileged
+user namespaces to every other binary on the box, which is exactly the
+containment this profile exists to avoid giving up: an unprofiled binary still
+gets only a capability-stripped namespace (its `uid_map` write is denied, which
+is what `bwrap` needs and cannot get).
+
+Nothing reloads this profile for you. `auto_update` ff-merges `main` and
+restarts the unit unattended, so a corrected profile can sit in
+`/opt/sybra/src` while the host keeps enforcing the previously parsed one.
+`sybra-build.sh` compares the two on every build and logs
+`apparmor profile drift` when they differ — grep the unit journal for it after
+a deploy that touches `deploy/apparmor/`, then re-run the two commands above.
 
 To run the optional local thin worker after its YAML and secret environment
 from [the agentd runbook](../docs/agentd.md) are installed:
@@ -364,9 +395,12 @@ Rework the playbook from container to service:
   `ansible.builtin.copy` / `template`.
 - **Install:** `deploy/apparmor/sybra-bwrap` into `/etc/apparmor.d/`, from the
   checkout rather than a copy kept in the playbook, with a handler running
-  `apparmor_parser -r -W` on it. Without it the process sandbox cannot start on
-  any Ubuntu 24.04 host. Do **not** template the sysctl — the profile grants
-  the namespace to `bwrap` alone.
+  `apparmor_parser -r -W` on it. Guard the task on
+  `/proc/sys/kernel/apparmor_restrict_unprivileged_userns` reading `1` — CT 114
+  reads `0` and shares the PVE host's policy namespace. Without the profile the
+  process sandbox cannot start on a restricted Ubuntu 24.04 host. Do **not**
+  template the sysctl: the profile grants the namespace to the `bwrap` subtree,
+  which is the whole point of not relaxing it host-wide.
 - **New handler:** `systemctl daemon-reload` + `systemctl restart sybra`
   (replaces `docker restart sybra`). Config/secret tasks keep `notify`-ing it.
 - Keep all the existing secret + hook-config tasks (github-app.pem, klaudiush,
@@ -519,8 +553,10 @@ leader, `sybra-cli cluster nodes` lists the roster with its resolved
 10. **Fixture coverage:** `bash deploy/tests/deploy_integration_test.sh` runs
     all five of the above (config incompatibility, build failure,
     health-check failure + quarantine, lock contention, successful
-    activation) hermetically against a trimmed fixture module — run it after
-    touching any `deploy/bin/*.sh` script, before validating on the real box.
+    activation) hermetically against a trimmed fixture module, plus a check
+    that the shipped AppArmor profile still grants the namespace and still
+    compiles — run it after touching anything under `deploy/bin/` or
+    `deploy/apparmor/`, before validating on the real box.
 
 ## Caveats / decisions to make
 

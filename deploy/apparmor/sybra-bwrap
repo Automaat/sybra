@@ -7,12 +7,17 @@
 # single sandbox: under agent.sandbox_mode: enforce nothing certifies, and
 # under report every agent is left unwrapped.
 #
-# The grant is deliberately narrow. It names one binary rather than clearing
-# the host-wide sysctl, so every other unprivileged binary keeps the
-# restriction. flags=(unconfined) means the profile confines nothing else — it
-# exists only to attach the userns permission to this executable, which is the
-# same shape the distribution ships for ch-run and other namespace-using tools
-# in /etc/apparmor.d.
+# The grant is deliberately narrow: one executable, rather than a host-wide
+# sysctl every other unprivileged binary would ride on. flags=(unconfined)
+# means the profile confines nothing else — it exists only to attach the userns
+# permission, the same shape the distribution ships for ch-run and other
+# namespace-using tools in /etc/apparmor.d.
+#
+# The grant does reach the process tree bwrap execs, not a single process: with
+# no exec transition rules here, the provider CLI and its descendants keep this
+# label and this permission. That is intended — a sandboxed agent runs under
+# bwrap — but it is why a local/sybra-bwrap override would apply to far more
+# than the wrapper itself.
 #
 # Installed by the one-time provisioning in deploy/README.md. It ships here so
 # every host that runs agents loads the same version as the code that depends
