@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/Automaat/sybra/internal/executioncontract"
 	"github.com/Automaat/sybra/internal/fsutil"
@@ -80,7 +81,12 @@ func importGitLocked(ctx context.Context, target string, spec executioncontract.
 		return nil, err
 	}
 	stagedPatch, unstagedPatch, untracked, nonGit := partitionArtifacts(manifest, pkg)
-	staging, err := os.MkdirTemp(filepath.Dir(target), ".sybra-handback-")
+	stagingParent := filepath.Dir(target)
+	stagingPrefix := handbackScratchPrefix(target)
+	if err := reclaimHandbackScratch(stagingParent, stagingPrefix, time.Now()); err != nil {
+		return nil, err
+	}
+	staging, err := os.MkdirTemp(stagingParent, stagingPrefix)
 	if err != nil {
 		return nil, err
 	}
@@ -232,6 +238,36 @@ func importGitLocked(ctx context.Context, target string, spec executioncontract.
 		}
 	}
 	return nonGit, nil
+}
+
+func handbackScratchPrefix(target string) string {
+	sum := sha256.Sum256([]byte(filepath.Clean(target)))
+	return ".sybra-handback-" + hex.EncodeToString(sum[:]) + "-"
+}
+
+func reclaimHandbackScratch(parent, targetPrefix string, now time.Time) error {
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return err
+	}
+	legacyCutoff := now.Add(-24 * time.Hour)
+	for _, entry := range entries {
+		name := entry.Name()
+		remove := strings.HasPrefix(name, targetPrefix)
+		if !remove && strings.HasPrefix(name, ".sybra-handback-") {
+			info, infoErr := entry.Info()
+			if infoErr != nil {
+				return infoErr
+			}
+			remove = info.ModTime().Before(legacyCutoff)
+		}
+		if remove {
+			if err := fsutil.RemoveAllForce(filepath.Join(parent, name)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func partialPublicationIsRepairable(ctx context.Context, target string, expected map[string]struct{}) (bool, error) {
