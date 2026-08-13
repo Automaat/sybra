@@ -128,6 +128,9 @@ type ExecutionOptions struct {
 	RequestedSkill     string `json:"requestedSkill,omitempty"`
 	SkillExecutionMode string `json:"skillExecutionMode,omitempty"`
 	SeedWorkingMemory  bool   `json:"seedWorkingMemory,omitempty"`
+	// DiscardWorkspaceChanges preserves disposable/read-only verifier semantics:
+	// handback Git state is validated but never published to the canonical tree.
+	DiscardWorkspaceChanges bool `json:"discardWorkspaceChanges,omitempty"`
 	// ResumeSessionID is provider conversation state and may expose prior task
 	// context. Encrypt it in transit/at rest and never include it in logs.
 	ResumeSessionID string `json:"resumeSessionId,omitempty"`
@@ -271,7 +274,7 @@ func (s RunSpec) Validate() error {
 }
 
 func supportedSidecarKind(kind string) bool {
-	return slices.Contains([]string{"plan", "plan_contract", "plan_critique", "plan_research", "plan_decision", "plan_brief", "code_review", "current_test_failures", "acceptance_ledger", "spec_decision"}, kind)
+	return slices.Contains([]string{"plan", "plan_contract", "plan_critique", "plan_research", "plan_decisions", "plan_brief", "code_review", "current_test_failures", "acceptance_ledger", "spec_decision"}, kind)
 }
 
 func roleAuthorsCode(role string) bool {

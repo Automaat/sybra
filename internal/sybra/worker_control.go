@@ -81,11 +81,17 @@ func (a *App) importRemoteHandback(ctx context.Context, runID string) error {
 			notifyNeeded = getErr == nil
 			return getErr
 		}
-		if _, err := remotehandback.ImportGitWithBeforePublish(ctx, target, handback.Spec, handback.Manifest, handback.Content, guard, lock, before); err != nil {
-			if errors.Is(err, remotehandback.ErrStale) {
-				return a.rejectRemoteHandback(ctx, handback, err)
+		var importErr error
+		if handback.Spec.Options.DiscardWorkspaceChanges {
+			_, importErr = remotehandback.ValidateGitWithBeforePublish(ctx, target, handback.Spec, handback.Manifest, handback.Content, guard, lock, before)
+		} else {
+			_, importErr = remotehandback.ImportGitWithBeforePublish(ctx, target, handback.Spec, handback.Manifest, handback.Content, guard, lock, before)
+		}
+		if importErr != nil {
+			if errors.Is(importErr, remotehandback.ErrStale) {
+				return a.rejectRemoteHandback(ctx, handback, importErr)
 			}
-			return err
+			return importErr
 		}
 		return a.workerControl.ResolveArtifact(ctx, runID, handback.Manifest.ManifestID, "imported")
 	})
@@ -128,7 +134,7 @@ func (a *App) importRemoteOutputs(handback workercontrol.ArtifactHandback, membe
 				update.PlanCritique = task.Ptr(content)
 			case "plan_research":
 				update.PlanResearch = task.Ptr(content)
-			case "plan_decision":
+			case "plan_decisions":
 				update.PlanDecisions = task.Ptr(content)
 			case "plan_brief":
 				update.PlanBrief = task.Ptr(content)
@@ -167,6 +173,12 @@ func (a *App) importRemoteOutputs(handback workercontrol.ArtifactHandback, membe
 			}
 			tags := append([]string(nil), current.Tags...)
 			tags = append(tags, remoteReceiptTag(handback.Manifest.ManifestID))
+			for i := range handback.Manifest.Artifacts {
+				entry := &handback.Manifest.Artifacts[i]
+				if entry.Root == executioncontract.RootSidecar {
+					tags = append(tags, remoteSidecarReceiptTag(handback.Spec.Fence.WorkflowID, handback.Spec.Fence.StepID, handback.Spec.Fence.WorkflowGeneration+1, entry.Kind))
+				}
+			}
 			update.Tags = &tags
 			return update, nil
 		})
@@ -181,6 +193,10 @@ func (a *App) importRemoteOutputs(handback workercontrol.ArtifactHandback, membe
 var errRemoteOutputsAlreadyApplied = errors.New("remote handback: outputs already applied")
 
 func remoteReceiptTag(manifestID string) string { return "remote-handback:" + manifestID }
+
+func remoteSidecarReceiptTag(workflowID, stepID string, generation int64, kind string) string {
+	return fmt.Sprintf("remote-sidecar:%s:%s:%d:%s", workflowID, stepID, generation, kind)
+}
 
 func remoteReceiptApplied(current task.Task, handback workercontrol.ArtifactHandback) bool {
 	return current.Generation == handback.Spec.Fence.WorkflowGeneration+1 && slices.Contains(current.Tags, remoteReceiptTag(handback.Manifest.ManifestID))

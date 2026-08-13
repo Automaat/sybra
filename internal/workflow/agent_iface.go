@@ -3,6 +3,8 @@ package workflow
 import (
 	"context"
 	"io"
+
+	"github.com/Automaat/sybra/internal/executioncontract"
 )
 
 // VerificationWorkspace is a writable, disposable clone pinned to SourceSHA.
@@ -146,6 +148,10 @@ type AgentAssignment struct {
 	// ReadOnlyPaths are additional paths a diagnostic agent may inspect under
 	// the deny-by-default sandbox read posture. They never grant write access.
 	ReadOnlyPaths []string
+	RemoteOutputs []executioncontract.ExpectedOutput
+	// RemoteSidecarDir is the leader-local rendered root to virtualize out of
+	// remote prompts. It never crosses the execution contract.
+	RemoteSidecarDir string
 	// ForceInjectedSkill forces provider prep to inject the resolved skill
 	// instructions instead of relying on native visibility. Used by the
 	// automatic retry after a missing mandatory-skill receipt.

@@ -8,6 +8,11 @@ import (
 	"github.com/Automaat/sybra/internal/executioncontract"
 )
 
+// RemoteSidecarPathToken is the host-independent prompt path substituted by
+// agentd after it prepares the run's private workspace. A leader must never
+// serialize its own absolute sidecar path into a remote prompt.
+const RemoteSidecarPathToken = "sybra://sidecar" //nolint:gosec // Logical path marker, not a credential.
+
 // RemoteRunMetadata supplies durable leader-owned identities and logical
 // workspace facts that are deliberately absent from RunConfig.
 type RemoteRunMetadata struct {
@@ -85,6 +90,7 @@ func RemoteRunSpec(start ExecutionStart, metadata RemoteRunMetadata) (executionc
 			RetryWatchdog: start.Config.RetryWatchdog, FallbackModel: start.Config.FallbackModel,
 			RequestedSkill: start.Config.RequestedSkill, SkillExecutionMode: start.Config.SkillExecutionMode,
 			SeedWorkingMemory: start.Config.SeedWorkingMemory, ResumeSessionID: start.Config.ResumeSessionID,
+			DiscardWorkspaceChanges: start.Config.RemoteDiscardWorkspaceChanges,
 		},
 		Workspace: executioncontract.Workspace{
 			RepositoryID: metadata.WorkspaceRepositoryID, BaseSHA: metadata.WorkspaceBaseSHA, BaseRef: metadata.WorkspaceBaseRef,

@@ -412,7 +412,7 @@ func (d *Daemon) start(ctx context.Context, envelope executioncontract.CommandEn
 	_, err = d.manager.RunContext(runCtx, agent.RunConfig{
 		TaskID: spec.RunID, AdmissionTaskKey: spec.RunID, IntentID: spec.IdempotencyKey,
 		TaskGeneration: spec.Fence.TaskGeneration, Name: spec.RunID, Role: agent.Role(spec.Role), Mode: "headless",
-		Prompt: spec.Prompt.Text, OutputSchema: spec.Prompt.OutputSchema, AllowedTools: spec.Tools.AllowedTools,
+		Prompt: strings.ReplaceAll(spec.Prompt.Text, agent.RemoteSidecarPathToken, layout.Sidecar), OutputSchema: spec.Prompt.OutputSchema, AllowedTools: spec.Tools.AllowedTools,
 		// The sandbox's one auxiliary write root covers this run's isolated
 		// sidecar/artifact siblings; it never grants the shared workspace root.
 		Dir: layout.Worktree, SidecarDir: layout.RunRoot, Provider: spec.Provider.Provider, Model: spec.Provider.Model, ReasoningEffort: spec.Provider.ReasoningEffort,

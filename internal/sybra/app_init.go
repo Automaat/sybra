@@ -1113,6 +1113,11 @@ func (a *App) releaseTaskAgents(taskID string) {
 
 func (a *App) runsTaskLocally(t task.Task) bool {
 	cfg := a.currentConfig()
+	if cfg != nil && cfg.IsLeader() && a.workerControl != nil {
+		// The leader owns every canonical workflow now; node metadata selects
+		// only the execution backend for each run, never another task owner.
+		return true
+	}
 	return cfg == nil || cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride).Local
 }
 
@@ -1135,6 +1140,20 @@ func (a *App) auditClusterBlock(taskID, node, reason string) {
 }
 
 func (a *App) initCluster() {
+	if a.cfg != nil && a.cfg.IsLeader() && a.workerControl != nil && a.agents != nil {
+		a.agents.SetExecutionBackend(newLeaderExecutionBackend(a))
+		if a.taskSvc != nil {
+			a.taskSvc.leaderRunPlacement = true
+		}
+		if a.workflowEngine != nil {
+			a.workflowEngine.SetDispatchGate(func(workflow.TaskInfo) bool { return true })
+		}
+		if len(a.cfg.Cluster.Followers) > 0 {
+			a.logger.Warn("cluster.follower-mode.deprecated", "migration", "run sybra-agentd workers against this leader; task snapshot assignment and mirroring are disabled")
+		}
+		a.logger.Info("cluster.leader.run-placement.enabled")
+		return
+	}
 	if a.workflowEngine != nil {
 		a.workflowEngine.SetDispatchGate(func(ti workflow.TaskInfo) bool {
 			cfg := a.currentConfig()

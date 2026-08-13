@@ -204,6 +204,12 @@ func taskSidecarContent(t TaskInfo, kind string) string {
 		return t.PlanBrief
 	case kind == "code_review":
 		return t.CodeReview
+	case kind == "current_test_failures":
+		return t.CurrentTestFailures
+	case kind == "acceptance_ledger":
+		return t.AcceptanceLedger
+	case kind == "spec_decision":
+		return t.SpecDecision
 	case strings.HasPrefix(kind, "plan_draft."):
 		return t.PlanDrafts[strings.TrimPrefix(kind, "plan_draft.")]
 	default:

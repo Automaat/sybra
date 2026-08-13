@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/executioncontract"
 	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/roleeffort"
 	"github.com/Automaat/sybra/internal/stats"
@@ -2172,6 +2173,13 @@ type RunConfig struct {
 	// home, while their prompts and the host-side importer intentionally share
 	// the durable per-task sidecar directory. Empty grants nothing.
 	SidecarDir string
+	// RemoteExpectedOutputs declares the bounded logical outputs a daemon may
+	// return. Local runners ignore it; the remote execution contract validates
+	// every path, kind, size, and sensitivity before delivery.
+	RemoteExpectedOutputs []executioncontract.ExpectedOutput
+	// RemoteDiscardWorkspaceChanges validates daemon Git output without
+	// publishing it, matching local disposable verifier-clone behavior.
+	RemoteDiscardWorkspaceChanges bool
 	// DisableVerifierControl withholds the task mutation credential from local
 	// deterministic checks, whose admission certificate has no such capability.
 	DisableVerifierControl bool

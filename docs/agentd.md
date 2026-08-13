@@ -4,6 +4,26 @@
 Sybra board, task or project stores, workflows, GitHub automation, loop agents,
 monitoring/evaluation services, or the UI/API server.
 
+## Leader authority and legacy migration
+
+On a database-backed `cluster.role: leader` board, every workflow `run_agent`
+effect is now placed independently through the worker scheduler. The leader
+keeps the only canonical task, Agent record, workflow effect claim, budget,
+sidecars, history, and completion callback. A daemon receives an immutable run
+spec and returns ordered events plus a handback package; it never receives or
+persists a task document. If no eligible daemon exists, the scheduler records
+an explicit local decision and the same leader-owned completion path runs the
+provider locally.
+
+The older `cluster.followers` task-assignment and snapshot-mirroring mode is
+deprecated. Existing fields remain loadable for rollback, and existing task
+`assigned_node` metadata acts as placement affinity when the matching daemon
+uses that worker ID, but a database-backed leader no longer pushes canonical
+task snapshots to those nodes. Install `sybra-agentd` on each
+execution node, point `leader_url` at the leader's `/worker/v1` service, copy
+repository mirrors into the daemon's `repositories` map, then remove the old
+follower service after its in-flight task runs have drained.
+
 Start it with a dedicated YAML file and a leader token supplied only through an
 environment variable:
 

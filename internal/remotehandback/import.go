@@ -48,6 +48,19 @@ func ImportGit(ctx context.Context, target string, spec executioncontract.RunSpe
 }
 
 func ImportGitWithBeforePublish(ctx context.Context, target string, spec executioncontract.RunSpec, manifest executioncontract.ArtifactManifest, content []byte, guard Guard, lock Lock, before BeforePublish) ([]executioncontract.ArtifactMember, error) {
+	return importGitWithBeforePublish(ctx, target, spec, manifest, content, guard, lock, before, true)
+}
+
+// ValidateGitWithBeforePublish performs the same complete isolated package,
+// ancestry, patch, and generation validation as ImportGit, and publishes
+// declared non-Git outputs through before, but deliberately discards all Git
+// mutations. Leader-owned verifier runs use it to preserve local disposable
+// clone semantics when execution happened on a daemon.
+func ValidateGitWithBeforePublish(ctx context.Context, target string, spec executioncontract.RunSpec, manifest executioncontract.ArtifactManifest, content []byte, guard Guard, lock Lock, before BeforePublish) ([]executioncontract.ArtifactMember, error) {
+	return importGitWithBeforePublish(ctx, target, spec, manifest, content, guard, lock, before, false)
+}
+
+func importGitWithBeforePublish(ctx context.Context, target string, spec executioncontract.RunSpec, manifest executioncontract.ArtifactManifest, content []byte, guard Guard, lock Lock, before BeforePublish, publishGit bool) ([]executioncontract.ArtifactMember, error) {
 	pkg, err := executioncontract.ValidateArtifactPackage(manifest, content)
 	if err != nil {
 		return nil, err
@@ -61,14 +74,14 @@ func ImportGitWithBeforePublish(ctx context.Context, target string, spec executi
 	var imported []executioncontract.ArtifactMember
 	err = lock(ctx, target, func() error {
 		var importErr error
-		imported, importErr = importGitLocked(ctx, target, spec, manifest, pkg, guard, before)
+		imported, importErr = importGitLocked(ctx, target, spec, manifest, pkg, guard, before, publishGit)
 		return importErr
 	})
 	return imported, err
 }
 
 //nolint:funlen // Validate, stage, recheck, publish, and rollback are one canonical mutation transaction.
-func importGitLocked(ctx context.Context, target string, spec executioncontract.RunSpec, manifest executioncontract.ArtifactManifest, pkg executioncontract.ArtifactPackage, guard Guard, before BeforePublish) ([]executioncontract.ArtifactMember, error) {
+func importGitLocked(ctx context.Context, target string, spec executioncontract.RunSpec, manifest executioncontract.ArtifactManifest, pkg executioncontract.ArtifactPackage, guard Guard, before BeforePublish, publishGit bool) ([]executioncontract.ArtifactMember, error) {
 	current, canonicalBase, err := guard(ctx)
 	if err != nil {
 		return nil, err
@@ -149,6 +162,21 @@ func importGitLocked(ctx context.Context, target string, spec executioncontract.
 		if err := recordPublicationState(ctx, checkout, publicationStates); err != nil {
 			return nil, err
 		}
+	}
+	if !publishGit {
+		current, canonicalBase, err = guard(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if current != spec.Fence || canonicalBase != spec.Workspace.BaseSHA {
+			return nil, ErrStale
+		}
+		if before != nil {
+			if err := before(nonGit); err != nil {
+				return nil, err
+			}
+		}
+		return nonGit, nil
 	}
 	// Only recognize a journaled publication after the bundle, ancestry,
 	// patches, and untracked members have passed the same isolated validation
