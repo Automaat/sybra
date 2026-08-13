@@ -57,6 +57,7 @@ func (e *Engine) tryMarkResumeDispatching(taskID string, step *Step) (reason str
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	_, starting := e.starting[taskID]
 	_, dispatching := e.dispatching[taskID]
 	hasOutstandingAgent := false
 	if fresh, err := e.tasks.GetTask(taskID); err == nil && fresh.Workflow != nil {
@@ -75,7 +76,7 @@ func (e *Engine) tryMarkResumeDispatching(taskID string, step *Step) (reason str
 	// concurrently with it.
 	claimedElsewhere := e.agents.IsDispatching(taskID)
 
-	if !advancing && !dispatching && !hasOutstandingAgent && !claimedElsewhere {
+	if !advancing && !starting && !dispatching && !hasOutstandingAgent && !claimedElsewhere {
 		e.dispatching[taskID] = struct{}{}
 		return "", true
 	}
@@ -83,6 +84,8 @@ func (e *Engine) tryMarkResumeDispatching(taskID string, step *Step) (reason str
 	switch {
 	case advancing:
 		return "inflight", false
+	case starting:
+		return "starting", false
 	case dispatching:
 		return "dispatching", false
 	case hasOutstandingAgent:
