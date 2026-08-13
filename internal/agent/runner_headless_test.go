@@ -3188,13 +3188,13 @@ func TestBackendOwnedCompletionDoesNotArmLocalResultClose(t *testing.T) {
 	m := newParseTestManager(t)
 	canceled := make(chan struct{}, 1)
 	a := &Agent{
-		ID: "portable-result", TaskID: "task-1", Mode: "headless", Provider: "claude", StartedAt: time.Now().UTC(),
+		ID: "portable-result", TaskID: "task-1", Mode: "headless", Provider: providerid.Claude, StartedAt: time.Now().UTC(),
 		cancel: func() { canceled <- struct{}{} },
 	}
 	a.setBackendOwnsCompletion(true)
 	resultLine := []byte(`{"type":"result","subtype":"success","session_id":"s-1","total_cost_usd":0.1,"usage":{"input_tokens":10,"output_tokens":5}}`)
 	var lastEmit time.Time
-	if stop := m.processHeadlessLine(t.Context(), a, resultLine, &lastEmit, providerByName("claude")); stop {
+	if stop := m.processHeadlessLine(t.Context(), a, resultLine, &lastEmit, providerByName(providerid.Claude)); stop {
 		t.Fatal("portable result output stopped before the backend Completed event")
 	}
 	if _, _, ok := a.PostResultWait(); ok {
