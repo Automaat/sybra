@@ -148,7 +148,7 @@ func (a *App) certifyPreparedRunEnvironment(ctx context.Context, environment age
 	}
 	cert, err := a.runenv.Certify(ctx, runenv.Request{
 		TaskID: t.ID, ProjectID: t.ProjectID, Action: action, WorkDir: environment.Dir,
-		ReadRoots: environment.ReadOnlyPaths, GitRoots: environment.ReadOnlyPaths,
+		ReadRoots: environment.ReadOnlyPaths, GitRoots: preparedRunGitRoots(environment),
 		ScratchRoots: environment.ScratchRoots, CloneDir: cloneDir, CloneGeneration: cloneGeneration, TaskBranch: t.Branch,
 		Provider: environment.Provider, SandboxMode: environment.SandboxMode,
 		SigningPolicy:        project.NormalizeSigningPolicy(a.cfg.CommitSigning()),
@@ -160,6 +160,19 @@ func (a *App) certifyPreparedRunEnvironment(ctx context.Context, environment age
 		err = a.verification.SetCertificateForWorkspace(environment.Dir, cert.ID)
 	}
 	return err
+}
+
+// preparedRunGitRoots keeps checkout certification scoped to the prepared
+// repository. ReadOnlyPaths also contains provider credentials, config files,
+// and tool executables; those must be readable but are not Git checkouts.
+func preparedRunGitRoots(environment agent.RunEnvironment) []string {
+	if len(environment.GitRoots) > 0 {
+		return slices.Clone(environment.GitRoots)
+	}
+	if strings.TrimSpace(environment.Dir) == "" {
+		return nil
+	}
+	return []string{environment.Dir}
 }
 
 // certifyStartupRunEnvironment records host posture after survivor reattach

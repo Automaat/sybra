@@ -236,6 +236,7 @@ type RunEnvironment struct {
 	Role          Role
 	Dir           string
 	ReadOnlyPaths []string
+	GitRoots      []string
 	Provider      string
 	SandboxMode   string
 	ScratchRoots  []string

@@ -148,6 +148,9 @@ type AgentAssignment struct {
 	// ReadOnlyPaths are additional paths a diagnostic agent may inspect under
 	// the deny-by-default sandbox read posture. They never grant write access.
 	ReadOnlyPaths []string
+	// GitRoots identifies the subset of ReadOnlyPaths that are checkouts whose
+	// Git metadata and referenced objects must be certified before dispatch.
+	GitRoots      []string
 	RemoteOutputs []executioncontract.ExpectedOutput
 	// RemoteSidecarDir is the leader-local rendered root to virtualize out of
 	// remote prompts. It never crosses the execution contract.

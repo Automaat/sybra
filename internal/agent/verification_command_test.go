@@ -28,13 +28,16 @@ func TestVerificationCommandUsesLeaseScratchAndNoProviderCapacity(t *testing.T) 
 	})
 	var output bytes.Buffer
 	err := m.RunVerificationCommand(t.Context(), RunConfig{
-		TaskID: "task-local", Role: RoleTestRunner, Dir: workspace, SandboxMode: "off", ExtraEnv: os.Environ(),
+		TaskID: "task-local", Role: RoleTestRunner, Dir: workspace, GitRoots: []string{workspace}, SandboxMode: "off", ExtraEnv: os.Environ(),
 	}, "/bin/sh", []string{"-c", `test -d "$SYBRA_HOME" && test "$XDG_CONFIG_HOME" = "$SYBRA_HOME/.config" && test "$GIT_CONFIG_GLOBAL" = /dev/null && test "$GIT_CONFIG_NOSYSTEM" = 1`}, &output)
 	if err != nil {
 		t.Fatalf("RunVerificationCommand: %v (%s)", err, output.String())
 	}
 	if !observed.LocalCommand || observed.Provider != "" {
 		t.Fatalf("preflight local=%v provider=%q", observed.LocalCommand, observed.Provider)
+	}
+	if len(observed.GitRoots) != 1 || observed.GitRoots[0] != workspace {
+		t.Fatalf("preflight GitRoots = %v, want [%q]", observed.GitRoots, workspace)
 	}
 	var scratch string
 	for _, root := range observed.ScratchRoots {

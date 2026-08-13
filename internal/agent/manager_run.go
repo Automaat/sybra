@@ -381,6 +381,7 @@ func (m *Manager) certifyPreparedRun(ctx context.Context, cfg RunConfig, provide
 	}
 	return preflight(ctx, RunEnvironment{
 		TaskID: cfg.TaskID, Role: cfg.Role, Dir: cfg.Dir, ReadOnlyPaths: slices.Clone(cfg.ReadOnlyPaths), Provider: providerName,
+		GitRoots:     slices.Clone(cfg.GitRoots),
 		SandboxMode:  cfg.SandboxMode,
 		ScratchRoots: preparedScratchRoots(cfg),
 	})
