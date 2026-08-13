@@ -220,6 +220,24 @@ func (s *Store) Authorize(token string, use Use) error {
 	return nil
 }
 
+// ReleaseReplay compensates an authorization whose surrounding durable
+// operation failed. It only removes the named replay key from the exact grant.
+func (s *Store) ReleaseReplay(token, replayKey string) error {
+	if s == nil || strings.TrimSpace(token) == "" || strings.TrimSpace(replayKey) == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	stored := digest(token)
+	grant, ok := s.grants[stored]
+	if !ok {
+		return nil
+	}
+	grant.UsedReplayKeys = slices.DeleteFunc(grant.UsedReplayKeys, func(key string) bool { return key == replayKey })
+	s.grants[stored] = grant
+	return s.persistLocked()
+}
+
 // Revoke drops every grant issued for a task, which is what the end of its run
 // should do rather than waiting for the expiry.
 func (s *Store) Revoke(taskID string) error {
@@ -250,6 +268,23 @@ func (s *Store) RevokeRun(runID string) error {
 			s.auditLocked(AuditEvent{Kind: "grant.revoked", TaskID: grant.TaskID, RunID: grant.RunID, EffectID: grant.EffectID, WorkflowGeneration: grant.WorkflowGeneration, Allowed: true})
 			delete(s.grants, stored)
 		}
+	}
+	return s.persistLocked()
+}
+
+// RevokeToken drops one grant by the raw credential held by its issuer. It is
+// used to roll back a mint when the surrounding durable operation fails; the
+// token itself is never persisted by the store.
+func (s *Store) RevokeToken(token string) error {
+	if s == nil || strings.TrimSpace(token) == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	stored := digest(token)
+	if grant, ok := s.grants[stored]; ok {
+		s.auditLocked(AuditEvent{Kind: "grant.revoked", TaskID: grant.TaskID, RunID: grant.RunID, EffectID: grant.EffectID, WorkflowGeneration: grant.WorkflowGeneration, Allowed: true})
+		delete(s.grants, stored)
 	}
 	return s.persistLocked()
 }

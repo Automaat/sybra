@@ -22,9 +22,18 @@ func (s *Service) Handler() http.Handler {
 	mux.HandleFunc("POST /worker/v1/events/{runID}/ack", s.handleAckEvents)
 	mux.HandleFunc("POST /worker/v1/artifacts", s.handleArtifact)
 	mux.HandleFunc("POST /worker/v1/runs/{runID}/grant", s.handleRunGrant)
+	mux.HandleFunc("POST /worker/v1/runs/{runID}/authorize", s.handleRunAction)
 	mux.HandleFunc("POST /worker/v1/drain", s.handleDrain)
 	mux.HandleFunc("GET /worker/v1/diagnostics", s.handleDiagnostics)
 	return mux
+}
+
+func (s *Service) handleRunAction(w http.ResponseWriter, r *http.Request) {
+	var request RunActionRequest
+	if !decode(w, r, &request) {
+		return
+	}
+	respond(w, map[string]bool{"authorized": true}, s.AuthorizeRunAction(r.Context(), r.PathValue("runID"), request))
 }
 
 func (s *Service) handleRunGrant(w http.ResponseWriter, r *http.Request) {

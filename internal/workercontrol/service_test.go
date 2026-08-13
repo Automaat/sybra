@@ -183,6 +183,7 @@ func TestDurableWorkerControlBehavior(t *testing.T) {
 
 func TestRunGrantRequiresOwningLiveSessionAndRevokesOnTerminal(t *testing.T) {
 	dbtest.Each(t, func(t *testing.T, engine dbtest.Engine) {
+		t.Helper()
 		database := engine.Open(t)
 		service := New(database)
 		owner := register(t, service, "worker-grant-owner")
@@ -203,7 +204,36 @@ func TestRunGrantRequiresOwningLiveSessionAndRevokesOnTerminal(t *testing.T) {
 			grant.WorkflowGeneration != spec.Fence.WorkflowGeneration {
 			t.Fatalf("issued grant = %+v, ok=%v", grant, ok)
 		}
-		terminal := event(spec.RunID, 1, executioncontract.EventTerminal)
+		action := RunActionRequest{
+			SessionID: owner.SessionID, Token: issued.Token, TaskID: spec.Fence.TaskID, EffectID: spec.EffectID,
+			WorkflowGeneration: spec.Fence.WorkflowGeneration, Action: "approval.request", ReplayKey: spec.RunID + ":1",
+		}
+		wrong := action
+		wrong.SessionID = other.SessionID
+		if err := service.AuthorizeRunAction(t.Context(), spec.RunID, wrong); !errors.Is(err, ErrStaleSession) {
+			t.Fatalf("other session action = %v, want stale", err)
+		}
+		wrong = action
+		wrong.Action = "task.delete"
+		if err := service.AuthorizeRunAction(t.Context(), spec.RunID, wrong); err == nil {
+			t.Fatal("unlisted action authorized")
+		}
+		approval := event(spec.RunID, 1, executioncontract.EventProgress)
+		approval.Payload = json.RawMessage(`{"kind":"approval_request","request":{"toolUseId":"tool-1"}}`)
+		batch := EventBatch{SessionID: owner.SessionID, Events: []executioncontract.EventEnvelope{approval}, Authorizations: map[string]RunActionRequest{approval.IdempotencyKey: action}}
+		if _, err := service.AppendEvents(t.Context(), EventBatch{SessionID: owner.SessionID, Events: []executioncontract.EventEnvelope{approval}}); err == nil {
+			t.Fatal("approval event without scoped authorization was accepted")
+		}
+		if _, err := service.AppendEvents(t.Context(), batch); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := service.AppendEvents(t.Context(), batch); err != nil {
+			t.Fatalf("lost-response event retry was not idempotent: %v", err)
+		}
+		if err := service.AuthorizeRunAction(t.Context(), spec.RunID, action); err == nil {
+			t.Fatal("replayed action authorized")
+		}
+		terminal := event(spec.RunID, 2, executioncontract.EventTerminal)
 		if _, err := service.AppendEvents(t.Context(), EventBatch{SessionID: owner.SessionID, Events: []executioncontract.EventEnvelope{terminal}}); err != nil {
 			t.Fatal(err)
 		}

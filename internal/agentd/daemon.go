@@ -27,6 +27,7 @@ type Daemon struct {
 	cfg          Config
 	logger       *slog.Logger
 	client       *leaderClient
+	issueGrant   func(context.Context, string, string) (workercontrol.RunGrant, error)
 	spool        *Spool
 	manager      *agent.Manager
 	approvals    *agent.ApprovalServer
@@ -67,6 +68,7 @@ func New(ctx context.Context, cfg Config, logger *slog.Logger) (*Daemon, error) 
 		capabilities: cfg.Capabilities(build), runAgents: make(map[string]string), agentRuns: make(map[string]string),
 		runCancels: make(map[string]context.CancelFunc),
 	}
+	d.issueGrant = d.client.runGrant
 	approvals, err := agent.NewDurableApprovalServer(ctx, d.emitManagerEvent, logger, 0,
 		filepath.Join(cfg.StateRoot, "approval-port"), filepath.Join(cfg.StateRoot, "approval-token"))
 	if err != nil {
@@ -396,27 +398,16 @@ func (d *Daemon) start(ctx context.Context, envelope executioncontract.CommandEn
 		return d.rejectStart(spec.RunID, errors.New("workspace preparation failed"))
 	}
 	keepWorkspace := false
-	defer func() {
-		if !keepWorkspace {
-			_ = os.RemoveAll(layout.RunRoot)
-		}
-	}()
+	defer removeRunWorkspaceUnlessKept(layout.RunRoot, &keepWorkspace)
 	runEnv, err := projectRunEnvironment(layout, *spec, d.cfg.SecretEnv)
 	if err != nil {
 		return d.rejectStart(spec.RunID, err)
 	}
-	runGrant, err := d.client.runGrant(ctx, d.currentSession(), spec.RunID)
+	grantEnv, err := d.projectRunGrant(ctx, layout, spec.RunID)
 	if err != nil {
-		return d.rejectStart(spec.RunID, errors.New("agentd: issue scoped run grant"))
+		return d.rejectStart(spec.RunID, err)
 	}
-	grantPath := filepath.Join(layout.RunRoot, "secrets", "run-grant")
-	if err := os.MkdirAll(filepath.Dir(grantPath), 0o700); err != nil {
-		return d.rejectStart(spec.RunID, errors.New("agentd: create run grant directory"))
-	}
-	if err := fsutil.AtomicWriteMode(grantPath, []byte(runGrant.Token), 0o400); err != nil {
-		return d.rejectStart(spec.RunID, errors.New("agentd: project scoped run grant"))
-	}
-	runEnv = append(runEnv, "SYBRA_RUN_GRANT_FILE="+grantPath)
+	runEnv = append(runEnv, grantEnv)
 	runCtx, cancel := context.WithDeadline(ctx, spec.Deadline)
 	_, err = d.manager.RunContext(runCtx, agent.RunConfig{
 		TaskID: spec.RunID, AdmissionTaskKey: spec.RunID, IntentID: spec.IdempotencyKey,
@@ -467,6 +458,27 @@ func (d *Daemon) start(ctx context.Context, envelope executioncontract.CommandEn
 	}
 	keepWorkspace = true
 	return nil
+}
+
+func removeRunWorkspaceUnlessKept(runRoot string, keep *bool) {
+	if !*keep {
+		_ = os.RemoveAll(runRoot)
+	}
+}
+
+func (d *Daemon) projectRunGrant(ctx context.Context, layout agentworkspace.Layout, runID string) (string, error) {
+	runGrant, err := d.issueGrant(ctx, d.currentSession(), runID)
+	if err != nil {
+		return "", errors.New("agentd: issue scoped run grant")
+	}
+	grantPath := filepath.Join(layout.RunRoot, "secrets", "run-grant")
+	if err := os.MkdirAll(filepath.Dir(grantPath), 0o700); err != nil {
+		return "", errors.New("agentd: create run grant directory")
+	}
+	if err := fsutil.AtomicWriteMode(grantPath, []byte(runGrant.Token), 0o400); err != nil {
+		return "", errors.New("agentd: project scoped run grant")
+	}
+	return "SYBRA_RUN_GRANT_FILE=" + grantPath, nil
 }
 
 func projectRunEnvironment(layout agentworkspace.Layout, spec executioncontract.RunSpec, secretEnv map[string]string) ([]string, error) {
@@ -689,7 +701,31 @@ func (d *Daemon) flushEvents(ctx context.Context) error {
 		if len(events) == 0 {
 			continue
 		}
-		ack, err := d.client.events(ctx, workercontrol.EventBatch{SessionID: d.currentSession(), Events: events})
+		authorizations := make(map[string]workercontrol.RunActionRequest)
+		for i := range events {
+			event := &events[i]
+			var progress struct {
+				Kind string `json:"kind"`
+			}
+			if event.Type != executioncontract.EventProgress || json.Unmarshal(event.Payload, &progress) != nil || progress.Kind != "approval_request" {
+				continue
+			}
+			spec, ok := state.RunSpecs[runID]
+			if !ok {
+				return errors.New("agentd: approval event has no run specification")
+			}
+			grantPath := filepath.Join(d.cfg.WorkspaceRoot, runID, "secrets", "run-grant")
+			token, readErr := os.ReadFile(grantPath)
+			if readErr != nil {
+				return errors.New("agentd: scoped run grant unavailable")
+			}
+			request := workercontrol.RunActionRequest{
+				SessionID: d.currentSession(), Token: string(token), TaskID: spec.Fence.TaskID, EffectID: spec.EffectID,
+				WorkflowGeneration: spec.Fence.WorkflowGeneration, Action: "approval.request", ReplayKey: event.IdempotencyKey,
+			}
+			authorizations[event.IdempotencyKey] = request
+		}
+		ack, err := d.client.events(ctx, workercontrol.EventBatch{SessionID: d.currentSession(), Events: events, Authorizations: authorizations})
 		if err != nil {
 			return err
 		}

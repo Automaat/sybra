@@ -335,6 +335,7 @@ printf '%s\n' '{"type":"result","result":"after restart","session_id":"restart-s
 	if err != nil {
 		t.Fatal(err)
 	}
+	stubRunGrant(first)
 	if err := first.handleCommand(firstCtx, workercontrol.Command{
 		Sequence: 1, Envelope: commandForSpec(t, specWithBase("run-restart", baseSHA), "restart"),
 	}); err != nil {
@@ -383,6 +384,7 @@ func TestDaemonStartFailureBecomesAcknowledgableTerminalOutcome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	stubRunGrant(daemon)
 	spec := validSpec("run-start-failure")
 	spec.Workspace.BaseSHA = baseSHA
 	spec.Environment = []executioncontract.EnvironmentBinding{{
@@ -607,6 +609,7 @@ printf '%s\n' '{"type":"result","result":"done","session_id":"steer-session"}'
 	if err != nil {
 		t.Fatal(err)
 	}
+	stubRunGrant(daemon)
 	start := commandForSpec(t, specWithBase("run-steer", baseSHA), "start-steer")
 	if err := daemon.handleCommand(ctx, workercontrol.Command{Sequence: 1, Envelope: start}); err != nil {
 		t.Fatal(err)
@@ -680,6 +683,12 @@ func commandForSpec(t *testing.T, spec executioncontract.RunSpec, commandID stri
 	return executioncontract.CommandEnvelope{
 		Version: executioncontract.CurrentVersion(), BuildVersion: "test", CommandID: commandID, RunID: spec.RunID,
 		IdempotencyKey: "command-" + commandID, Type: executioncontract.CommandStart, SentAt: time.Now().UTC(), Payload: payload,
+	}
+}
+
+func stubRunGrant(daemon *Daemon) {
+	daemon.issueGrant = func(context.Context, string, string) (workercontrol.RunGrant, error) {
+		return workercontrol.RunGrant{Token: "test-scoped-run-grant", ExpiresAt: time.Now().Add(time.Minute)}, nil
 	}
 }
 
