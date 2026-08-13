@@ -254,7 +254,7 @@ func reclaimHandbackScratch(parent, targetPrefix string, now time.Time) error {
 	for _, entry := range entries {
 		name := entry.Name()
 		remove := strings.HasPrefix(name, targetPrefix)
-		if !remove && strings.HasPrefix(name, ".sybra-handback-") {
+		if !remove && isLegacyHandbackScratch(name) {
 			info, infoErr := entry.Info()
 			if infoErr != nil {
 				return infoErr
@@ -268,6 +268,19 @@ func reclaimHandbackScratch(parent, targetPrefix string, now time.Time) error {
 		}
 	}
 	return nil
+}
+
+func isLegacyHandbackScratch(name string) bool {
+	suffix := strings.TrimPrefix(name, ".sybra-handback-")
+	if suffix == name || suffix == "" {
+		return false
+	}
+	for _, character := range suffix {
+		if character < '0' || character > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func partialPublicationIsRepairable(ctx context.Context, target string, expected map[string]struct{}) (bool, error) {
