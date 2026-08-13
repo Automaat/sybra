@@ -1,6 +1,8 @@
 package agentgrant
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +13,78 @@ import (
 func readFile(path string) (string, error) {
 	data, err := os.ReadFile(path)
 	return string(data), err
+}
+
+func TestScopedGrantRejectsConfusedDeputyStaleGenerationAndReplay(t *testing.T) {
+	s := store(t, time.Hour)
+	token, err := s.MintScoped(Grant{
+		TaskID: "task-a", RunID: "run-a", EffectID: "effect-a", WorkflowGeneration: 7,
+		AllowedActions: []string{"task.get", "artifact.put"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := Use{TaskID: "task-a", RunID: "run-a", EffectID: "effect-a", WorkflowGeneration: 7, Action: "task.get", ReplayKey: "request-1"}
+	for name, mutate := range map[string]func(*Use){
+		"another task":     func(use *Use) { use.TaskID = "task-b" },
+		"another run":      func(use *Use) { use.RunID = "run-b" },
+		"another effect":   func(use *Use) { use.EffectID = "effect-b" },
+		"stale generation": func(use *Use) { use.WorkflowGeneration-- },
+		"unlisted action":  func(use *Use) { use.Action = "task.delete" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			request := valid
+			mutate(&request)
+			if err := s.Authorize(token, request); !errors.Is(err, ErrOutOfScope) {
+				t.Fatalf("Authorize = %v, want out of scope", err)
+			}
+		})
+	}
+	if err := s.Authorize(token, valid); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Authorize(token, valid); !errors.Is(err, ErrReplay) {
+		t.Fatalf("replay = %v, want ErrReplay", err)
+	}
+	if err := s.RevokeRun("run-a"); err != nil {
+		t.Fatal(err)
+	}
+	valid.ReplayKey = "request-2"
+	if err := s.Authorize(token, valid); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("revoked use = %v, want unauthorized", err)
+	}
+}
+
+func TestScopedGrantPersistsDigestReplayStateAndSecretFreeAudit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "grants.json")
+	s, err := New(path, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var audit []AuditEvent
+	s.SetAuditSink(func(event AuditEvent) { audit = append(audit, event) })
+	token, err := s.MintScoped(Grant{TaskID: "task", RunID: "run", EffectID: "effect", WorkflowGeneration: 2, AllowedActions: []string{"task.get"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	use := Use{TaskID: "task", RunID: "run", EffectID: "effect", WorkflowGeneration: 2, Action: "task.get", ReplayKey: "nonce"}
+	if err := s.Authorize(token, use); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := New(path, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.Authorize(token, use); !errors.Is(err, ErrReplay) {
+		t.Fatalf("restarted replay = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), token) || strings.Contains(fmt.Sprint(audit), token) {
+		t.Fatal("raw credential leaked to persistence or audit")
+	}
 }
 
 func contains(haystack, needle string) bool { return strings.Contains(haystack, needle) }

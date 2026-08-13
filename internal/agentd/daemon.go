@@ -18,6 +18,7 @@ import (
 	"github.com/Automaat/sybra/internal/agentworkspace"
 	agentevents "github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/executioncontract"
+	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/version"
 	"github.com/Automaat/sybra/internal/workercontrol"
 )
@@ -350,7 +351,6 @@ func (d *Daemon) applyCommand(ctx context.Context, envelope executioncontract.Co
 	}
 }
 
-//nolint:funlen // Admission, durable registration, workspace setup, and provider launch form one rollback unit.
 func (d *Daemon) start(ctx context.Context, envelope executioncontract.CommandEnvelope) error {
 	durable := d.spool.snapshot()
 	d.mu.RLock()
@@ -401,17 +401,9 @@ func (d *Daemon) start(ctx context.Context, envelope executioncontract.CommandEn
 			_ = os.RemoveAll(layout.RunRoot)
 		}
 	}()
-	runEnv := agentworkspace.Environment(layout)
-	for _, binding := range spec.Environment {
-		value := binding.Value
-		if binding.SecretRef != nil {
-			envName := d.cfg.SecretEnv[binding.SecretRef.Name]
-			if envName == "" {
-				return d.rejectStart(spec.RunID, fmt.Errorf("agentd: unresolved secret capability %q", binding.SecretRef.Name))
-			}
-			value = os.Getenv(envName)
-		}
-		runEnv = append(runEnv, binding.Name+"="+value)
+	runEnv, err := projectRunEnvironment(layout, *spec, d.cfg.SecretEnv)
+	if err != nil {
+		return d.rejectStart(spec.RunID, err)
 	}
 	runCtx, cancel := context.WithDeadline(ctx, spec.Deadline)
 	_, err = d.manager.RunContext(runCtx, agent.RunConfig{
@@ -463,6 +455,30 @@ func (d *Daemon) start(ctx context.Context, envelope executioncontract.CommandEn
 	}
 	keepWorkspace = true
 	return nil
+}
+
+func projectRunEnvironment(layout agentworkspace.Layout, spec executioncontract.RunSpec, secretEnv map[string]string) ([]string, error) {
+	runEnv := agentworkspace.Environment(layout)
+	secretDir := filepath.Join(layout.RunRoot, "secrets")
+	for _, binding := range spec.Environment {
+		if binding.SecretRef == nil {
+			runEnv = append(runEnv, binding.Name+"="+binding.Value)
+			continue
+		}
+		envName := secretEnv[binding.SecretRef.Name]
+		if envName == "" {
+			return nil, fmt.Errorf("agentd: unresolved secret capability %q", binding.SecretRef.Name)
+		}
+		if err := os.MkdirAll(secretDir, 0o700); err != nil {
+			return nil, errors.New("agentd: create protected run secret directory")
+		}
+		secretPath := filepath.Join(secretDir, binding.Name)
+		if err := fsutil.AtomicWriteMode(secretPath, []byte(os.Getenv(envName)), 0o400); err != nil {
+			return nil, errors.New("agentd: project protected run secret")
+		}
+		runEnv = append(runEnv, binding.Name+"_FILE="+secretPath)
+	}
+	return runEnv, nil
 }
 
 func (d *Daemon) secretEnvironmentKeys() []string {
