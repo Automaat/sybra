@@ -121,6 +121,36 @@ func TestSandboxEnforce_ZshHeredocSurvivesScratchCleanup(t *testing.T) {
 	}
 }
 
+// TestShellTempPrefix_UnavailableDirectoryDropsCallerValue pins what happens
+// when the prefix directory cannot be created. The run still dispatches, and
+// a caller-supplied prefix — which can name any writable path, the worktree
+// included — is dropped rather than left to steer the shell's temp files.
+func TestShellTempPrefix_UnavailableDirectoryDropsCallerValue(t *testing.T) {
+	worktree := t.TempDir()
+	sandboxHome := t.TempDir()
+	if err := os.WriteFile(filepath.Join(sandboxHome, "zsh"), []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("stage blocking file: %v", err)
+	}
+	m, _ := newTestManager(t, ManagerConfig{
+		SandboxHome: func(string) (string, error) { return sandboxHome, nil },
+	})
+	cfg, _, err := m.prepareRunConfig(RunConfig{
+		TaskID:      "task-heredoc-blocked",
+		Mode:        "headless",
+		Dir:         worktree,
+		SandboxMode: "report",
+		ExtraEnv:    []string{shellTempPrefixEnv + "=" + filepath.Join(worktree, "evil")},
+	})
+	if err != nil {
+		t.Fatalf("prepareRunConfig refused to dispatch: %v", err)
+	}
+	for _, entry := range cfg.ExtraEnv {
+		if strings.HasPrefix(entry, shellTempPrefixEnv+"=") {
+			t.Fatalf("caller %s survived an unusable prefix directory: %q", shellTempPrefixEnv, entry)
+		}
+	}
+}
+
 // TestSandboxEnforce_ZshHeredocTempStaysOutOfWorktree guards the obvious wrong
 // fix. The worktree is writable under enforce, so pointing the shell's temp
 // prefix there would also work — and then SanitizeWorktree's `git add -A`

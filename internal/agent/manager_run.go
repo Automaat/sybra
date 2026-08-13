@@ -907,12 +907,15 @@ func (m *Manager) injectShellTempPrefix(cfg *RunConfig) {
 	if strings.TrimSpace(cfg.resolvedSandboxHome) == "" {
 		return
 	}
+	// Strip first. A caller-supplied prefix can name any writable path,
+	// including one inside the worktree, so a directory this cannot create
+	// must leave the run with no prefix at all rather than that one.
+	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, shellTempPrefixEnv)
 	dir := filepath.Join(cfg.resolvedSandboxHome, "zsh")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		m.logger.Warn("agent.shell_temp_prefix.failed", "task_id", cfg.TaskID, "dir", dir, "err", err)
 		return
 	}
-	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, shellTempPrefixEnv)
 	cfg.ExtraEnv = append(cfg.ExtraEnv, shellTempPrefixEnv+"="+filepath.Join(dir, "zsh"))
 }
 
