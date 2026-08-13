@@ -123,11 +123,14 @@ in explicitly when no eligible daemon may fall back to local execution.
    file argument. Start the daemon and confirm `/worker/v1/diagnostics` shows
    the expected worker ID, protocol/build, repository capability, sandbox
    posture, and non-expired lease.
-2. To rotate, install the new token in the daemon's secret environment, restart
-   the daemon, and wait for its resumed session to appear before revoking the
-   old token. A replacement session fences the old session atomically; do not
-   clone a daemon `state_root` onto another machine because it contains the
-   stable identity and delivery cursors.
+2. The leader currently accepts one bearer token, so rotate with a coordinated
+   drain rather than assuming an overlap window: drain every daemon, wait for
+   `activeRuns=0` and `pendingEvents=0`, stop them, replace the leader token,
+   replace each daemon's `token_env` value, then restart the daemons. Verify new
+   sessions before restoring placement. A replacement session fences the old
+   session atomically; do not clone a daemon `state_root` onto another machine
+   because it contains the stable identity and delivery cursors. A zero-downtime
+   overlapping rotation requires future multi-token leader support.
 3. Rotate provider secrets independently through `secret_env`. Existing runs
    retain only their run-scoped files; a new approval/action obtains a fresh
    scoped grant and never receives the leader token.

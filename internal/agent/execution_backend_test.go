@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/providerid"
+	"github.com/Automaat/sybra/internal/testutil/backendconformance"
 )
 
 type sinkDrivenFakeBackend struct {
@@ -241,6 +242,69 @@ func TestExecutionBackendImmediateCompletionDoesNotLeaveControlHandle(t *testing
 
 func TestCallbackExecutionBackendControlConformance(t *testing.T) {
 	runExecutionBackendConformance(t, newCallbackConformanceFixture)
+}
+
+func TestCallbackExecutionBackendCommonConformance(t *testing.T) {
+	backendconformance.Run(t, callbackCommonConformanceFixture)
+}
+
+func callbackCommonConformanceFixture(t *testing.T, emit func(backendconformance.Event)) backendconformance.Fixture {
+	t.Helper()
+	adapter := executionEventSinkFunc(func(_ context.Context, _ ExecutionHandle, event ExecutionEvent) {
+		emit(backendconformance.Event{Kind: executionEventKind(event.Kind), Err: event.Err})
+	})
+	fixture := newCallbackConformanceFixture(t, adapter)
+	return backendconformance.Fixture{
+		Start: func() (string, error) {
+			handle, err := fixture.backend.Start(t.Context(), fixture.start)
+			return string(handle), err
+		},
+		InvalidStart: func() error {
+			invalid := fixture.start
+			invalid.Spec.ID = ""
+			_, err := fixture.backend.Start(t.Context(), invalid)
+			return err
+		},
+		Stop: func(handle string) error { return fixture.backend.Stop(t.Context(), ExecutionHandle(handle)) },
+		Recover: func(handle string, recovered func(backendconformance.Event)) error {
+			sink := executionEventSinkFunc(func(_ context.Context, _ ExecutionHandle, event ExecutionEvent) {
+				recovered(backendconformance.Event{Kind: executionEventKind(event.Kind), Err: event.Err})
+			})
+			return fixture.backend.Recover(t.Context(), ExecutionHandle(handle), sink)
+		},
+		Inspect: func(handle string) error {
+			_, err := fixture.backend.Inspect(t.Context(), ExecutionHandle(handle))
+			return err
+		},
+		Release: fixture.release,
+		Steer: func(handle, text string) error {
+			return fixture.backend.Steer(t.Context(), ExecutionHandle(handle), text)
+		},
+		Approve: func(handle string, answer bool) error {
+			return fixture.backend.RespondApproval(t.Context(), ExecutionHandle(handle), "tool", answer)
+		},
+		Steered:  func() bool { return fixture.steered() == "continue" },
+		Approved: fixture.approved,
+	}
+}
+
+type executionEventSinkFunc func(context.Context, ExecutionHandle, ExecutionEvent)
+
+func (f executionEventSinkFunc) EmitExecutionEvent(ctx context.Context, handle ExecutionHandle, event ExecutionEvent) {
+	f(ctx, handle, event)
+}
+
+func executionEventKind(kind ExecutionEventKind) string {
+	switch kind {
+	case ExecutionStarted:
+		return "started"
+	case ExecutionOutput:
+		return "output"
+	case ExecutionCompleted:
+		return "completed"
+	default:
+		return string(kind)
+	}
 }
 
 type backendConformanceFixture struct {

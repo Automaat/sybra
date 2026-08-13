@@ -327,9 +327,14 @@ func (b *leaderExecutionBackend) command(ctx context.Context, handle agent.Execu
 	if err != nil {
 		return err
 	}
+	// Delivery identity must survive a lost response and a leader restart. The
+	// durable run deadline and the semantic idempotency key are stable across
+	// recovery; a changed payload still reaches Enqueue with the same identity
+	// and is rejected by its changed-request fence.
+	commandID := string(kind) + "-" + uuid.NewSHA1(uuid.NameSpaceOID, []byte(run.runID+":"+key)).String()
 	envelope := executioncontract.CommandEnvelope{Version: executioncontract.CurrentVersion(), BuildVersion: version.Version,
-		CommandID: string(kind) + "-" + uuid.NewString(), RunID: run.runID, IdempotencyKey: key,
-		Type: kind, SentAt: time.Now().UTC(), Payload: body}
+		CommandID: commandID, RunID: run.runID, IdempotencyKey: key,
+		Type: kind, SentAt: run.deadline.UTC(), Payload: body}
 	_, err = b.app.workerControl.Enqueue(ctx, sessionID, nil, envelope)
 	return err
 }
