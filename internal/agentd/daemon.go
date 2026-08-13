@@ -287,7 +287,7 @@ func (d *Daemon) recoverRejectedSession(ctx context.Context, rejectedSession str
 		return nil
 	}
 	if err := d.register(ctx); err != nil {
-		return fmt.Errorf("replace rejected session %s after %v: %w", rejectedSession, cause, err)
+		return fmt.Errorf("replace rejected session %s after %w: %w", rejectedSession, cause, err)
 	}
 	d.logger.Info("agentd.session.recovered", "old_session", rejectedSession, "new_session", d.currentSession())
 	return nil
@@ -373,12 +373,12 @@ func (d *Daemon) register(ctx context.Context) error {
 	})
 }
 
-func (d *Daemon) ensureRegistrationID(current, resumeSession string, commandAck uint64) (string, string, uint64, error) {
+func (d *Daemon) ensureRegistrationID(current, resumeSession string, commandAck uint64) (registrationID, registrationFrom string, registrationAck uint64, err error) {
 	if current != "" {
 		state := d.spool.snapshot()
 		return current, state.RegistrationFrom, state.RegistrationAck, nil
 	}
-	registrationID, err := opaqueID("registration")
+	registrationID, err = opaqueID("registration")
 	if err != nil {
 		return "", "", 0, err
 	}

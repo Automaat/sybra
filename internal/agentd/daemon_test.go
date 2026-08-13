@@ -214,7 +214,8 @@ func recoveryStartContract(t *testing.T) (executioncontract.RunSpec, executionco
 
 func activeSession(diagnostics []workercontrol.Diagnostics) string {
 	var active string
-	for _, item := range diagnostics {
+	for i := range diagnostics {
+		item := &diagnostics[i]
 		if item.State != "active" {
 			continue
 		}

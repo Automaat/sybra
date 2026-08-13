@@ -238,6 +238,9 @@ func (s *Service) SetGrantAuditSink(sink agentgrant.AuditSink) {
 	s.grants.SetAuditSink(sink)
 }
 
+// Register keeps session fencing and ownership migration in one transaction.
+//
+//nolint:funlen // Splitting the transaction would obscure or weaken that atomic boundary.
 func (s *Service) Register(ctx context.Context, request RegisterRequest) (Session, error) {
 	if request.WorkerID == "" || request.Negotiation.BuildVersion == "" {
 		return Session{}, invalidf("worker and build identities are required")
