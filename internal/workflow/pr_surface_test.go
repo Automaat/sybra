@@ -20,7 +20,7 @@ func TestSetPRSurfaceNamesEveryMissingMember(t *testing.T) {
 		t.Fatal("setPRSurfaceForTest accepted an entirely empty surface")
 	}
 	for _, want := range []string{
-		"Linker", "ReviewRequester", "StateFetcher", "HeadFetcher", "Creator",
+		"Linker", "ReviewRequester", "StateFetcher", "HeadFetcher", "MetaFetcher", "Creator",
 		"Closer", "Finder", "AnyStateFinder", "ExistenceChecker", "ContentGenerator",
 	} {
 		if !strings.Contains(err.Error(), want) {
@@ -60,6 +60,7 @@ func TestSetPRSurfaceWiresEveryField(t *testing.T) {
 		"prReviewers":      e.pr.ReviewRequester,
 		"prStates":         e.pr.StateFetcher,
 		"prHeads":          e.pr.HeadFetcher,
+		"prMeta":           e.pr.MetaFetcher,
 		"prCreator":        e.pr.Creator,
 		"prCloser":         e.pr.Closer,
 		"prFinder":         e.pr.Finder,
@@ -89,6 +90,9 @@ func (stubPRSurface) FetchPRState(string, int) (github.PRState, error) { return 
 func (stubPRSurface) FetchPRHeadSHA(context.Context, string, int) (string, error) {
 	return "", nil
 }
+func (stubPRSurface) FetchPRMeta(context.Context, string, int) (github.PullRequest, error) {
+	return github.PullRequest{}, nil
+}
 func (stubPRSurface) CreatePR(context.Context, string, PRCreateRequest) (number int, headSHA string, err error) {
 	return 0, "", nil
 }
@@ -111,6 +115,7 @@ func completePRSurface() PRSurface {
 		ReviewRequester:  s,
 		StateFetcher:     s,
 		HeadFetcher:      s,
+		MetaFetcher:      s,
 		Creator:          s,
 		Closer:           s,
 		Finder:           s,

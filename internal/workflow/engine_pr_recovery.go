@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/taskstatus"
 	"github.com/Automaat/sybra/internal/textutil"
@@ -18,6 +19,8 @@ const alreadyFixedOnMainRecoveryReason = "requested change already satisfies ori
 const maxDeclaredReasonBytes = 400
 
 const unreadableRecoveryVerdictReason = "run emitted an unreadable recovery declaration — staying parked rather than inferring the outcome from its prose"
+
+var recoveryRemoteBranchHead = project.RemoteBranchHead
 
 // maybeRecoverHumanRequiredAlreadyFixedOnMain rewrites a narrow duplicate-task
 // class: an implementation step parked the task at human-required after
@@ -117,14 +120,24 @@ func (e *Engine) maybeRecoverHumanRequiredByOpeningPR(taskID string, currentStep
 		e.logger.Warn("workflow.human-required.pr-recovery.resolve-head", "task_id", taskID, "err", err)
 		return nil, false, nil
 	}
+	existingPR, existingFound := e.findExistingPRForBranch(t.ProjectID, headArg)
 	remote := project.PushRemote(ctx, wtPath)
-	remoteSHA, err := project.RemoteBranchHead(ctx, wtPath, remote, branch)
+	remoteBranch := branch
+	if existingFound {
+		if authoritativeRemote, authoritativeBranch, ok, resolveErr := e.authoritativePRTrackingRef(ctx, wtPath, t.ProjectID, existingPR, branch); resolveErr != nil {
+			e.logger.Warn("workflow.human-required.pr-recovery.pr-meta", "task_id", taskID, "pr", existingPR, "err", resolveErr)
+		} else if ok {
+			remote = authoritativeRemote
+			remoteBranch = authoritativeBranch
+		}
+	}
+	remoteSHA, err := recoveryRemoteBranchHead(ctx, wtPath, remote, remoteBranch)
 	if err != nil {
-		e.logger.Warn("workflow.human-required.pr-recovery.remote-head", "task_id", taskID, "remote", remote, "branch", branch, "err", err)
+		e.logger.Warn("workflow.human-required.pr-recovery.remote-head", "task_id", taskID, "remote", remote, "branch", remoteBranch, "err", err)
 		return nil, false, nil
 	}
 	if remoteSHA == "" {
-		e.logger.Info("workflow.human-required.pr-recovery.remote-missing", "task_id", taskID, "remote", remote, "branch", branch)
+		e.logger.Info("workflow.human-required.pr-recovery.remote-missing", "task_id", taskID, "remote", remote, "branch", remoteBranch)
 		return nil, false, nil
 	}
 
@@ -144,8 +157,8 @@ func (e *Engine) maybeRecoverHumanRequiredByOpeningPR(taskID string, currentStep
 	// would never reach the PR. Fall through to ready-pr in that case so
 	// simple-task-pr pushes the current HEAD before linking.
 	if remoteSHA == localSHA {
-		if existing, found := e.findExistingPRForBranch(t.ProjectID, headArg); found {
-			if err := e.linkTaskPR(taskID, t, existing); err != nil {
+		if existingFound {
+			if err := e.linkTaskPR(taskID, t, existingPR); err != nil {
 				return nil, false, err
 			}
 			status = taskstatus.InReview
@@ -187,6 +200,44 @@ func isMissingLivePRVerificationBlocker(reason string) bool {
 		strings.Contains(r, "required live") ||
 		strings.Contains(r, "live pr-monitor") ||
 		strings.Contains(r, "live proof")
+}
+
+func (e *Engine) authoritativePRTrackingRef(ctx context.Context, wtPath, repo string, prNumber int, fallbackBranch string) (remote, branch string, ok bool, err error) {
+	if e.pr.MetaFetcher == nil || repo == "" || prNumber <= 0 {
+		return "", "", false, nil
+	}
+	meta, err := e.pr.MetaFetcher.FetchPRMeta(ctx, repo, prNumber)
+	if err != nil {
+		return "", "", false, err
+	}
+	branch = strings.TrimSpace(meta.HeadRefName)
+	if branch == "" {
+		branch = strings.TrimSpace(fallbackBranch)
+	}
+	if branch == "" {
+		return "", "", false, nil
+	}
+	headRepo := strings.TrimSpace(meta.HeadRepo)
+	switch {
+	case strings.EqualFold(headRepo, repo):
+		return "origin", branch, true, nil
+	case recoveryRemoteRepoMatches(ctx, wtPath, "fork", headRepo):
+		return "fork", branch, true, nil
+	default:
+		return "", "", false, nil
+	}
+}
+
+func recoveryRemoteRepoMatches(ctx context.Context, wtPath, remote, repo string) bool {
+	raw, err := gitexec.Output(ctx, gitexec.Options{Dir: wtPath}, "config", "--get", "remote."+remote+".url")
+	if err != nil {
+		return false
+	}
+	owner, name, err := project.ParseGitHubURL(strings.TrimSpace(raw))
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(owner+"/"+name, repo)
 }
 
 func (e *Engine) branchAlreadySatisfiedOnMain(taskID, wtPath string, t TaskInfo) (bool, error) {

@@ -322,6 +322,12 @@ type PRHeadFetcher interface {
 	FetchPRHeadSHA(ctx context.Context, repo string, number int) (string, error)
 }
 
+// PRMetaFetcher resolves PR metadata needed when the workflow must identify the
+// authoritative head repo/ref behind an existing PR.
+type PRMetaFetcher interface {
+	FetchPRMeta(ctx context.Context, repo string, number int) (github.PullRequest, error)
+}
+
 // PushCredentialPreflighter validates that the current process can authenticate
 // to the worktree's configured push remote before push-dependent workflow
 // steps spend more work or attempt a real push. Engine operates with a nil
@@ -784,6 +790,7 @@ type PRSurface struct {
 	ReviewRequester  PRReviewRequester
 	StateFetcher     PRStateFetcher
 	HeadFetcher      PRHeadFetcher
+	MetaFetcher      PRMetaFetcher
 	PushPreflighter  PushCredentialPreflighter
 	Creator          PRCreator
 	Closer           PRCloser
@@ -835,6 +842,7 @@ func (s PRSurface) missing() []string {
 		namedDependency{"PR.ReviewRequester", s.ReviewRequester},
 		namedDependency{"PR.StateFetcher", s.StateFetcher},
 		namedDependency{"PR.HeadFetcher", s.HeadFetcher},
+		namedDependency{"PR.MetaFetcher", s.MetaFetcher},
 		namedDependency{"PR.Creator", s.Creator},
 		namedDependency{"PR.Closer", s.Closer},
 		namedDependency{"PR.Finder", s.Finder},
@@ -900,6 +908,12 @@ func (e *Engine) setPRStateFetcherForTest(f PRStateFetcher) { e.pr.StateFetcher 
 // push landed. Leaving it unset skips the verification.
 // Test seam: production wires this through setPRSurfaceForTest.
 func (e *Engine) setPRHeadFetcherForTest(f PRHeadFetcher) { e.pr.HeadFetcher = f }
+
+// setPRMetaFetcherForTest wires the PR metadata lookup used by human-required
+// PR recovery to resolve the authoritative head repo/ref before divergence
+// checks. Leaving it unset falls back to the worktree's configured push remote.
+// Test seam: production wires this through setPRSurfaceForTest.
+func (e *Engine) setPRMetaFetcherForTest(f PRMetaFetcher) { e.pr.MetaFetcher = f }
 
 // setPushCredentialPreflighterForTest wires the push-auth preflight used before
 // `push_branch` and `create_pr` attempt a real git push. Leaving it unset uses
