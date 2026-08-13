@@ -715,12 +715,18 @@ func (d *Daemon) flushEvents(ctx context.Context) error {
 				return errors.New("agentd: approval event has no run specification")
 			}
 			grantPath := filepath.Join(d.cfg.WorkspaceRoot, runID, "secrets", "run-grant")
-			token, readErr := os.ReadFile(grantPath)
-			if readErr != nil {
-				return errors.New("agentd: scoped run grant unavailable")
+			// Approval can arrive long after the start-time grant expired. Mint a
+			// fresh bounded grant through the live worker session and rotate the
+			// protected projection before presenting it.
+			grant, grantErr := d.issueGrant(ctx, d.currentSession(), runID)
+			if grantErr != nil {
+				return errors.New("agentd: renew scoped run grant")
+			}
+			if writeErr := fsutil.AtomicWriteMode(grantPath, []byte(grant.Token), 0o400); writeErr != nil {
+				return errors.New("agentd: rotate scoped run grant")
 			}
 			request := workercontrol.RunActionRequest{
-				SessionID: d.currentSession(), Token: string(token), TaskID: spec.Fence.TaskID, EffectID: spec.EffectID,
+				SessionID: d.currentSession(), Token: grant.Token, TaskID: spec.Fence.TaskID, EffectID: spec.EffectID,
 				WorkflowGeneration: spec.Fence.WorkflowGeneration, Action: "approval.request", ReplayKey: event.IdempotencyKey,
 			}
 			authorizations[event.IdempotencyKey] = request

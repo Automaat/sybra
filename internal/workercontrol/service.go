@@ -117,15 +117,6 @@ type RunActionRequest struct {
 	ReplayKey          string `json:"replayKey"`
 }
 
-func (s *Service) AuthorizeRunAction(ctx context.Context, runID string, request RunActionRequest) error {
-	return s.db.InTx(ctx, func(tx *sql.Tx) error {
-		if err := s.requireSessionTx(ctx, tx, request.SessionID, false); err != nil {
-			return err
-		}
-		return s.authorizeRunActionTx(ctx, tx, runID, request)
-	})
-}
-
 func (s *Service) authorizeRunActionTx(ctx context.Context, tx *sql.Tx, runID string, request RunActionRequest) error {
 	query := `SELECT task_id, effect_id, workflow_generation FROM remote_runs WHERE run_id = ? AND session_id = ? AND state IN ('queued', 'running')`
 	if s.db.Dialect() == db.Postgres {
@@ -142,10 +133,11 @@ func (s *Service) authorizeRunActionTx(ctx context.Context, tx *sql.Tx, runID st
 	if taskID != request.TaskID || effectID != request.EffectID || generation != request.WorkflowGeneration {
 		return ErrInvalidRequest
 	}
-	return s.grants.Authorize(request.Token, agentgrant.Use{
+	use := agentgrant.Use{
 		TaskID: taskID, RunID: runID, EffectID: effectID, WorkflowGeneration: generation,
 		Action: request.Action, ReplayKey: request.ReplayKey,
-	})
+	}
+	return s.grants.Check(request.Token, use)
 }
 
 func (s *Service) IssueRunGrant(ctx context.Context, sessionID, runID string) (RunGrant, error) {
@@ -515,7 +507,6 @@ func (s *Service) AckCommands(ctx context.Context, sessionID string, through uin
 func (s *Service) AppendEvents(ctx context.Context, batch EventBatch) (map[string]uint64, error) {
 	acks := map[string]uint64{}
 	terminalRuns := map[string]bool{}
-	consumed := make([]RunActionRequest, 0)
 	err := s.db.InTx(ctx, func(tx *sql.Tx) error {
 		if err := s.requireSessionTx(ctx, tx, batch.SessionID, true); err != nil {
 			return err
@@ -557,10 +548,12 @@ func (s *Service) AppendEvents(ctx context.Context, batch EventBatch) (map[strin
 				if action.SessionID != batch.SessionID || action.ReplayKey != event.IdempotencyKey {
 					return ErrInvalidRequest
 				}
+				// This event row is the replay record for approval transport. Keep
+				// scope validation non-mutating so a crash before SQL commit cannot
+				// strand the daemon behind a consumed grant key.
 				if err := s.authorizeRunActionTx(ctx, tx, event.RunID, action); err != nil {
 					return err
 				}
-				consumed = append(consumed, action)
 			}
 			if current > 0 {
 				var previousJSON string
@@ -601,9 +594,6 @@ func (s *Service) AppendEvents(ctx context.Context, batch EventBatch) (map[strin
 		return nil
 	})
 	if err != nil {
-		for i := range consumed {
-			_ = s.grants.ReleaseReplay(consumed[i].Token, consumed[i].ReplayKey)
-		}
 		return acks, err
 	}
 	for runID := range terminalRuns {

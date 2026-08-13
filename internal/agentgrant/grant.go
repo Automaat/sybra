@@ -186,6 +186,16 @@ func (s *Store) Verify(token string) (Grant, bool) {
 // an exact Use. Successful replay keys are consumed durably; a lost response
 // cannot be submitted again under the same grant.
 func (s *Store) Authorize(token string, use Use) error {
+	return s.authorize(token, use, true)
+}
+
+// Check validates a decoded use without consuming its replay key. Callers use
+// this only when their own atomic durable record is the replay authority.
+func (s *Store) Check(token string, use Use) error {
+	return s.authorize(token, use, false)
+}
+
+func (s *Store) authorize(token string, use Use, consume bool) error {
 	if s == nil || strings.TrimSpace(token) == "" {
 		return ErrUnauthorized
 	}
@@ -210,6 +220,11 @@ func (s *Store) Authorize(token string, use Use) error {
 		s.auditLocked(event)
 		return ErrReplay
 	}
+	if !consume {
+		event.Allowed = true
+		s.auditLocked(event)
+		return nil
+	}
 	grant.UsedReplayKeys = append(grant.UsedReplayKeys, use.ReplayKey)
 	s.grants[digest(token)] = grant
 	if err := s.persistLocked(); err != nil {
@@ -218,24 +233,6 @@ func (s *Store) Authorize(token string, use Use) error {
 	event.Allowed = true
 	s.auditLocked(event)
 	return nil
-}
-
-// ReleaseReplay compensates an authorization whose surrounding durable
-// operation failed. It only removes the named replay key from the exact grant.
-func (s *Store) ReleaseReplay(token, replayKey string) error {
-	if s == nil || strings.TrimSpace(token) == "" || strings.TrimSpace(replayKey) == "" {
-		return nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	stored := digest(token)
-	grant, ok := s.grants[stored]
-	if !ok {
-		return nil
-	}
-	grant.UsedReplayKeys = slices.DeleteFunc(grant.UsedReplayKeys, func(key string) bool { return key == replayKey })
-	s.grants[stored] = grant
-	return s.persistLocked()
 }
 
 // Revoke drops every grant issued for a task, which is what the end of its run
