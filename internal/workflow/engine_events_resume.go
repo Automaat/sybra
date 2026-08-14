@@ -59,6 +59,7 @@ func (e *Engine) tryMarkResumeDispatching(taskID string, step *Step) (reason str
 
 	_, starting := e.starting[taskID]
 	_, dispatching := e.dispatching[taskID]
+	completing := e.completing[taskID] > 0
 	hasOutstandingAgent := false
 	if fresh, err := e.tasks.GetTask(taskID); err == nil && fresh.Workflow != nil {
 		for _, stepID := range fresh.Workflow.AgentRoutes {
@@ -76,7 +77,7 @@ func (e *Engine) tryMarkResumeDispatching(taskID string, step *Step) (reason str
 	// concurrently with it.
 	claimedElsewhere := e.agents.IsDispatching(taskID)
 
-	if !advancing && !starting && !dispatching && !hasOutstandingAgent && !claimedElsewhere {
+	if !advancing && !starting && !dispatching && !completing && !hasOutstandingAgent && !claimedElsewhere {
 		e.dispatching[taskID] = struct{}{}
 		return "", true
 	}
@@ -88,6 +89,8 @@ func (e *Engine) tryMarkResumeDispatching(taskID string, step *Step) (reason str
 		return "starting", false
 	case dispatching:
 		return "dispatching", false
+	case completing:
+		return "agent-pending-completion", false
 	case hasOutstandingAgent:
 		return "agent-pending-completion", false
 	case claimedElsewhere:

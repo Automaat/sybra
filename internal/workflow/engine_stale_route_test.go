@@ -208,6 +208,116 @@ func TestResumeStalled_StaleRouteRecoversWedgedTask(t *testing.T) {
 	}
 }
 
+func TestResumeStalled_StaleRouteRearmsCompletedRunAgentEffect(t *testing.T) {
+	engine, tasks, agents := staleRouteEngine(t, discardLogger(), map[string]string{"agent-ghost": "implement"})
+	info, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	oldEffect := EffectID{Generation: info.Generation, StepSeq: executionStepSeq(info.Workflow), StepID: "implement", Pos: effectPosStepAction}
+	info.Workflow.RecordEffectIntent(oldEffect, now)
+	info.Workflow.RecordEffectCompletion(oldEffect, now)
+	if err := tasks.SetWorkflow(info.ID, info.Workflow); err != nil {
+		t.Fatal(err)
+	}
+
+	engine.ResumeStalled()
+
+	if got := roleStartCount(agents, "implementation"); got != 1 {
+		t.Fatalf("implementation dispatches = %d, want 1 after stale completed dispatch was re-armed", got)
+	}
+	after, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	newEffect, ok := after.Workflow.EffectRecordForStep("implement", effectPosStepAction)
+	if !ok || newEffect.ID.Equal(oldEffect) {
+		t.Fatalf("latest dispatch effect = %+v, want a fresh identity after stale route cleanup", newEffect)
+	}
+	if !after.Workflow.EffectApplied(oldEffect) {
+		t.Fatal("re-arm erased the stale effect's durable completion history")
+	}
+}
+
+func TestPruneStaleAgentRoutes_RearmsCompletedFanoutParentEffects(t *testing.T) {
+	tests := []struct {
+		name    string
+		step    Step
+		routeID string
+	}{
+		{
+			name: "parallel child",
+			step: Step{ID: "fanout", Type: StepParallel, Parallel: []Step{
+				{ID: "review-a", Type: StepRunAgent},
+				{ID: "review-b", Type: StepRunAgent},
+			}},
+			routeID: "review-a",
+		},
+		{
+			name:    "best-of-n attempt",
+			step:    Step{ID: "candidates", Type: StepBestOfN},
+			routeID: bestOfNAttemptStepKey("candidates", "attempt_1"),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			engine, tasks, _ := staleRouteEngine(t, discardLogger(), map[string]string{"agent-ghost": tc.routeID})
+			info, err := tasks.GetTask("t1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			info.Workflow.CurrentStep = tc.step.ID
+			now := time.Now().UTC()
+			oldEffect := EffectID{Generation: info.Generation, StepSeq: executionStepSeq(info.Workflow), StepID: tc.step.ID, Pos: effectPosStepAction}
+			info.Workflow.RecordEffectIntent(oldEffect, now)
+			info.Workflow.RecordEffectCompletion(oldEffect, now)
+			if err := tasks.SetWorkflow(info.ID, info.Workflow); err != nil {
+				t.Fatal(err)
+			}
+
+			engine.pruneStaleAgentRoutes(info.ID, &tc.step)
+
+			after, err := tasks.GetTask(info.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(after.Workflow.AgentRoutes) != 0 {
+				t.Fatalf("stale routes = %v, want none", after.Workflow.AgentRoutes)
+			}
+			newEffect, ok := after.Workflow.EffectRecordForStep(tc.step.ID, effectPosStepAction)
+			if !ok || newEffect.ID.Equal(oldEffect) || newEffect.CompletedAt != nil {
+				t.Fatalf("latest dispatch effect = %+v, want a fresh pending parent effect", newEffect)
+			}
+			if !after.Workflow.EffectApplied(oldEffect) {
+				t.Fatal("re-arm erased the stale parent effect's durable completion history")
+			}
+		})
+	}
+}
+
+func TestTryMarkResumeDispatching_CompletionStartingAfterPruneBlocksDispatch(t *testing.T) {
+	engine, _, _ := staleRouteEngine(t, discardLogger(), map[string]string{"agent-ghost": "implement"})
+	step := implementStep(t, engine)
+
+	// Drive the check-then-act boundary directly: the first liveness check saw
+	// no completion and retired the route, then a completion that had already
+	// captured that route entered before tryMarkResumeDispatching could claim
+	// the replacement dispatch.
+	engine.pruneStaleAgentRoutes("t1", step)
+	release := engine.enterCompletion("t1")
+	defer release()
+
+	reason, acquired := engine.tryMarkResumeDispatching("t1", step)
+	if acquired {
+		t.Fatal("resume dispatch was acquired while a late completion was in flight")
+	}
+	if reason != "agent-pending-completion" {
+		t.Fatalf("reason = %q, want agent-pending-completion", reason)
+	}
+}
+
 // TestResumeStalled_StaleRoutePrunerSparesMidAdvanceCompletion is the
 // regression guard the route check was written for. It drives the exact
 // interleaving recovery's lost-callback bridge produces: HandleAgentComplete

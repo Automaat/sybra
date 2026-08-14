@@ -192,6 +192,28 @@ func (e *Engine) pruneStaleAgentRoutes(taskID string, step *Step) {
 			"route_step", t.Workflow.AgentRoutes[agentID])
 		clearAgentRouteFromWorkflow(t.Workflow, agentID)
 	}
+	// Agent-owning async steps mark their dispatch effect complete once the
+	// provider(s) have started, then wait for routed completions to advance. If
+	// a route outlives its dead agent, clearing only the route leaves a completed
+	// effect behind: replay treats it as an intentional no-op forever. Re-arm
+	// after every task-level liveness guard above proved there is no live
+	// dispatch or completion to duplicate. Parallel and best-of-N retain their
+	// child/attempt records, so their resume-safe handlers skip terminal slots
+	// and respawn only the pending orphan.
+	if step.Type == StepRunAgent || step.Type == StepParallel || step.Type == StepBestOfN {
+		if rec, ok := currentStepEffectRecord(t, step, effectPosStepAction); ok && rec.CompletedAt != nil {
+			newEffect := EffectID{
+				Generation: t.Generation,
+				StepSeq:    nextEffectStepSeq(t.Workflow, t.Generation, executionStepSeq(t.Workflow)),
+				StepID:     step.ID,
+				Pos:        effectPosStepAction,
+			}
+			t.Workflow.RecordEffectIntent(newEffect, e.now())
+			e.logger.Info("workflow.resume-stalled.stale-route.rearm",
+				"task_id", taskID, "step", step.ID,
+				"stale_effect", rec.ID.String(), "new_effect", newEffect.String())
+		}
+	}
 	if err := e.tasks.SetWorkflow(taskID, t.Workflow); err != nil {
 		e.logger.Warn("workflow.resume-stalled.stale-route.clear",
 			"task_id", taskID, "step", step.ID, "err", err)
