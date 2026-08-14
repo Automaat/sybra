@@ -21,6 +21,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/agent"
 	agentdaemon "github.com/Automaat/sybra/internal/agentd"
+	"github.com/Automaat/sybra/internal/agentworkspace"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/executioncontract"
 	"github.com/Automaat/sybra/internal/gitexec"
@@ -1214,6 +1215,71 @@ func remoteBackendRepository(t *testing.T) (dir, base string) {
 		t.Fatal(err)
 	}
 	return dir, base
+}
+
+func TestPrepareRemoteWorkspaceBaseUsesSharedAncestorForDivergedWorker(t *testing.T) {
+	dir, common := remoteBackendRepository(t)
+	if err := os.WriteFile(filepath.Join(dir, "leader.txt"), []byte("leader\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := gitexec.Run(t.Context(), gitexec.Options{Dir: dir}, "add", "leader.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if err := gitexec.Run(t.Context(), gitexec.Options{Dir: dir}, "commit", "-m", "leader"); err != nil {
+		t.Fatal(err)
+	}
+	base, err := gitexec.Output(t.Context(), gitexec.Options{Dir: dir}, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := gitexec.Run(t.Context(), gitexec.Options{Dir: dir}, "switch", "-c", "worker", common); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "worker.txt"), []byte("worker\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := gitexec.Run(t.Context(), gitexec.Options{Dir: dir}, "add", "worker.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if err := gitexec.Run(t.Context(), gitexec.Options{Dir: dir}, "commit", "-m", "worker"); err != nil {
+		t.Fatal(err)
+	}
+	workerAnchor, err := gitexec.Output(t.Context(), gitexec.Options{Dir: dir}, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workerBundle := filepath.Join(t.TempDir(), "worker.bundle")
+	if err := gitexec.Run(t.Context(), gitexec.Options{Dir: dir}, "bundle", "create", workerBundle, "worker"); err != nil {
+		t.Fatal(err)
+	}
+	daemonDir := filepath.Join(t.TempDir(), "daemon")
+	if err := gitexec.Run(t.Context(), gitexec.Options{}, "clone", workerBundle, daemonDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := gitexec.Run(t.Context(), gitexec.Options{Dir: daemonDir}, "cat-file", "-e", base+"^{commit}"); err == nil {
+		t.Fatal("worker fixture unexpectedly already contains the leader-only base")
+	}
+
+	content, ref, err := prepareRemoteWorkspaceBase(t.Context(), dir, "run-diverged", base, workerAnchor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(content) == 0 || ref == nil {
+		t.Fatal("diverged worker did not receive a base bundle")
+	}
+	incoming := filepath.Join(t.TempDir(), "incoming.bundle")
+	if err := os.WriteFile(incoming, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := gitexec.Run(t.Context(), gitexec.Options{Dir: daemonDir}, "bundle", "verify", incoming); err != nil {
+		t.Fatalf("thin bundle cannot be applied to advertised worker history: %v", err)
+	}
+	if err := gitexec.Run(t.Context(), gitexec.Options{Dir: daemonDir}, "fetch", incoming, agentworkspace.BaseBundleRef("run-diverged")); err != nil {
+		t.Fatal(err)
+	}
+	if err := gitexec.Run(t.Context(), gitexec.Options{Dir: daemonDir}, "cat-file", "-e", base+"^{commit}"); err != nil {
+		t.Fatalf("leader-only base missing after thin bundle import: %v", err)
+	}
 }
 
 func syntheticDaemonCapabilities(base string, extra ...string) []string {
