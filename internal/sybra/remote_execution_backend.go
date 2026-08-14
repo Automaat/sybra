@@ -263,11 +263,19 @@ func prepareRemoteWorkspaceBase(ctx context.Context, dir, runID, baseSHA, worker
 	// candidate daemon. A leader-side remote-tracking ref says nothing about a
 	// stale daemon clone and must never be used as the prerequisite.
 	anchor := strings.TrimSpace(workerAnchor)
-	if err := gitexec.Run(ctx, gitexec.Options{Dir: dir}, "merge-base", "--is-ancestor", baseSHA, anchor); err == nil {
+	if anchor != "" && gitexec.Run(ctx, gitexec.Options{Dir: dir}, "merge-base", "--is-ancestor", baseSHA, anchor) == nil {
 		return nil, nil, nil
 	}
-	if err := gitexec.Run(ctx, gitexec.Options{Dir: dir}, "merge-base", "--is-ancestor", anchor, baseSHA); err != nil {
-		anchor = "" // absent or unrelated daemon history needs a full bundle.
+	prerequisite := ""
+	if anchor != "" {
+		// Diverged histories can still use a thin bundle. The merge base is
+		// necessarily present when the daemon has the exact advertised anchor,
+		// while excluding the anchor itself would incorrectly omit the leader's
+		// side of the divergence. Unrelated histories deliberately fall back to
+		// a self-contained bundle.
+		if shared, err := gitexec.Output(ctx, gitexec.Options{Dir: dir}, "merge-base", baseSHA, anchor); err == nil {
+			prerequisite = strings.TrimSpace(shared)
+		}
 	}
 	tmpDir, err := os.MkdirTemp("", "sybra-workspace-base-")
 	if err != nil {
@@ -283,8 +291,8 @@ func prepareRemoteWorkspaceBase(ctx context.Context, dir, runID, baseSHA, worker
 		_ = gitexec.Run(context.WithoutCancel(ctx), gitexec.Options{Dir: dir}, "update-ref", "-d", ref)
 	}()
 	bundleArgs := []string{"bundle", "create", path, ref}
-	if anchor != "" {
-		bundleArgs = append(bundleArgs, "^"+anchor)
+	if prerequisite != "" {
+		bundleArgs = append(bundleArgs, "^"+prerequisite)
 	}
 	if err := gitexec.Run(ctx, gitexec.Options{Dir: dir}, bundleArgs...); err != nil {
 		return nil, nil, fmt.Errorf("remote execution package base: %w", err)
