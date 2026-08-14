@@ -1,7 +1,10 @@
 package agentd
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +14,28 @@ import (
 	"github.com/Automaat/sybra/internal/executioncontract"
 	"github.com/Automaat/sybra/internal/workercontrol"
 )
+
+func TestLeaderClientStreamsAndVerifiesWorkspaceBaseBundle(t *testing.T) {
+	content := []byte("streamed git bundle")
+	sum := sha256.Sum256(content)
+	digest := hex.EncodeToString(sum[:])
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer token" || r.URL.Query().Get("session") != "session" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-git-bundle")
+		w.Header().Set("X-Sybra-Content-SHA256", digest)
+		_, _ = w.Write(content)
+	}))
+	t.Cleanup(server.Close)
+	client := newLeaderClient(server.URL, "token")
+	ref := executioncontract.ContentReference{ID: "run", DigestSHA256: digest, SizeBytes: int64(len(content))}
+	bundle, err := client.workspaceBaseBundle(t.Context(), "session", "run", ref)
+	if err != nil || !bytes.Equal(bundle.Content, content) || bundle.DigestSHA256 != digest {
+		t.Fatalf("bundle = %+v, %v", bundle, err)
+	}
+}
 
 func TestLeaderClientDecodesPerRunEventAcknowledgement(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

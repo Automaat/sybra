@@ -106,6 +106,10 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 		out.TerminalStatus = taskstatus.HumanRequired
 		out.TerminalReason = "checkpoint_failed: checkpoint commit failed — no durable checkpoint state created"
 	}
+	if !c.Success && c.EscalationReason == "permanent_execution_failure" {
+		out.TerminalStatus = taskstatus.Blocked
+		out.TerminalReason = "remote execution was rejected permanently; operator action is required before retry"
+	}
 	if def, ok := defs.get(); ok && e.maybeRecoverUnverifiedSkillRun(taskID, c.AgentID, spawnedStep, c.Result, def, def.StepByID(t.Workflow.CurrentStep)) {
 		e.clearAgentStep(taskID, c.AgentID)
 		return

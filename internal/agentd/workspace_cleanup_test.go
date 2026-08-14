@@ -37,7 +37,7 @@ func TestPrepareRunWorkspaceReclaimsOnlyUnprotectedRunsOnDiskPressure(t *testing
 	calls := 0
 	daemon := &Daemon{
 		cfg: Config{WorkspaceRoot: root}, logger: slog.New(slog.DiscardHandler), spool: spool,
-		prepareWorkspace: func(_ context.Context, workspaceRoot, _ string, spec executioncontract.RunSpec) (agentworkspace.Layout, error) {
+		prepareWorkspace: func(_ context.Context, workspaceRoot, _ string, spec executioncontract.RunSpec, _ []byte) (agentworkspace.Layout, error) {
 			calls++
 			if calls <= 2 {
 				return agentworkspace.Layout{}, errors.New("git clone: fatal: write error: Disk quota exceeded")
@@ -45,7 +45,7 @@ func TestPrepareRunWorkspaceReclaimsOnlyUnprotectedRunsOnDiskPressure(t *testing
 			return agentworkspace.Layout{RunRoot: filepath.Join(workspaceRoot, spec.RunID)}, nil
 		},
 	}
-	layout, release, err := daemon.prepareRunWorkspace(t.Context(), "source", executioncontract.RunSpec{RunID: "new-run"})
+	layout, release, err := daemon.prepareRunWorkspace(t.Context(), "source", executioncontract.RunSpec{RunID: "new-run"}, nil)
 	release()
 	if err != nil {
 		t.Fatalf("prepare after pressure reclaim: %v", err)
@@ -76,18 +76,27 @@ func TestPrepareRunWorkspaceDoesNotReclaimForNonPressureFailure(t *testing.T) {
 	calls := 0
 	daemon := &Daemon{
 		cfg: Config{WorkspaceRoot: root}, logger: slog.New(slog.DiscardHandler), spool: spool,
-		prepareWorkspace: func(context.Context, string, string, executioncontract.RunSpec) (agentworkspace.Layout, error) {
+		prepareWorkspace: func(context.Context, string, string, executioncontract.RunSpec, []byte) (agentworkspace.Layout, error) {
 			calls++
 			return agentworkspace.Layout{}, errors.New("immutable base is unavailable")
 		},
 	}
-	_, release, err := daemon.prepareRunWorkspace(t.Context(), "source", executioncontract.RunSpec{RunID: "new-run"})
+	_, release, err := daemon.prepareRunWorkspace(t.Context(), "source", executioncontract.RunSpec{RunID: "new-run"}, nil)
 	release()
 	if err == nil || calls != 1 {
 		t.Fatalf("non-pressure prepare error/calls = %v/%d", err, calls)
 	}
 	if _, err := os.Stat(orphan); err != nil {
 		t.Fatalf("non-pressure failure removed diagnostic workspace: %v", err)
+	}
+}
+
+func TestMovedRepositoryAnchorDoesNotPermanentlyBlockTask(t *testing.T) {
+	if permanentWorkspacePreparationFailure(agentworkspace.ErrRepositoryAnchorMoved) {
+		t.Fatal("source movement between placement and Start was classified as permanent")
+	}
+	if !permanentWorkspacePreparationFailure(agentworkspace.ErrInvalidBaseBundle) {
+		t.Fatal("invalid signed bundle was not classified as permanent")
 	}
 }
 
@@ -100,7 +109,7 @@ func TestPrepareRunWorkspaceAllowsConcurrentOrdinaryStarts(t *testing.T) {
 	unblock := make(chan struct{})
 	daemon := &Daemon{
 		cfg: Config{WorkspaceRoot: t.TempDir()}, logger: slog.New(slog.DiscardHandler), spool: spool,
-		prepareWorkspace: func(_ context.Context, _ string, _ string, spec executioncontract.RunSpec) (agentworkspace.Layout, error) {
+		prepareWorkspace: func(_ context.Context, _ string, _ string, spec executioncontract.RunSpec, _ []byte) (agentworkspace.Layout, error) {
 			entered <- spec.RunID
 			<-unblock
 			return agentworkspace.Layout{RunRoot: spec.RunID}, nil
@@ -109,7 +118,7 @@ func TestPrepareRunWorkspaceAllowsConcurrentOrdinaryStarts(t *testing.T) {
 	done := make(chan error, 2)
 	for _, runID := range []string{"run-a", "run-b"} {
 		go func() {
-			_, release, err := daemon.prepareRunWorkspace(t.Context(), "source", executioncontract.RunSpec{RunID: runID})
+			_, release, err := daemon.prepareRunWorkspace(t.Context(), "source", executioncontract.RunSpec{RunID: runID}, nil)
 			release()
 			done <- err
 		}()

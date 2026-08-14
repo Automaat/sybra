@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/providerid"
 )
 
@@ -67,5 +68,32 @@ func TestConfigRejectsUnsafeBoundaries(t *testing.T) {
 	leakedToken.SecretEnv = map[string]string{"run/example/input": "AGENTD_TOKEN"}
 	if err := leakedToken.Validate(); err == nil || !strings.Contains(err.Error(), "leader token environment") {
 		t.Fatalf("leader-token reuse error = %v", err)
+	}
+}
+
+func TestCapabilitiesAdvertiseExactRepositoryHead(t *testing.T) {
+	repository, head := testRepository(t, t.TempDir())
+	cfg := Config{Repositories: map[string]string{"repo": repository}}
+	initial := cfg.Capabilities(t.Context(), "test")
+	capabilities := strings.Join(initial, "\n")
+	if !strings.Contains(capabilities, "repository=repo") || !strings.Contains(capabilities, "repository_head:repo="+head) {
+		t.Fatalf("repository capabilities = %s", capabilities)
+	}
+	if err := os.WriteFile(filepath.Join(repository, "new.txt"), []byte("new\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := gitexec.Run(t.Context(), gitexec.Options{Dir: repository}, "add", "new.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if err := gitexec.Run(t.Context(), gitexec.Options{Dir: repository}, "commit", "-m", "move head"); err != nil {
+		t.Fatal(err)
+	}
+	newHead, err := gitexec.Output(t.Context(), gitexec.Options{Dir: repository}, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	refreshed := strings.Join(cfg.refreshRepositoryHeads(t.Context(), initial), "\n")
+	if strings.Contains(refreshed, "repository_head:repo="+head) || !strings.Contains(refreshed, "repository_head:repo="+newHead) {
+		t.Fatalf("refreshed repository capabilities = %s", refreshed)
 	}
 }

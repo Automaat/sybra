@@ -12,16 +12,16 @@ import (
 	"github.com/Automaat/sybra/internal/executioncontract"
 )
 
-func (d *Daemon) prepareRunWorkspace(ctx context.Context, source string, spec executioncontract.RunSpec) (agentworkspace.Layout, func(), error) {
+func (d *Daemon) prepareRunWorkspace(ctx context.Context, source string, spec executioncontract.RunSpec, baseBundle []byte) (agentworkspace.Layout, func(), error) {
 	prepare := d.prepareWorkspace
 	if prepare == nil {
-		prepare = agentworkspace.Prepare
+		prepare = agentworkspace.PrepareWithBaseBundle
 	}
 	// Ordinary starts share the read lock and may prepare concurrently. A
 	// pressure recovery upgrades to exclusive ownership only after all other
 	// starts have durably published their RunAgents ownership in BeforeStart.
 	d.workspaceMu.RLock()
-	layout, err := prepare(ctx, d.cfg.WorkspaceRoot, source, spec)
+	layout, err := prepare(ctx, d.cfg.WorkspaceRoot, source, spec, baseBundle)
 	if err == nil || !isWorkspacePressureError(err) {
 		return layout, d.workspaceMu.RUnlock, err
 	}
@@ -30,7 +30,7 @@ func (d *Daemon) prepareRunWorkspace(ctx context.Context, source string, spec ex
 	d.workspaceMu.Lock()
 	// Another pressure recovery may have reclaimed space while this start was
 	// waiting for exclusive ownership, so retry before deleting diagnostics.
-	layout, err = prepare(ctx, d.cfg.WorkspaceRoot, source, spec)
+	layout, err = prepare(ctx, d.cfg.WorkspaceRoot, source, spec, baseBundle)
 	if err == nil || !isWorkspacePressureError(err) {
 		return layout, d.workspaceMu.Unlock, err
 	}
@@ -44,7 +44,7 @@ func (d *Daemon) prepareRunWorkspace(ctx context.Context, source string, spec ex
 	if reclaimed == 0 {
 		return agentworkspace.Layout{}, d.workspaceMu.Unlock, err
 	}
-	layout, err = prepare(ctx, d.cfg.WorkspaceRoot, source, spec)
+	layout, err = prepare(ctx, d.cfg.WorkspaceRoot, source, spec, baseBundle)
 	return layout, d.workspaceMu.Unlock, err
 }
 

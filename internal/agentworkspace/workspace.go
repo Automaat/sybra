@@ -27,6 +27,12 @@ const (
 	unstagedPatchPath = "git/unstaged.patch"
 )
 
+var (
+	ErrImmutableBaseUnavailable = errors.New("agent workspace: immutable base is unavailable")
+	ErrInvalidBaseBundle        = errors.New("agent workspace: invalid base bundle")
+	ErrRepositoryAnchorMoved    = errors.New("agent workspace: selected repository anchor is unavailable")
+)
+
 type Layout struct {
 	RunRoot       string
 	Worktree      string
@@ -50,9 +56,25 @@ func (l Layout) Root(root executioncontract.LogicalRoot) string {
 	}
 }
 
+// BaseBundleRef is the private ref used on both sides of the execution
+// boundary. Hashing the protocol identity keeps every valid RunID safe for Git
+// ref syntax without weakening the contract's broader identity language.
+func BaseBundleRef(runID string) string {
+	digest := sha256.Sum256([]byte(runID))
+	return "refs/sybra/base-input/" + hex.EncodeToString(digest[:])
+}
+
 // Prepare clones the daemon-local source and checks out exactly BaseSHA. The
 // mutable BaseRef tip is verified only as ancestry; it is never checked out.
 func Prepare(ctx context.Context, root, source string, spec executioncontract.RunSpec) (Layout, error) {
+	return PrepareWithBaseBundle(ctx, root, source, spec, nil)
+}
+
+// PrepareWithBaseBundle imports a content-addressed thin Git bundle before
+// resolving BaseSHA. Bundle verification happens inside the disposable clone,
+// so missing prerequisites, forged refs, and corrupt bytes fail closed without
+// mutating daemon source state.
+func PrepareWithBaseBundle(ctx context.Context, root, source string, spec executioncontract.RunSpec, baseBundle []byte) (Layout, error) {
 	if err := spec.Validate(); err != nil {
 		return Layout{}, err
 	}
@@ -74,13 +96,38 @@ func Prepare(ctx context.Context, root, source string, spec executioncontract.Ru
 	}
 	defer func() { _ = os.RemoveAll(tmp) }()
 	worktree := filepath.Join(tmp, "worktree")
-	if err := gitexec.Run(ctx, gitexec.Options{}, "clone", "--no-checkout", "--no-local", "--", source, worktree); err != nil {
-		return Layout{}, fmt.Errorf("agent workspace: clone repository: %w", err)
-	}
-	if _, err := gitexec.Output(ctx, gitexec.Options{Dir: worktree}, "rev-parse", "--verify", spec.Workspace.BaseSHA+"^{commit}"); err != nil {
-		return Layout{}, fmt.Errorf("agent workspace: immutable base is unavailable: %w", err)
+	if err := cloneAtRepositoryAnchor(ctx, source, worktree, spec.Workspace.RepositoryAnchor); err != nil {
+		return Layout{}, err
 	}
 	baseRef := spec.Workspace.BaseRef
+	if ref := spec.Workspace.BaseBundle; ref != nil {
+		if int64(len(baseBundle)) != ref.SizeBytes || int64(len(baseBundle)) > executioncontract.MaxWorkspaceBaseBundleSize ||
+			!strings.EqualFold(fmt.Sprintf("%x", sha256.Sum256(baseBundle)), ref.DigestSHA256) {
+			return Layout{}, fmt.Errorf("%w: content differs from contract", ErrInvalidBaseBundle)
+		}
+		bundlePath := filepath.Join(tmp, ".base.bundle")
+		if err := os.WriteFile(bundlePath, baseBundle, 0o600); err != nil {
+			return Layout{}, err
+		}
+		if err := gitexec.Run(ctx, gitexec.Options{Dir: worktree}, "bundle", "verify", bundlePath); err != nil {
+			return Layout{}, fmt.Errorf("%w: verify: %w", ErrInvalidBaseBundle, err)
+		}
+		importedRef := BaseBundleRef(spec.RunID)
+		if err := gitexec.Run(ctx, gitexec.Options{Dir: worktree}, "fetch", bundlePath, importedRef+":"+importedRef); err != nil {
+			return Layout{}, fmt.Errorf("%w: import: %w", ErrInvalidBaseBundle, err)
+		}
+		_ = os.Remove(bundlePath)
+		resolved, err := gitexec.Output(ctx, gitexec.Options{Dir: worktree}, "rev-parse", "--verify", importedRef+"^{commit}")
+		if err != nil || resolved != spec.Workspace.BaseSHA {
+			return Layout{}, fmt.Errorf("%w: immutable base is not advertised", ErrInvalidBaseBundle)
+		}
+		baseRef = importedRef
+	} else if len(baseBundle) != 0 {
+		return Layout{}, fmt.Errorf("%w: unexpected content", ErrInvalidBaseBundle)
+	}
+	if _, err := gitexec.Output(ctx, gitexec.Options{Dir: worktree}, "rev-parse", "--verify", spec.Workspace.BaseSHA+"^{commit}"); err != nil {
+		return Layout{}, fmt.Errorf("%w: %w", ErrImmutableBaseUnavailable, err)
+	}
 	if branch, ok := strings.CutPrefix(baseRef, "refs/heads/"); ok {
 		remoteRef := "refs/remotes/origin/" + branch
 		if _, err := gitexec.Output(ctx, gitexec.Options{Dir: worktree}, "rev-parse", "--verify", remoteRef+"^{commit}"); err == nil {
@@ -130,6 +177,18 @@ func Prepare(ctx context.Context, root, source string, spec executioncontract.Ru
 		return Layout{}, err
 	}
 	return final, nil
+}
+
+func cloneAtRepositoryAnchor(ctx context.Context, source, worktree, anchor string) error {
+	if err := gitexec.Run(ctx, gitexec.Options{}, "clone", "--no-checkout", "--no-local", "--", source, worktree); err != nil {
+		return fmt.Errorf("agent workspace: clone repository: %w", err)
+	}
+	if anchor != "" {
+		if _, err := gitexec.Output(ctx, gitexec.Options{Dir: worktree}, "rev-parse", "--verify", anchor+"^{commit}"); err != nil {
+			return fmt.Errorf("%w: %w", ErrRepositoryAnchorMoved, err)
+		}
+	}
+	return nil
 }
 
 func exclude(ctx context.Context, worktree, path string) error {

@@ -74,6 +74,33 @@ func TestHandleAgentComplete_CheckpointFailedParksWithoutRetry(t *testing.T) {
 	}
 }
 
+func TestHandleAgentComplete_PermanentExecutionFailureBlocksWithoutRetry(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
+	tasks.Put(TaskInfo{ID: "t1", Status: taskstatus.InProgress, AgentMode: "headless", Workflow: &Execution{
+		WorkflowID: "test-simple", CurrentStep: "triage", State: ExecWaiting,
+	}})
+	setWorkflowAgentRoute(t, tasks, "t1", "rejected-agent", "triage")
+
+	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "rejected-agent", Success: false, EscalationReason: "permanent_execution_failure"})
+
+	if got := agents.CallCount(); got != 0 {
+		t.Fatalf("replacement agent starts = %d, want 0", got)
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != taskstatus.Blocked || got.Workflow == nil || got.Workflow.State != ExecCompleted || got.Workflow.CurrentStep != "" {
+		t.Fatalf("parked task = %+v", got)
+	}
+	if !strings.Contains(got.StatusReason, "operator action") {
+		t.Fatalf("status reason = %q", got.StatusReason)
+	}
+}
+
 func TestHandleHumanAction_NotWaiting(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()

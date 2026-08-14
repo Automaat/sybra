@@ -385,7 +385,7 @@ func TestRuntimeCapabilitiesReportBoundedSpoolUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 	daemon := &Daemon{cfg: Config{SpoolMaxBytes: 1 << 20}, spool: spool, capabilities: []string{"capacity=1"}}
-	capabilities := daemon.runtimeCapabilities()
+	capabilities := daemon.runtimeCapabilities(t.Context())
 	joined := strings.Join(capabilities, " ")
 	if !strings.Contains(joined, "spool_max_bytes=1048576") || strings.Contains(joined, "spool_bytes=0") {
 		t.Fatalf("runtime capabilities = %v", capabilities)

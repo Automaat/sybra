@@ -4,6 +4,7 @@
 package agentd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/url"
@@ -14,6 +15,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/providerid"
 	"gopkg.in/yaml.v3"
 )
@@ -126,10 +128,11 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-func (c *Config) Capabilities(build string) []string {
+func (c *Config) Capabilities(ctx context.Context, build string) []string {
 	values := []string{
 		"protocol=1", "build=" + build, "os=" + runtime.GOOS, "arch=" + runtime.GOARCH,
 		fmt.Sprintf("capacity=%d", c.Capacity), "sandbox=" + c.SandboxMode,
+		"workspace_base_bundle=true",
 		fmt.Sprintf("trusted_work=%t", c.TrustedWork),
 		fmt.Sprintf("encrypted_work=%t", c.EncryptedWork),
 	}
@@ -165,6 +168,31 @@ func (c *Config) Capabilities(build string) []string {
 	sort.Strings(repositories)
 	for _, repositoryID := range repositories {
 		values = append(values, "repository="+repositoryID)
+	}
+	return c.refreshRepositoryHeads(ctx, values)
+}
+
+func (c *Config) refreshRepositoryHeads(ctx context.Context, capabilities []string) []string {
+	values := make([]string, 0, len(capabilities)+len(c.Repositories))
+	for _, capability := range capabilities {
+		if !strings.HasPrefix(capability, "repository_head:") {
+			values = append(values, capability)
+		}
+	}
+	repositories := make([]string, 0, len(c.Repositories))
+	for repositoryID := range c.Repositories {
+		repositories = append(repositories, repositoryID)
+	}
+	sort.Strings(repositories)
+	for _, repositoryID := range repositories {
+		source := c.Repositories[repositoryID]
+		shallow, shallowErr := gitexec.Output(ctx, gitexec.Options{Dir: source}, "rev-parse", "--is-shallow-repository")
+		if shallowErr != nil || shallow == "true" {
+			continue
+		}
+		if head, err := gitexec.Output(ctx, gitexec.Options{Dir: source}, "rev-parse", "--verify", "HEAD^{commit}"); err == nil && head != "" {
+			values = append(values, "repository_head:"+repositoryID+"="+head)
+		}
 	}
 	return values
 }

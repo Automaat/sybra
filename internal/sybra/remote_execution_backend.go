@@ -2,15 +2,19 @@ package sybra
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/agentworkspace"
 	"github.com/Automaat/sybra/internal/executioncontract"
 	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/version"
@@ -208,11 +212,28 @@ func (b *leaderExecutionBackend) placementRequest(ctx context.Context, start age
 		WorkspaceRoots:  []executioncontract.LogicalRoot{executioncontract.RootWorktree, executioncontract.RootSidecar, executioncontract.RootArtifact},
 		ExpectedOutputs: append([]executioncontract.ExpectedOutput(nil), start.Config.RemoteExpectedOutputs...),
 	}
+	anchors, err := b.app.workerControl.RepositoryAnchors(ctx, t.ProjectID)
+	if err != nil {
+		return workercontrol.PlacementRequest{}, err
+	}
+	baseBundles := make([]workercontrol.WorkspaceBaseBundleInput, 0, len(anchors))
+	for _, anchor := range anchors {
+		baseBundle, baseBundleRef, bundleErr := prepareRemoteWorkspaceBase(ctx, start.Config.Dir, start.Spec.ID, baseSHA, anchor)
+		if bundleErr != nil {
+			return workercontrol.PlacementRequest{}, bundleErr
+		}
+		baseBundles = append(baseBundles, workercontrol.WorkspaceBaseBundleInput{
+			RepositoryAnchor: anchor, Reference: baseBundleRef, Content: baseBundle,
+		})
+	}
 	if clean.Config.SeedWorkingMemory {
 		metadata.WorkspaceRoots = append(metadata.WorkspaceRoots, executioncontract.RootWorkingMemory)
 	}
 	spec, err := agent.RemoteRunSpec(clean, metadata)
 	if err != nil {
+		return workercontrol.PlacementRequest{}, err
+	}
+	if err := spec.Validate(); err != nil {
 		return workercontrol.PlacementRequest{}, err
 	}
 	payload, err := json.Marshal(executioncontract.StartCommandPayload{Spec: &spec})
@@ -232,8 +253,59 @@ func (b *leaderExecutionBackend) placementRequest(ctx context.Context, start age
 		Spec: spec, Command: command, NodeOverride: t.NodeOverride, AssignedNode: t.AssignedNode,
 		AllowAffinityFallback: true, AllowLocalFallback: true, WorkType: workType,
 		RequireTrusted: b.app.isWorkProject(t.ProjectID), RequireEncrypted: b.app.isWorkProject(t.ProjectID),
-		Sandbox: start.Config.SandboxMode,
+		Sandbox: start.Config.SandboxMode, RequireRepositoryAnchor: true, WorkspaceBaseBundles: baseBundles,
 	}, nil
+}
+
+func prepareRemoteWorkspaceBase(ctx context.Context, dir, runID, baseSHA, workerAnchor string) ([]byte, *executioncontract.ContentReference, error) {
+	// Thin bundles are safe only against the exact object advertised by the
+	// candidate daemon. A leader-side remote-tracking ref says nothing about a
+	// stale daemon clone and must never be used as the prerequisite.
+	anchor := strings.TrimSpace(workerAnchor)
+	if err := gitexec.Run(ctx, gitexec.Options{Dir: dir}, "merge-base", "--is-ancestor", baseSHA, anchor); err == nil {
+		return nil, nil, nil
+	}
+	if err := gitexec.Run(ctx, gitexec.Options{Dir: dir}, "merge-base", "--is-ancestor", anchor, baseSHA); err != nil {
+		anchor = "" // absent or unrelated daemon history needs a full bundle.
+	}
+	tmp, err := os.CreateTemp("", "sybra-workspace-base-*.bundle")
+	if err != nil {
+		return nil, nil, err
+	}
+	path := tmp.Name()
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(path)
+		return nil, nil, err
+	}
+	_ = os.Remove(path) // git bundle requires a path it can create itself.
+	defer func() { _ = os.Remove(path) }()
+	ref := agentworkspace.BaseBundleRef(runID)
+	if err := gitexec.Run(ctx, gitexec.Options{Dir: dir}, "update-ref", ref, baseSHA); err != nil {
+		return nil, nil, fmt.Errorf("remote execution stage base ref: %w", err)
+	}
+	defer func() {
+		_ = gitexec.Run(context.WithoutCancel(ctx), gitexec.Options{Dir: dir}, "update-ref", "-d", ref)
+	}()
+	bundleArgs := []string{"bundle", "create", path, ref}
+	if anchor != "" {
+		bundleArgs = append(bundleArgs, "^"+anchor)
+	}
+	if err := gitexec.Run(ctx, gitexec.Options{Dir: dir}, bundleArgs...); err != nil {
+		return nil, nil, fmt.Errorf("remote execution package base: %w", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	if info.Size() <= 0 || info.Size() > executioncontract.MaxWorkspaceBaseBundleSize {
+		return nil, nil, fmt.Errorf("remote execution base bundle size %d exceeds limit %d", info.Size(), executioncontract.MaxWorkspaceBaseBundleSize)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	digest := sha256.Sum256(content)
+	return content, &executioncontract.ContentReference{ID: runID, DigestSHA256: hex.EncodeToString(digest[:]), SizeBytes: int64(len(content))}, nil
 }
 
 func (b *leaderExecutionBackend) relay(ctx context.Context, handle agent.ExecutionHandle, run *remoteExecution, after uint64) {
@@ -317,6 +389,7 @@ func (b *leaderExecutionBackend) completeAfterHandback(ctx context.Context, hand
 		State         executioncontract.TerminalState `json:"state"`
 		Error         string                          `json:"error"`
 		ArtifactState executioncontract.ArtifactState `json:"artifactState"`
+		Permanent     bool                            `json:"permanent,omitempty"`
 	}
 	if err := json.Unmarshal(event.Payload, &terminal); err != nil {
 		run.emit(ctx, handle, agent.ExecutionEvent{Kind: agent.ExecutionCompleted, Err: err})
@@ -363,7 +436,7 @@ func (b *leaderExecutionBackend) completeAfterHandback(ctx context.Context, hand
 	default:
 		completionErr = errors.New(firstNonBlank(terminal.Error, "remote execution failed"))
 	}
-	run.emit(ctx, handle, agent.ExecutionEvent{Kind: agent.ExecutionCompleted, Err: completionErr})
+	run.emit(ctx, handle, agent.ExecutionEvent{Kind: agent.ExecutionCompleted, Err: completionErr, PermanentFailure: terminal.Permanent})
 	return true
 }
 

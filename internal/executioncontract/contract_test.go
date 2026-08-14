@@ -160,6 +160,25 @@ func TestValidationRejectsLeaderPathsAndCredentials(t *testing.T) {
 	}
 }
 
+func TestRunSpecValidatesSelectedRepositoryAnchor(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "v1-run-spec.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := DecodeRunSpec(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.Workspace.RepositoryAnchor = "not-an-object-id"
+	if err := spec.Validate(); err == nil {
+		t.Fatal("malformed selected repository anchor was accepted")
+	}
+	spec.Workspace.RepositoryAnchor = strings.Repeat("a", 40)
+	if err := spec.Validate(); err != nil {
+		t.Fatalf("valid selected repository anchor: %v", err)
+	}
+}
+
 func TestEnvironmentBindingRejectsNonEnvironmentNames(t *testing.T) {
 	for _, name := range []string{"../grant", "A/B", "A=B", "1TOKEN", "A B"} {
 		if err := (EnvironmentBinding{Name: name, Value: "value"}).Validate(); err == nil {

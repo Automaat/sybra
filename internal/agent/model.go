@@ -1354,6 +1354,11 @@ const EscalationReasonCheckpoint = "checkpoint"
 // EscalationReasonCheckpointFailed marks a turn-ceiling run whose checkpoint commit failed.
 const EscalationReasonCheckpointFailed = "checkpoint_failed"
 
+// EscalationReasonPermanentExecution marks a backend rejection which cannot
+// heal by rerunning the same workflow effect (for example a corrupt immutable
+// workspace input). The workflow parks instead of creating a retry storm.
+const EscalationReasonPermanentExecution = "permanent_execution_failure"
+
 // IsCheckpointEscalation reports whether reason records a turn-ceiling
 // checkpoint outcome. Both values steer terminal handling — one reschedules the
 // handoff, the other stamps errCheckpointCommitFailed — so neither may be

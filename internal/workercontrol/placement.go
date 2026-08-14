@@ -2,7 +2,9 @@ package workercontrol
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,20 +24,32 @@ var ErrNoEligibleWorker = errors.New("worker control: no eligible worker")
 // existing boards retain locality without turning a temporarily absent node
 // into a permanent dispatch failure.
 type PlacementRequest struct {
-	Spec                  executioncontract.RunSpec         `json:"spec"`
-	Command               executioncontract.CommandEnvelope `json:"command"`
-	NodeOverride          string                            `json:"nodeOverride,omitempty"`
-	AssignedNode          string                            `json:"assignedNode,omitempty"`
-	AllowAffinityFallback bool                              `json:"allowAffinityFallback"`
-	AllowLocalFallback    bool                              `json:"allowLocalFallback"`
-	WorkType              string                            `json:"workType,omitempty"`
-	RequireTrusted        bool                              `json:"requireTrusted,omitempty"`
-	RequireEncrypted      bool                              `json:"requireEncrypted,omitempty"`
-	OS                    string                            `json:"os,omitempty"`
-	Architecture          string                            `json:"architecture,omitempty"`
-	Labels                map[string]string                 `json:"labels,omitempty"`
-	Sandbox               string                            `json:"sandbox,omitempty"`
-	WarmCacheHints        []string                          `json:"warmCacheHints,omitempty"`
+	Spec                    executioncontract.RunSpec         `json:"spec"`
+	Command                 executioncontract.CommandEnvelope `json:"command"`
+	NodeOverride            string                            `json:"nodeOverride,omitempty"`
+	AssignedNode            string                            `json:"assignedNode,omitempty"`
+	AllowAffinityFallback   bool                              `json:"allowAffinityFallback"`
+	AllowLocalFallback      bool                              `json:"allowLocalFallback"`
+	WorkType                string                            `json:"workType,omitempty"`
+	RequireTrusted          bool                              `json:"requireTrusted,omitempty"`
+	RequireEncrypted        bool                              `json:"requireEncrypted,omitempty"`
+	OS                      string                            `json:"os,omitempty"`
+	Architecture            string                            `json:"architecture,omitempty"`
+	Labels                  map[string]string                 `json:"labels,omitempty"`
+	Sandbox                 string                            `json:"sandbox,omitempty"`
+	WarmCacheHints          []string                          `json:"warmCacheHints,omitempty"`
+	RequireRepositoryAnchor bool                              `json:"requireRepositoryAnchor,omitempty"`
+	// WorkspaceBaseBundles are leader-only transport inputs keyed by the exact
+	// repository HEAD advertised by a worker. Descriptors participate in stable
+	// request identity; bytes do not. Worker control selects and persists one
+	// variant atomically with the worker reservation.
+	WorkspaceBaseBundles []WorkspaceBaseBundleInput `json:"workspaceBaseBundles,omitempty"`
+}
+
+type WorkspaceBaseBundleInput struct {
+	RepositoryAnchor string                              `json:"repositoryAnchor"`
+	Reference        *executioncontract.ContentReference `json:"reference,omitempty"`
+	Content          []byte                              `json:"-"`
 }
 
 type PlacementCandidate struct {
@@ -68,6 +82,9 @@ type placementSession struct {
 // concurrent schedulers on postgres; sqlite uses its immediate transaction.
 func (s *Service) ScheduleStart(ctx context.Context, request PlacementRequest) (Placement, error) {
 	if err := validateStartDelivery(&request.Spec, request.Command); err != nil {
+		return Placement{}, err
+	}
+	if err := validateWorkspaceBaseBundles(request); err != nil {
 		return Placement{}, err
 	}
 	var result Placement
@@ -136,6 +153,63 @@ func (s *Service) ScheduleStart(ctx context.Context, request PlacementRequest) (
 		s.notify()
 	}
 	return result, nil
+}
+
+func validateWorkspaceBaseBundle(ref *executioncontract.ContentReference, content []byte) error {
+	if ref == nil {
+		if len(content) != 0 {
+			return invalidf("workspace base bundle has no contract reference")
+		}
+		return nil
+	}
+	if int64(len(content)) != ref.SizeBytes || int64(len(content)) > executioncontract.MaxWorkspaceBaseBundleSize {
+		return invalidf("workspace base bundle size differs from contract")
+	}
+	digest := fmt.Sprintf("%x", sha256.Sum256(content))
+	if !strings.EqualFold(digest, ref.DigestSHA256) {
+		return invalidf("workspace base bundle digest differs from contract")
+	}
+	return nil
+}
+
+func validateWorkspaceBaseBundles(request PlacementRequest) error {
+	seen := make(map[string]struct{}, len(request.WorkspaceBaseBundles))
+	for i := range request.WorkspaceBaseBundles {
+		input := &request.WorkspaceBaseBundles[i]
+		anchor := strings.TrimSpace(input.RepositoryAnchor)
+		if !validRepositoryAnchor(anchor) {
+			return invalidf("workspace base bundle repository anchor is invalid")
+		}
+		if _, ok := seen[anchor]; ok {
+			return invalidf("workspace base bundle repository anchor is duplicated")
+		}
+		seen[anchor] = struct{}{}
+		if input.Reference != nil && input.Reference.ID != request.Spec.RunID {
+			return invalidf("workspace base bundle belongs to another run")
+		}
+		if err := validateWorkspaceBaseBundle(input.Reference, input.Content); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validRepositoryAnchor(anchor string) bool {
+	if len(anchor) != 40 && len(anchor) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(anchor)
+	return err == nil
+}
+
+func workspaceBaseBundleFor(session placementSession, request PlacementRequest) (WorkspaceBaseBundleInput, bool) {
+	anchor := session.capabilities.one("repository_head:" + request.Spec.Workspace.RepositoryID)
+	for i := range request.WorkspaceBaseBundles {
+		if request.WorkspaceBaseBundles[i].RepositoryAnchor == anchor {
+			return request.WorkspaceBaseBundles[i], true
+		}
+	}
+	return WorkspaceBaseBundleInput{}, false
 }
 
 func (s *Service) placementSessionsTx(ctx context.Context, tx *sql.Tx, request PlacementRequest) ([]placementSession, error) {
@@ -222,6 +296,13 @@ func scorePlacement(session placementSession, request PlacementRequest) Placemen
 	}
 	if request.RequireEncrypted && !session.capabilities.flags["encrypted_work"] {
 		reject("encrypted work capability is required")
+	}
+	if request.RequireRepositoryAnchor {
+		if !session.capabilities.flags["workspace_base_bundle"] {
+			reject("workspace base bundle capability is required")
+		} else if _, ok := workspaceBaseBundleFor(session, request); !ok {
+			reject("workspace base bundle does not match repository anchor")
+		}
 	}
 	provider := request.Spec.Provider.Provider
 	if !session.capabilities.has("provider", provider) {
@@ -349,11 +430,31 @@ func (s *Service) reserveLocalFallbackTx(ctx context.Context, tx *sql.Tx, reques
 }
 
 func (s *Service) reserveStartTx(ctx context.Context, tx *sql.Tx, selected placementSession, request PlacementRequest) (Command, error) {
-	specJSON, err := json.Marshal(request.Spec)
+	selectedSpec := request.Spec
+	var selectedBundle []byte
+	if len(request.WorkspaceBaseBundles) > 0 {
+		input, ok := workspaceBaseBundleFor(selected, request)
+		if !ok {
+			return Command{}, invalidf("selected worker has no matching workspace base bundle")
+		}
+		selectedSpec.Workspace.BaseBundle = input.Reference
+		selectedSpec.Workspace.RepositoryAnchor = input.RepositoryAnchor
+		selectedBundle = input.Content
+	}
+	selectedCommand := request.Command
+	payload, err := json.Marshal(executioncontract.StartCommandPayload{Spec: &selectedSpec})
 	if err != nil {
 		return Command{}, err
 	}
-	commandJSON, err := json.Marshal(request.Command)
+	selectedCommand.Payload = payload
+	if err := validateStartDelivery(&selectedSpec, selectedCommand); err != nil {
+		return Command{}, err
+	}
+	specJSON, err := json.Marshal(selectedSpec)
+	if err != nil {
+		return Command{}, err
+	}
+	commandJSON, err := json.Marshal(selectedCommand)
 	if err != nil {
 		return Command{}, err
 	}
@@ -368,10 +469,10 @@ func (s *Service) reserveStartTx(ctx context.Context, tx *sql.Tx, selected place
 		return Command{}, err
 	}
 	_, err = tx.ExecContext(ctx, s.db.Rebind(`INSERT INTO remote_runs
-		(run_id, worker_id, session_id, effect_id, task_id, task_generation, workflow_id, workflow_generation, step_id, run_spec_json, state, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)`), request.Spec.RunID, selected.workerID, selected.sessionID,
-		request.Spec.EffectID, request.Spec.Fence.TaskID, request.Spec.Fence.TaskGeneration, request.Spec.Fence.WorkflowID,
-		request.Spec.Fence.WorkflowGeneration, request.Spec.Fence.StepID, string(specJSON), db.TimeValue(s.now().UTC()))
+		(run_id, worker_id, session_id, effect_id, task_id, task_generation, workflow_id, workflow_generation, step_id, run_spec_json, state, updated_at, workspace_base_bundle)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)`), request.Spec.RunID, selected.workerID, selected.sessionID,
+		selectedSpec.EffectID, selectedSpec.Fence.TaskID, selectedSpec.Fence.TaskGeneration, selectedSpec.Fence.WorkflowID,
+		selectedSpec.Fence.WorkflowGeneration, selectedSpec.Fence.StepID, string(specJSON), db.TimeValue(s.now().UTC()), nullableBytes(selectedBundle))
 	if err != nil {
 		return Command{}, err
 	}
@@ -385,9 +486,54 @@ func (s *Service) reserveStartTx(ctx context.Context, tx *sql.Tx, selected place
 	sequence := max(lastAck, maximum) + 1
 	_, err = tx.ExecContext(ctx, s.db.Rebind(`INSERT INTO worker_commands
 		(session_id, sequence, command_id, run_id, idempotency_key, command_type, payload_json, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`), selected.sessionID, sequence, request.Command.CommandID, request.Spec.RunID,
-		request.Command.IdempotencyKey, request.Command.Type, string(commandJSON), db.TimeValue(s.now().UTC()))
-	return Command{Sequence: sequence, Envelope: request.Command}, err
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`), selected.sessionID, sequence, selectedCommand.CommandID, selectedSpec.RunID,
+		selectedCommand.IdempotencyKey, selectedCommand.Type, string(commandJSON), db.TimeValue(s.now().UTC()))
+	return Command{Sequence: sequence, Envelope: selectedCommand}, err
+}
+
+// RepositoryAnchors returns the exact repository HEADs advertised by live,
+// active workers. The opaque repository identity stays on the leader; daemon
+// paths and remotes never cross the protocol boundary.
+func (s *Service) RepositoryAnchors(ctx context.Context, repositoryID string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, s.db.Rebind(`SELECT capabilities_json FROM worker_sessions WHERE state = 'active' AND lease_expires_at > ? ORDER BY worker_id, session_id`), db.TimeValue(s.now().UTC()))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	unique := make(map[string]struct{})
+	for rows.Next() {
+		var encoded string
+		if err := rows.Scan(&encoded); err != nil {
+			return nil, err
+		}
+		var values []string
+		if err := json.Unmarshal([]byte(encoded), &values); err != nil {
+			return nil, err
+		}
+		capabilities := parseCapabilities(values)
+		if !capabilities.has("repository", repositoryID) {
+			continue
+		}
+		if anchor := capabilities.one("repository_head:" + repositoryID); validRepositoryAnchor(anchor) {
+			unique[anchor] = struct{}{}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	anchors := make([]string, 0, len(unique))
+	for anchor := range unique {
+		anchors = append(anchors, anchor)
+	}
+	slices.Sort(anchors)
+	return anchors, nil
+}
+
+func nullableBytes(content []byte) any {
+	if len(content) == 0 {
+		return nil
+	}
+	return content
 }
 
 type capabilitySet struct {

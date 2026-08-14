@@ -2,6 +2,8 @@ package workercontrol
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"math"
@@ -9,6 +11,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -17,6 +20,62 @@ import (
 	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/testutil/dbtest"
 )
+
+func TestPlacementPersistsWorkspaceBaseBundleForOwningSession(t *testing.T) {
+	service := New(dbtest.SQLite(t))
+	anchor := strings.Repeat("a", 40)
+	registerPlacementWorker(t, service, "node-base", []string{"capacity=1", "provider=claude", "provider_health:claude=healthy", "sandbox=enforce", "workspace_base_bundle=true", "repository=repo", "repository_head:repo=" + anchor})
+	request := placementRequest(t, "run-base", "effect-base")
+	content := []byte("thin git bundle")
+	digest := sha256.Sum256(content)
+	ref := &executioncontract.ContentReference{
+		ID: request.Spec.RunID, DigestSHA256: hex.EncodeToString(digest[:]), SizeBytes: int64(len(content)),
+	}
+	request.RequireRepositoryAnchor = true
+	request.WorkspaceBaseBundles = []WorkspaceBaseBundleInput{{RepositoryAnchor: anchor, Reference: ref, Content: content}}
+	placed, err := service.ScheduleStart(t.Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var selected executioncontract.StartCommandPayload
+	if err := json.Unmarshal(placed.Command.Envelope.Payload, &selected); err != nil || selected.Spec == nil || selected.Spec.Workspace.RepositoryAnchor != anchor || selected.Spec.Workspace.BaseBundle == nil || selected.Spec.Workspace.BaseBundle.DigestSHA256 != ref.DigestSHA256 {
+		t.Fatalf("selected start payload = %+v, %v", selected, err)
+	}
+	loaded, err := service.LoadWorkspaceBaseBundle(t.Context(), placed.SessionID, request.Spec.RunID)
+	if err != nil || loaded.RunID != request.Spec.RunID || loaded.DigestSHA256 != ref.DigestSHA256 || !bytes.Equal(loaded.Content, content) {
+		t.Fatalf("loaded bundle = %+v, %v", loaded, err)
+	}
+	other := registerPlacementWorker(t, service, "node-other", []string{"capacity=1", "provider=claude", "provider_health:claude=healthy"})
+	if _, err := service.LoadWorkspaceBaseBundle(t.Context(), other.SessionID, request.Spec.RunID); !errors.Is(err, ErrStaleSession) {
+		t.Fatalf("unrelated session load = %v, want ErrStaleSession", err)
+	}
+	if err := service.AckCommands(t.Context(), placed.SessionID, placed.Command.Sequence); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.LoadWorkspaceBaseBundle(t.Context(), placed.SessionID, request.Spec.RunID); err == nil {
+		t.Fatal("acknowledged Start retained the workspace base bundle")
+	}
+
+	tampered := placementRequest(t, "run-base-tampered", "effect-base-tampered")
+	tampered.RequireRepositoryAnchor = true
+	tampered.WorkspaceBaseBundles = []WorkspaceBaseBundleInput{{RepositoryAnchor: anchor, Reference: &executioncontract.ContentReference{ID: tampered.Spec.RunID, DigestSHA256: hex.EncodeToString(digest[:]), SizeBytes: int64(len(content))}, Content: []byte("different bytes")}}
+	if _, err := service.ScheduleStart(t.Context(), tampered); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("tampered bundle placement = %v, want ErrInvalidRequest", err)
+	}
+}
+
+func TestPlacementRejectsWorkspaceBundleForDifferentRepositoryAnchor(t *testing.T) {
+	service := New(dbtest.SQLite(t))
+	workerAnchor := strings.Repeat("a", 40)
+	registerPlacementWorker(t, service, "node-base", []string{"capacity=1", "provider=claude", "provider_health:claude=healthy", "workspace_base_bundle=true", "repository=repo", "repository_head:repo=" + workerAnchor})
+	request := placementRequest(t, "run-base-mismatch", "effect-base-mismatch")
+	request.RequireRepositoryAnchor = true
+	request.WorkspaceBaseBundles = []WorkspaceBaseBundleInput{{RepositoryAnchor: strings.Repeat("b", 40)}}
+	placed, err := service.ScheduleStart(t.Context(), request)
+	if !errors.Is(err, ErrNoEligibleWorker) || len(placed.Candidates) != 1 || !slices.Contains(placed.Candidates[0].Reasons, "workspace base bundle does not match repository anchor") {
+		t.Fatalf("mismatched anchor placement = %+v, %v", placed, err)
+	}
+}
 
 func TestPlacementSharesCapacityAndReleasesOnTerminal(t *testing.T) {
 	dbtest.Each(t, func(t *testing.T, engine dbtest.Engine) {

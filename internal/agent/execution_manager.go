@@ -191,6 +191,9 @@ func (m *Manager) emitExecutionEvent(ctx context.Context, _ ExecutionHandle, eve
 		}
 		return false
 	case ExecutionCompleted:
+		if event.PermanentFailure {
+			a.SetEscalationReason(EscalationReasonPermanentExecution)
+		}
 		if event.Err != nil {
 			a.SetExitErr(event.Err)
 		} else {

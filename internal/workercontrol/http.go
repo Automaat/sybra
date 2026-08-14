@@ -22,11 +22,25 @@ func (s *Service) Handler() http.Handler {
 	mux.HandleFunc("POST /worker/v1/events/{runID}/ack", s.handleAckEvents)
 	mux.HandleFunc("POST /worker/v1/artifacts", s.handleArtifact)
 	mux.HandleFunc("POST /worker/v1/runs/{runID}/grant", s.handleRunGrant)
+	mux.HandleFunc("GET /worker/v1/runs/{runID}/base-bundle", s.handleWorkspaceBaseBundle)
 	mux.HandleFunc("POST /worker/v1/runs/schedule", s.handleScheduleRun)
 	mux.HandleFunc("POST /worker/v1/drain", s.handleDrain)
 	mux.HandleFunc("POST /worker/v1/disable", s.handleDisable)
 	mux.HandleFunc("GET /worker/v1/diagnostics", s.handleDiagnostics)
 	return mux
+}
+
+func (s *Service) handleWorkspaceBaseBundle(w http.ResponseWriter, r *http.Request) {
+	bundle, err := s.LoadWorkspaceBaseBundle(r.Context(), r.URL.Query().Get("session"), r.PathValue("runID"))
+	if err != nil {
+		respond(w, map[string]any{}, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-git-bundle")
+	w.Header().Set("X-Sybra-Content-SHA256", bundle.DigestSHA256)
+	w.Header().Set("Content-Length", strconv.Itoa(len(bundle.Content)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(bundle.Content)
 }
 
 func (s *Service) handleScheduleRun(w http.ResponseWriter, r *http.Request) {

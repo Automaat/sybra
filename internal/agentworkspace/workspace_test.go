@@ -2,6 +2,7 @@ package agentworkspace
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -128,6 +129,16 @@ func TestPrepareResolvesNonDefaultBranchThroughOrigin(t *testing.T) {
 	head, err := gitexec.Output(t.Context(), gitexec.Options{Dir: layout.Worktree}, "rev-parse", "HEAD")
 	if err != nil || head != base {
 		t.Fatalf("release checkout = %q, %v", head, err)
+	}
+}
+
+func TestPrepareRejectsMovedSelectedRepositoryAnchorAsRetryable(t *testing.T) {
+	source, base := repository(t)
+	spec := runSpec(base, false)
+	spec.Workspace.RepositoryAnchor = strings.Repeat("f", 40)
+	_, err := PrepareWithBaseBundle(t.Context(), filepath.Join(t.TempDir(), "runs"), source, spec, nil)
+	if !errors.Is(err, ErrRepositoryAnchorMoved) || errors.Is(err, ErrInvalidBaseBundle) {
+		t.Fatalf("moved repository anchor error = %v", err)
 	}
 }
 
