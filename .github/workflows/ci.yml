@@ -53,6 +53,10 @@ jobs:
       - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
 
       - name: Run sandbox tests
+        # shell: bash for -o pipefail. Without it the step reports tee's exit
+        # status, so a failing suite reads as a passing step — which is what
+        # this job did on its first run, over a real darwin failure.
+        shell: bash
         run: go test -race -timeout 10m ./internal/agent/... 2>&1 | tee darwin-tests.log
 
       - name: Fail when the sandbox itself was unavailable
@@ -61,6 +65,7 @@ jobs:
         # that names a missing sandbox counts: a test needing a GPG key or a
         # provider CLI legitimately skips on a runner, and failing on those
         # would make the job noise rather than a signal.
+        shell: bash
         run: |
           go test -run 'TestSandboxEnforce|TestOneShotCommand|TestSandboxBreakout' -v ./internal/agent/ \
             2>&1 | tee darwin-sandbox.log
