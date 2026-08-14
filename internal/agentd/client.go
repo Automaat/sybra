@@ -3,6 +3,8 @@ package agentd
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/executioncontract"
 	"github.com/Automaat/sybra/internal/workercontrol"
 )
 
@@ -133,4 +136,43 @@ func (c *leaderClient) runGrant(ctx context.Context, sessionID, runID string) (w
 	var grant workercontrol.RunGrant
 	err := c.call(ctx, http.MethodPost, "/worker/v1/runs/"+url.PathEscape(runID)+"/grant", map[string]string{"sessionId": sessionID}, &grant)
 	return grant, err
+}
+
+func (c *leaderClient) workspaceBaseBundle(ctx context.Context, sessionID, runID string, ref executioncontract.ContentReference) (workercontrol.WorkspaceBaseBundle, error) {
+	query := url.Values{"session": {sessionID}}
+	path := "/worker/v1/runs/" + url.PathEscape(runID) + "/base-bundle?" + query.Encode()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, http.NoBody)
+	if err != nil {
+		return workercontrol.WorkspaceBaseBundle{}, err
+	}
+	request.Header.Set("Authorization", "Bearer "+c.token)
+	// Bundle transfer is bounded by the signed contract size, but uses a
+	// size-aware deadline instead of the small-control-request timeout. This
+	// keeps a valid 64 MiB transfer viable on ordinary remote links.
+	timeout := 30*time.Second + time.Duration(ref.SizeBytes/(1<<20)+1)*5*time.Second
+	timeout = min(timeout, 10*time.Minute)
+	client := *c.http
+	client.Timeout = timeout
+	response, err := client.Do(request)
+	if err != nil {
+		return workercontrol.WorkspaceBaseBundle{}, err
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		limited, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+		return workercontrol.WorkspaceBaseBundle{}, &leaderHTTPError{method: http.MethodGet, path: path, status: response.StatusCode, detail: strings.TrimSpace(string(limited))}
+	}
+	content, err := io.ReadAll(io.LimitReader(response.Body, executioncontract.MaxWorkspaceBaseBundleSize+1))
+	if err != nil {
+		return workercontrol.WorkspaceBaseBundle{}, err
+	}
+	if int64(len(content)) != ref.SizeBytes || int64(len(content)) > executioncontract.MaxWorkspaceBaseBundleSize {
+		return workercontrol.WorkspaceBaseBundle{}, errors.New("workspace base bundle size differs from contract")
+	}
+	sum := sha256.Sum256(content)
+	digest := hex.EncodeToString(sum[:])
+	if !strings.EqualFold(digest, ref.DigestSHA256) || !strings.EqualFold(response.Header.Get("X-Sybra-Content-SHA256"), ref.DigestSHA256) {
+		return workercontrol.WorkspaceBaseBundle{}, errors.New("workspace base bundle digest differs from contract")
+	}
+	return workercontrol.WorkspaceBaseBundle{RunID: runID, DigestSHA256: digest, Content: content}, nil
 }

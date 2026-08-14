@@ -251,22 +251,22 @@ func TestRemoteReceiptLegacyTagBackwardCompat(t *testing.T) {
 }
 
 func TestLeaderExecutionBackendReclaimsExistingEffectAfterRestart(t *testing.T) {
+	dir, base := remoteBackendRepository(t)
 	database := dbtest.SQLite(t)
 	control := workercontrol.New(database)
 	session, err := control.Register(t.Context(), workercontrol.RegisterRequest{
-		WorkerID: "daemon-a", Capabilities: []string{"capacity=1", "provider=claude", "provider_health:claude=healthy", "trusted_work=true", "encrypted_work=true"},
+		WorkerID: "daemon-a", Capabilities: syntheticDaemonCapabilities(base),
 		Negotiation: executioncontract.Negotiation{ProtocolMin: executioncontract.CurrentVersion(), ProtocolMax: executioncontract.CurrentVersion(), BuildVersion: "worker-test"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := control.Register(t.Context(), workercontrol.RegisterRequest{
-		WorkerID: "daemon-b", Capabilities: []string{"capacity=1", "provider=claude", "provider_health:claude=healthy", "trusted_work=true", "encrypted_work=true"},
+		WorkerID: "daemon-b", Capabilities: syntheticDaemonCapabilities(base),
 		Negotiation: executioncontract.Negotiation{ProtocolMin: executioncontract.CurrentVersion(), ProtocolMax: executioncontract.CurrentVersion(), BuildVersion: "worker-test"},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	dir, _ := remoteBackendRepository(t)
 	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatal(err)
@@ -437,16 +437,16 @@ func (s *recordingExecutionSink) EmitExecutionEvent(_ context.Context, _ agent.E
 }
 
 func TestLeaderExecutionBackendRelaysOneCanonicalCompletion(t *testing.T) {
+	dir, base := remoteBackendRepository(t)
 	database := dbtest.SQLite(t)
 	control := workercontrol.New(database)
 	session, err := control.Register(t.Context(), workercontrol.RegisterRequest{
-		WorkerID: "daemon-a", Capabilities: []string{"capacity=1", "provider=claude", "provider_health:claude=healthy", "sandbox=enforce", "trusted_work=true", "encrypted_work=true"},
+		WorkerID: "daemon-a", Capabilities: syntheticDaemonCapabilities(base, "sandbox=enforce"),
 		Negotiation: executioncontract.Negotiation{ProtocolMin: executioncontract.CurrentVersion(), ProtocolMax: executioncontract.CurrentVersion(), BuildVersion: "worker-test"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir, base := remoteBackendRepository(t)
 	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatal(err)
@@ -642,17 +642,17 @@ func TestLeaderExecutionBackendUsesSingleAdmissionBeforeClaimingLocalFallback(t 
 }
 
 func TestLeaderManagerCompletesPartitionRecoveryOnceAcrossTwoWorkers(t *testing.T) {
+	dir, base := remoteBackendRepository(t)
 	database := dbtest.SQLite(t)
 	control := workercontrol.New(database)
 	for _, worker := range []string{"daemon-a", "daemon-b"} {
 		if _, err := control.Register(t.Context(), workercontrol.RegisterRequest{
-			WorkerID: worker, Capabilities: []string{"capacity=1", "provider=claude", "provider_health:claude=healthy", "sandbox=enforce", "trusted_work=true", "encrypted_work=true"},
+			WorkerID: worker, Capabilities: syntheticDaemonCapabilities(base, "sandbox=enforce"),
 			Negotiation: executioncontract.Negotiation{ProtocolMin: executioncontract.CurrentVersion(), ProtocolMax: executioncontract.CurrentVersion(), BuildVersion: "worker-test"},
 		}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	dir, _ := remoteBackendRepository(t)
 	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatal(err)
@@ -757,6 +757,31 @@ func TestLeaderTwoDaemonsPartitionCompletesProviderAndWorkflowExactlyOnce(t *tes
 	}
 	root := t.TempDir()
 	dir, _ := remoteBackendRepository(t)
+	// Snapshot the daemon source before creating a leader-only commit. The
+	// provider can start only if worker control transfers and the daemon imports
+	// the content-addressed base bundle; sharing dir would mask this boundary.
+	daemonSource := filepath.Join(root, "daemon-source")
+	if err := gitexec.Run(t.Context(), gitexec.Options{}, "clone", "--no-local", "--", dir, daemonSource); err != nil {
+		t.Fatal(err)
+	}
+	if err := gitexec.Run(t.Context(), gitexec.Options{Dir: dir}, "remote", "add", "origin", daemonSource); err != nil {
+		t.Fatal(err)
+	}
+	if err := gitexec.Run(t.Context(), gitexec.Options{Dir: dir}, "fetch", "origin"); err != nil {
+		t.Fatal(err)
+	}
+	if err := gitexec.Run(t.Context(), gitexec.Options{Dir: dir}, "remote", "set-head", "origin", "-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "leader-only.txt"), []byte("not pushed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := gitexec.Run(t.Context(), gitexec.Options{Dir: dir}, "add", "leader-only.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if err := gitexec.Run(t.Context(), gitexec.Options{Dir: dir}, "commit", "-m", "leader-only base"); err != nil {
+		t.Fatal(err)
+	}
 	bin := filepath.Join(root, "bin")
 	if err := os.Mkdir(bin, 0o700); err != nil {
 		t.Fatal(err)
@@ -799,7 +824,7 @@ printf '%s\n' '{"type":"result","result":"done","session_id":"partition-session"
 			Providers: []string{providerid.Claude}, SandboxMode: "report", LeaseSeconds: 30, PollSeconds: 1,
 			TrustedWork: true, EncryptedWork: true,
 			WorkspaceRoot: filepath.Join(root, node, "workspaces"), StateRoot: filepath.Join(root, node, "state"),
-			SpoolMaxBytes: 1 << 20, Repositories: map[string]string{"repo": dir},
+			SpoolMaxBytes: 1 << 20, Repositories: map[string]string{"repo": daemonSource},
 		}, slog.New(slog.DiscardHandler))
 		if err != nil {
 			t.Fatal(err)
@@ -944,15 +969,15 @@ func TestDaemonExecutionBackendCommonConformance(t *testing.T) {
 
 func daemonCommonConformanceFixture(t *testing.T, emit func(backendconformance.Event)) backendconformance.Fixture {
 	t.Helper()
+	dir, base := remoteBackendRepository(t)
 	database := dbtest.SQLite(t)
 	control := workercontrol.New(database)
 	if _, err := control.Register(t.Context(), workercontrol.RegisterRequest{
-		WorkerID: "daemon-conformance", Capabilities: []string{"capacity=1", "provider=claude", "provider_health:claude=healthy", "trusted_work=true", "encrypted_work=true"},
+		WorkerID: "daemon-conformance", Capabilities: syntheticDaemonCapabilities(base),
 		Negotiation: executioncontract.Negotiation{ProtocolMin: executioncontract.CurrentVersion(), ProtocolMax: executioncontract.CurrentVersion(), BuildVersion: "worker-test"},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	dir, _ := remoteBackendRepository(t)
 	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatal(err)
@@ -1065,16 +1090,16 @@ func daemonConformanceEventKind(kind agent.ExecutionEventKind) string {
 }
 
 func TestLeaderExecutionBackendVirtualizesSidecarPathAndFollowsResumedSession(t *testing.T) {
+	dir, base := remoteBackendRepository(t)
 	database := dbtest.SQLite(t)
 	control := workercontrol.New(database)
 	session, err := control.Register(t.Context(), workercontrol.RegisterRequest{
-		WorkerID: "daemon-resume", Capabilities: []string{"capacity=1", "provider=claude", "provider_health:claude=healthy", "trusted_work=true", "encrypted_work=true"},
+		WorkerID: "daemon-resume", Capabilities: syntheticDaemonCapabilities(base),
 		Negotiation: executioncontract.Negotiation{ProtocolMin: executioncontract.CurrentVersion(), ProtocolMax: executioncontract.CurrentVersion(), BuildVersion: "worker-test"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir, _ := remoteBackendRepository(t)
 	sidecar := filepath.Join(t.TempDir(), "leader-sidecars")
 	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
@@ -1108,7 +1133,7 @@ func TestLeaderExecutionBackendVirtualizesSidecarPathAndFollowsResumedSession(t 
 	}
 	replacement, err := control.Register(t.Context(), workercontrol.RegisterRequest{
 		WorkerID: "daemon-resume", ResumeSessionID: session.SessionID,
-		Capabilities: []string{"capacity=1", "provider=claude", "provider_health:claude=healthy", "trusted_work=true", "encrypted_work=true"},
+		Capabilities: syntheticDaemonCapabilities(base),
 		Negotiation:  executioncontract.Negotiation{ProtocolMin: executioncontract.CurrentVersion(), ProtocolMax: executioncontract.CurrentVersion(), BuildVersion: "worker-test"},
 	})
 	if err != nil {
@@ -1189,6 +1214,15 @@ func remoteBackendRepository(t *testing.T) (dir, base string) {
 		t.Fatal(err)
 	}
 	return dir, base
+}
+
+func syntheticDaemonCapabilities(base string, extra ...string) []string {
+	capabilities := []string{
+		"capacity=1", "provider=claude", "provider_health:claude=healthy",
+		"trusted_work=true", "encrypted_work=true", "workspace_base_bundle=true",
+		"repository=repo", "repository_head:repo=" + base,
+	}
+	return append(capabilities, extra...)
 }
 
 func remoteBackendEvent(runID string, sequence uint64, kind executioncontract.EventType, payload any) executioncontract.EventEnvelope {

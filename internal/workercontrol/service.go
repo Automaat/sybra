@@ -73,6 +73,12 @@ type ArtifactHandback struct {
 	State    string
 }
 
+type WorkspaceBaseBundle struct {
+	RunID        string `json:"runId"`
+	DigestSHA256 string `json:"digestSha256"`
+	Content      []byte `json:"content"`
+}
+
 type Diagnostics struct {
 	WorkerID          string    `json:"workerId"`
 	SessionID         string    `json:"sessionId"`
@@ -127,6 +133,43 @@ func (s *Service) RemoteRunStatus(ctx context.Context, runID string) (RemoteRunS
 	err := s.db.QueryRowContext(ctx, s.db.Rebind(`SELECT session_id, state, artifact_state FROM remote_runs WHERE run_id = ?`), runID).
 		Scan(&status.SessionID, &status.State, &status.ArtifactState)
 	return status, err
+}
+
+// LoadWorkspaceBaseBundle returns the immutable leader input only to the
+// currently owning live daemon session. Re-registration migrates remote_runs,
+// so a replacement session can resume delivery without sharing credentials or
+// leader filesystem paths.
+func (s *Service) LoadWorkspaceBaseBundle(ctx context.Context, sessionID, runID string) (WorkspaceBaseBundle, error) {
+	var out WorkspaceBaseBundle
+	out.RunID = runID
+	err := s.db.InTx(ctx, func(tx *sql.Tx) error {
+		if err := s.requireSessionTx(ctx, tx, sessionID, true); err != nil {
+			return err
+		}
+		var owner, specJSON string
+		var content []byte
+		if err := tx.QueryRowContext(ctx, s.db.Rebind(`SELECT session_id, run_spec_json, workspace_base_bundle FROM remote_runs WHERE run_id = ?`), runID).
+			Scan(&owner, &specJSON, &content); err != nil {
+			return err
+		}
+		if owner != sessionID {
+			return ErrStaleSession
+		}
+		var spec executioncontract.RunSpec
+		if err := json.Unmarshal([]byte(specJSON), &spec); err != nil {
+			return err
+		}
+		if spec.Workspace.BaseBundle == nil || len(content) == 0 {
+			return invalidf("run has no workspace base bundle")
+		}
+		if err := validateWorkspaceBaseBundle(spec.Workspace.BaseBundle, content); err != nil {
+			return err
+		}
+		out.DigestSHA256 = spec.Workspace.BaseBundle.DigestSHA256
+		out.Content = append([]byte(nil), content...)
+		return nil
+	})
+	return out, err
 }
 
 // RemoteRunForEffect returns the immutable run already fenced to effectID.
@@ -621,6 +664,15 @@ func (s *Service) AckCommands(ctx context.Context, sessionID string, through uin
 		}
 		now := db.TimeValue(s.now().UTC())
 		if _, err := tx.ExecContext(ctx, s.db.Rebind(`UPDATE worker_commands SET acknowledged_at = COALESCE(acknowledged_at, ?) WHERE session_id = ? AND sequence <= ?`), now, sessionID, through); err != nil {
+			return err
+		}
+		// Acknowledging Start proves the daemon either prepared the workspace or
+		// durably recorded its terminal rejection. The content-addressed input is
+		// no longer needed; clear the potentially large blob while retaining its
+		// descriptor in run_spec_json for audit and replay identity.
+		if _, err := tx.ExecContext(ctx, s.db.Rebind(`UPDATE remote_runs SET workspace_base_bundle = NULL WHERE run_id IN
+			(SELECT run_id FROM worker_commands WHERE session_id = ? AND sequence <= ? AND command_type = ?)`),
+			sessionID, through, executioncontract.CommandStart); err != nil {
 			return err
 		}
 		_, err := tx.ExecContext(ctx, s.db.Rebind(`UPDATE worker_sessions SET last_command_ack = CASE WHEN last_command_ack < ? THEN ? ELSE last_command_ack END WHERE session_id = ?`), through, through, sessionID)

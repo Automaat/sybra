@@ -41,6 +41,7 @@ type ExecutionEvent struct {
 	Err                   error
 	Command               string
 	BackendOwnsCompletion bool
+	PermanentFailure      bool
 	Approval              *ApprovalRequest
 }
 

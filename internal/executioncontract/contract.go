@@ -144,6 +144,23 @@ type Workspace struct {
 	BaseSHA      string        `json:"baseSha"`
 	BaseRef      string        `json:"baseRef"`
 	Roots        []LogicalRoot `json:"roots"`
+	// RepositoryAnchor is the exact daemon source commit selected by placement.
+	// Workspace preparation verifies it in the disposable clone before using a
+	// thin bundle, closing source-movement races without exposing source paths.
+	RepositoryAnchor string `json:"repositoryAnchor,omitempty"`
+	// BaseBundle names a durable, content-addressed leader input containing
+	// commits which are not available from the daemon's repository source.
+	// The bytes travel through worker control, never through a host path or
+	// repository credential in the execution contract.
+	BaseBundle *ContentReference `json:"baseBundle,omitempty"`
+}
+
+const MaxWorkspaceBaseBundleSize int64 = 64 << 20
+
+type ContentReference struct {
+	ID           string `json:"id"`
+	DigestSHA256 string `json:"digestSha256"`
+	SizeBytes    int64  `json:"sizeBytes"`
 }
 
 // SecretRef is a worker-scoped capability name, never a credential value.
@@ -219,6 +236,11 @@ func (s RunSpec) Validate() error {
 	}
 	if err := validateWorkspace(s.Workspace); err != nil {
 		return err
+	}
+	if ref := s.Workspace.BaseBundle; ref != nil {
+		if ref.ID != s.RunID || !sha256Digest.MatchString(ref.DigestSHA256) || ref.SizeBytes <= 0 || ref.SizeBytes > MaxWorkspaceBaseBundleSize {
+			return errors.New("execution contract: invalid workspace base bundle reference")
+		}
 	}
 	declaredRoots := make(map[LogicalRoot]struct{}, len(s.Workspace.Roots))
 	for _, root := range s.Workspace.Roots {
@@ -342,6 +364,9 @@ func sensitiveEnvironmentName(name string) bool {
 func validateWorkspace(workspace Workspace) error {
 	if !validRepositoryID(workspace.RepositoryID) || !gitObjectID.MatchString(workspace.BaseSHA) || !validFullGitRef(workspace.BaseRef) || len(workspace.Roots) == 0 {
 		return errors.New("execution contract: workspace base SHA/ref and logical roots are required")
+	}
+	if workspace.RepositoryAnchor != "" && !gitObjectID.MatchString(workspace.RepositoryAnchor) {
+		return errors.New("execution contract: workspace repository anchor is invalid")
 	}
 	seen := map[LogicalRoot]bool{}
 	for _, root := range workspace.Roots {

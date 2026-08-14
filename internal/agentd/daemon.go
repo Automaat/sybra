@@ -32,7 +32,7 @@ type Daemon struct {
 	manager          *agent.Manager
 	approvals        *agent.ApprovalServer
 	capabilities     []string
-	prepareWorkspace func(context.Context, string, string, executioncontract.RunSpec) (agentworkspace.Layout, error)
+	prepareWorkspace func(context.Context, string, string, executioncontract.RunSpec, []byte) (agentworkspace.Layout, error)
 
 	approvalMu  sync.Mutex
 	recoveryMu  sync.Mutex
@@ -44,6 +44,8 @@ type Daemon struct {
 	runCancels  map[string]context.CancelFunc
 	draining    bool
 }
+
+var errStartRejected = errors.New("agentd: start rejection was recorded durably")
 
 func New(ctx context.Context, cfg Config, logger *slog.Logger) (*Daemon, error) {
 	if err := cfg.Validate(); err != nil {
@@ -68,7 +70,7 @@ func New(ctx context.Context, cfg Config, logger *slog.Logger) (*Daemon, error) 
 	d := &Daemon{
 		cfg: cfg, logger: logger, spool: spool,
 		client:       newLeaderClient(cfg.LeaderURL, os.Getenv(cfg.TokenEnv)),
-		capabilities: cfg.Capabilities(build), runAgents: make(map[string]string), agentRuns: make(map[string]string),
+		capabilities: cfg.Capabilities(ctx, build), runAgents: make(map[string]string), agentRuns: make(map[string]string),
 		runCancels: make(map[string]context.CancelFunc),
 	}
 	d.issueGrant = d.client.runGrant
@@ -265,7 +267,7 @@ func (d *Daemon) heartbeatLoop(ctx context.Context) {
 		}
 		d.pruneExpiredWorkspaces()
 		sessionID := d.currentSession()
-		session, err := d.client.heartbeat(ctx, sessionID, d.runtimeCapabilities())
+		session, err := d.client.heartbeat(ctx, sessionID, d.runtimeCapabilities(ctx))
 		if err != nil {
 			if isRejectedSession(err) {
 				if recoverErr := d.recoverRejectedSession(ctx, sessionID, err); recoverErr != nil {
@@ -343,7 +345,7 @@ func (d *Daemon) register(ctx context.Context) error {
 	}
 	state = d.spool.snapshot()
 	request := workercontrol.RegisterRequest{
-		WorkerID: d.cfg.NodeID, RegistrationID: registrationID, Capabilities: d.runtimeCapabilities(), LeaseSeconds: d.cfg.LeaseSeconds,
+		WorkerID: d.cfg.NodeID, RegistrationID: registrationID, Capabilities: d.runtimeCapabilities(ctx), LeaseSeconds: d.cfg.LeaseSeconds,
 		Negotiation: executioncontract.Negotiation{
 			ProtocolMin: executioncontract.CurrentVersion(), ProtocolMax: executioncontract.CurrentVersion(), BuildVersion: buildVersion(),
 		},
@@ -400,8 +402,8 @@ func (d *Daemon) ensureRegistrationID(current, resumeSession string, commandAck 
 	return registrationID, resumeSession, commandAck, nil
 }
 
-func (d *Daemon) runtimeCapabilities() []string {
-	capabilities := append([]string(nil), d.capabilities...)
+func (d *Daemon) runtimeCapabilities(ctx context.Context) []string {
+	capabilities := d.cfg.refreshRepositoryHeads(ctx, d.capabilities)
 	return append(capabilities,
 		fmt.Sprintf("spool_bytes=%d", d.spool.usageBytes()),
 		fmt.Sprintf("spool_max_bytes=%d", d.cfg.SpoolMaxBytes),
@@ -462,6 +464,7 @@ func (d *Daemon) applyCommand(ctx context.Context, envelope executioncontract.Co
 	}
 }
 
+//nolint:funlen // Start keeps admission, immutable workspace acceptance, and provider ownership in one ordered transaction-like flow.
 func (d *Daemon) start(ctx context.Context, envelope executioncontract.CommandEnvelope) error {
 	durable := d.spool.snapshot()
 	d.mu.RLock()
@@ -501,14 +504,22 @@ func (d *Daemon) start(ctx context.Context, envelope executioncontract.CommandEn
 		return err
 	}
 	source := d.cfg.Repositories[spec.Workspace.RepositoryID]
+	baseBundle, err := d.loadWorkspaceBaseBundle(ctx, *spec)
+	if err != nil {
+		if errors.Is(err, errStartRejected) {
+			return nil
+		}
+		return err
+	}
 	// Keep workspace publication and pressure reclamation linearized. A second
 	// concurrent start must not mistake a freshly prepared checkout for an
 	// abandoned completed run before BeforeStart durably records its owner.
-	layout, releaseWorkspace, err := d.prepareRunWorkspace(ctx, source, *spec)
+	layout, releaseWorkspace, err := d.prepareRunWorkspace(ctx, source, *spec, baseBundle)
 	defer releaseWorkspace()
 	if err != nil {
 		d.logger.Error("agentd.workspace.prepare", "run_id", spec.RunID, "err", err)
-		return d.rejectStart(spec.RunID, errors.New("workspace preparation failed"))
+		permanent := permanentWorkspacePreparationFailure(err)
+		return d.rejectStartWithDisposition(spec.RunID, errors.New("workspace preparation failed"), permanent)
 	}
 	keepWorkspace := false
 	defer removeRunWorkspaceUnlessKept(layout.RunRoot, &keepWorkspace)
@@ -573,6 +584,32 @@ func (d *Daemon) start(ctx context.Context, envelope executioncontract.CommandEn
 	return nil
 }
 
+func permanentWorkspacePreparationFailure(err error) bool {
+	return errors.Is(err, agentworkspace.ErrImmutableBaseUnavailable) || errors.Is(err, agentworkspace.ErrInvalidBaseBundle)
+}
+
+func (d *Daemon) loadWorkspaceBaseBundle(ctx context.Context, spec executioncontract.RunSpec) ([]byte, error) {
+	ref := spec.Workspace.BaseBundle
+	if ref == nil {
+		return nil, nil
+	}
+	bundle, err := d.client.workspaceBaseBundle(ctx, d.currentSession(), spec.RunID, *ref)
+	if err != nil {
+		d.logger.Error("agentd.workspace.base-download", "run_id", spec.RunID, "err", err)
+		if rejectErr := d.rejectStart(spec.RunID, errors.New("workspace base transfer failed")); rejectErr != nil {
+			return nil, rejectErr
+		}
+		return nil, errStartRejected
+	}
+	if bundle.RunID != spec.RunID || !strings.EqualFold(bundle.DigestSHA256, ref.DigestSHA256) {
+		if rejectErr := d.rejectStartWithDisposition(spec.RunID, errors.New("workspace base transfer verification failed"), true); rejectErr != nil {
+			return nil, rejectErr
+		}
+		return nil, errStartRejected
+	}
+	return bundle.Content, nil
+}
+
 func removeRunWorkspaceUnlessKept(runRoot string, keep *bool) {
 	if !*keep {
 		_ = os.RemoveAll(runRoot)
@@ -631,8 +668,12 @@ func (d *Daemon) secretEnvironmentKeys() []string {
 }
 
 func (d *Daemon) rejectStart(runID string, cause error) error {
+	return d.rejectStartWithDisposition(runID, cause, false)
+}
+
+func (d *Daemon) rejectStartWithDisposition(runID string, cause error, permanent bool) error {
 	emitErr := d.emitAdmissionFailure(runID, map[string]any{
-		"state": executioncontract.TerminalFailed, "error": cause.Error(),
+		"state": executioncontract.TerminalFailed, "error": cause.Error(), "permanent": permanent,
 	})
 	if emitErr != nil {
 		return errors.Join(cause, emitErr)
