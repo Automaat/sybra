@@ -11,6 +11,7 @@ import "math"
 // treated as pressure; see thresholdTripped.
 type Sample struct {
 	DiskFreePct     float64
+	DiskFreeBytes   float64
 	MemAvailablePct float64
 	LoadPerCPU      float64
 }

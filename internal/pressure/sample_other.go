@@ -7,6 +7,7 @@ import "math"
 func readSample(string) Sample {
 	return Sample{
 		DiskFreePct:     math.NaN(),
+		DiskFreeBytes:   math.NaN(),
 		MemAvailablePct: math.NaN(),
 		LoadPerCPU:      math.NaN(),
 	}

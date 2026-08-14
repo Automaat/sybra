@@ -1074,15 +1074,16 @@ func (a *branchSyncerAdapter) SyncTaskBranch(ctx context.Context, taskID string)
 
 // agentAdapter bridges agent.Manager + agentorch.Orchestrator → workflow.AgentLauncher.
 type agentAdapter struct {
-	agents       *agent.Manager
-	agentOrch    *agentorch.Orchestrator
-	tasks        *task.Manager
-	projects     *project.Store
-	sandboxes    *sandbox.Manager
-	experience   experience.Repository
-	pressure     *pressure.Gate
-	runenv       *runenv.Service
-	verification *verification.Manager
+	agents          *agent.Manager
+	agentOrch       *agentorch.Orchestrator
+	tasks           *task.Manager
+	projects        *project.Store
+	sandboxes       *sandbox.Manager
+	experience      experience.Repository
+	pressure        *pressure.Gate
+	remotePlacement bool
+	runenv          *runenv.Service
+	verification    *verification.Manager
 }
 
 func (a *agentAdapter) RunVerificationCommand(ctx context.Context, taskID, dir, command string, env []string, output io.Writer) error {
@@ -1868,16 +1869,45 @@ func (a *agentAdapter) AdmitDispatch(taskID, role, mode string) (admit bool, rea
 	if a.pressure == nil {
 		return true, ""
 	}
-	admit, reason = a.pressure.Admit()
+	remote := a.remoteDispatchCandidate(taskID)
+	admit, reason = a.pressureAdmission(taskID)
 	if !admit {
 		a.agentOrch.LogAudit(audit.EventAgentDeferredPressure, taskID, "", map[string]any{
 			"role":   role,
 			"mode":   mode,
 			"reason": reason,
+			"remote": remote,
 		})
 		return false, reason
 	}
 	return true, ""
+}
+
+func (a *agentAdapter) pressureAdmission(taskID string) (admitted bool, reason string) {
+	if a == nil || a.pressure == nil {
+		return true, ""
+	}
+	if a.remoteDispatchCandidate(taskID) {
+		return a.pressure.AdmitRemote()
+	}
+	return a.pressure.Admit()
+}
+
+// remoteDispatchCandidate mirrors the execution backend's routing boundary.
+// The workflow owns the durable effect required by remote execution, while a
+// project and a non-local pin make the task eligible for daemon placement.
+// Actual worker/provider/capacity matching remains transactional in
+// workercontrol.ScheduleStart; this method only chooses which leader pressure
+// posture applies before that placement is attempted.
+func (a *agentAdapter) remoteDispatchCandidate(taskID string) bool {
+	if a == nil || !a.remotePlacement || a.tasks == nil {
+		return false
+	}
+	t, err := a.tasks.Get(taskID)
+	if err != nil {
+		return false
+	}
+	return t.ProjectID != "" && t.NodeOverride != "local" && t.Workflow != nil
 }
 
 // CheckTaskCostBudget implements workflow.CostBudgetChecker for the

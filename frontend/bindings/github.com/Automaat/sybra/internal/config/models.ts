@@ -1713,6 +1713,16 @@ export class PressureConfig {
     "warningDiskFreePercent": number;
 
     /**
+     * RemoteMinDiskFreeBytes is the absolute emergency reserve the leader must
+     * retain before it may dispatch work to a remote execution daemon. Remote
+     * providers do not consume the leader's CPU or memory, so the ordinary local
+     * percentage/load thresholds do not apply to them; the leader still needs
+     * enough disk to persist control state and import the bounded handback. <=0
+     * disables this reserve. Default 2 GiB.
+     */
+    "remoteMinDiskFreeBytes": number;
+
+    /**
      * ReclaimCooldownSeconds rate-limits how often the warning-triggered safe
      * cleanup pass may run, so a host hovering right at the watermark doesn't
      * re-scan/re-delete on every dispatch tick. <=0 falls back to
@@ -1743,6 +1753,9 @@ export class PressureConfig {
         }
         if (!("warningDiskFreePercent" in $$source)) {
             this["warningDiskFreePercent"] = 0;
+        }
+        if (!("remoteMinDiskFreeBytes" in $$source)) {
+            this["remoteMinDiskFreeBytes"] = 0;
         }
         if (!("reclaimCooldownSeconds" in $$source)) {
             this["reclaimCooldownSeconds"] = 0;

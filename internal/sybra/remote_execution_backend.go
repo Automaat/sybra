@@ -15,6 +15,7 @@ import (
 	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/version"
 	"github.com/Automaat/sybra/internal/workercontrol"
+	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/google/uuid"
 )
 
@@ -45,15 +46,37 @@ func (r *remoteExecution) emit(ctx context.Context, handle agent.ExecutionHandle
 // workflow callback; all output and one terminal fate flow back through the
 // manager-owned sink used by local execution.
 type leaderExecutionBackend struct {
-	app   *App
-	local agent.ExecutionBackend
+	app         *App
+	local       agent.ExecutionBackend
+	admitLocal  func() (bool, string)
+	admitRemote func() (bool, string)
 
 	mu   sync.RWMutex
 	runs map[agent.ExecutionHandle]*remoteExecution
 }
 
 func newLeaderExecutionBackend(app *App) *leaderExecutionBackend {
-	return &leaderExecutionBackend{app: app, local: app.agents.LocalExecutionBackend(), runs: make(map[agent.ExecutionHandle]*remoteExecution)}
+	return &leaderExecutionBackend{
+		app: app, local: app.agents.LocalExecutionBackend(), runs: make(map[agent.ExecutionHandle]*remoteExecution),
+		admitLocal: func() (bool, string) {
+			if app.pressureGate != nil {
+				return app.pressureGate.Admit()
+			}
+			if app.cfg == nil {
+				return true, ""
+			}
+			return app.getPressureGate().Admit()
+		},
+		admitRemote: func() (bool, string) {
+			if app.pressureGate != nil {
+				return app.pressureGate.AdmitRemote()
+			}
+			if app.cfg == nil {
+				return true, ""
+			}
+			return app.getPressureGate().AdmitRemote()
+		},
+	}
 }
 
 func (b *leaderExecutionBackend) Start(ctx context.Context, start agent.ExecutionStart) (agent.ExecutionHandle, error) {
@@ -62,6 +85,9 @@ func (b *leaderExecutionBackend) Start(ctx context.Context, start agent.Executio
 		return "", err
 	}
 	if t.ProjectID == "" || t.NodeOverride == "local" {
+		if ok, reason := b.localAdmission(); !ok {
+			return "", fmt.Errorf("%w: %s", workflow.ErrResourcePressure, reason)
+		}
 		return b.startLocal(ctx, start)
 	}
 	if t.Workflow == nil || start.Config.IntentID == "" {
@@ -79,8 +105,21 @@ func (b *leaderExecutionBackend) Start(ctx context.Context, start agent.Executio
 	if err != nil {
 		return "", err
 	}
+	// Worktree preparation happens after the workflow's early admission check
+	// and can take long enough for the cached pressure sample to expire. Check
+	// the absolute leader reserve again immediately before creating a durable
+	// placement. Reattaching an existing effect above intentionally skips this:
+	// recovery must observe its already-paid run regardless of current pressure.
+	if ok, reason := b.remoteAdmission(); !ok {
+		return "", fmt.Errorf("%w: %s", workflow.ErrResourcePressure, reason)
+	}
+	localOK, localReason := b.localAdmission()
+	request.AllowLocalFallback = localOK
 	placed, err := b.app.workerControl.ScheduleStart(ctx, request)
 	if err != nil {
+		if errors.Is(err, workercontrol.ErrNoEligibleWorker) && !localOK && strings.TrimSpace(request.NodeOverride) == "" {
+			return "", fmt.Errorf("%w: no remote worker is eligible and local fallback is disabled: %s", workflow.ErrResourcePressure, localReason)
+		}
 		return "", err
 	}
 	if placed.LocalFallback {
@@ -120,6 +159,20 @@ func (b *leaderExecutionBackend) startLocal(ctx context.Context, start agent.Exe
 		b.store(handle, &remoteExecution{sink: start.Sink, localHandle: handle})
 	}
 	return handle, err
+}
+
+func (b *leaderExecutionBackend) localAdmission() (admitted bool, reason string) {
+	if b == nil || b.admitLocal == nil {
+		return true, ""
+	}
+	return b.admitLocal()
+}
+
+func (b *leaderExecutionBackend) remoteAdmission() (admitted bool, reason string) {
+	if b == nil || b.admitRemote == nil {
+		return true, ""
+	}
+	return b.admitRemote()
 }
 
 func (b *leaderExecutionBackend) placementRequest(ctx context.Context, start agent.ExecutionStart) (workercontrol.PlacementRequest, error) {

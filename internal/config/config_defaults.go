@@ -879,6 +879,7 @@ func defaultSeedConfig() *Config {
 				MinMemAvailablePercent: 8,
 				MaxLoadPerCPU:          8.0,
 				WarningDiskFreePercent: 15,
+				RemoteMinDiskFreeBytes: 2 << 30,
 				SampleIntervalSeconds:  15,
 				ReclaimCooldownSeconds: 300,
 			},
