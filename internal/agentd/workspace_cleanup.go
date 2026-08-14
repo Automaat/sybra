@@ -90,11 +90,11 @@ func (d *Daemon) reclaimUnprotectedWorkspacesLocked() (int, error) {
 }
 
 func (d *Daemon) ackArtifactAndRemoveWorkspace(manifestID, runID string) error {
-	d.workspaceMu.Lock()
-	defer d.workspaceMu.Unlock()
 	if err := d.spool.ackArtifact(manifestID); err != nil {
 		return err
 	}
-	_ = os.RemoveAll(filepath.Join(d.cfg.WorkspaceRoot, runID))
+	if err := os.RemoveAll(filepath.Join(d.cfg.WorkspaceRoot, runID)); err != nil {
+		d.logger.Warn("agentd.workspace.remove", "run_id", runID, "err", err)
+	}
 	return nil
 }
