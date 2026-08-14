@@ -46,7 +46,7 @@ func TestPlacementPersistsWorkspaceBaseBundleForOwningSession(t *testing.T) {
 		t.Fatalf("loaded bundle = %+v, %v", loaded, err)
 	}
 	recorder := httptest.NewRecorder()
-	httpRequest := httptest.NewRequest(http.MethodGet, "/worker/v1/runs/"+request.Spec.RunID+"/base-bundle?session="+placed.SessionID, nil)
+	httpRequest := httptest.NewRequest(http.MethodGet, "/worker/v1/runs/"+request.Spec.RunID+"/base-bundle?session="+placed.SessionID, http.NoBody)
 	service.Handler().ServeHTTP(recorder, httpRequest)
 	if recorder.Code != http.StatusOK || recorder.Header().Get("Cache-Control") != "no-store" || recorder.Header().Get("X-Content-Type-Options") != "nosniff" || !bytes.Equal(recorder.Body.Bytes(), content) {
 		t.Fatalf("bundle HTTP response = status %d, cache %q, nosniff %q, body %q", recorder.Code, recorder.Header().Get("Cache-Control"), recorder.Header().Get("X-Content-Type-Options"), recorder.Body.Bytes())
