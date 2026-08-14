@@ -8,6 +8,11 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 )
 
+// orchestratorLogPrefix is what reconcileOrchestratorsLocked writes under.
+// Counting every record instead would also count the agent manager's, which
+// shares this logger and writes from goroutines that outlive agent exit.
+const orchestratorLogPrefix = "orchestrator."
+
 // TestReconcileOrchestratorsLocked_StableAfterTerminalTransition guards
 // #2725: before the orchestrator singleton selection was made to ignore
 // terminal registry entries, every reconciliation tick over an unchanged
@@ -36,27 +41,31 @@ func TestReconcileOrchestratorsLocked_StableAfterTerminalTransition(t *testing.T
 		t.Fatalf("Run: %v", err)
 	}
 
-	// KillAgentsForTask stops the agent and blocks until its runner goroutine
-	// confirms exit, so its own logging has settled before the "before"
-	// snapshot below — an in-flight straggler log line could otherwise land
-	// in either window and flake the comparison.
+	// KillAgentsForTask blocks until the runner goroutine confirms exit, but
+	// the manager's post-result and background-task watchers still write to
+	// this logger afterwards, so the measurement below counts orchestrator
+	// records only rather than every record (#3384).
 	if !mgr.KillAgentsForTask(a.TaskID, 10*time.Second) {
 		t.Fatal("agent did not exit within 10s of KillAgentsForTask")
 	}
 
 	svc := &OrchestratorService{agents: mgr, logger: logger, emit: func(string, any) {}, agentID: a.ID}
 
-	before := handler.Len()
+	before := handler.CountPrefix(orchestratorLogPrefix)
 	var lastKeep string
 	for range 20 {
 		lastKeep = svc.reconcileOrchestratorsLocked()
+		// Stand in for the manager's post-exit writers, whose timing decides
+		// whether this test flakes. A straggler must not read as output from
+		// the code under test.
+		logger.Info("agent.headless.post_result_close", "id", a.ID)
 	}
-	after := handler.Len()
+	after := handler.CountPrefix(orchestratorLogPrefix)
 
 	if lastKeep != "" {
 		t.Errorf("reconcileOrchestratorsLocked() kept = %q, want empty (terminal agent must never be kept)", lastKeep)
 	}
 	if after != before {
-		t.Errorf("reconciliation over an unchanged terminal orchestrator kept producing log output: %d records before 20 ticks, %d after", before, after)
+		t.Errorf("reconciliation over an unchanged terminal orchestrator kept producing log output: %d %s records before 20 ticks, %d after", before, orchestratorLogPrefix, after)
 	}
 }
