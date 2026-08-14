@@ -1713,6 +1713,12 @@ var systemReadRoots = []string{
 	"/System", "/Library", "/dev", "/private/var/select", "/nix/store",
 }
 
+// hostRuntimeReadRoots are the package-manager runtime closures a host tool
+// links against, in the same spirit as /nix/store above. Granting the binary
+// without them is granting nothing: the dynamic loader fails before the
+// process runs, which is what made every verifier command abort on a mac
+// whose git came from Homebrew (#3390).
+
 // toolchainReadSubdirs are home-relative roots that hold the language
 // toolchains themselves. mise's install tree is the load-bearing one: it
 // carries the Go stdlib source that every compile reads, and it never appears
@@ -1793,6 +1799,9 @@ func (m *Manager) resolveSandboxReadRoots(cfg *RunConfig) []string {
 		roots = append(roots, canon)
 	}
 	for _, p := range systemReadRoots {
+		add(p)
+	}
+	for _, p := range hostRuntimeReadRoots() {
 		add(p)
 	}
 	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
