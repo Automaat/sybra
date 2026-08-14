@@ -24,23 +24,25 @@ import (
 )
 
 type Daemon struct {
-	cfg          Config
-	logger       *slog.Logger
-	client       *leaderClient
-	issueGrant   func(context.Context, string, string) (workercontrol.RunGrant, error)
-	spool        *Spool
-	manager      *agent.Manager
-	approvals    *agent.ApprovalServer
-	capabilities []string
+	cfg              Config
+	logger           *slog.Logger
+	client           *leaderClient
+	issueGrant       func(context.Context, string, string) (workercontrol.RunGrant, error)
+	spool            *Spool
+	manager          *agent.Manager
+	approvals        *agent.ApprovalServer
+	capabilities     []string
+	prepareWorkspace func(context.Context, string, string, executioncontract.RunSpec) (agentworkspace.Layout, error)
 
-	approvalMu sync.Mutex
-	recoveryMu sync.Mutex
-	mu         sync.RWMutex
-	sessionID  string
-	runAgents  map[string]string
-	agentRuns  map[string]string
-	runCancels map[string]context.CancelFunc
-	draining   bool
+	approvalMu  sync.Mutex
+	recoveryMu  sync.Mutex
+	workspaceMu sync.RWMutex
+	mu          sync.RWMutex
+	sessionID   string
+	runAgents   map[string]string
+	agentRuns   map[string]string
+	runCancels  map[string]context.CancelFunc
+	draining    bool
 }
 
 func New(ctx context.Context, cfg Config, logger *slog.Logger) (*Daemon, error) {
@@ -294,6 +296,13 @@ func (d *Daemon) recoverRejectedSession(ctx context.Context, rejectedSession str
 }
 
 func (d *Daemon) pruneExpiredWorkspaces() {
+	// Retention cleanup is opportunistic and must never delay the heartbeat
+	// which calls it. A large clone may legitimately hold a preparation read
+	// lock longer than one lease interval.
+	if !d.workspaceMu.TryLock() {
+		return
+	}
+	defer d.workspaceMu.Unlock()
 	before := time.Now().Add(-time.Duration(d.cfg.WorkspaceRetentionHours) * time.Hour)
 	expired, err := d.spool.expireArtifacts(before)
 	if err != nil {
@@ -492,7 +501,11 @@ func (d *Daemon) start(ctx context.Context, envelope executioncontract.CommandEn
 		return err
 	}
 	source := d.cfg.Repositories[spec.Workspace.RepositoryID]
-	layout, err := agentworkspace.Prepare(ctx, d.cfg.WorkspaceRoot, source, *spec)
+	// Keep workspace publication and pressure reclamation linearized. A second
+	// concurrent start must not mistake a freshly prepared checkout for an
+	// abandoned completed run before BeforeStart durably records its owner.
+	layout, releaseWorkspace, err := d.prepareRunWorkspace(ctx, source, *spec)
+	defer releaseWorkspace()
 	if err != nil {
 		d.logger.Error("agentd.workspace.prepare", "run_id", spec.RunID, "err", err)
 		return d.rejectStart(spec.RunID, errors.New("workspace preparation failed"))
@@ -855,10 +868,9 @@ func (d *Daemon) flushEvents(ctx context.Context, sessionID string) error {
 		if err := d.client.artifact(ctx, upload); err != nil {
 			return err
 		}
-		if err := d.spool.ackArtifact(manifestID); err != nil {
+		if err := d.ackArtifactAndRemoveWorkspace(manifestID, upload.Manifest.RunID); err != nil {
 			return err
 		}
-		_ = os.RemoveAll(filepath.Join(d.cfg.WorkspaceRoot, upload.Manifest.RunID))
 	}
 	return nil
 }
