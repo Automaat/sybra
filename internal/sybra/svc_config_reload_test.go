@@ -956,5 +956,24 @@ func (h *recordHandler) Len() int {
 	defer h.mu.Unlock()
 	return len(*h.records)
 }
+
+// CountPrefix returns how many records carry a message with this prefix.
+//
+// A test that shares its logger with the agent manager cannot use Len as a
+// measurement: the manager writes from goroutines that outlive an agent's
+// exit, so an unrelated record landing mid-measurement reads as output from
+// the code under test (#3384).
+func (h *recordHandler) CountPrefix(prefix string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	n := 0
+	records := *h.records
+	for i := range records {
+		if strings.HasPrefix(records[i].Message, prefix) {
+			n++
+		}
+	}
+	return n
+}
 func (h *recordHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
 func (h *recordHandler) WithGroup(_ string) slog.Handler      { return h }

@@ -598,6 +598,10 @@ func (a *App) initAgentManager(ctx context.Context, emit func(string, any)) erro
 		a.logger.Error("agent.manager.init", "err", err)
 		return fmt.Errorf("agent manager: %w", err)
 	}
+	// One-shot classifier and judge calls run the same provider CLIs on this
+	// host, so route them through the manager's sandbox rather than leaving
+	// them to spawn unwrapped in the serving process's own directory (#3383).
+	a.agents.RegisterOneShotCommands()
 	a.agents.SetGHAppToken(github.CurrentAppToken)
 	a.agents.SetGHVerifierAppToken(github.CurrentVerifierAppToken)
 	// Applied at construction, not after Startup returns: the recovery pass

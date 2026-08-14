@@ -22,6 +22,21 @@ const GhShimReason = "Blocked by Sybra: APPROVE is a human decision. " +
 	"Use --request-changes/--comment (or gh api -f event=REQUEST_CHANGES/COMMENT) to submit feedback, " +
 	"or gh api without an event to leave the review pending for a human to approve."
 
+// GhShimRawFieldReason is what the shim prints when a raw field carries a
+// value that names an existing file.
+//
+// gh expands a leading @ on --field only. On --raw-field the value is sent
+// verbatim, so `-f body=@reply.txt` posts the string "@reply.txt" and GitHub
+// answers 201 — the reply content is lost and the local path is published on
+// whatever the caller was writing to. That happened to four review threads
+// before this existed (#3376). The check is deliberately narrow, because this
+// wrapper sits on every agent's PATH: it fires on a field key whose value is
+// @<file on disk> or the @- stdin marker, so an at-mention opening a body, and
+// prose that merely quotes the flag, both still post.
+const GhShimRawFieldReason = "Blocked by Sybra: gh does not read a file into a --raw-field/-f value, " +
+	"so this would post the literal path as the body. " +
+	"Use -F/--field for the same key to read the file, or pass the text inline."
+
 //nolint:dupword // Nested shell conditionals legitimately end with adjacent fi tokens.
 const ghShimScript = `#!/bin/sh
 if [ "$1" = "pr" ] && [ "$2" = "review" ]; then
@@ -78,7 +93,54 @@ fi
 if [ "$1" = "api" ]; then
 	sawhidden=0
 	sawreviews=0
+	rawnext=0
 	for arg in "$@"; do
+		# A raw field whose value names a file. gh sends it verbatim, so the
+		# request carries the path instead of the file's contents.
+		rawvalue=
+		if [ "$rawnext" = 1 ]; then
+			rawnext=0
+			rawvalue=$arg
+		else
+			case "$arg" in
+			-f | --raw-field)
+				rawnext=1
+				;;
+			--raw-field=*)
+				rawvalue=${arg#--raw-field=}
+				;;
+			-f?*)
+				rawvalue=${arg#-f}
+				;;
+			# A shorthand bundle whose last character is -f takes the next
+			# argv token as its value, the same as a bare -f.
+			-[!-]*f)
+				rawnext=1
+				;;
+			esac
+		fi
+		case "$rawvalue" in
+		*=@*)
+			# Anchor on the key. Without this, prose that merely contains
+			# "=@name" is treated as a file reference, and the skill now tells
+			# agents to write exactly that ("use -F body=@file"), so a reply
+			# quoting the guidance would be refused.
+			rawkey=${rawvalue%%=@*}
+			rawpath=${rawvalue#*=@}
+			case "$rawkey" in
+			'' | *[!]A-Za-z0-9_.[-]*)
+				;;
+			*)
+				# @- is stdin to --field and a literal to --raw-field, so it
+				# posts "@-" with no file on disk for the test below to catch.
+				if [ "$rawpath" = - ] || [ -f "$rawpath" ]; then
+					printf '%%s\n' '%[5]s' >&2
+					exit 1
+				fi
+				;;
+			esac
+			;;
+		esac
 		case "$arg" in
 		[Ee][Vv][Ee][Nn][Tt]=[Aa][Pp][Pp][Rr][Oo][Vv][Ee])
 			printf '%%s\n' '%[1]s' >&2
@@ -89,9 +151,22 @@ if [ "$1" = "api" ]; then
 		# The review mutation can carry its event in a GraphQL variable, so argv
 		# never sees the submitted event beside EVENT. Agents have a sanctioned
 		# REST path for pending drafts, so block GraphQL review mutations.
+		#
+		# addPullRequestReviewThreadReply contains addPullRequestReview as a
+		# substring, so matching the glob alone refused every GraphQL reply to
+		# a review thread — a plain comment carrying no event. That is the
+		# refusal that pushed an agent onto an improvised REST call and
+		# published a local path (#3376). Remove the reply mutation's name
+		# before testing, so a payload carrying both still blocks on the one
+		# that submits.
 		*[Aa][Dd][Dd][Pp][Uu][Ll][Ll][Rr][Ee][Qq][Uu][Ee][Ss][Tt][Rr][Ee][Vv][Ii][Ee][Ww]* | *[Ss][Uu][Bb][Mm][Ii][Tt][Pp][Uu][Ll][Ll][Rr][Ee][Qq][Uu][Ee][Ss][Tt][Rr][Ee][Vv][Ii][Ee][Ww]*)
-			printf '%%s\n' '%[1]s' >&2
-			exit 1
+			mutation=$(printf '%%s' "$arg" | tr 'A-Z' 'a-z' | sed 's/addpullrequestreviewthreadreply//g')
+			case "$mutation" in
+			*addpullrequestreview* | *submitpullrequestreview*)
+				printf '%%s\n' '%[1]s' >&2
+				exit 1
+				;;
+			esac
 			;;
 		esac
 		# --input (or --input=path) swaps the whole request body for a file/stdin
@@ -241,7 +316,7 @@ func executableAbsolute(path string) string {
 
 func writeGhShim(dir string) (string, error) {
 	found := lookRealGh()
-	if !shellSingleQuoteSafe(GhShimReason) {
+	if !shellSingleQuoteSafe(GhShimReason) || !shellSingleQuoteSafe(GhShimRawFieldReason) {
 		return "", fmt.Errorf("gh shim reason is not shell-safe")
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -265,7 +340,7 @@ func writeGhShim(dir string) (string, error) {
 		if strings.ContainsAny(realGh, "'\n") {
 			return "", fmt.Errorf("gh path %q is not shell-safe", realGh)
 		}
-		script := fmt.Sprintf(ghShimScript, GhShimReason, realGh, sybraCLI, "operator")
+		script := fmt.Sprintf(ghShimScript, GhShimReason, realGh, sybraCLI, "operator", GhShimRawFieldReason)
 		if err := writeExecutableAtomic(filepath.Join(dir, "gh"), script); err != nil {
 			return "", err
 		}
@@ -273,7 +348,7 @@ func writeGhShim(dir string) (string, error) {
 		if err := os.MkdirAll(verifierDir, 0o755); err != nil {
 			return "", fmt.Errorf("create verifier gh shim dir: %w", err)
 		}
-		verifierScript := fmt.Sprintf(ghShimScript, GhShimReason, realGh, "", "verifier")
+		verifierScript := fmt.Sprintf(ghShimScript, GhShimReason, realGh, "", "verifier", GhShimRawFieldReason)
 		if err := writeExecutableAtomic(filepath.Join(verifierDir, "gh"), verifierScript); err != nil {
 			return "", err
 		}

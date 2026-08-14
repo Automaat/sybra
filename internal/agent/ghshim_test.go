@@ -837,3 +837,222 @@ func TestGhShim_AllowsInspectableAndUnrelatedCalls(t *testing.T) {
 		})
 	}
 }
+
+// TestGhShim_BlocksRawFieldFileValue pins #3376. gh reads a file into a value
+// only for --field; on --raw-field the "@path" is sent verbatim, so the
+// request carries the operator's path instead of the reply and GitHub answers
+// 201. Four review threads on an external pull request were posted that way.
+func TestGhShim_BlocksRawFieldFileValue(t *testing.T) {
+	shimDir := newShim(t)
+	reply := filepath.Join(t.TempDir(), "reply1.txt")
+	if err := os.WriteFile(reply, []byte("the actual reply\n"), 0o600); err != nil {
+		t.Fatalf("write reply: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"separate short flag", []string{"api", "--method", "POST", "/repos/o/r/pulls/1/comments/2/replies", "-f", "body=@" + reply}},
+		{"attached short flag", []string{"api", "--method", "POST", "/repos/o/r/pulls/1/comments/2/replies", "-fbody=@" + reply}},
+		{"long flag", []string{"api", "--raw-field", "body=@" + reply}},
+		{"long flag with equals", []string{"api", "--raw-field=body=@" + reply}},
+		{"nested field key", []string{"api", "-f", "comments[][body]=@" + reply}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, stderr, code := runShim(t, shimDir, tc.args...)
+			if code == 0 {
+				t.Fatalf("shim allowed %v (exit 0)", tc.args)
+			}
+			if strings.Contains(stdout, "REAL-GH") {
+				t.Fatalf("shim executed real gh for %v: %s", tc.args, stdout)
+			}
+			if !strings.Contains(stderr, GhShimRawFieldReason) {
+				t.Fatalf("stderr lacks the raw-field reason for %v: %q", tc.args, stderr)
+			}
+		})
+	}
+}
+
+// The guard keys on the filesystem, not on a leading @, so the bodies an agent
+// legitimately writes still post. Refusing every "@..." value would block an
+// at-mention, and refusing --field would block the flag that actually works.
+func TestGhShim_AllowsAtValuesThatNameNoFile(t *testing.T) {
+	shimDir := newShim(t)
+	reply := filepath.Join(t.TempDir(), "reply1.txt")
+	if err := os.WriteFile(reply, []byte("the actual reply\n"), 0o600); err != nil {
+		t.Fatalf("write reply: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"at-mention opens the body", []string{"api", "-f", "body=@octocat can you take another look"}},
+		{"missing path", []string{"api", "-f", "body=@/no/such/reply.txt"}},
+		{"field flag reads the file", []string{"api", "-F", "body=@" + reply}},
+		{"field flag attached", []string{"api", "-Fbody=@" + reply}},
+		{"long field flag", []string{"api", "--field", "body=@" + reply}},
+		{"body mentioning a raw field", []string{"api", "-f", "body=use -f body=@file next time"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, stderr, code := runShim(t, shimDir, tc.args...)
+			if code != 0 {
+				t.Fatalf("shim blocked %v: exit=%d stderr=%q", tc.args, code, stderr)
+			}
+			if !strings.Contains(stdout, "REAL-GH") {
+				t.Fatalf("real gh not reached for %v: %s", tc.args, stdout)
+			}
+		})
+	}
+}
+
+// TestGhShim_AllowsThreadReplyMutation pins the refusal that caused #3376.
+// addPullRequestReviewThreadReply contains addPullRequestReview as a
+// substring, so the review-mutation glob refused every GraphQL reply to a
+// review thread — a comment carrying no event — and the agent improvised a
+// REST call that published a local path. A payload that also submits a review
+// must still be refused.
+func TestGhShim_AllowsThreadReplyMutation(t *testing.T) {
+	shimDir := newShim(t)
+	reply := `mutation($threadId: ID!, $body: String!) {
+  addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $threadId, body: $body }) {
+    comment { id url }
+  }
+}`
+	stdout, stderr, code := runShim(t, shimDir, "api", "graphql", "-f", "threadId=T", "-f", "body=ok", "-f", "query="+reply)
+	if code != 0 {
+		t.Fatalf("shim refused a thread reply: exit=%d stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stdout, "REAL-GH") {
+		t.Fatalf("real gh not reached: %s", stdout)
+	}
+
+	both := reply + `
+mutation { submitPullRequestReview(input: { event: APPROVE }) { clientMutationId } }`
+	_, stderr, code = runShim(t, shimDir, "api", "graphql", "-f", "query="+both)
+	if code == 0 {
+		t.Fatal("shim allowed a payload that submits a review alongside a thread reply")
+	}
+	if !strings.Contains(stderr, GhShimReason) {
+		t.Fatalf("stderr lacks the approval reason: %q", stderr)
+	}
+}
+
+// TestGhShim_RawFieldGuardKeysOnTheFieldName keeps the guard off ordinary
+// prose. It fires on a raw field whose value is a path, not on a body that
+// happens to contain "=@" followed by something that exists — which the skill
+// now makes likely, since it tells agents to write "-F body=@file".
+func TestGhShim_RawFieldGuardKeysOnTheFieldName(t *testing.T) {
+	shimDir := newShim(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "reply1.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("write reply: %v", err)
+	}
+
+	run := func(t *testing.T, args ...string) (stdout, stderr string, code int) {
+		t.Helper()
+		cmd := exec.Command(filepath.Join(shimDir, "gh"), args...)
+		cmd.Dir = dir
+		var out, errBuf strings.Builder
+		cmd.Stdout = &out
+		cmd.Stderr = &errBuf
+		err := cmd.Run()
+		var exitErr *exec.ExitError
+		switch {
+		case err == nil:
+		case errors.As(err, &exitErr):
+			code = exitErr.ExitCode()
+		default:
+			t.Fatalf("run shim: %v", err)
+		}
+		return out.String(), errBuf.String(), code
+	}
+
+	allowed := []struct {
+		name string
+		args []string
+	}{
+		{"body quotes the guidance", []string{"api", "-f", "body=Applied. Posted with -F body=@reply1.txt"}},
+		{"body mentions a relative file", []string{"api", "-f", "body=see docs=@reply1.txt"}},
+		{"field flag attached with a bundle", []string{"api", "-Freply1.txt=@reply1.txt"}},
+	}
+	for _, tc := range allowed {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, stderr, code := run(t, tc.args...)
+			if code != 0 {
+				t.Fatalf("shim blocked %v: exit=%d stderr=%q", tc.args, code, stderr)
+			}
+			if !strings.Contains(stdout, "REAL-GH") {
+				t.Fatalf("real gh not reached for %v: %s", tc.args, stdout)
+			}
+		})
+	}
+
+	blocked := []struct {
+		name string
+		args []string
+	}{
+		{"relative path", []string{"api", "-f", "body=@reply1.txt"}},
+		{"stdin marker", []string{"api", "-f", "body=@-"}},
+		{"bundled shorthand", []string{"api", "-sf", "body=@reply1.txt"}},
+	}
+	for _, tc := range blocked {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, stderr, code := run(t, tc.args...)
+			if code == 0 {
+				t.Fatalf("shim allowed %v (exit 0): %s", tc.args, stdout)
+			}
+			if !strings.Contains(stderr, GhShimRawFieldReason) {
+				t.Fatalf("stderr lacks the raw-field reason for %v: %q", tc.args, stderr)
+			}
+		})
+	}
+}
+
+// TestGhShim_AcceptsBundledSkillCommands runs the commands the bundled
+// fix-review-auto skill tells agents to use. The skill and the wrapper are
+// written apart from each other, and the wrapper wins: a documented command it
+// refuses sends every agent down an improvised path, which is how #3376
+// happened.
+func TestGhShim_AcceptsBundledSkillCommands(t *testing.T) {
+	shimDir := newShim(t)
+	skill, err := os.ReadFile(filepath.Join("..", "skills", "data", "fix-review-auto.md"))
+	if err != nil {
+		t.Fatalf("read bundled skill: %v", err)
+	}
+	text := string(skill)
+	if strings.Contains(text, "-F query=@-") {
+		t.Fatal("skill still documents a stdin GraphQL query, which the shim refuses")
+	}
+
+	// The two gh api invocations the skill prescribes, reduced to the argv a
+	// shell would deliver.
+	fetch := []string{"api", "graphql", "-f", "owner=o", "-f", "repo=r", "-F", "pr=1", "-f", `
+query($owner: String!, $repo: String!, $pr: Int!) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $pr) { reviewThreads(first: 100) { nodes { id isResolved } } }
+  }
+}`}
+	post := []string{"api", "graphql", "-f", "threadId=T", "-f", "body=Applied.", "-f", `
+mutation($threadId: ID!, $body: String!) {
+  addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $threadId, body: $body }) {
+    comment { id url }
+  }
+}`}
+	rest := []string{"api", "-X", "POST", "/repos/o/r/pulls/1/comments/2/replies", "-f", "body=Applied."}
+
+	for name, args := range map[string][]string{"fetch": fetch, "post": post, "rest fallback": rest} {
+		t.Run(name, func(t *testing.T) {
+			stdout, stderr, code := runShim(t, shimDir, args...)
+			if code != 0 {
+				t.Fatalf("shim refused the documented %s command: exit=%d stderr=%q", name, code, stderr)
+			}
+			if !strings.Contains(stdout, "REAL-GH") {
+				t.Fatalf("real gh not reached for %s: %s", name, stdout)
+			}
+		})
+	}
+}

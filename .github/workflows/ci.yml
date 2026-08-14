@@ -399,6 +399,15 @@ jobs:
       - name: Check for direct gh subprocess spawns outside github.Run/RunWithEnv
         run: bash scripts/check-gh-exec-gate.sh
 
+  check-provider-exec-gate:
+    name: Provider CLIs Routed Through the Sandbox
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Check for provider CLI spawns outside agent.newProviderCmd
+        run: bash scripts/check-provider-exec-gate.sh
+
   check-git-exec-gate:
     name: Git Calls Routed Through gitexec
     runs-on: ubuntu-latest
