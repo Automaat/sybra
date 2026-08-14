@@ -55,17 +55,22 @@ jobs:
       - name: Run sandbox tests
         run: go test -race -timeout 10m ./internal/agent/... 2>&1 | tee darwin-tests.log
 
-      - name: Fail on a skipped sandbox test
+      - name: Fail when the sandbox itself was unavailable
         # A skipped test prints nothing without -v, so a suite that covered
-        # nothing reads exactly like one that covered everything. These names
-        # skip only when the host cannot build a sandbox, which on a macOS
-        # runner means the job is not testing what it exists to test.
+        # nothing reads exactly like one that covered everything. Only a skip
+        # that names a missing sandbox counts: a test needing a GPG key or a
+        # provider CLI legitimately skips on a runner, and failing on those
+        # would make the job noise rather than a signal.
         run: |
           go test -run 'TestSandboxEnforce|TestOneShotCommand|TestSandboxBreakout' -v ./internal/agent/ \
             2>&1 | tee darwin-sandbox.log
-          if grep -q -- '--- SKIP' darwin-sandbox.log; then
-            echo "::error::sandbox tests skipped on the macOS runner; the job proves nothing" >&2
-            grep -- '--- SKIP' darwin-sandbox.log >&2
+          if grep -qE 'sandbox (mechanism unavailable|-exec not installed)' darwin-sandbox.log; then
+            echo "::error::the macOS runner could not build a sandbox; this job proves nothing" >&2
+            grep -E 'sandbox (mechanism unavailable|-exec not installed)' darwin-sandbox.log >&2
+            exit 1
+          fi
+          if ! grep -q -- '--- PASS: TestSandboxEnforce' darwin-sandbox.log; then
+            echo "::error::no enforce-mode sandbox test ran" >&2
             exit 1
           fi
 
