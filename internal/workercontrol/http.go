@@ -37,6 +37,8 @@ func (s *Service) handleWorkspaceBaseBundle(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	w.Header().Set("Content-Type", "application/x-git-bundle")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Sybra-Content-SHA256", bundle.DigestSHA256)
 	w.Header().Set("Content-Length", strconv.Itoa(len(bundle.Content)))
 	w.WriteHeader(http.StatusOK)

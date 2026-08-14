@@ -45,6 +45,12 @@ func TestPlacementPersistsWorkspaceBaseBundleForOwningSession(t *testing.T) {
 	if err != nil || loaded.RunID != request.Spec.RunID || loaded.DigestSHA256 != ref.DigestSHA256 || !bytes.Equal(loaded.Content, content) {
 		t.Fatalf("loaded bundle = %+v, %v", loaded, err)
 	}
+	recorder := httptest.NewRecorder()
+	httpRequest := httptest.NewRequest(http.MethodGet, "/worker/v1/runs/"+request.Spec.RunID+"/base-bundle?session="+placed.SessionID, nil)
+	service.Handler().ServeHTTP(recorder, httpRequest)
+	if recorder.Code != http.StatusOK || recorder.Header().Get("Cache-Control") != "no-store" || recorder.Header().Get("X-Content-Type-Options") != "nosniff" || !bytes.Equal(recorder.Body.Bytes(), content) {
+		t.Fatalf("bundle HTTP response = status %d, cache %q, nosniff %q, body %q", recorder.Code, recorder.Header().Get("Cache-Control"), recorder.Header().Get("X-Content-Type-Options"), recorder.Body.Bytes())
+	}
 	other := registerPlacementWorker(t, service, "node-other", []string{"capacity=1", "provider=claude", "provider_health:claude=healthy"})
 	if _, err := service.LoadWorkspaceBaseBundle(t.Context(), other.SessionID, request.Spec.RunID); !errors.Is(err, ErrStaleSession) {
 		t.Fatalf("unrelated session load = %v, want ErrStaleSession", err)

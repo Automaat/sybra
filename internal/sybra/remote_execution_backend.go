@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -268,17 +269,12 @@ func prepareRemoteWorkspaceBase(ctx context.Context, dir, runID, baseSHA, worker
 	if err := gitexec.Run(ctx, gitexec.Options{Dir: dir}, "merge-base", "--is-ancestor", anchor, baseSHA); err != nil {
 		anchor = "" // absent or unrelated daemon history needs a full bundle.
 	}
-	tmp, err := os.CreateTemp("", "sybra-workspace-base-*.bundle")
+	tmpDir, err := os.MkdirTemp("", "sybra-workspace-base-")
 	if err != nil {
 		return nil, nil, err
 	}
-	path := tmp.Name()
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(path)
-		return nil, nil, err
-	}
-	_ = os.Remove(path) // git bundle requires a path it can create itself.
-	defer func() { _ = os.Remove(path) }()
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+	path := filepath.Join(tmpDir, "base.bundle")
 	ref := agentworkspace.BaseBundleRef(runID)
 	if err := gitexec.Run(ctx, gitexec.Options{Dir: dir}, "update-ref", ref, baseSHA); err != nil {
 		return nil, nil, fmt.Errorf("remote execution stage base ref: %w", err)
