@@ -1020,6 +1020,9 @@ func TestLoadPressureDefaults(t *testing.T) {
 	if p.MinDiskFreePercent != 5 {
 		t.Fatalf("pressure.min_disk_free_percent = %v, want 5", p.MinDiskFreePercent)
 	}
+	if p.RemoteMinDiskFreeBytes != 2<<30 {
+		t.Fatalf("pressure.remote_min_disk_free_bytes = %d, want %d", p.RemoteMinDiskFreeBytes, int64(2<<30))
+	}
 	if p.MinMemAvailablePercent != 8 {
 		t.Fatalf("pressure.min_mem_available_percent = %v, want 8", p.MinMemAvailablePercent)
 	}

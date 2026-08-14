@@ -1772,20 +1772,23 @@ func (a *App) configureEvidencePolicy() {
 
 func (a *App) newWorkflowAgentLauncher() *agentAdapter {
 	pressureGate := a.getPressureGate()
+	adapter := &agentAdapter{
+		agents:          a.agents,
+		agentOrch:       a.agentOrch,
+		tasks:           a.tasks,
+		projects:        a.projects,
+		sandboxes:       a.sandboxes,
+		experience:      a.experience,
+		pressure:        pressureGate,
+		remotePlacement: a.cfg != nil && a.cfg.IsLeader() && a.workerControl != nil && a.agents != nil,
+		runenv:          a.runenv,
+		verification:    a.verification,
+	}
 	if a.agentOrch != nil {
 		a.agentOrch.SetPressureGate(pressureGate)
+		a.agentOrch.SetPressureAdmission(adapter.pressureAdmission)
 	}
-	return &agentAdapter{
-		agents:       a.agents,
-		agentOrch:    a.agentOrch,
-		tasks:        a.tasks,
-		projects:     a.projects,
-		sandboxes:    a.sandboxes,
-		experience:   a.experience,
-		pressure:     pressureGate,
-		runenv:       a.runenv,
-		verification: a.verification,
-	}
+	return adapter
 }
 
 func (a *App) getPressureGate() *pressure.Gate {

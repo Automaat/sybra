@@ -98,6 +98,13 @@ type PressureConfig struct {
 	// also been crossed. <=0 disables the warning-triggered cleanup entirely.
 	// Default 15.
 	WarningDiskFreePercent float64 `yaml:"warning_disk_free_percent" json:"warningDiskFreePercent"`
+	// RemoteMinDiskFreeBytes is the absolute emergency reserve the leader must
+	// retain before it may dispatch work to a remote execution daemon. Remote
+	// providers do not consume the leader's CPU or memory, so the ordinary local
+	// percentage/load thresholds do not apply to them; the leader still needs
+	// enough disk to persist control state and import the bounded handback. <=0
+	// disables this reserve. Default 2 GiB.
+	RemoteMinDiskFreeBytes int64 `yaml:"remote_min_disk_free_bytes" json:"remoteMinDiskFreeBytes"`
 	// ReclaimCooldownSeconds rate-limits how often the warning-triggered safe
 	// cleanup pass may run, so a host hovering right at the watermark doesn't
 	// re-scan/re-delete on every dispatch tick. <=0 falls back to

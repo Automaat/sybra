@@ -40,6 +40,25 @@ type recordingExecutionSink struct {
 	ready  chan struct{}
 }
 
+type acceptingLocalBackend struct{}
+
+func (acceptingLocalBackend) Start(_ context.Context, _ agent.ExecutionStart) (agent.ExecutionHandle, error) {
+	return "local:accepted", nil
+}
+func (acceptingLocalBackend) Stop(context.Context, agent.ExecutionHandle) error { return nil }
+func (acceptingLocalBackend) Steer(context.Context, agent.ExecutionHandle, string) error {
+	return nil
+}
+func (acceptingLocalBackend) RespondApproval(context.Context, agent.ExecutionHandle, string, bool) error {
+	return nil
+}
+func (acceptingLocalBackend) Inspect(context.Context, agent.ExecutionHandle) (agent.ExecutionInspection, error) {
+	return agent.ExecutionInspection{}, nil
+}
+func (acceptingLocalBackend) Recover(context.Context, agent.ExecutionHandle, agent.ExecutionEventSink) error {
+	return nil
+}
+
 func TestLeaderRunPlacementOwnsFollowerHomedCanonicalTask(t *testing.T) {
 	app := &App{
 		cfg:           &config.Config{Cluster: config.ClusterConfig{Role: config.ClusterRoleLeader, Followers: []config.Follower{{Name: "old-follower", Homes: []string{"repo"}}}}},
@@ -440,7 +459,10 @@ func TestLeaderExecutionBackendRelaysOneCanonicalCompletion(t *testing.T) {
 		t.Fatal(err)
 	}
 	app := &App{tasks: task.NewManager(store, nil), workerControl: control}
-	backend := &leaderExecutionBackend{app: app, runs: make(map[agent.ExecutionHandle]*remoteExecution)}
+	backend := &leaderExecutionBackend{
+		app: app, runs: make(map[agent.ExecutionHandle]*remoteExecution),
+		admitLocal: func() (bool, string) { return false, "leader pressure" },
+	}
 	sink := &recordingExecutionSink{ready: make(chan struct{})}
 	start := agent.ExecutionStart{Spec: agent.ExecutionSpec{ID: "agent-remote", TaskID: canonical.ID, Provider: providerid.Claude, Model: "sonnet"},
 		Config: agent.RunConfig{TaskID: canonical.ID, Role: agent.RoleImplementation, Mode: "headless", Prompt: "work", Dir: dir,
@@ -494,6 +516,128 @@ func TestLeaderExecutionBackendRelaysOneCanonicalCompletion(t *testing.T) {
 	}
 	if base == "" || handle == "" {
 		t.Fatal("invalid repository or execution identity")
+	}
+}
+
+func TestLeaderExecutionBackendDoesNotFallBackLocallyUnderLeaderPressure(t *testing.T) {
+	database := dbtest.SQLite(t)
+	control := workercontrol.New(database)
+	dir, _ := remoteBackendRepository(t)
+	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	canonical := task.Task{
+		ID: "task-pressure", Title: "pressure", ProjectID: "repo", Branch: "main", Status: task.StatusInProgress,
+		CreatedAt: now, UpdatedAt: now, Generation: 4,
+		Workflow: &workflow.Execution{WorkflowID: "ship", CurrentStep: "implement", State: workflow.ExecWaiting},
+	}
+	if _, err := store.Put(canonical); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{tasks: task.NewManager(store, nil), workerControl: control}
+	backend := &leaderExecutionBackend{
+		app: app, runs: make(map[agent.ExecutionHandle]*remoteExecution),
+		admitLocal: func() (bool, string) { return false, "disk free 4.7% below minimum 5.0%" },
+	}
+	start := agent.ExecutionStart{
+		Spec: agent.ExecutionSpec{ID: "agent-pressure", TaskID: canonical.ID, Provider: providerid.Claude, Model: "sonnet"},
+		Config: agent.RunConfig{
+			TaskID: canonical.ID, Role: agent.RoleImplementation, Mode: "headless", Prompt: "work", Dir: dir,
+			IntentID: canonical.ID + ":ship:4:1:implement:0", TaskGeneration: 4,
+			Provider: providerid.Claude, Model: "sonnet", SandboxMode: "enforce",
+		},
+		Sink: &recordingExecutionSink{ready: make(chan struct{})},
+	}
+	if _, err := backend.Start(t.Context(), start); !errors.Is(err, workflow.ErrResourcePressure) {
+		t.Fatalf("Start() error = %v, want resource-pressure defer instead of local fallback", err)
+	}
+	if _, err := control.RemoteRunForEffect(t.Context(), start.Config.IntentID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("RemoteRunForEffect() error = %v, want no reservation after deferred placement", err)
+	}
+}
+
+func TestLeaderExecutionBackendRechecksRemoteReserveBeforePlacement(t *testing.T) {
+	database := dbtest.SQLite(t)
+	control := workercontrol.New(database)
+	dir, _ := remoteBackendRepository(t)
+	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	canonical := task.Task{
+		ID: "task-remote-reserve", Title: "reserve", ProjectID: "repo", Branch: "main", Status: task.StatusInProgress,
+		CreatedAt: now, UpdatedAt: now, Generation: 4,
+		Workflow: &workflow.Execution{WorkflowID: "ship", CurrentStep: "implement", State: workflow.ExecWaiting},
+	}
+	if _, err := store.Put(canonical); err != nil {
+		t.Fatal(err)
+	}
+	backend := &leaderExecutionBackend{
+		app:         &App{tasks: task.NewManager(store, nil), workerControl: control},
+		runs:        make(map[agent.ExecutionHandle]*remoteExecution),
+		admitLocal:  func() (bool, string) { return true, "" },
+		admitRemote: func() (bool, string) { return false, "leader disk below remote reserve" },
+	}
+	start := agent.ExecutionStart{
+		Spec: agent.ExecutionSpec{ID: "agent-remote-reserve", TaskID: canonical.ID, Provider: providerid.Claude, Model: "sonnet"},
+		Config: agent.RunConfig{
+			TaskID: canonical.ID, Role: agent.RoleImplementation, Mode: "headless", Prompt: "work", Dir: dir,
+			IntentID: canonical.ID + ":ship:4:1:implement:0", TaskGeneration: 4,
+			Provider: providerid.Claude, Model: "sonnet", SandboxMode: "enforce",
+		},
+		Sink: &recordingExecutionSink{ready: make(chan struct{})},
+	}
+	if _, err := backend.Start(t.Context(), start); !errors.Is(err, workflow.ErrResourcePressure) {
+		t.Fatalf("Start() error = %v, want remote-reserve pressure defer", err)
+	}
+	if _, err := control.RemoteRunForEffect(t.Context(), start.Config.IntentID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("RemoteRunForEffect() error = %v, want no placement below reserve", err)
+	}
+}
+
+func TestLeaderExecutionBackendUsesSingleAdmissionBeforeClaimingLocalFallback(t *testing.T) {
+	database := dbtest.SQLite(t)
+	control := workercontrol.New(database)
+	dir, _ := remoteBackendRepository(t)
+	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	canonical := task.Task{
+		ID: "task-local-fallback", Title: "fallback", ProjectID: "repo", Branch: "main", Status: task.StatusInProgress,
+		CreatedAt: now, UpdatedAt: now, Generation: 4,
+		Workflow: &workflow.Execution{WorkflowID: "ship", CurrentStep: "implement", State: workflow.ExecWaiting},
+	}
+	if _, err := store.Put(canonical); err != nil {
+		t.Fatal(err)
+	}
+	admissions := 0
+	backend := &leaderExecutionBackend{
+		app:   &App{tasks: task.NewManager(store, nil), workerControl: control},
+		local: acceptingLocalBackend{}, runs: make(map[agent.ExecutionHandle]*remoteExecution),
+		admitLocal: func() (bool, string) {
+			admissions++
+			return admissions == 1, "pressure changed after placement"
+		},
+	}
+	start := agent.ExecutionStart{
+		Spec: agent.ExecutionSpec{ID: "agent-local-fallback", TaskID: canonical.ID, Provider: providerid.Claude, Model: "sonnet"},
+		Config: agent.RunConfig{
+			TaskID: canonical.ID, Role: agent.RoleImplementation, Mode: "headless", Prompt: "work", Dir: dir,
+			IntentID: canonical.ID + ":ship:4:1:implement:0", TaskGeneration: 4,
+			Provider: providerid.Claude, Model: "sonnet", SandboxMode: "enforce",
+		},
+		Sink: &recordingExecutionSink{ready: make(chan struct{})},
+	}
+	if handle, err := backend.Start(t.Context(), start); err != nil || handle != "local:accepted" {
+		t.Fatalf("Start() = (%q, %v), want accepted local fallback", handle, err)
+	}
+	if admissions != 1 {
+		t.Fatalf("local admission calls = %d, want one before durable placement", admissions)
 	}
 }
 

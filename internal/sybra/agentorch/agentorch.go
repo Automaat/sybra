@@ -205,6 +205,11 @@ type Orchestrator struct {
 	// memory, or CPU headroom. Late-bound via SetPressureGate so startup can
 	// construct it from config after New returns. Nil disables gating.
 	pressureGate *pressure.Gate
+	// pressureAdmission selects the applicable pressure posture for a task.
+	// Cluster leaders use this to distinguish daemon-bound execution from
+	// work that will consume local provider capacity. When nil, pressureGate
+	// remains the backwards-compatible local-only admission source.
+	pressureAdmission func(taskID string) (bool, string)
 	// queue is the admission queue a workflow implementation dispatch falls
 	// back to when the agent pool is saturated (see StartAgentWithAssignment's
 	// admissionGate). Late-bound via SetQueue once agentqueue.New succeeds at
@@ -277,6 +282,11 @@ func (o *Orchestrator) SetBgops(bgops *bgop.Tracker) {
 // SetPressureGate late-binds the local resource-pressure admission gate.
 func (o *Orchestrator) SetPressureGate(gate *pressure.Gate) {
 	o.pressureGate = gate
+}
+
+// SetPressureAdmission late-binds task-aware resource-pressure admission.
+func (o *Orchestrator) SetPressureAdmission(fn func(taskID string) (bool, string)) {
+	o.pressureAdmission = fn
 }
 
 // SetConflictRecovery late-binds the autonomous conflict-recovery callback
@@ -659,7 +669,12 @@ func (o *Orchestrator) startAgent(ctx context.Context, taskID, mode, prompt stri
 	// ResolveExecution), so implementation dispatches never bypass the
 	// concurrency/pressure gate — legacy interactive tasks are treated as
 	// ordinary headless runs.
-	if o.pressureGate != nil {
+	if o.pressureAdmission != nil {
+		if admit, reason := o.pressureAdmission(taskID); !admit {
+			o.LogAudit(audit.EventAgentDeferredPressure, taskID, "", map[string]any{"reason": reason})
+			return nil, "", fmt.Errorf("%w: %s", workflow.ErrResourcePressure, reason)
+		}
+	} else if o.pressureGate != nil {
 		if admit, reason := o.pressureGate.Admit(); !admit {
 			o.LogAudit(audit.EventAgentDeferredPressure, taskID, "", map[string]any{"reason": reason})
 			return nil, "", fmt.Errorf("%w: %s", workflow.ErrResourcePressure, reason)
