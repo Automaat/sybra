@@ -50,11 +50,16 @@ type Options struct {
 	Provider string
 	// Models maps provider name to the model slug passed to that provider's CLI.
 	Models map[string]string
-	// EnableTools gives the call tool access. It is off by default, and no
-	// caller in the tree turns it on: these are classifiers, judges and
-	// planners that answer from their prompt. The default used to be the
-	// opposite, which put a fully-permissioned CLI behind prompts built from
-	// GitHub issue and pull-request text (#3383).
+	// EnableTools gives the call tool access. It is off by default: these are
+	// classifiers, judges and planners that answer from their prompt. The
+	// default used to be the opposite, which put a fully-permissioned CLI
+	// behind prompts built from GitHub issue and pull-request text (#3383).
+	//
+	// One caller sets it. agent.Inspect hands the model a log path and tells
+	// it to read the tail, and a tools-off run there returns hallucinated
+	// tool-call markup — which the watchdog only logs, so the stall detector
+	// would go quietly dead. Weigh a new true against that: it is the bar,
+	// not a formality.
 	//
 	// Off means claude denies every tool, codex runs read-only, and copilot
 	// is not given blanket tool permission. Providers differ in what they

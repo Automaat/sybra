@@ -71,10 +71,13 @@ while IFS= read -r file; do
     continue
   fi
   # Either the file speaks in providerid constants, or it spawns a provider by
-  # name on the exec line itself. A quoted provider word elsewhere in a file is
-  # not enough: GitHub logins ("copilot") and prose both use these words.
+  # name within the call. A quoted provider word elsewhere in a file is not
+  # enough: GitHub logins ("copilot") and prose both use these words. The
+  # window spans following lines too, since gofmt splits a long call and puts
+  # the command on its own line.
   if ! grep -q "internal/providerid" "$file" &&
-    ! grep -qE "exec\\.Command(Context)?\\([^)]*\"(claude|codex|copilot|opencode)\"" "$file"; then
+    ! grep -A4 -E "exec\\.Command(Context)?\\(" "$file" |
+    grep -qE '^[^"]*"(claude|codex|copilot|opencode)"'; then
     continue
   fi
   line=$(grep -nE "exec\\.Command(Context)?\\(" "$file" | head -1 | cut -d: -f1)

@@ -17,7 +17,10 @@ import (
 // it is the only project-shaped path the call can write, and callers pass a
 // scratch directory rather than a checkout.
 //
-// The sandbox home is ephemeral and removed once ctx is done.
+// The returned func removes the ephemeral sandbox home, and the caller must
+// call it once the process has exited. Removal is deliberately not tied to
+// ctx: callers pass the app's root context, which is done only at shutdown,
+// so one home per classification would accumulate for the life of the server.
 func (m *Manager) OneShotCommand(ctx context.Context, dir, name string, args []string) (*exec.Cmd, func(), error) {
 	home, err := os.MkdirTemp("", "sybra-oneshot-home-")
 	if err != nil {
