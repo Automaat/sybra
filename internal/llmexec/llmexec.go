@@ -38,21 +38,35 @@ const providerWaitDelay = 5 * time.Second
 // provider instead of aborting the whole call.
 var errSchemaDelivery = errors.New("schema delivery failed")
 
+// errWorkdir wraps failures preparing the call's working directory. Treated
+// like errSchemaDelivery: a local filesystem problem is the host's, not this
+// provider's, but failing the whole call over it would take down a classifier
+// that another provider could still answer.
+var errWorkdir = errors.New("working directory unavailable")
+
 // Options configures a one-shot provider invocation.
 type Options struct {
 	// Provider is the preferred provider. Empty means claude first, then peers.
 	Provider string
 	// Models maps provider name to the model slug passed to that provider's CLI.
 	Models map[string]string
-	// DisableTools runs the call with no tool access instead of the default
-	// full-tool bypass. Use for classifiers/summarizers whose prompt embeds
-	// any text a prior model turn authored — without this, that text runs in
-	// a tool-enabled session and a prompt-injected instruction could act on
-	// it. Claude denies every tool (--disallowedTools "*"); other providers
-	// are invoked unchanged (RunJSON has no tool-enabled peer path today).
-	DisableTools bool
-	Logger       *slog.Logger
-	Gate         provider.HealthGate
+	// EnableTools gives the call tool access. It is off by default, and no
+	// caller in the tree turns it on: these are classifiers, judges and
+	// planners that answer from their prompt. The default used to be the
+	// opposite, which put a fully-permissioned CLI behind prompts built from
+	// GitHub issue and pull-request text (#3383).
+	//
+	// Off means claude denies every tool, codex runs read-only, and copilot
+	// is not given blanket tool permission. Providers differ in what they
+	// offer here, so the process sandbox below is the containment that does
+	// not depend on a CLI honouring a flag.
+	EnableTools bool
+	// Dir is the working directory for the CLI. Empty means a fresh empty
+	// directory per call, removed afterwards — never the serving process's
+	// cwd, which is a source checkout on the deploy host.
+	Dir    string
+	Logger *slog.Logger
+	Gate   provider.HealthGate
 	// Schema is an optional JSON Schema describing the expected result shape.
 	// Codex receives it natively via `--output-schema <tempfile>` (no prose);
 	// claude and copilot have no such flag, so it is embedded as prose in the
@@ -73,7 +87,7 @@ type Result struct {
 // RunJSON runs prompt against the preferred provider and falls back to peers
 // when the provider is unavailable, unhealthy, logged out, or rate-limited.
 func RunJSON(ctx context.Context, prompt string, opts Options) (Result, error) {
-	candidates := candidates(opts.Provider)
+	candidates := candidates(opts.Provider, opts.EnableTools)
 	var failures []string
 	var lastProvider string
 	for _, p := range candidates {
@@ -90,9 +104,9 @@ func RunJSON(ctx context.Context, prompt string, opts Options) (Result, error) {
 			continue
 		}
 
-		raw, stderrOut, err := runProvider(ctx, p, prompt, opts.Models[p], opts.DisableTools, opts.Schema)
+		raw, stderrOut, err := runProvider(ctx, p, prompt, opts.Models[p], opts, opts.Schema)
 		if err != nil {
-			if errors.Is(err, errSchemaDelivery) {
+			if errors.Is(err, errSchemaDelivery) || errors.Is(err, errWorkdir) {
 				failures = append(failures, fmt.Sprintf("%s: %s", p, err))
 				continue
 			}
@@ -145,18 +159,39 @@ func RunJSON(ctx context.Context, prompt string, opts Options) (Result, error) {
 	return Result{Provider: lastProvider}, fmt.Errorf("all providers failed: %s", strings.Join(failures, "; "))
 }
 
-func candidates(preferred string) []string {
+// candidates orders the failover chain, dropping any provider that cannot run
+// with tools off when the call asked for that. A chain whose last hop quietly
+// restores tool access is worse than a shorter chain: the caller reads one
+// guarantee from Options and gets another from whichever provider answered.
+func candidates(preferred string, enableTools bool) []string {
 	preferred = normalizeProvider(preferred)
-	if preferred == "" {
-		return slices.Clone(providerOrder)
+	out := make([]string, 0, len(providerOrder)+1)
+	if preferred != "" {
+		out = append(out, preferred)
 	}
-	out := []string{preferred}
 	for _, p := range providerOrder {
 		if p != preferred {
 			out = append(out, p)
 		}
 	}
-	return out
+	if enableTools {
+		return out
+	}
+	// An explicit preference is honoured — the caller named that CLI and can
+	// read this guarantee for itself. What is dropped is the silent fallback:
+	// a chain that ends at a tool-enabled provider hands back a different
+	// guarantee than the one the caller set, and nothing in the result says so.
+	return slices.DeleteFunc(out, func(p string) bool {
+		return p != preferred && !supportsToolsOff(p)
+	})
+}
+
+// supportsToolsOff reports whether this CLI has a flag that denies tool use.
+// claude denies every tool, codex runs read-only, copilot is simply not given
+// blanket permission. opencode's non-interactive mode is --auto, which
+// approves every call, and it offers no verified alternative.
+func supportsToolsOff(p string) bool {
+	return p != providerid.OpenCode
 }
 
 func normalizeProvider(p string) string {
@@ -181,7 +216,7 @@ func binaryName(p string) string {
 	return p
 }
 
-func runProvider(ctx context.Context, p, prompt, model string, disableTools bool, schema string) (stdout []byte, stderrOut string, err error) {
+func runProvider(ctx context.Context, p, prompt, model string, opts Options, schema string) (stdout []byte, stderrOut string, err error) {
 	effectivePrompt := prompt
 	schemaPath := ""
 	if strings.TrimSpace(schema) != "" {
@@ -197,8 +232,12 @@ func runProvider(ctx context.Context, p, prompt, model string, disableTools bool
 		}
 	}
 
-	name, args, stdin := invocation(p, effectivePrompt, model, disableTools, schemaPath)
-	cmd := exec.CommandContext(ctx, name, args...)
+	name, args, stdin := invocation(p, effectivePrompt, model, opts.EnableTools, schemaPath)
+	cmd, release, err := providerCommand(ctx, opts, name, args)
+	if err != nil {
+		return nil, "", err
+	}
+	defer release()
 	// Without WaitDelay, cancelling ctx kills the provider CLI but Wait still
 	// blocks until every write end of the output pipe closes — a grandchild
 	// that outlives its parent holds it open indefinitely, so the exec
@@ -231,12 +270,16 @@ func writeSchemaTempFile(schema string) (string, error) {
 	return f.Name(), nil
 }
 
-func invocation(p, prompt, model string, disableTools bool, schemaPath string) (name string, args []string, stdin string) {
+func invocation(p, prompt, model string, enableTools bool, schemaPath string) (name string, args []string, stdin string) {
 	switch p {
 	case providerid.Codex:
 		args := []string{
 			"exec", "--json", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules",
-			"--dangerously-bypass-approvals-and-sandbox",
+		}
+		if enableTools {
+			args = append(args, "--dangerously-bypass-approvals-and-sandbox")
+		} else {
+			args = append(args, "--sandbox", "read-only")
 		}
 		if model != "" {
 			args = append(args, "--model", model)
@@ -247,12 +290,18 @@ func invocation(p, prompt, model string, disableTools bool, schemaPath string) (
 		args = append(args, "-")
 		return providerid.Codex, args, prompt
 	case providerid.Copilot:
-		args := []string{"-p", prompt, "--output-format", "json", "--allow-all-tools", "--no-ask-user"}
+		args := []string{"-p", prompt, "--output-format", "json", "--no-ask-user"}
+		if enableTools {
+			args = append(args, "--allow-all-tools")
+		}
 		if model != "" {
 			args = append(args, "--model", model)
 		}
 		return providerid.Copilot, args, ""
 	case providerid.OpenCode:
+		// --auto approves every tool call. There is no verified no-tool flag
+		// for this CLI, so candidates() drops opencode entirely when tools
+		// are off; reaching here means the caller asked for them.
 		args := []string{"run", "--format", "json", "--auto"}
 		if model != "" {
 			args = append(args, "--model", model)
@@ -261,10 +310,10 @@ func invocation(p, prompt, model string, disableTools bool, schemaPath string) (
 		return providerid.OpenCode, args, ""
 	default:
 		args := []string{"-p", prompt, "--output-format", "json"}
-		if disableTools {
-			args = append(args, "--disallowedTools", "*")
-		} else {
+		if enableTools {
 			args = append(args, "--dangerously-skip-permissions")
+		} else {
+			args = append(args, "--disallowedTools", "*")
 		}
 		if model != "" {
 			args = append(args, "--model", model)

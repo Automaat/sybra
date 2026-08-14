@@ -84,6 +84,7 @@ run = [
   "bash scripts/check-consolidated-primitives.sh",
   "bash scripts/check-no-viewer-user-endpoint.sh",
   "bash scripts/check-gh-exec-gate.sh",
+  "bash scripts/check-provider-exec-gate.sh",
   "bash scripts/check-git-exec-gate.sh",
   "bash scripts/check-git-exec-gate.test.sh",
   "bash scripts/check-no-direct-status-write.sh",

@@ -311,17 +311,16 @@ func (s *Service) readAudit(since, until time.Time) ([]audit.Event, error) {
 // only: the digest is a read-only aggregate summary with no mutation
 // powers, and claude is the only provider this feature has been validated
 // against. claudeOnlyGate masks every other provider unhealthy so
-// llmexec.RunJSON's fallback loop never reaches them. DisableTools keeps
-// that "no mutation powers" claim true even though the prompt embeds the
-// previous digest's model-authored NextBets text — a prompt-injected
-// instruction in that text has no tool to act through.
+// llmexec.RunJSON's fallback loop never reaches them. Tools stay off, which
+// is now llmexec's default, keeping that "no mutation powers" claim true even
+// though the prompt embeds the previous digest's model-authored NextBets text
+// — a prompt-injected instruction in that text has no tool to act through.
 func (s *Service) callSummarizer(ctx context.Context, prompt string) (llmexec.Result, error) {
 	res, err := s.runJSON(ctx, prompt, llmexec.Options{
-		Provider:     providerid.Claude,
-		Models:       map[string]string{providerid.Claude: s.cfg.Model},
-		DisableTools: true,
-		Logger:       s.logger,
-		Gate:         claudeOnlyGate{base: s.gate},
+		Provider: providerid.Claude,
+		Models:   map[string]string{providerid.Claude: s.cfg.Model},
+		Logger:   s.logger,
+		Gate:     claudeOnlyGate{base: s.gate},
 	})
 	if err != nil {
 		return llmexec.Result{}, err
