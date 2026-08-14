@@ -18,6 +18,15 @@ import (
 
 const terminalPromptEnv = "GIT_TERMINAL_PROMPT=0"
 
+var inheritedRepoScopedGitEnv = []string{
+	"GIT_DIR",
+	"GIT_WORK_TREE",
+	"GIT_COMMON_DIR",
+	"GIT_INDEX_FILE",
+	"GIT_OBJECT_DIRECTORY",
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES",
+}
+
 // Options configures one Git invocation.
 //
 // A nil Env inherits the current process environment. A non-nil Env, including
@@ -135,7 +144,7 @@ func command(ctx context.Context, opts Options, args ...string) *exec.Cmd {
 func invocationEnv(opts Options) []string {
 	var env []string
 	if opts.Env == nil {
-		env = append([]string(nil), os.Environ()...)
+		env = stripEnvKeys(os.Environ(), inheritedRepoScopedGitEnv...)
 	} else {
 		env = append([]string(nil), opts.Env...)
 	}
@@ -143,6 +152,27 @@ func invocationEnv(opts Options) []string {
 		env = overlayEnv(env, entry)
 	}
 	return overlayEnv(env, terminalPromptEnv)
+}
+
+func stripEnvKeys(env []string, keys ...string) []string {
+	if len(keys) == 0 {
+		return append([]string(nil), env...)
+	}
+	blocked := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		blocked[key] = struct{}{}
+	}
+	out := make([]string, 0, len(env))
+	for _, entry := range env {
+		key, _, ok := strings.Cut(entry, "=")
+		if ok {
+			if _, blockedKey := blocked[key]; blockedKey {
+				continue
+			}
+		}
+		out = append(out, entry)
+	}
+	return out
 }
 
 func overlayEnv(env []string, entry string) []string {
