@@ -20,14 +20,13 @@ func TestSandboxRead_RunsHomebrewLinkedBinary(t *testing.T) {
 	if !sandboxExecAvailable() {
 		t.Skip("host sandbox mechanism unavailable; enforce path unexercised on this host")
 	}
-	tool := ""
+	var tools []string
 	for _, candidate := range []string{"/opt/homebrew/bin/rg", "/opt/homebrew/bin/git", "/opt/homebrew/bin/jq"} {
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-			tool = candidate
-			break
+			tools = append(tools, candidate)
 		}
 	}
-	if tool == "" {
+	if len(tools) == 0 {
 		t.Skip("no Homebrew-installed tool on this host")
 	}
 
@@ -46,14 +45,21 @@ func TestSandboxRead_RunsHomebrewLinkedBinary(t *testing.T) {
 		t.Fatalf("prepareRunConfig: %v", err)
 	}
 
-	cmd := newProviderCmd(context.Background(), &cfg, false, tool, "--version")
-	cmd.Env = append(os.Environ(), cfg.ExtraEnv...)
-	out, runErr := cmd.CombinedOutput()
-	if runErr != nil {
-		t.Fatalf("%s failed under the read sandbox: %v: %s", tool, runErr, out)
-	}
-	if strings.Contains(string(out), "Library not loaded") {
-		t.Fatalf("loader could not open a library: %s", out)
+	// Every Homebrew tool present, not the first one found: git reads its
+	// configuration from the prefix and got past the loader only to die on
+	// that, so a suite covering one tool proved less than it looked.
+	for _, tool := range tools {
+		t.Run(filepath.Base(tool), func(t *testing.T) {
+			cmd := newProviderCmd(context.Background(), &cfg, false, tool, "--version")
+			cmd.Env = append(os.Environ(), cfg.ExtraEnv...)
+			out, runErr := cmd.CombinedOutput()
+			if runErr != nil {
+				t.Fatalf("%s failed under the read sandbox: %v: %s", tool, runErr, out)
+			}
+			if strings.Contains(string(out), "Library not loaded") {
+				t.Fatalf("loader could not open a library: %s", out)
+			}
+		})
 	}
 }
 
