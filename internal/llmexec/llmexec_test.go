@@ -11,11 +11,12 @@ import (
 	"testing"
 
 	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 func TestRunJSONFallsBackOnRateLimit(t *testing.T) {
 	dir := t.TempDir()
-	writeExe(t, filepath.Join(dir, "claude"), `#!/bin/sh
+	writeExe(t, filepath.Join(dir, providerid.Claude), `#!/bin/sh
 echo "rate limit exceeded" >&2
 exit 1
 `)
@@ -38,7 +39,7 @@ printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{
 
 func TestRunJSONPassesCodexPromptOnStdin(t *testing.T) {
 	dir := t.TempDir()
-	writeExe(t, filepath.Join(dir, "claude"), `#!/bin/sh
+	writeExe(t, filepath.Join(dir, providerid.Claude), `#!/bin/sh
 echo "rate limit exceeded" >&2
 exit 1
 `)
@@ -136,7 +137,7 @@ printf '%s\n' '{"type":"assistant.message","data":{"content":"{\"ok\":true}"}}'
 
 func TestRunJSONFallsBackOnCodexUsageLimit(t *testing.T) {
 	dir := t.TempDir()
-	writeExe(t, filepath.Join(dir, "claude"), `#!/bin/sh
+	writeExe(t, filepath.Join(dir, providerid.Claude), `#!/bin/sh
 echo "rate limit exceeded" >&2
 exit 1
 `)
@@ -244,7 +245,7 @@ printf '%%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"
 
 func TestRunJSONEmbedsSchemaAsProseForClaude(t *testing.T) {
 	dir := t.TempDir()
-	writeExe(t, filepath.Join(dir, "claude"), `#!/bin/bash
+	writeExe(t, filepath.Join(dir, providerid.Claude), `#!/bin/bash
 if [[ "$*" == *"--output-schema"* ]]; then
   echo "claude must not receive --output-schema" >&2
   exit 7
@@ -293,7 +294,7 @@ func TestRunJSONFallsBackWhenSchemaTempFileFails(t *testing.T) {
 echo "codex should never run when schema delivery fails" >&2
 exit 7
 `)
-	writeExe(t, filepath.Join(dir, "claude"), `#!/bin/sh
+	writeExe(t, filepath.Join(dir, providerid.Claude), `#!/bin/sh
 printf '%s\n' '{"result":"{\"ok\":true}"}'
 `)
 	t.Setenv("PATH", dir)
@@ -340,7 +341,7 @@ printf '%s\n' '{"type":"assistant.message","data":{"content":"{\"ok\":true}"}}'
 
 func TestRunJSONAllProvidersFailedNamesLastProvider(t *testing.T) {
 	dir := t.TempDir()
-	writeExe(t, filepath.Join(dir, "claude"), `#!/bin/sh
+	writeExe(t, filepath.Join(dir, providerid.Claude), `#!/bin/sh
 echo "rate limit exceeded" >&2
 exit 1
 `)
@@ -386,7 +387,7 @@ func writeExe(t *testing.T, path, content string) {
 // RunJSON through this line.
 func TestRunJSONWithNilHealthChecker(t *testing.T) {
 	dir := t.TempDir()
-	writeExe(t, filepath.Join(dir, "claude"), `#!/bin/sh
+	writeExe(t, filepath.Join(dir, providerid.Claude), `#!/bin/sh
 printf '%s\n' '{"type":"result","subtype":"success","result":"{\"ok\":true}","total_cost_usd":0.01}'
 `)
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -418,19 +419,19 @@ func TestRunJSONKeepsToolsOffByDefault(t *testing.T) {
 		denyArg  string
 	}{
 		{
-			provider: "claude",
+			provider: providerid.Claude,
 			script:   `printf '%s\n' "$@" > "$ARGS_FILE"; printf '%s\n' '{"result":"{\"ok\":true}"}'`,
 			wantArg:  "--disallowedTools",
 			denyArg:  "--dangerously-skip-permissions",
 		},
 		{
-			provider: "codex",
+			provider: providerid.Codex,
 			script:   `printf '%s\n' "$@" > "$ARGS_FILE"; printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"ok\":true}"}}'`,
 			wantArg:  "read-only",
 			denyArg:  "--dangerously-bypass-approvals-and-sandbox",
 		},
 		{
-			provider: "copilot",
+			provider: providerid.Copilot,
 			script:   `printf '%s\n' "$@" > "$ARGS_FILE"; printf '%s\n' '{"type":"assistant.message","data":{"content":"{\"ok\":true}"}}'`,
 			wantArg:  "--no-ask-user",
 			denyArg:  "--allow-all-tools",
@@ -466,10 +467,10 @@ func TestRunJSONKeepsToolsOffByDefault(t *testing.T) {
 func TestRunJSONRunsOutsideTheCallersDirectory(t *testing.T) {
 	dir := t.TempDir()
 	cwdFile := filepath.Join(dir, "cwd")
-	writeExe(t, filepath.Join(dir, "claude"), "#!/bin/sh\npwd > "+cwdFile+"\nprintf '%s\\n' '{\"result\":\"{\\\"ok\\\":true}\"}'\n")
+	writeExe(t, filepath.Join(dir, providerid.Claude), "#!/bin/sh\npwd > "+cwdFile+"\nprintf '%s\\n' '{\"result\":\"{\\\"ok\\\":true}\"}'\n")
 	t.Setenv("PATH", dir)
 
-	if _, err := RunJSON(context.Background(), "classify", Options{Provider: "claude"}); err != nil {
+	if _, err := RunJSON(context.Background(), "classify", Options{Provider: providerid.Claude}); err != nil {
 		t.Fatalf("RunJSON: %v", err)
 	}
 	recorded, err := os.ReadFile(cwdFile)
@@ -491,7 +492,7 @@ func TestRunJSONRunsOutsideTheCallersDirectory(t *testing.T) {
 // CLI itself.
 func TestRunJSONUsesTheRegisteredCommandFactory(t *testing.T) {
 	dir := t.TempDir()
-	writeExe(t, filepath.Join(dir, "claude"), "#!/bin/sh\nexit 9\n")
+	writeExe(t, filepath.Join(dir, providerid.Claude), "#!/bin/sh\nexit 9\n")
 	stand := filepath.Join(dir, "stand-in")
 	writeExe(t, stand, "#!/bin/sh\nprintf '%s\\n' '{\"result\":\"{\\\"ok\\\":true}\"}'\n")
 	t.Setenv("PATH", dir)
@@ -504,7 +505,7 @@ func TestRunJSONUsesTheRegisteredCommandFactory(t *testing.T) {
 	})
 	t.Cleanup(func() { SetCommandFactory(nil) })
 
-	if _, err := RunJSON(context.Background(), "classify", Options{Provider: "claude"}); err != nil {
+	if _, err := RunJSON(context.Background(), "classify", Options{Provider: providerid.Claude}); err != nil {
 		t.Fatalf("RunJSON: %v", err)
 	}
 	if gotName != "claude" {
@@ -524,13 +525,13 @@ func TestRunJSONUsesTheRegisteredCommandFactory(t *testing.T) {
 // lands on. An explicit preference still reaches it, since that caller chose
 // the CLI knowingly.
 func TestCandidatesDropsToolOnlyFallback(t *testing.T) {
-	if got := candidates("", false); slices.Contains(got, "opencode") {
+	if got := candidates("", false); slices.Contains(got, providerid.OpenCode) {
 		t.Errorf("tools-off fallback chain still contains opencode: %v", got)
 	}
-	if got := candidates("", true); !slices.Contains(got, "opencode") {
+	if got := candidates("", true); !slices.Contains(got, providerid.OpenCode) {
 		t.Errorf("tools-on chain dropped opencode: %v", got)
 	}
-	if got := candidates("opencode", false); got[0] != "opencode" {
+	if got := candidates(providerid.OpenCode, false); got[0] != providerid.OpenCode {
 		t.Errorf("explicit opencode preference was dropped: %v", got)
 	}
 }

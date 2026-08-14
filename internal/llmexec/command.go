@@ -2,6 +2,7 @@ package llmexec
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -50,8 +51,14 @@ func providerCommand(ctx context.Context, opts Options, name string, args []stri
 
 	if f := factory.Load(); f != nil {
 		built, done, buildErr := (*f)(ctx, dir, name, args)
-		if buildErr != nil {
+		if buildErr != nil || built == nil {
 			release()
+			if done != nil {
+				done()
+			}
+			if buildErr == nil {
+				buildErr = errors.New("factory returned no command")
+			}
 			return nil, nil, fmt.Errorf("%w: build provider command: %w", errWorkdir, buildErr)
 		}
 		// Composed rather than tied to ctx: a caller passes the app's root

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 // TestOneShotCommand_WrapsUnderEnforce pins that a classifier call is contained
@@ -21,13 +23,13 @@ func TestOneShotCommand_WrapsUnderEnforce(t *testing.T) {
 	})
 	dir := t.TempDir()
 
-	cmd, cleanup, err := m.OneShotCommand(context.Background(), dir, "claude", []string{"-p", "hi"})
+	cmd, cleanup, err := m.OneShotCommand(context.Background(), dir, providerid.Claude, []string{"-p", "hi"})
 	if err != nil {
 		t.Fatalf("OneShotCommand: %v", err)
 	}
 	defer cleanup()
 
-	if filepath.Base(cmd.Path) == "claude" {
+	if filepath.Base(cmd.Path) == providerid.Claude {
 		t.Fatalf("provider spawned unwrapped: %s %v", cmd.Path, cmd.Args)
 	}
 	if want := sandboxWrapperName(); filepath.Base(cmd.Path) != want {
@@ -50,7 +52,7 @@ func TestOneShotCommand_WithholdsBoardAndToken(t *testing.T) {
 		SandboxHome: func(string) (string, error) { return t.TempDir(), nil },
 	})
 
-	cmd, cleanup, err := m.OneShotCommand(context.Background(), t.TempDir(), "claude", []string{"-p", "hi"})
+	cmd, cleanup, err := m.OneShotCommand(context.Background(), t.TempDir(), providerid.Claude, []string{"-p", "hi"})
 	if err != nil {
 		t.Fatalf("OneShotCommand: %v", err)
 	}
@@ -87,7 +89,7 @@ func TestOneShotCommand_CleanupRemovesScratchHome(t *testing.T) {
 		SandboxHome: func(string) (string, error) { return t.TempDir(), nil },
 	})
 
-	cmd, cleanup, err := m.OneShotCommand(context.Background(), t.TempDir(), "claude", []string{"-p", "hi"})
+	cmd, cleanup, err := m.OneShotCommand(context.Background(), t.TempDir(), providerid.Claude, []string{"-p", "hi"})
 	if err != nil {
 		t.Fatalf("OneShotCommand: %v", err)
 	}
@@ -118,11 +120,11 @@ func TestOneShotCommand_ResolvesSymlinkedProvider(t *testing.T) {
 		t.Skip("host sandbox mechanism unavailable; enforce path unexercised on this host")
 	}
 	binDir := t.TempDir()
-	target := filepath.Join(binDir, "codex-real")
+	target := filepath.Join(binDir, providerid.Codex+"-real")
 	if err := os.WriteFile(target, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
 		t.Fatalf("write provider: %v", err)
 	}
-	link := filepath.Join(binDir, "codex")
+	link := filepath.Join(binDir, providerid.Codex)
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatalf("symlink provider: %v", err)
 	}
@@ -132,7 +134,7 @@ func TestOneShotCommand_ResolvesSymlinkedProvider(t *testing.T) {
 		Runtime:     ManagerRuntimeConfig{SandboxMode: "enforce"},
 		SandboxHome: func(string) (string, error) { return t.TempDir(), nil },
 	})
-	cmd, cleanup, err := m.OneShotCommand(context.Background(), t.TempDir(), "codex", []string{"exec"})
+	cmd, cleanup, err := m.OneShotCommand(context.Background(), t.TempDir(), providerid.Codex, []string{"exec"})
 	if err != nil {
 		t.Fatalf("OneShotCommand: %v", err)
 	}
