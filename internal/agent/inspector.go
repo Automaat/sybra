@@ -57,10 +57,14 @@ type InspectInput struct {
 // Inspect spawns `claude -p` to analyze a running agent's NDJSON log and return
 // a verdict on whether it appears stuck. The caller must supply a context with
 // a reasonable timeout (e.g. 2 minutes).
-// The inspector always runs with --dangerously-skip-permissions because it is
-// short-lived and read-only; logger receives a warning on each invocation.
+//
+// This is the one llmexec caller that asks for tools: the prompt hands the
+// model a log path and tells it to read the tail, so a tools-off run returns
+// hallucinated tool-call markup or no result at all — and since the watchdog
+// only logs an inspect failure, that silently disables the stall/loop kill
+// switch rather than failing loudly (#3383).
 func Inspect(ctx context.Context, logger *slog.Logger, in InspectInput) (InspectorVerdict, error) {
-	logger.Warn("inspector: running with --dangerously-skip-permissions",
+	logger.Warn("inspector: running with tool access to read the agent log",
 		"agent_id", in.AgentID, "task_title", in.TaskTitle)
 
 	prompt := buildInspectorPrompt(in)
@@ -70,7 +74,7 @@ func Inspect(ctx context.Context, logger *slog.Logger, in InspectInput) (Inspect
 		Tier:     llmjob.SuperCheap,
 		Schema:   inspectorVerdictSchema,
 		Validate: validateInspectorVerdict,
-	}, llmexec.Options{Logger: logger, Models: claudeModelOverride(in.Model)})
+	}, llmexec.Options{Logger: logger, Models: claudeModelOverride(in.Model), EnableTools: true})
 	if err != nil {
 		return InspectorVerdict{}, fmt.Errorf("inspector: %w", err)
 	}
