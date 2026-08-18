@@ -188,6 +188,24 @@ steps:
           operator: equals
           value: human-required
         goto: ""
+      - goto: verify_review_threads
+
+  # Mechanical check (no LLM): the comments path lets the agent enumerate the
+  # PR's review threads itself, so a failed or stale enumeration would let it
+  # answer a fraction of the feedback and still report success. Re-fetches the
+  # threads it was briefed on and flips to human-required when any is still
+  # unanswered, instead of returning the task to in-review for the monitor to
+  # re-dispatch until the status-bounce guard pauses it. No-ops on every
+  # dispatch that carried no brief, i.e. every non-comments fix.
+  - id: verify_review_threads
+    name: Verify Review Threads Answered
+    type: verify_review_threads
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
       - goto: link_pr_and_review
 
   # Non-LLM step: recover PR number from task, agent result history, or

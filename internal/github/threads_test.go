@@ -1,6 +1,9 @@
 package github
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestFetchReviewThreads_parse(t *testing.T) {
 	t.Parallel()
@@ -11,7 +14,7 @@ func TestFetchReviewThreads_parse(t *testing.T) {
 	]}}}}}`
 	fe := &fakeExecer{output: []byte(body)}
 
-	threads, err := fetchReviewThreadsWith(fe, "o/r", 9)
+	threads, err := fetchReviewThreadsWith(context.Background(), fe, "o/r", 9)
 	if err != nil {
 		t.Fatalf("fetchReviewThreadsWith: %v", err)
 	}
@@ -33,7 +36,7 @@ func TestFetchReviewThreads_parse(t *testing.T) {
 
 func TestFetchReviewThreads_invalidRepo(t *testing.T) {
 	t.Parallel()
-	if _, err := fetchReviewThreadsWith(&fakeExecer{}, "noslash", 1); err == nil {
+	if _, err := fetchReviewThreadsWith(context.Background(), &fakeExecer{}, "noslash", 1); err == nil {
 		t.Fatal("want error for invalid repo, got nil")
 	}
 }

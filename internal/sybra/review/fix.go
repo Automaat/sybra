@@ -78,6 +78,10 @@ type dispatchFixOptions struct {
 	replaceActiveWorkflow bool
 	cancelReason          string
 	prDispatchReserved    bool
+	// reviewThreads is the harness-side view of the PR's unresolved review
+	// threads, recorded so verify_review_threads can hold the run to it. Empty
+	// for every dispatch that does not include a review-comments issue.
+	reviewThreads reviewThreadBrief
 }
 
 const PRFixResultContract = "\n\nBefore your final response, decide the outcome:\n" +
@@ -776,14 +780,14 @@ func prFixPushPromptWithRemote(branch, intro string, fenced, allowHistoryRewrite
 // prIssueBody returns the pr-fix agent prompt for one fixable issue kind. ok is
 // false for kinds with no agent prompt (ready_to_merge), which never reach the
 // dispatch path.
-func prIssueBody(ctx context.Context, issue github.PRIssue, signing project.SigningPolicy) (string, bool) {
+func prIssueBody(ctx context.Context, issue github.PRIssue, signing project.SigningPolicy, brief reviewThreadBrief) (string, bool) {
 	switch issue.Kind {
 	case github.PRIssueConflict:
 		return conflictPrompt(ctx, issue.PR, signing), true
 	case github.PRIssueCIFailure:
 		return ciFailurePrompt(issue.PR), true
 	case github.PRIssueComments:
-		return commentsPrompt(ctx, issue.PR, signing), true
+		return commentsPrompt(ctx, issue.PR, signing, brief), true
 	default:
 		return "", false
 	}
@@ -850,17 +854,17 @@ func (r *Handler) logPRIssueDetected(taskID string, issue github.PRIssue) {
 // review-hold setting is on AND the set includes a review-comments issue — the
 // only kind that posts thread replies. It overrides the "reply live and push"
 // instructions above, so it must land after them.
-func coalescedFixPrompt(ctx context.Context, issues []github.PRIssue, holdSuffix string, signing project.SigningPolicy) string {
+func coalescedFixPrompt(ctx context.Context, issues []github.PRIssue, holdSuffix string, signing project.SigningPolicy, brief reviewThreadBrief) string {
 	var prompt string
 	if len(issues) == 1 {
-		prompt, _ = prIssueBody(ctx, issues[0], signing)
+		prompt, _ = prIssueBody(ctx, issues[0], signing, brief)
 	} else {
 		var b strings.Builder
 		b.WriteString("This PR has multiple open issues from the same push. Address " +
 			"ALL of them in one pass, then push once at the end (the per-section push " +
 			"commands are equivalent — run it a single time).\n\n")
 		for i := range issues {
-			body, ok := prIssueBody(ctx, issues[i], signing)
+			body, ok := prIssueBody(ctx, issues[i], signing, brief)
 			if !ok {
 				continue
 			}
@@ -991,7 +995,12 @@ func (r *Handler) dispatchFixIssuesWithOptions(ctx context.Context, taskID strin
 	if preparationClaim != nil {
 		preparationClaim.Release()
 	}
-	return r.dispatchPRIssueWithOptions(ctx, t, primary, handle, coalescedFixPrompt(ctx, handle, reviewHoldFixSuffix(r.cfg), r.signingPolicy()), dir, opts)
+	// Fetched once here, then used twice: to brief the agent in the prompt and
+	// to hold it to that same set after the run.
+	if slices.ContainsFunc(handle, func(i github.PRIssue) bool { return i.Kind == github.PRIssueComments }) {
+		opts.reviewThreads = fetchReviewThreadBrief(ctx, primary.PR)
+	}
+	return r.dispatchPRIssueWithOptions(ctx, t, primary, handle, coalescedFixPrompt(ctx, handle, reviewHoldFixSuffix(r.cfg), r.signingPolicy(), opts.reviewThreads), dir, opts)
 }
 
 func prHasCurrentApproval(pr github.PullRequest) bool {
@@ -1258,6 +1267,9 @@ func (r *Handler) dispatchPRIssueWithOptions(ctx context.Context, t task.Task, p
 		// host-appropriate commit flags (-s vs -s -S) for its own commit
 		// instruction, computed once here rather than hardcoded in the YAML.
 		workflow.WorkflowVarCommitSignFlags: r.signingPolicy().CommitFlags(ctx),
+	}
+	if brief := opts.reviewThreads.vars(); brief != "" {
+		vars[workflow.PRReviewThreadBriefVar] = brief
 	}
 	// Deterministic backstop for review-hold: when the hold is active and this
 	// fix touches review comments, the agent drafted its replies into a pending
@@ -2181,7 +2193,11 @@ func (r *Handler) prepareWorktree(ctx context.Context, t task.Task, issue github
 // commentsPrompt instructs the fix agent to address unresolved review comments
 // on the user's own PR via the /fix-review skill (which replies on every
 // thread), then push and re-request review.
-func commentsPrompt(ctx context.Context, pr github.PullRequest, signing project.SigningPolicy) string {
+func commentsPrompt(ctx context.Context, pr github.PullRequest, signing project.SigningPolicy, brief reviewThreadBrief) string {
+	briefBlock := ""
+	if brief.prompt != "" {
+		briefBlock = "\n\n" + brief.prompt
+	}
 	return fmt.Sprintf(
 		"Run /fix-review %s --auto\n\n"+
 			"This is your own PR (#%d) — reviewers left comments or unresolved "+
@@ -2202,8 +2218,8 @@ func commentsPrompt(ctx context.Context, pr github.PullRequest, signing project.
 			"IMPORTANT: when committing, use conventional commit format "+
 			"`fix(review): address PR review comments` (type(scope) required by "+
 			"repo hooks). Sign the commit with `git commit %s`.\n\n"+
-			"%s",
-		pr.URL, pr.Number, signing.CommitFlags(ctx), prFixPushPrompt(pr.HeadRefName, "Push to the same remote create-pr would target for this worktree:", true, false),
+			"%s%s",
+		pr.URL, pr.Number, signing.CommitFlags(ctx), prFixPushPrompt(pr.HeadRefName, "Push to the same remote create-pr would target for this worktree:", true, false), briefBlock,
 	)
 }
 
