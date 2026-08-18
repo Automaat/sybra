@@ -569,7 +569,9 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	if err := m.injectSandboxHome(&cfg); err != nil {
 		return cfg, nil, err
 	}
-	m.injectShellTempPrefix(&cfg)
+	if err := m.injectShellTempPrefix(&cfg); err != nil {
+		return cfg, nil, err
+	}
 	if err := injectScratchEnvironment(&cfg); err != nil {
 		return cfg, nil, err
 	}
@@ -907,9 +909,9 @@ const shellTempPrefixEnv = "TMPPREFIX"
 // state every run was already in; refusing to dispatch over it would turn one
 // stray file in an agent-writable directory into a task that can never run
 // again, on every posture including off.
-func (m *Manager) injectShellTempPrefix(cfg *RunConfig) {
+func (m *Manager) injectShellTempPrefix(cfg *RunConfig) error {
 	if strings.TrimSpace(cfg.resolvedSandboxHome) == "" {
-		return
+		return nil
 	}
 	// Strip first. A caller-supplied prefix can name any writable path,
 	// including one inside the worktree, so a directory this cannot create
@@ -917,10 +919,14 @@ func (m *Manager) injectShellTempPrefix(cfg *RunConfig) {
 	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, shellTempPrefixEnv)
 	dir := filepath.Join(cfg.resolvedSandboxHome, "zsh")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
+		if m.resolvedSandboxModeFor(cfg) == "enforce" {
+			return fmt.Errorf("agent.Run: create shell temp prefix directory %q: %w", dir, err)
+		}
 		m.logger.Warn("agent.shell_temp_prefix.failed", "task_id", cfg.TaskID, "dir", dir, "err", err)
-		return
+		return nil
 	}
 	cfg.ExtraEnv = append(cfg.ExtraEnv, shellTempPrefixEnv+"="+filepath.Join(dir, "zsh"))
+	return nil
 }
 
 // injectScratchEnvironment gives every sandbox-home-backed run an explicit
@@ -1121,6 +1127,23 @@ func (m *Manager) injectSharedBuildCache(cfg *RunConfig) error {
 // subprocess spawns. report never blocks: the same failures are logged and
 // this run's spec falls back to "off" (unwrapped) instead of erroring, so a
 // misconfigured or unsupported host cannot break the default posture.
+// resolvedSandboxModeFor reports the posture this run will use, applying the
+// manager default when the run names none. Unparseable values read as the
+// empty string; injectProcessSandbox reports that error properly.
+func (m *Manager) resolvedSandboxModeFor(cfg *RunConfig) string {
+	requested := cfg.SandboxMode
+	if strings.TrimSpace(requested) == "" {
+		m.mu.RLock()
+		requested = m.defaultSandboxMode
+		m.mu.RUnlock()
+	}
+	mode, err := config.NormalizeSandboxMode(requested)
+	if err != nil {
+		return ""
+	}
+	return mode
+}
+
 func (m *Manager) injectProcessSandbox(cfg *RunConfig) error {
 	requested := cfg.SandboxMode
 	if strings.TrimSpace(requested) == "" {

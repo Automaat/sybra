@@ -1639,6 +1639,7 @@ func (a *App) workflowDependencies(agentLauncher *agentAdapter) workflow.Depende
 			Linker:           workflowpr.LinkerAdapter{},
 			ReviewRequester:  workflowpr.ReviewRequesterAdapter{},
 			StateFetcher:     workflowpr.StateFetcherAdapter{},
+			ThreadFetcher:    workflowpr.ThreadFetcherAdapter{},
 			HeadFetcher:      workflowpr.HeadFetcherAdapter{},
 			Creator:          workflowpr.CreatorAdapter{},
 			Closer:           workflowpr.CloserAdapter{},

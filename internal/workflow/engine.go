@@ -315,6 +315,11 @@ type PRStateFetcher interface {
 	FetchPRState(repo string, number int) (github.PRState, error)
 }
 
+// PRReviewThreadFetcher lists a PR's review threads.
+type PRReviewThreadFetcher interface {
+	FetchReviewThreads(ctx context.Context, repo string, number int) ([]github.ReviewThread, error)
+}
+
 // PRHeadFetcher looks up a PR's live head commit SHA. Used by `push_branch`
 // to verify a push landed before continuing. Engine operates with a nil
 // fetcher — the step then skips verification and trusts the push exit code.
@@ -783,6 +788,7 @@ type PRSurface struct {
 	Linker           PRLinker
 	ReviewRequester  PRReviewRequester
 	StateFetcher     PRStateFetcher
+	ThreadFetcher    PRReviewThreadFetcher
 	HeadFetcher      PRHeadFetcher
 	PushPreflighter  PushCredentialPreflighter
 	Creator          PRCreator
@@ -834,6 +840,7 @@ func (s PRSurface) missing() []string {
 		namedDependency{"PR.Linker", s.Linker},
 		namedDependency{"PR.ReviewRequester", s.ReviewRequester},
 		namedDependency{"PR.StateFetcher", s.StateFetcher},
+		namedDependency{"PR.ThreadFetcher", s.ThreadFetcher},
 		namedDependency{"PR.HeadFetcher", s.HeadFetcher},
 		namedDependency{"PR.Creator", s.Creator},
 		namedDependency{"PR.Closer", s.Closer},
