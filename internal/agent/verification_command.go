@@ -37,7 +37,9 @@ func (m *Manager) RunVerificationCommand(ctx context.Context, cfg RunConfig, nam
 	// The command runs under sh today, which takes its temp root from TMPDIR,
 	// but a project's own verify entry can invoke zsh — and then it needs the
 	// same writable prefix an agent shell gets (#3377).
-	m.injectShellTempPrefix(&cfg)
+	if err := m.injectShellTempPrefix(&cfg); err != nil {
+		return err
+	}
 	if err := isolateVerifierGitCredentials(&cfg); err != nil {
 		return err
 	}
