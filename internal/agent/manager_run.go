@@ -877,9 +877,13 @@ func systemSandboxKey(cfg *RunConfig) string {
 
 const scratchHomePrompt = `## Temporary files
 
-When a command or test needs a disposable HOME, use $SYBRA_SCRATCH_HOME. It
-lives outside the Git worktree. Never create fake homes, caches, or other
-runtime state inside the worktree.`
+When a command or test needs a disposable HOME, use $SYBRA_SCRATCH_HOME. For
+ordinary scratch files - command output you read back, intermediate JSON, a
+query you build up - use $SYBRA_SCRATCH_DIR. Both live outside the Git worktree.
+
+Do not write to /tmp. It is world-writable and shared with unrelated tasks, so
+the sandbox does not grant it and the write fails with a permission error.
+Never create fake homes, caches, or other runtime state inside the worktree.`
 
 // shellTempPrefixEnv is zsh's temp-file prefix, and the reason a contained run
 // can use a heredoc at all. zsh writes every heredoc body to a file under
@@ -940,11 +944,15 @@ func injectScratchEnvironment(cfg *RunConfig) error {
 	if err := os.MkdirAll(scratchHome, 0o700); err != nil {
 		return fmt.Errorf("agent.Run: create task scratch directory %q: %w", scratchHome, err)
 	}
+	scratchDir := filepath.Join(cfg.resolvedSandboxHome, "scratch")
+	if err := os.MkdirAll(scratchDir, 0o700); err != nil {
+		return fmt.Errorf("agent.Run: create task scratch file directory %q: %w", scratchDir, err)
+	}
 	// Do not replace TMPDIR/TMP/TEMP here. Provider and harness control files
 	// may already live beneath the caller's process temp root; changing that
 	// root makes those paths fail validation and can change CLI behaviour.
-	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, "SYBRA_SCRATCH_HOME")
-	cfg.ExtraEnv = append(cfg.ExtraEnv, "SYBRA_SCRATCH_HOME="+scratchHome)
+	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, "SYBRA_SCRATCH_HOME", "SYBRA_SCRATCH_DIR")
+	cfg.ExtraEnv = append(cfg.ExtraEnv, "SYBRA_SCRATCH_HOME="+scratchHome, "SYBRA_SCRATCH_DIR="+scratchDir)
 	if !strings.Contains(cfg.Prompt, scratchHomePrompt) {
 		if cfg.Prompt != "" {
 			cfg.Prompt = strings.TrimRight(cfg.Prompt, "\n") + "\n\n"
