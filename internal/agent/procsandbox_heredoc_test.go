@@ -184,3 +184,52 @@ func TestSandboxEnforce_ZshHeredocTempStaysOutOfWorktree(t *testing.T) {
 		t.Fatalf("%s %q sits inside the worktree %q", shellTempPrefixEnv, prefix, worktree)
 	}
 }
+
+// TestSandboxEnforce_ScratchDirIsWritableAndTmpIsNot pins the pair the prompt
+// tells agents to rely on: the advertised scratch directory accepts an
+// ordinary file, and the /tmp path agents reach for instead does not.
+func TestSandboxEnforce_ScratchDirIsWritableAndTmpIsNot(t *testing.T) {
+	if !sandboxExecAvailable() {
+		t.Skip("host sandbox mechanism unavailable; enforce path unexercised on this host")
+	}
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("sh not installed")
+	}
+	narrowSandboxTempRoot(t)
+	worktree := t.TempDir()
+	sandboxHome := t.TempDir()
+	m, _ := newTestManager(t, ManagerConfig{
+		SandboxHome: func(string) (string, error) { return sandboxHome, nil },
+	})
+	cfg, _, err := m.prepareRunConfig(RunConfig{
+		TaskID:      "task-scratch-dir",
+		Mode:        "headless",
+		Dir:         worktree,
+		SandboxMode: "enforce",
+	})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+	if strings.HasPrefix(cfg.sandbox.tmp, "/tmp") {
+		t.Skipf("granted temp root %q covers /tmp; the run cannot distinguish the two paths", cfg.sandbox.tmp)
+	}
+
+	write := newProviderCmd(context.Background(), &cfg, false, sh, "-c", `echo scratch > "$SYBRA_SCRATCH_DIR/probe.txt"`)
+	write.Env = append(os.Environ(), cfg.ExtraEnv...)
+	if out, writeErr := write.CombinedOutput(); writeErr != nil {
+		t.Fatalf("write to $SYBRA_SCRATCH_DIR failed under enforce: %v: %s", writeErr, out)
+	}
+	body, readErr := os.ReadFile(filepath.Join(sandboxHome, "scratch", "probe.txt"))
+	if readErr != nil || string(body) != "scratch\n" {
+		t.Fatalf("scratch file = %q (err %v), want the written line", body, readErr)
+	}
+
+	denied := "/tmp/sybra-scratch-guidance-probe.txt"
+	t.Cleanup(func() { _ = os.Remove(denied) })
+	probe := newProviderCmd(context.Background(), &cfg, false, sh, "-c", "echo leak > "+denied)
+	probe.Env = append(os.Environ(), cfg.ExtraEnv...)
+	if out, probeErr := probe.CombinedOutput(); probeErr == nil {
+		t.Fatalf("write to %q succeeded, so the prompt's rule about /tmp is wrong: %s", denied, out)
+	}
+}

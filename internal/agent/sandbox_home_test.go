@@ -37,6 +37,7 @@ func TestPrepareRunConfig_SandboxHome_Injected(t *testing.T) {
 		"SYBRA_CONTROL_HOME=/real/home",
 		"TMPPREFIX=" + filepath.Join(sandboxDir, "zsh", "zsh"),
 		"SYBRA_SCRATCH_HOME=" + filepath.Join(sandboxDir, "scratch-home"),
+		"SYBRA_SCRATCH_DIR=" + filepath.Join(sandboxDir, "scratch"),
 		"GOLANGCI_LINT_CACHE=" + filepath.Join(sandboxDir, "golangci-lint-cache"),
 		"GOCACHE=" + filepath.Join(base, "go-build", "task-1"),
 		"GOMODCACHE=" + filepath.Join(base, "go-mod"),
@@ -235,6 +236,7 @@ func TestPrepareRunConfig_SandboxHome_IsolatedSystemRun(t *testing.T) {
 		"SYBRA_CONTROL_HOME=/real/home",
 		"TMPPREFIX=" + filepath.Join(sandboxDir, "zsh", "zsh"),
 		"SYBRA_SCRATCH_HOME=" + filepath.Join(sandboxDir, "scratch-home"),
+		"SYBRA_SCRATCH_DIR=" + filepath.Join(sandboxDir, "scratch"),
 		"GOLANGCI_LINT_CACHE=" + filepath.Join(sandboxDir, "golangci-lint-cache"),
 		"GOCACHE=" + filepath.Join(base, "go-build", "system-sybra-orchestrator"),
 		"GOMODCACHE=" + filepath.Join(base, "go-mod"),
@@ -378,6 +380,7 @@ func TestPrepareRunConfig_SandboxHome_StripsDuplicateCallerEnv(t *testing.T) {
 		"SYBRA_CONTROL_HOME=/real/home",
 		"TMPPREFIX=" + filepath.Join(sandboxDir, "zsh", "zsh"),
 		"SYBRA_SCRATCH_HOME=" + filepath.Join(sandboxDir, "scratch-home"),
+		"SYBRA_SCRATCH_DIR=" + filepath.Join(sandboxDir, "scratch"),
 		"GOLANGCI_LINT_CACHE=" + filepath.Join(sandboxDir, "golangci-lint-cache"),
 		"GOCACHE=" + filepath.Join(base, "go-build", "task-1"),
 		"GOMODCACHE=" + filepath.Join(base, "go-mod"),
@@ -416,6 +419,7 @@ func TestPrepareRunConfig_SandboxHome_EmptyControlHomeOmitsVar(t *testing.T) {
 		"SYBRA_HOME=" + sandboxDir,
 		"TMPPREFIX=" + filepath.Join(sandboxDir, "zsh", "zsh"),
 		"SYBRA_SCRATCH_HOME=" + filepath.Join(sandboxDir, "scratch-home"),
+		"SYBRA_SCRATCH_DIR=" + filepath.Join(sandboxDir, "scratch"),
 		"GOLANGCI_LINT_CACHE=" + filepath.Join(sandboxDir, "golangci-lint-cache"),
 		"GOCACHE=" + filepath.Join(base, "go-build", "task-1"),
 		"GOMODCACHE=" + filepath.Join(base, "go-mod"),
@@ -800,4 +804,35 @@ func TestPrepareRunConfig_UnnamedBoardKeepsTheControlHome(t *testing.T) {
 func TestRecordToolCall_UnsetLedgerDoesNotPanic(t *testing.T) {
 	m, _ := newTestManager(t, ManagerConfig{})
 	m.recordToolCall(toolledger.Record{AgentID: "ag1", Tool: "Bash"})
+}
+
+func TestScratchEnvironment_AdvertisesAScratchFileDirectory(t *testing.T) {
+	worktree := t.TempDir()
+	sandboxDir := t.TempDir()
+	m, _ := newTestManager(t, ManagerConfig{
+		SandboxHome: func(string) (string, error) { return sandboxDir, nil },
+	})
+
+	cfg, _, err := m.prepareRunConfig(RunConfig{
+		TaskID: "task-scratch-files",
+		Mode:   "headless",
+		Dir:    worktree,
+		Prompt: "do the thing",
+	})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+
+	scratchDir := filepath.Join(sandboxDir, "scratch")
+	if !slices.Contains(cfg.ExtraEnv, "SYBRA_SCRATCH_DIR="+scratchDir) {
+		t.Errorf("SYBRA_SCRATCH_DIR not exported: %v", cfg.ExtraEnv)
+	}
+	if info, statErr := os.Stat(scratchDir); statErr != nil || !info.IsDir() {
+		t.Errorf("scratch dir %q not created: %v", scratchDir, statErr)
+	}
+	for _, want := range []string{"$SYBRA_SCRATCH_DIR", "Do not write to /tmp"} {
+		if !strings.Contains(cfg.Prompt, want) {
+			t.Errorf("prompt missing %q:\n%s", want, cfg.Prompt)
+		}
+	}
 }
