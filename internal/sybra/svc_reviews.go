@@ -41,7 +41,13 @@ func (s *ReviewService) StartFixReview(taskID string) error {
 	if err != nil {
 		return err
 	}
-	return s.reviewer.StartFixReviewAgent(t)
+	if err := s.reviewer.StartFixReviewAgent(t); err != nil {
+		if errors.Is(err, workflow.ErrWorkflowAlreadyActive) || errors.Is(err, workflow.ErrDispatchInFlight) {
+			return conflictError("review fix is already preparing for this task")
+		}
+		return err
+	}
+	return nil
 }
 
 // ListReviewComments returns all review comments for a task.
