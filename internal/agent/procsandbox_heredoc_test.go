@@ -184,3 +184,55 @@ func TestSandboxEnforce_ZshHeredocTempStaysOutOfWorktree(t *testing.T) {
 		t.Fatalf("%s %q sits inside the worktree %q", shellTempPrefixEnv, prefix, worktree)
 	}
 }
+
+// TestShellTempPrefix_UnavailableDirectoryFailsUnderEnforce pins the other
+// half of the pair. Under enforce the shell cannot fall back to its compiled
+// default, so a run that starts without the prefix loses every heredoc and
+// improvises paths the sandbox also denies; it must not start at all.
+func TestShellTempPrefix_UnavailableDirectoryFailsUnderEnforce(t *testing.T) {
+	worktree := t.TempDir()
+	sandboxHome := t.TempDir()
+	if err := os.WriteFile(filepath.Join(sandboxHome, "zsh"), []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("stage blocking file: %v", err)
+	}
+	m, _ := newTestManager(t, ManagerConfig{
+		SandboxHome: func(string) (string, error) { return sandboxHome, nil },
+	})
+
+	_, _, err := m.prepareRunConfig(RunConfig{
+		TaskID:      "task-heredoc-enforce",
+		Mode:        "headless",
+		Dir:         worktree,
+		SandboxMode: "enforce",
+	})
+	if err == nil {
+		t.Fatal("prepareRunConfig dispatched a run whose heredocs cannot work")
+	}
+	if !strings.Contains(err.Error(), "shell temp prefix") {
+		t.Errorf("error %q does not name the prefix directory", err)
+	}
+}
+
+// TestShellTempPrefix_ManagerDefaultDecidesTheFailure pins that a run naming
+// no mode inherits the manager default, so an enforce deployment fails closed
+// even when the caller left SandboxMode empty.
+func TestShellTempPrefix_ManagerDefaultDecidesTheFailure(t *testing.T) {
+	worktree := t.TempDir()
+	sandboxHome := t.TempDir()
+	if err := os.WriteFile(filepath.Join(sandboxHome, "zsh"), []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("stage blocking file: %v", err)
+	}
+	m, _ := newTestManager(t, ManagerConfig{
+		Runtime:     ManagerRuntimeConfig{SandboxMode: "enforce"},
+		SandboxHome: func(string) (string, error) { return sandboxHome, nil },
+	})
+
+	_, _, err := m.prepareRunConfig(RunConfig{
+		TaskID: "task-heredoc-default",
+		Mode:   "headless",
+		Dir:    worktree,
+	})
+	if err == nil {
+		t.Fatal("prepareRunConfig ignored the manager's enforce default")
+	}
+}
