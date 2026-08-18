@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -9,14 +10,13 @@ import (
 	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
-// swapReviewThreadFetch points the step at a canned thread set for one test.
-// It writes a package-level seam, so a test using it must not call
-// t.Parallel() - concurrent tests would overwrite each other's stub.
-func swapReviewThreadFetch(t *testing.T, threads []github.ReviewThread, err error) {
-	t.Helper()
-	prev := fetchReviewThreads
-	fetchReviewThreads = func(string, int) ([]github.ReviewThread, error) { return threads, err }
-	t.Cleanup(func() { fetchReviewThreads = prev })
+type stubThreadFetcher struct {
+	threads []github.ReviewThread
+	err     error
+}
+
+func (s stubThreadFetcher) FetchReviewThreads(context.Context, string, int) ([]github.ReviewThread, error) {
+	return s.threads, s.err
 }
 
 func TestUntouchedBriefedThreads(t *testing.T) {
@@ -114,6 +114,8 @@ func TestUntouchedBriefedThreads(t *testing.T) {
 }
 
 func TestExecVerifyReviewThreads(t *testing.T) {
+	t.Parallel()
+
 	briefed := MarshalBriefedReviewThreads([]BriefedReviewThread{
 		{ID: "t1", Comments: 1},
 		{ID: "t2", Comments: 1},
@@ -181,12 +183,12 @@ func TestExecVerifyReviewThreads(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			swapReviewThreadFetch(t, tc.live, tc.fetchErr)
-
+			t.Parallel()
 			tasks := newMemTasks()
 			info := TaskInfo{ID: "task-1", Status: taskstatus.InProgress, PRNumber: tc.prNumber, ProjectID: tc.projectID}
 			tasks.Put(info)
 			engine := newEngineForEval(t, tasks)
+			engine.pr.ThreadFetcher = stubThreadFetcher{threads: tc.live, err: tc.fetchErr}
 
 			step := &Step{ID: "verify_review_threads", Type: StepVerifyReviewThreads}
 			out, err := engine.execVerifyReviewThreads("task-1", step, &Execution{Variables: tc.vars}, info)
@@ -207,15 +209,18 @@ func TestExecVerifyReviewThreads(t *testing.T) {
 // The parked reason must name which feedback was dropped, not only how much:
 // a bare count sends the operator back to the PR to diff it by hand.
 func TestExecVerifyReviewThreads_ReasonNamesTheDroppedThreads(t *testing.T) {
-	swapReviewThreadFetch(t, []github.ReviewThread{
+	t.Parallel()
+
+	fetcher := stubThreadFetcher{threads: []github.ReviewThread{
 		{ID: "t1", CommentCount: 1, Path: "internal/a.go", Line: 12},
 		{ID: "t2", CommentCount: 1, Path: "internal/b.go", Line: 40},
-	}, nil)
+	}}
 
 	tasks := newMemTasks()
 	info := TaskInfo{ID: "task-1", Status: taskstatus.InProgress, PRNumber: 7, ProjectID: "o/r"}
 	tasks.Put(info)
 	engine := newEngineForEval(t, tasks)
+	engine.pr.ThreadFetcher = fetcher
 
 	vars := map[string]string{PRReviewThreadBriefVar: MarshalBriefedReviewThreads([]BriefedReviewThread{
 		{ID: "t1", Comments: 1},
@@ -281,14 +286,17 @@ func TestUntouchedBriefedThreads_PreUpgradeBriefFailsOpen(t *testing.T) {
 // The resolved-on-remote escape hatch exists so a human is not parked for a PR
 // that already landed. The gate must not undo it.
 func TestExecVerifyReviewThreads_SkipsALandedPR(t *testing.T) {
-	swapReviewThreadFetch(t, []github.ReviewThread{
+	t.Parallel()
+
+	fetcher := stubThreadFetcher{threads: []github.ReviewThread{
 		{ID: "t1", CommentCount: 1, Path: "internal/a.go", Line: 12},
-	}, nil)
+	}}
 
 	tasks := newMemTasks()
 	info := TaskInfo{ID: "task-1", Status: taskstatus.InReview, PRNumber: 7, ProjectID: "o/r"}
 	tasks.Put(info)
 	engine := newEngineForEval(t, tasks)
+	engine.pr.ThreadFetcher = fetcher
 	engine.pr.StateFetcher = stubPRStateFetcher{state: github.PRState{State: "MERGED"}}
 
 	vars := map[string]string{PRReviewThreadBriefVar: MarshalBriefedReviewThreads(
@@ -319,14 +327,17 @@ func (s stubPRStateFetcher) FetchPRState(string, int) (github.PRState, error) {
 // runs it exists to catch, since the comments dispatch keys on unanswered
 // threads alone and does not care about mergeability or CI.
 func TestExecVerifyReviewThreads_GreenOpenPRIsStillChecked(t *testing.T) {
-	swapReviewThreadFetch(t, []github.ReviewThread{
+	t.Parallel()
+
+	fetcher := stubThreadFetcher{threads: []github.ReviewThread{
 		{ID: "t1", CommentCount: 1, Path: "internal/a.go", Line: 12},
-	}, nil)
+	}}
 
 	tasks := newMemTasks()
 	info := TaskInfo{ID: "task-1", Status: taskstatus.InProgress, PRNumber: 7, ProjectID: "o/r"}
 	tasks.Put(info)
 	engine := newEngineForEval(t, tasks)
+	engine.pr.ThreadFetcher = fetcher
 	engine.pr.StateFetcher = stubPRStateFetcher{state: github.PRState{State: "OPEN", Mergeable: "MERGEABLE"}}
 
 	vars := map[string]string{PRReviewThreadBriefVar: MarshalBriefedReviewThreads(

@@ -20,8 +20,9 @@ func TestSetPRSurfaceNamesEveryMissingMember(t *testing.T) {
 		t.Fatal("setPRSurfaceForTest accepted an entirely empty surface")
 	}
 	for _, want := range []string{
-		"Linker", "ReviewRequester", "StateFetcher", "HeadFetcher", "Creator",
-		"Closer", "Finder", "AnyStateFinder", "ExistenceChecker", "ContentGenerator",
+		"Linker", "ReviewRequester", "StateFetcher", "ThreadFetcher", "HeadFetcher",
+		"Creator", "Closer", "Finder", "AnyStateFinder", "ExistenceChecker",
+		"ContentGenerator",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not name the missing %s", err, want)
@@ -59,6 +60,7 @@ func TestSetPRSurfaceWiresEveryField(t *testing.T) {
 		"prLinker":         e.pr.Linker,
 		"prReviewers":      e.pr.ReviewRequester,
 		"prStates":         e.pr.StateFetcher,
+		"prThreadFetcher":  e.pr.ThreadFetcher,
 		"prHeads":          e.pr.HeadFetcher,
 		"prCreator":        e.pr.Creator,
 		"prCloser":         e.pr.Closer,
@@ -100,6 +102,9 @@ func (stubPRSurface) FindPRForBranchAnyState(context.Context, string, string) (n
 	return 0, "", false, nil
 }
 func (stubPRSurface) PRExists(context.Context, string, int) (bool, error) { return false, nil }
+func (stubPRSurface) FetchReviewThreads(context.Context, string, int) ([]github.ReviewThread, error) {
+	return nil, nil
+}
 func (stubPRSurface) GeneratePRContent(context.Context, string, string, []string) (title, body string, err error) {
 	return "", "", nil
 }
@@ -110,6 +115,7 @@ func completePRSurface() PRSurface {
 		Linker:           s,
 		ReviewRequester:  s,
 		StateFetcher:     s,
+		ThreadFetcher:    s,
 		HeadFetcher:      s,
 		Creator:          s,
 		Closer:           s,
