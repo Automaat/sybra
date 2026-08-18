@@ -83,6 +83,7 @@ type Agent struct {
 	CacheCreationInputTokens int     `json:"cacheCreationInputTokens,omitempty"`
 	CacheReadInputTokens     int     `json:"cacheReadInputTokens,omitempty"`
 	ReasoningTokens          int     `json:"reasoningTokens,omitempty"`
+	ToolFailures             int     `json:"toolFailures,omitempty"`
 	// PremiumRequests is Copilot's billing unit (AI credits). Sybra keeps the
 	// raw count alongside the estimated USD equivalent persisted on task runs.
 	PremiumRequests float64   `json:"premiumRequests,omitempty"`
@@ -1566,6 +1567,20 @@ func (a *Agent) GetReasoningTokens() int {
 }
 
 // GetLogPath returns the current output log path.
+// CountToolFailure records one failed tool call on the run.
+func (a *Agent) CountToolFailure() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.ToolFailures++
+}
+
+// GetToolFailures reports how many tool calls failed during the run.
+func (a *Agent) GetToolFailures() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.ToolFailures
+}
+
 func (a *Agent) GetLogPath() string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()

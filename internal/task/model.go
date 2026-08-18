@@ -243,6 +243,7 @@ type AgentRun struct {
 	EscalationReason string    `json:"escalationReason,omitempty"`
 	StartedAt        time.Time `json:"startedAt"`
 	CostUSD          float64   `json:"costUsd"`
+	ToolFailures     int       `json:"toolFailures,omitempty"`
 	PremiumRequests  float64   `json:"premiumRequests,omitempty"`
 	Prompt           string    `json:"prompt,omitempty"`
 	Result           string    `json:"result"`

@@ -75,6 +75,7 @@ func (m *Manager) recordToolCallFailure(a *Agent, rec ToolCallFailureRecord) {
 		"terminal_reason", rec.TerminalReason)
 
 	if a != nil {
+		a.CountToolFailure()
 		m.appendToolFailureRecord(a.GetLogPath(), rec)
 	}
 	m.appendToolFailureRecord(filepath.Join(m.logDir, "tool-failures.ndjson"), rec)

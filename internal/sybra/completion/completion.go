@@ -625,6 +625,7 @@ func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiu
 		SessionID:       task.Ptr(ag.GetSessionID()),
 		Model:           task.Ptr(ag.Model),
 		Provider:        task.Ptr(ag.Provider),
+		ToolFailures:    task.Ptr(ag.GetToolFailures()),
 	}
 	if ag.SkillExecutionMode != "" {
 		runUpdates.SkillExecutionMode = task.Ptr(ag.SkillExecutionMode)
