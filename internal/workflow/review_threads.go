@@ -16,8 +16,13 @@ const PRReviewThreadBriefVar = "pr_review_thread_brief"
 // reviewer's thread, so a correctly answered thread stays unresolved. It also
 // cannot key on the newest comment's author: the reviewer may post again
 // between the reply and this check, which would restore the brief-time author
-// and read as though the agent had never replied. A comment count only ever
-// grows, so any reply — by anyone — clears the thread.
+// and read as though the agent had never replied. Any change to the count —
+// by anyone — clears the thread.
+//
+// A brief written before this field existed decodes to Comments: 0, which is
+// not "the thread had no comments" but "this workflow predates the check".
+// Every live thread has at least one comment, so those in-flight runs go
+// unverified rather than parking. That is the intended direction.
 type BriefedReviewThread struct {
 	ID       string `json:"id"`
 	Comments int    `json:"comments"`

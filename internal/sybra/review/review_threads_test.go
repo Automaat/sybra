@@ -152,3 +152,19 @@ func TestCommentsPromptCarriesTheBrief(t *testing.T) {
 		}
 	}
 }
+
+// viewerLogin swallows its errors and returns "", which matches no real login.
+// Briefing every unresolved thread in that state would reinstate exactly the
+// unsatisfiable-park this filter exists to prevent.
+func TestFetchReviewThreadBrief_UnknownAgentLoginBriefsNothing(t *testing.T) {
+	t.Parallel()
+
+	pr := github.PullRequest{Repository: "o/r", Number: 7}
+	brief := fetchReviewThreadBrief(context.Background(), pr, "")
+	if len(brief.threads) != 0 || brief.prompt != "" {
+		t.Errorf("unknown agent login produced a brief: %+v", brief)
+	}
+	if brief.vars() != "" {
+		t.Errorf("unknown agent login wrote a workflow var: %q", brief.vars())
+	}
+}

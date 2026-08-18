@@ -77,9 +77,9 @@ func fetchReviewThreadBrief(ctx context.Context, pr github.PullRequest, agentLog
 }
 
 // actionableReviewThread reports whether a thread is still waiting on the
-// harness. Mirrors the actionable rule in github.FetchPRReviewState: a
-// reviewer had the last word, and the thread is neither resolved nor anchored
-// to code that has since moved.
+// harness. Mirrors the actionable rule in convertCommonPR
+// (internal/github/client.go): a reviewer had the last word, and the thread is
+// neither resolved nor anchored to code that has since moved.
 func actionableReviewThread(t github.ReviewThread, agentLogin string) bool {
 	if t.IsResolved || t.IsOutdated {
 		return false

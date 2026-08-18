@@ -84,6 +84,15 @@ func TestUntouchedBriefedThreads(t *testing.T) {
 			},
 		},
 		{
+			// A reviewer deleting their own comment shrinks the count. The
+			// thread still moved, so it must not be held against the run.
+			name: "a deleted comment shrinks the count and still counts as answered",
+			live: []github.ReviewThread{
+				{ID: "t1", CommentCount: 0},
+				{ID: "t2", CommentCount: 0},
+			},
+		},
+		{
 			name: "an empty live set answers nothing and blames nothing",
 			live: nil,
 		},
@@ -251,4 +260,55 @@ func TestBriefedReviewThreadsRoundTrip(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A brief persisted before BriefedReviewThread carried a comment count decodes
+// to Comments: 0. Every live thread has at least one comment, so a workflow
+// that spanned the deploy goes unverified instead of parking outright.
+func TestUntouchedBriefedThreads_PreUpgradeBriefFailsOpen(t *testing.T) {
+	t.Parallel()
+
+	briefed := UnmarshalBriefedReviewThreads(`[{"id":"t1","last_author":"reviewer"}]`)
+	if len(briefed) != 1 || briefed[0].Comments != 0 {
+		t.Fatalf("old shape decoded unexpectedly: %+v", briefed)
+	}
+	live := []github.ReviewThread{{ID: "t1", CommentCount: 1, LastAuthorLogin: "reviewer"}}
+	if got := untouchedBriefedThreads(briefed, live); len(got) != 0 {
+		t.Errorf("pre-upgrade brief parked the run: %+v", got)
+	}
+}
+
+// The resolved-on-remote escape hatch exists so a human is not parked for a PR
+// that already landed. The gate must not undo it.
+func TestExecVerifyReviewThreads_SkipsALandedPR(t *testing.T) {
+	swapReviewThreadFetch(t, []github.ReviewThread{
+		{ID: "t1", CommentCount: 1, Path: "internal/a.go", Line: 12},
+	}, nil)
+
+	tasks := newMemTasks()
+	info := TaskInfo{ID: "task-1", Status: taskstatus.InReview, PRNumber: 7, ProjectID: "o/r"}
+	tasks.Put(info)
+	engine := newEngineForEval(t, tasks)
+	engine.pr.StateFetcher = mergedPRStateFetcher{}
+
+	vars := map[string]string{PRReviewThreadBriefVar: MarshalBriefedReviewThreads(
+		[]BriefedReviewThread{{ID: "t1", Comments: 1}})}
+	step := &Step{ID: "verify_noop_review_threads", Type: StepVerifyReviewThreads}
+	out, err := engine.execVerifyReviewThreads("task-1", step, &Execution{Variables: vars}, info)
+	if err != nil {
+		t.Fatalf("execVerifyReviewThreads: %v", err)
+	}
+	if !strings.Contains(out.Output, "already resolved on remote") {
+		t.Errorf("output = %q, want the landed-PR skip", out.Output)
+	}
+	got, _ := tasks.GetTask("task-1")
+	if got.Status != taskstatus.InReview {
+		t.Errorf("status = %q, want a merged PR left in-review", got.Status)
+	}
+}
+
+type mergedPRStateFetcher struct{}
+
+func (mergedPRStateFetcher) FetchPRState(string, int) (github.PRState, error) {
+	return github.PRState{State: "MERGED"}, nil
 }

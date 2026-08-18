@@ -32,6 +32,8 @@ var fetchReviewThreads = github.FetchReviewThreads
 // Skip conditions (no-op, returns "completed"):
 //   - the workflow carries no brief, which is every non-comments dispatch
 //   - the task has no PR or no project
+//   - the PR already landed or closed, where unanswered threads are moot and
+//     parking a human on a merged PR is pure noise
 //   - the live fetch fails, since a transient GitHub error must not park a run
 //     that may well have done its job
 func (e *Engine) execVerifyReviewThreads(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error) {
@@ -41,6 +43,9 @@ func (e *Engine) execVerifyReviewThreads(taskID string, step *Step, wfExec *Exec
 	}
 	if t.PRNumber == 0 || t.ProjectID == "" {
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: missing pr or project"}, nil
+	}
+	if e.prAlreadyLanded(t) {
+		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: pr already resolved on remote"}, nil
 	}
 
 	live, err := fetchReviewThreads(t.ProjectID, t.PRNumber)
@@ -87,7 +92,11 @@ func untouchedBriefedThreads(briefed []BriefedReviewThread, live []github.Review
 		if cur.IsResolved || cur.IsOutdated {
 			continue
 		}
-		if cur.CommentCount > b.Comments {
+		// Equality, not ">": a reviewer deleting a comment shrinks the count,
+		// and a shrunk count still means the thread moved since brief time.
+		// Only a thread that looks byte-for-byte untouched is held against
+		// the run.
+		if cur.CommentCount != b.Comments {
 			continue
 		}
 		untouched = append(untouched, b)
@@ -124,4 +133,19 @@ func untouchedLocations(untouched []BriefedReviewThread, live []github.ReviewThr
 		return strings.Join(locs, ", ") + ", ..."
 	}
 	return strings.Join(locs, ", ")
+}
+
+// prAlreadyLanded reports whether the PR is merged or otherwise resolved on
+// the remote. A fetch failure answers false: the gate then runs, which is the
+// conservative direction for a check whose whole job is to catch a run that
+// claimed more than it did.
+func (e *Engine) prAlreadyLanded(t TaskInfo) bool {
+	if e.pr.StateFetcher == nil {
+		return false
+	}
+	state, err := e.pr.StateFetcher.FetchPRState(t.ProjectID, t.PRNumber)
+	if err != nil {
+		return false
+	}
+	return state.Resolved()
 }
