@@ -7,18 +7,20 @@ import "encoding/json"
 // dispatcher and read back by the verify_review_threads step.
 const PRReviewThreadBriefVar = "pr_review_thread_brief"
 
-// BriefedReviewThread records one unresolved review thread as it looked when
+// BriefedReviewThread records one actionable review thread as it looked when
 // the pr-fix agent was briefed on it.
 //
-// LastAuthor is the identity check. The harness cannot ask "did the agent
-// answer this thread?" by resolution state alone: a reviewer's thread stays
-// unresolved after a correct reply, and the account the agent posts as varies
-// by deployment (a GitHub App installation token reports no viewer login at
-// all). Comparing the thread's newest comment author against the author
-// recorded here needs no identity lookup: any reply, by anyone, moves it.
+// Comments is the identity check, and it is a count rather than an author for
+// two reasons. The harness cannot ask "did the agent answer this?" by
+// resolution state: the fix-review skill deliberately never resolves a
+// reviewer's thread, so a correctly answered thread stays unresolved. It also
+// cannot key on the newest comment's author: the reviewer may post again
+// between the reply and this check, which would restore the brief-time author
+// and read as though the agent had never replied. A comment count only ever
+// grows, so any reply — by anyone — clears the thread.
 type BriefedReviewThread struct {
-	ID         string `json:"id"`
-	LastAuthor string `json:"last_author"`
+	ID       string `json:"id"`
+	Comments int    `json:"comments"`
 }
 
 // MarshalBriefedReviewThreads encodes threads for the workflow variable.

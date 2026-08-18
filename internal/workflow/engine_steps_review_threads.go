@@ -24,10 +24,10 @@ var fetchReviewThreads = github.FetchReviewThreads
 // and the review feedback is lost behind what reads as a scheduling fault.
 //
 // A briefed thread counts as untouched when it is still unresolved, still
-// anchored to live code, and its newest comment is the same one that was there
-// at brief time. That is deliberately weaker than requiring resolution: a
-// reviewer's thread stays unresolved after a correct reply, so gating on
-// resolution would park every honest run.
+// anchored to live code, and has gained no comment since brief time. That is
+// deliberately weaker than requiring resolution: the fix-review skill never
+// resolves a reviewer's thread, so gating on resolution would park every
+// honest run.
 //
 // Skip conditions (no-op, returns "completed"):
 //   - the workflow carries no brief, which is every non-comments dispatch
@@ -87,7 +87,7 @@ func untouchedBriefedThreads(briefed []BriefedReviewThread, live []github.Review
 		if cur.IsResolved || cur.IsOutdated {
 			continue
 		}
-		if cur.LastAuthorLogin != b.LastAuthor {
+		if cur.CommentCount > b.Comments {
 			continue
 		}
 		untouched = append(untouched, b)

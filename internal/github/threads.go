@@ -18,6 +18,7 @@ type ReviewThread struct {
 	IsOutdated      bool   // the anchored code changed since the comment — i.e. addressed
 	Path            string // file the thread is anchored to, empty for a file-level thread
 	Line            int    // line the thread is anchored to, 0 when the anchor is gone
+	CommentCount    int    // total comments on the thread, the monotone "was it answered" signal
 }
 
 const reviewThreadsQuery = `query($owner: String!, $name: String!, $number: Int!) {
@@ -30,6 +31,7 @@ const reviewThreadsQuery = `query($owner: String!, $name: String!, $number: Int!
           isOutdated
           path
           line
+          comments { totalCount }
           first: comments(first: 1) { nodes { author { login } } }
           last: comments(last: 1) { nodes { author { login } } }
         }
@@ -49,7 +51,10 @@ type gqlReviewThreadsResponse struct {
 						IsOutdated bool   `json:"isOutdated"`
 						Path       string `json:"path"`
 						Line       int    `json:"line"`
-						First      struct {
+						Comments   struct {
+							TotalCount int `json:"totalCount"`
+						} `json:"comments"`
+						First struct {
 							Nodes []struct {
 								Author struct {
 									Login string `json:"login"`
@@ -129,6 +134,7 @@ func fetchReviewThreadsWith(ctx context.Context, e execer, repo string, number i
 			IsOutdated:      nodes[i].IsOutdated,
 			Path:            nodes[i].Path,
 			Line:            nodes[i].Line,
+			CommentCount:    nodes[i].Comments.TotalCount,
 		})
 	}
 	return threads, nil

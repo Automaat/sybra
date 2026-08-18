@@ -970,6 +970,7 @@ export enum StepType {
     StepStampPRAttribution = "stamp_pr_attribution",
     StepRerequestReview = "rerequest_review",
     StepVerifyCommits = "verify_commits",
+    StepVerifyReviewThreads = "verify_review_threads",
     StepLinkPRAndReview = "link_pr_and_review",
     StepEvaluate = "evaluate",
     StepRequireSidecar = "require_sidecar",

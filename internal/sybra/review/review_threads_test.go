@@ -51,6 +51,55 @@ func TestReviewThreadLocation(t *testing.T) {
 	}
 }
 
+// The brief must match the monitor's actionable rule. A thread the agent
+// already answered stays unresolved forever - the fix-review skill never
+// resolves a reviewer's thread - so briefing one would park every later run
+// on a thread no reply can clear.
+func TestActionableReviewThread(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		thread github.ReviewThread
+		want   bool
+	}{
+		{
+			name:   "a reviewer had the last word",
+			thread: github.ReviewThread{LastAuthorLogin: "reviewer"},
+			want:   true,
+		},
+		{
+			name:   "the agent already replied, so no reply can ever clear it",
+			thread: github.ReviewThread{LastAuthorLogin: "sybra-bot"},
+		},
+		{
+			name:   "the agent login match is case-insensitive",
+			thread: github.ReviewThread{LastAuthorLogin: "Sybra-Bot"},
+		},
+		{
+			name:   "resolved is never actionable",
+			thread: github.ReviewThread{LastAuthorLogin: "reviewer", IsResolved: true},
+		},
+		{
+			name:   "outdated is never actionable",
+			thread: github.ReviewThread{LastAuthorLogin: "reviewer", IsOutdated: true},
+		},
+		{
+			name:   "a thread with no comments names no one to answer",
+			thread: github.ReviewThread{},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := actionableReviewThread(tc.thread, "sybra-bot"); got != tc.want {
+				t.Errorf("actionableReviewThread = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestReviewThreadBriefVars(t *testing.T) {
 	t.Parallel()
 
@@ -63,7 +112,7 @@ func TestReviewThreadBriefVars(t *testing.T) {
 		{
 			name: "a populated brief round-trips through the variable",
 			brief: reviewThreadBrief{threads: []workflow.BriefedReviewThread{
-				{ID: "t1", LastAuthor: "reviewer"},
+				{ID: "t1", Comments: 1},
 			}},
 			wantVar: true,
 		},
@@ -95,7 +144,7 @@ func TestCommentsPromptCarriesTheBrief(t *testing.T) {
 		t.Errorf("empty brief must add nothing to the prompt:\n%s", bare)
 	}
 
-	brief := reviewThreadBrief{prompt: "The harness counted 2 unresolved review thread(s) on this PR:\n- internal/a.go:12 by reviewer"}
+	brief := reviewThreadBrief{prompt: "The harness counted 2 review thread(s) on this PR still waiting on a reply from you:\n- internal/a.go:12 by reviewer"}
 	withBrief := commentsPrompt(context.Background(), pr, project.SigningAuto, brief)
 	for _, want := range []string{"harness counted 2", "internal/a.go:12", "/fix-review"} {
 		if !strings.Contains(withBrief, want) {

@@ -162,6 +162,16 @@ func (r *Handler) startPreparedFixReviewWorkflow(t task.Task, dir string) error 
 	if r.cfg.ReviewHoldEnabled() {
 		vars[workflow.ReviewHoldParkVar] = "true"
 	}
+	// An operator-triggered fix runs the same agent against the same threads,
+	// so it needs the same ground truth: without a brief verify_review_threads
+	// skips, and a run whose thread fetch failed still reports clean.
+	if t.ProjectID != "" && t.PRNumber > 0 {
+		pr := github.PullRequest{Repository: t.ProjectID, Number: t.PRNumber}
+		if brief := fetchReviewThreadBrief(context.Background(), pr, r.agentLogin(context.Background())); brief.vars() != "" {
+			vars[workflow.PRReviewThreadBriefVar] = brief.vars()
+			vars["prompt"] = prompt + "\n\n" + brief.prompt + PRFixResultContract
+		}
+	}
 	if err := r.WorkflowEngine.StartWorkflowWithVars(t.ID, prFixWorkflowID, vars); err != nil {
 		return err
 	}

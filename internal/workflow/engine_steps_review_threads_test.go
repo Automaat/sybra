@@ -23,8 +23,8 @@ func TestUntouchedBriefedThreads(t *testing.T) {
 	t.Parallel()
 
 	briefed := []BriefedReviewThread{
-		{ID: "t1", LastAuthor: "reviewer"},
-		{ID: "t2", LastAuthor: "reviewer"},
+		{ID: "t1", Comments: 1},
+		{ID: "t2", Comments: 1},
 	}
 
 	tests := []struct {
@@ -33,45 +33,55 @@ func TestUntouchedBriefedThreads(t *testing.T) {
 		want []string
 	}{
 		{
-			name: "answered threads carry a new last author",
+			name: "a reply grows the comment count",
 			live: []github.ReviewThread{
-				{ID: "t1", LastAuthorLogin: "harness"},
-				{ID: "t2", LastAuthorLogin: "harness"},
+				{ID: "t1", CommentCount: 2},
+				{ID: "t2", CommentCount: 2},
 			},
 		},
 		{
-			name: "resolved counts as answered even with the original last author",
+			name: "resolved counts as answered even with no new comment",
 			live: []github.ReviewThread{
-				{ID: "t1", LastAuthorLogin: "reviewer", IsResolved: true},
-				{ID: "t2", LastAuthorLogin: "reviewer", IsResolved: true},
+				{ID: "t1", CommentCount: 1, IsResolved: true},
+				{ID: "t2", CommentCount: 1, IsResolved: true},
 			},
 		},
 		{
 			name: "outdated counts as answered, the anchored code moved",
 			live: []github.ReviewThread{
-				{ID: "t1", LastAuthorLogin: "reviewer", IsOutdated: true},
-				{ID: "t2", LastAuthorLogin: "reviewer", IsOutdated: true},
+				{ID: "t1", CommentCount: 1, IsOutdated: true},
+				{ID: "t2", CommentCount: 1, IsOutdated: true},
 			},
 		},
 		{
 			name: "a vanished thread is not held against the run",
-			live: []github.ReviewThread{{ID: "t1", LastAuthorLogin: "harness"}},
+			live: []github.ReviewThread{{ID: "t1", CommentCount: 2}},
 		},
 		{
-			name: "untouched threads keep their brief-time last author",
+			name: "an unanswered thread keeps its brief-time comment count",
 			live: []github.ReviewThread{
-				{ID: "t1", LastAuthorLogin: "reviewer"},
-				{ID: "t2", LastAuthorLogin: "reviewer"},
+				{ID: "t1", CommentCount: 1},
+				{ID: "t2", CommentCount: 1},
 			},
 			want: []string{"t1", "t2"},
 		},
 		{
 			name: "a partially answered set reports only the untouched ones",
 			live: []github.ReviewThread{
-				{ID: "t1", LastAuthorLogin: "harness"},
-				{ID: "t2", LastAuthorLogin: "reviewer"},
+				{ID: "t1", CommentCount: 2},
+				{ID: "t2", CommentCount: 1},
 			},
 			want: []string{"t2"},
+		},
+		{
+			// A reviewer posting again mid-run restores the brief-time last
+			// author, which an author-identity check would misread as "the
+			// agent never replied". The count only grows, so it does not.
+			name: "a reviewer follow-up after the reply still counts as answered",
+			live: []github.ReviewThread{
+				{ID: "t1", CommentCount: 3, LastAuthorLogin: "reviewer"},
+				{ID: "t2", CommentCount: 3, LastAuthorLogin: "reviewer"},
+			},
 		},
 		{
 			name: "an empty live set answers nothing and blames nothing",
@@ -96,8 +106,8 @@ func TestUntouchedBriefedThreads(t *testing.T) {
 
 func TestExecVerifyReviewThreads(t *testing.T) {
 	briefed := MarshalBriefedReviewThreads([]BriefedReviewThread{
-		{ID: "t1", LastAuthor: "reviewer"},
-		{ID: "t2", LastAuthor: "reviewer"},
+		{ID: "t1", Comments: 1},
+		{ID: "t2", Comments: 1},
 	})
 
 	tests := []struct {
@@ -140,8 +150,8 @@ func TestExecVerifyReviewThreads(t *testing.T) {
 			prNumber:  7,
 			projectID: "o/r",
 			live: []github.ReviewThread{
-				{ID: "t1", LastAuthorLogin: "harness"},
-				{ID: "t2", LastAuthorLogin: "harness"},
+				{ID: "t1", CommentCount: 2},
+				{ID: "t2", CommentCount: 2},
 			},
 			wantStatus: taskstatus.InProgress,
 			wantOutput: "review threads answered",
@@ -152,8 +162,8 @@ func TestExecVerifyReviewThreads(t *testing.T) {
 			prNumber:  7,
 			projectID: "o/r",
 			live: []github.ReviewThread{
-				{ID: "t1", LastAuthorLogin: "harness"},
-				{ID: "t2", LastAuthorLogin: "reviewer", Path: "internal/a.go", Line: 12},
+				{ID: "t1", CommentCount: 2},
+				{ID: "t2", CommentCount: 1, Path: "internal/a.go", Line: 12},
 			},
 			wantStatus: taskstatus.HumanRequired,
 			wantOutput: "unanswered review threads",
@@ -189,8 +199,8 @@ func TestExecVerifyReviewThreads(t *testing.T) {
 // a bare count sends the operator back to the PR to diff it by hand.
 func TestExecVerifyReviewThreads_ReasonNamesTheDroppedThreads(t *testing.T) {
 	swapReviewThreadFetch(t, []github.ReviewThread{
-		{ID: "t1", LastAuthorLogin: "reviewer", Path: "internal/a.go", Line: 12},
-		{ID: "t2", LastAuthorLogin: "reviewer", Path: "internal/b.go", Line: 40},
+		{ID: "t1", CommentCount: 1, Path: "internal/a.go", Line: 12},
+		{ID: "t2", CommentCount: 1, Path: "internal/b.go", Line: 40},
 	}, nil)
 
 	tasks := newMemTasks()
@@ -199,8 +209,8 @@ func TestExecVerifyReviewThreads_ReasonNamesTheDroppedThreads(t *testing.T) {
 	engine := newEngineForEval(t, tasks)
 
 	vars := map[string]string{PRReviewThreadBriefVar: MarshalBriefedReviewThreads([]BriefedReviewThread{
-		{ID: "t1", LastAuthor: "reviewer"},
-		{ID: "t2", LastAuthor: "reviewer"},
+		{ID: "t1", Comments: 1},
+		{ID: "t2", Comments: 1},
 	})}
 	step := &Step{ID: "verify_review_threads", Type: StepVerifyReviewThreads}
 	if _, err := engine.execVerifyReviewThreads("task-1", step, &Execution{Variables: vars}, info); err != nil {
@@ -225,7 +235,7 @@ func TestBriefedReviewThreadsRoundTrip(t *testing.T) {
 		want int
 	}{
 		{name: "empty marshals to empty so the step's skip check stays a plain test"},
-		{name: "round trip", in: []BriefedReviewThread{{ID: "t1", LastAuthor: "a"}}, want: 1},
+		{name: "round trip", in: []BriefedReviewThread{{ID: "t1", Comments: 2}}, want: 1},
 		{name: "malformed decodes to nothing to verify", raw: "{not json", want: 0},
 	}
 

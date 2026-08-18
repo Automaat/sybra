@@ -55,12 +55,28 @@ steps:
           operator: equals
           value: continue
         goto: push_fixed_branch
+      # A no-op or flake verdict returns the task to in-review having pushed
+      # nothing, which is exactly the shape of the failure this workflow's
+      # thread gate exists to catch: an agent whose own thread fetch came back
+      # empty concludes there is nothing to answer and reports no-op. Verify
+      # the harness's thread set before trusting that, instead of ending here
+      # and letting the monitor re-dispatch on the same threads.
       - when:
           field: task.status
           operator: equals
           value: in-review
-        goto: ""
+        goto: verify_noop_review_threads
       - goto: push_fixed_branch
+
+  # Same gate as verify_review_threads, on the no-commit exit: it either
+  # confirms the "nothing to do" verdict and ends the workflow, or flips the
+  # task to human-required. Either way the workflow ends here - a no-op run
+  # has no branch to push and no PR state to relink.
+  - id: verify_noop_review_threads
+    name: Verify Review Threads Answered (No-Op)
+    type: verify_review_threads
+    next:
+      - goto: ""
 
   # Bounded, single-shot follow-up: route_pr_fix_result redirects here only
   # when the pr-fix agent named specific non-merge test failures instead of
@@ -135,7 +151,7 @@ steps:
           field: task.status
           operator: equals
           value: in-review
-        goto: ""
+        goto: verify_noop_review_threads
       - goto: push_fixed_branch
 
   # Agents are asked to push, but their prose is not a publication proof. A

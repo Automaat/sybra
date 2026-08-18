@@ -996,9 +996,12 @@ func (r *Handler) dispatchFixIssuesWithOptions(ctx context.Context, taskID strin
 		preparationClaim.Release()
 	}
 	// Fetched once here, then used twice: to brief the agent in the prompt and
-	// to hold it to that same set after the run.
-	if slices.ContainsFunc(handle, func(i github.PRIssue) bool { return i.Kind == github.PRIssueComments }) {
-		opts.reviewThreads = fetchReviewThreadBrief(ctx, primary.PR)
+	// to hold it to that same set after the run. Read from the comments issue's
+	// own PR, not primary.PR - a coalesced dispatch sorts conflicts first, and
+	// a task can match two different PRs, so the primary is not always the PR
+	// the review threads live on.
+	if i := slices.IndexFunc(handle, func(i github.PRIssue) bool { return i.Kind == github.PRIssueComments }); i >= 0 {
+		opts.reviewThreads = fetchReviewThreadBrief(ctx, handle[i].PR, r.agentLogin(ctx))
 	}
 	return r.dispatchPRIssueWithOptions(ctx, t, primary, handle, coalescedFixPrompt(ctx, handle, reviewHoldFixSuffix(r.cfg), r.signingPolicy(), opts.reviewThreads), dir, opts)
 }
