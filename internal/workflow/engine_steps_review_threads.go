@@ -11,10 +11,6 @@ import (
 
 const evidenceCriterionReviewThreads = "verify_review_threads"
 
-// fetchReviewThreads is indirected so the step's behaviour suite can run
-// without a live GitHub.
-var fetchReviewThreads = github.FetchReviewThreads
-
 // execVerifyReviewThreads checks that the pr-fix agent actually answered the
 // review threads it was briefed on, and is the ground truth the comments path
 // otherwise lacks: the agent enumerates threads itself, so a fetch that fails
@@ -34,6 +30,7 @@ var fetchReviewThreads = github.FetchReviewThreads
 //   - the task has no PR or no project
 //   - the PR already merged, where unanswered threads are moot and parking a
 //     human on it is pure noise
+//   - no thread fetcher is wired
 //   - the live fetch fails, since a transient GitHub error must not park a run
 //     that may well have done its job
 func (e *Engine) execVerifyReviewThreads(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error) {
@@ -44,11 +41,14 @@ func (e *Engine) execVerifyReviewThreads(taskID string, step *Step, wfExec *Exec
 	if t.PRNumber == 0 || t.ProjectID == "" {
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: missing pr or project"}, nil
 	}
+	if e.pr.ThreadFetcher == nil {
+		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: no review thread fetcher configured"}, nil
+	}
 	if e.prMerged(t) {
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: pr already merged"}, nil
 	}
 
-	live, err := fetchReviewThreads(t.ProjectID, t.PRNumber)
+	live, err := e.pr.ThreadFetcher.FetchReviewThreads(e.ctx, t.ProjectID, t.PRNumber)
 	if err != nil {
 		e.logger.Warn("workflow.verify-review-threads.fetch", "task_id", taskID, "pr", t.PRNumber, "err", err)
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: fetch failed: " + err.Error()}, nil
