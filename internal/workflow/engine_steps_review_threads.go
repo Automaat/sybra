@@ -32,8 +32,8 @@ var fetchReviewThreads = github.FetchReviewThreads
 // Skip conditions (no-op, returns "completed"):
 //   - the workflow carries no brief, which is every non-comments dispatch
 //   - the task has no PR or no project
-//   - the PR already landed or closed, where unanswered threads are moot and
-//     parking a human on a merged PR is pure noise
+//   - the PR already merged, where unanswered threads are moot and parking a
+//     human on it is pure noise
 //   - the live fetch fails, since a transient GitHub error must not park a run
 //     that may well have done its job
 func (e *Engine) execVerifyReviewThreads(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error) {
@@ -44,8 +44,8 @@ func (e *Engine) execVerifyReviewThreads(taskID string, step *Step, wfExec *Exec
 	if t.PRNumber == 0 || t.ProjectID == "" {
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: missing pr or project"}, nil
 	}
-	if e.prAlreadyLanded(t) {
-		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: pr already resolved on remote"}, nil
+	if e.prMerged(t) {
+		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: pr already merged"}, nil
 	}
 
 	live, err := fetchReviewThreads(t.ProjectID, t.PRNumber)
@@ -135,11 +135,20 @@ func untouchedLocations(untouched []BriefedReviewThread, live []github.ReviewThr
 	return strings.Join(locs, ", ")
 }
 
-// prAlreadyLanded reports whether the PR is merged or otherwise resolved on
-// the remote. A fetch failure answers false: the gate then runs, which is the
+// prMerged reports whether the PR has already merged.
+//
+// Deliberately not PRState.Resolved(), which is MERGED || ReadyToMerge() and
+// so is true for an open PR with green CI and no conflicts. That is the
+// ordinary shape of a PR under review, and the comments dispatch that writes
+// the brief keys on ActionableCount alone, independent of mergeability and CI
+// - so skipping on Resolved() left this gate inert on exactly the runs it
+// exists to catch. The escape hatch that motivated a PR-state check at all is
+// handled in pr-fix.yaml, on the agent's verdict.
+//
+// A fetch failure answers false: the gate then runs, which is the
 // conservative direction for a check whose whole job is to catch a run that
 // claimed more than it did.
-func (e *Engine) prAlreadyLanded(t TaskInfo) bool {
+func (e *Engine) prMerged(t TaskInfo) bool {
 	if e.pr.StateFetcher == nil {
 		return false
 	}
@@ -147,5 +156,5 @@ func (e *Engine) prAlreadyLanded(t TaskInfo) bool {
 	if err != nil {
 		return false
 	}
-	return state.Resolved()
+	return state.State == "MERGED"
 }

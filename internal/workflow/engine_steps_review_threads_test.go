@@ -289,7 +289,7 @@ func TestExecVerifyReviewThreads_SkipsALandedPR(t *testing.T) {
 	info := TaskInfo{ID: "task-1", Status: taskstatus.InReview, PRNumber: 7, ProjectID: "o/r"}
 	tasks.Put(info)
 	engine := newEngineForEval(t, tasks)
-	engine.pr.StateFetcher = mergedPRStateFetcher{}
+	engine.pr.StateFetcher = stubPRStateFetcher{state: github.PRState{State: "MERGED"}}
 
 	vars := map[string]string{PRReviewThreadBriefVar: MarshalBriefedReviewThreads(
 		[]BriefedReviewThread{{ID: "t1", Comments: 1}})}
@@ -298,8 +298,8 @@ func TestExecVerifyReviewThreads_SkipsALandedPR(t *testing.T) {
 	if err != nil {
 		t.Fatalf("execVerifyReviewThreads: %v", err)
 	}
-	if !strings.Contains(out.Output, "already resolved on remote") {
-		t.Errorf("output = %q, want the landed-PR skip", out.Output)
+	if !strings.Contains(out.Output, "already merged") {
+		t.Errorf("output = %q, want the merged-PR skip", out.Output)
 	}
 	got, _ := tasks.GetTask("task-1")
 	if got.Status != taskstatus.InReview {
@@ -307,8 +307,40 @@ func TestExecVerifyReviewThreads_SkipsALandedPR(t *testing.T) {
 	}
 }
 
-type mergedPRStateFetcher struct{}
+type stubPRStateFetcher struct{ state github.PRState }
 
-func (mergedPRStateFetcher) FetchPRState(string, int) (github.PRState, error) {
-	return github.PRState{State: "MERGED"}, nil
+func (s stubPRStateFetcher) FetchPRState(string, int) (github.PRState, error) {
+	return s.state, nil
+}
+
+// PRState.Resolved() is MERGED || ReadyToMerge(), so an open PR with green CI
+// and no conflicts reads as "resolved" - and that is the ordinary shape of a
+// PR under review. Skipping on it would leave the gate inert on exactly the
+// runs it exists to catch, since the comments dispatch keys on unanswered
+// threads alone and does not care about mergeability or CI.
+func TestExecVerifyReviewThreads_GreenOpenPRIsStillChecked(t *testing.T) {
+	swapReviewThreadFetch(t, []github.ReviewThread{
+		{ID: "t1", CommentCount: 1, Path: "internal/a.go", Line: 12},
+	}, nil)
+
+	tasks := newMemTasks()
+	info := TaskInfo{ID: "task-1", Status: taskstatus.InProgress, PRNumber: 7, ProjectID: "o/r"}
+	tasks.Put(info)
+	engine := newEngineForEval(t, tasks)
+	engine.pr.StateFetcher = stubPRStateFetcher{state: github.PRState{State: "OPEN", Mergeable: "MERGEABLE"}}
+
+	vars := map[string]string{PRReviewThreadBriefVar: MarshalBriefedReviewThreads(
+		[]BriefedReviewThread{{ID: "t1", Comments: 1}})}
+	step := &Step{ID: "verify_review_threads", Type: StepVerifyReviewThreads}
+	out, err := engine.execVerifyReviewThreads("task-1", step, &Execution{Variables: vars}, info)
+	if err != nil {
+		t.Fatalf("execVerifyReviewThreads: %v", err)
+	}
+	if !strings.Contains(out.Output, "unanswered review threads") {
+		t.Errorf("output = %q, want the green open PR to still be checked", out.Output)
+	}
+	got, _ := tasks.GetTask("task-1")
+	if got.Status != taskstatus.HumanRequired {
+		t.Errorf("status = %q, want human-required", got.Status)
+	}
 }
