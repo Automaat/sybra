@@ -83,6 +83,11 @@ type Handler struct {
 	// IDs must not write these maps concurrently.
 	failureMu sync.Mutex
 	wtDropped map[string]struct{}
+	// prDispatchMu/prDispatching serialize PR checkout preparation through its
+	// agent/workflow handoff. The agent dispatch claim cannot span a workflow
+	// launch because run_agent acquires that claim itself.
+	prDispatchMu  sync.Mutex
+	prDispatching map[string]struct{}
 	// mergePR performs the actual squash-merge; overridable in tests.
 	// nil falls back to github.MergePR.
 	mergePR func(repo string, number int) error

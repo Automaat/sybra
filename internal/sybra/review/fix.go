@@ -77,6 +77,7 @@ type taskBranchConflictRecoverySpec struct {
 type dispatchFixOptions struct {
 	replaceActiveWorkflow bool
 	cancelReason          string
+	prDispatchReserved    bool
 }
 
 const PRFixResultContract = "\n\nBefore your final response, decide the outcome:\n" +
@@ -886,10 +887,11 @@ func coalescedFixPrompt(ctx context.Context, issues []github.PRIssue, holdSuffix
 	return prompt
 }
 
-func (r *Handler) handlePRIssueReplacingWorkflow(ctx context.Context, issue github.PRIssue, cancelReason string) bool {
+func (r *Handler) handlePRIssueReplacingWorkflowReserved(ctx context.Context, issue github.PRIssue, cancelReason string, prDispatchReserved bool) bool {
 	return r.dispatchFixIssuesWithOptions(ctx, issue.TaskID, []github.PRIssue{issue}, dispatchFixOptions{
 		replaceActiveWorkflow: true,
 		cancelReason:          cancelReason,
+		prDispatchReserved:    prDispatchReserved,
 	})
 }
 
@@ -910,6 +912,14 @@ func (r *Handler) dispatchFixIssuesWithOptions(ctx context.Context, taskID strin
 	t, err := r.tasks.Get(taskID)
 	if err != nil {
 		return false
+	}
+	if !opts.prDispatchReserved {
+		releasePRDispatch, ok := r.tryReservePRDispatch(taskID)
+		if !ok {
+			r.logger.Info("pr-monitor.dispatch-busy", "task_id", taskID)
+			return false
+		}
+		defer releasePRDispatch()
 	}
 	// Stable-sort by fix priority so the primary (index 0) drives worktree prep
 	// and the prompt reads in execution order (conflicts → comments → CI).
@@ -936,6 +946,17 @@ func (r *Handler) dispatchFixIssuesWithOptions(ctx context.Context, taskID strin
 		primary.Kind == github.PRIssueCIFailure &&
 		(r.dispatchFlakyRerun(t, primary) || r.rerunCIFailure(t, primary)) {
 		return true
+	}
+
+	var preparationClaim workflow.DispatchClaim
+	if r.agents != nil && !opts.prDispatchReserved {
+		var claimed bool
+		preparationClaim, claimed = r.agents.TryClaimDispatch(t.ID)
+		if !claimed {
+			r.logger.Info("pr-monitor.dispatch-busy", "task_id", taskID, "reason", "agent_dispatch")
+			return false
+		}
+		defer preparationClaim.Release()
 	}
 
 	dir, ok := r.prepareWorktree(ctx, t, primary)
@@ -967,6 +988,9 @@ func (r *Handler) dispatchFixIssuesWithOptions(ctx context.Context, taskID strin
 	// e.ctx field (Engine.SetContext), not an explicit parameter threaded here.
 	// contextcheck no longer flags this call site (verified with a clean
 	// build+lint cache), so no suppression directive is needed here.
+	if preparationClaim != nil {
+		preparationClaim.Release()
+	}
 	return r.dispatchPRIssueWithOptions(ctx, t, primary, handle, coalescedFixPrompt(ctx, handle, reviewHoldFixSuffix(r.cfg), r.signingPolicy()), dir, opts)
 }
 
@@ -1345,6 +1369,14 @@ func (r *Handler) markConflictRecoveryExhausted(taskID string, kind github.PRIss
 // without ever actually attempting conflict resolution. ResumeStalled is the
 // only thing that should re-drive a parked step once a slot frees.
 func (r *Handler) RecoverStaleBranchConflict(taskID string) bool {
+	return r.recoverStaleBranchConflict(taskID, false)
+}
+
+func (r *Handler) recoverStaleBranchConflictReserved(taskID string) bool {
+	return r.recoverStaleBranchConflict(taskID, true)
+}
+
+func (r *Handler) recoverStaleBranchConflict(taskID string, prDispatchReserved bool) bool {
 	if r == nil || r.WorkflowEngine == nil || r.prTracker == nil {
 		return false
 	}
@@ -1385,9 +1417,9 @@ func (r *Handler) RecoverStaleBranchConflict(taskID string) bool {
 	// context.Background() is a dead end here: RecoverStaleBranchConflict is
 	// wired as agentorch.Orchestrator.ConflictRecovery, a fixed func(taskID string)
 	// bool callback (see internal/sybra/agentorch) with no ctx parameter to thread from.
-	return r.handlePRIssueReplacingWorkflow(context.Background(),
+	return r.handlePRIssueReplacingWorkflowReserved(context.Background(),
 		github.PRIssue{TaskID: taskID, Kind: github.PRIssueConflict, PR: pr},
-		"rebase conflict recovery")
+		"rebase conflict recovery", prDispatchReserved)
 }
 
 // prFixParkedOnConflict reports whether the task's active workflow is a pr-fix
@@ -2129,7 +2161,7 @@ func (r *Handler) prepareWorktree(ctx context.Context, t task.Task, issue github
 		// IS a conflict fix (avoid re-entering ourselves).
 		var recoverFn func(string) bool
 		if issue.Kind != github.PRIssueConflict {
-			recoverFn = r.RecoverStaleBranchConflict
+			recoverFn = r.recoverStaleBranchConflictReserved
 		}
 		if agentorch.MarkRebaseBlocked(r.tasks, t.ID, wtErr, r.logger, recoverFn) {
 			return "", false

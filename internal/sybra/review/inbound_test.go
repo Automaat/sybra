@@ -9,44 +9,61 @@ import (
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
-// TestStartFixReviewAgentSkipsWhenDispatchClaimHeld guards the fix for the
-// duplicate-dispatch race: StartFixReviewAgent (reached from the manual
-// "Fix Review" UI action) used to call agents.Run without checking whether
-// an automated fix-review dispatch already held the task's claim (e.g. via
-// WorkflowEngine.DispatchEvent), so both could start a headless agent
-// against the same worktree/branch concurrently. It must now respect an
-// already-held claim and skip without starting a second agent.
-func TestStartFixReviewAgentSkipsWhenDispatchClaimHeld(t *testing.T) {
-	r, tasks := newOutboundTestHandler(t)
+func TestStartFixReviewAgentRequiresWorkflowEngine(t *testing.T) {
+	r := &Handler{}
+	err := r.StartFixReviewAgent(task.Task{ID: "task-1", ProjectID: "Automaat/sybra", PRNumber: 7})
+	if err == nil || !strings.Contains(err.Error(), "workflow engine") {
+		t.Fatalf("StartFixReviewAgent() error = %v, want missing workflow engine", err)
+	}
+}
 
-	created, err := tasks.Create("Fix PR", "", task.AgentModeHeadless)
+func TestStartFixReviewAgentClaimsBeforeWorktreePreparation(t *testing.T) {
+	r, tasks := newOutboundWorkflowTestHandler(t)
+	created, err := tasks.Create("Fix review comments", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatal(err)
 	}
-	updated, err := tasks.Update(created.ID, task.Update{
+	created, err = tasks.Update(created.ID, task.Update{
 		ProjectID: task.Ptr("Automaat/sybra"),
 		PRNumber:  task.Ptr(7),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	claim, ok := r.agents.TryClaimDispatch(updated.ID)
+	claim, ok := r.agents.TryClaimDispatch(created.ID)
 	if !ok {
 		t.Fatal("claim dispatch")
 	}
 	defer claim.Release()
 
-	if err := r.StartFixReviewAgent(updated); err != nil {
-		t.Fatalf("StartFixReviewAgent() error = %v, want nil (skip)", err)
+	err = r.StartFixReviewAgent(created)
+	if !errors.Is(err, workflow.ErrDispatchInFlight) {
+		t.Fatalf("StartFixReviewAgent() error = %v, want ErrDispatchInFlight before worktree preparation", err)
 	}
+}
 
-	fresh, err := tasks.Get(updated.ID)
+func TestStartFixReviewAgentHonorsPRDispatchReservation(t *testing.T) {
+	r, tasks := newOutboundWorkflowTestHandler(t)
+	created, err := tasks.Create("Fix review comments", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(fresh.AgentRuns) != 0 {
-		t.Fatalf("AgentRuns = %d, want 0: a fix-review agent must not start while another dispatch claim is held", len(fresh.AgentRuns))
+	created, err = tasks.Update(created.ID, task.Update{
+		ProjectID: task.Ptr("Automaat/sybra"),
+		PRNumber:  task.Ptr(7),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	release, ok := r.tryReservePRDispatch(created.ID)
+	if !ok {
+		t.Fatal("reserve PR dispatch")
+	}
+	defer release()
+
+	err = r.StartFixReviewAgent(created)
+	if !errors.Is(err, workflow.ErrDispatchInFlight) {
+		t.Fatalf("StartFixReviewAgent() error = %v, want ErrDispatchInFlight before worktree preparation", err)
 	}
 }
 

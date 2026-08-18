@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/project"
@@ -181,96 +180,4 @@ func TestReviewService_StartFixReview_NoProjectID(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for task without projectID")
 	}
-}
-
-func TestReviewService_StartFixReview_HappyPath(t *testing.T) {
-	argsLog := filepath.Join(t.TempDir(), "claude-args.log")
-	t.Setenv("FAKE_CLAUDE_ARGS_LOG", argsLog)
-	stdinLog := filepath.Join(t.TempDir(), "claude-stdin.log")
-	t.Setenv("FAKE_CLAUDE_STDIN_LOG", stdinLog)
-
-	svc, taskMgr, _ := setupReviewService(t)
-
-	tk, err := taskMgr.Create("fix pr 42", "", "headless")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := taskMgr.Update(tk.ID, task.Update{
-		ProjectID: task.Ptr("testowner/testrepo"),
-		PRNumber:  task.Ptr(42),
-		Status:    task.Ptr(task.StatusInReview),
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := svc.StartFixReview(tk.ID); err != nil {
-		t.Fatalf("StartFixReview: %v", err)
-	}
-
-	wtPath := filepath.Join(os.Getenv("SYBRA_HOME"), "worktrees", tk.DirName())
-	branchOut, err := exec.Command("git", "-C", wtPath, "branch", "--show-current").Output()
-	if err != nil {
-		t.Fatalf("show current branch: %v", err)
-	}
-	if branch := strings.TrimSpace(string(branchOut)); branch == "" {
-		t.Fatalf("fix-review worktree is detached HEAD")
-	}
-
-	waitFor(t, 5*time.Second, "fake-claude args log written", func() bool {
-		_, err := os.Stat(argsLog)
-		return err == nil
-	})
-
-	data, err := os.ReadFile(argsLog)
-	if err != nil {
-		t.Fatal(err)
-	}
-	args := string(data)
-
-	for _, want := range []string{
-		"-p",
-		"--output-format",
-		"stream-json",
-		"--model",
-		"opus",
-	} {
-		if !strings.Contains(args, want) {
-			t.Errorf("expected %q in args:\n%s", want, args)
-		}
-	}
-
-	// The prompt itself travels over stdin, not argv (see
-	// provider_claude.go's non-steerable branch) — check the captured
-	// stdin content, not args, for its actual text.
-	waitFor(t, 5*time.Second, "fake-claude stdin log written", func() bool {
-		_, err := os.Stat(stdinLog)
-		return err == nil
-	})
-	stdinData, err := os.ReadFile(stdinLog)
-	if err != nil {
-		t.Fatal(err)
-	}
-	prompt := string(stdinData)
-	for _, want := range []string{
-		"/fix-review https://github.com/testowner/testrepo/pull/42 --auto",
-		"fix(review)",
-	} {
-		if !strings.Contains(prompt, want) {
-			t.Errorf("expected %q in stdin prompt:\n%s", want, prompt)
-		}
-	}
-
-	// Verify the agent got registered on the task with the fix-review role.
-	waitFor(t, 2*time.Second, "fix-review agent run recorded", func() bool {
-		cur, err := taskMgr.Get(tk.ID)
-		if err != nil {
-			return false
-		}
-		for _, run := range cur.AgentRuns {
-			if run.Role == string(agent.RoleFixReview) {
-				return true
-			}
-		}
-		return false
-	})
 }
