@@ -1302,6 +1302,7 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 		SubagentCallCount:       Ptr(3),
 		ResumeZeroOutputStall:   Ptr(true),
 		TurnCount:               Ptr(17),
+		ToolFailures:            Ptr(4),
 	}
 	assertRunPatchCoversEveryField(t, patch)
 
@@ -1342,6 +1343,7 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 		EscalationReason:        "cost",
 		CostUSD:                 1.23,
 		PremiumRequests:         2.5,
+		ToolFailures:            4,
 		Result:                  "completed with result",
 		Verdict:                 "sybra_bug",
 		VerdictRendered:         true,

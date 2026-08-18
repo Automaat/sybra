@@ -99,6 +99,7 @@ type agentRunRecord struct {
 	EscalationReason        string    `yaml:"escalation_reason,omitempty"`
 	StartedAt               time.Time `yaml:"started_at"`
 	CostUSD                 float64   `yaml:"cost_usd,omitempty"`
+	ToolFailures            int       `yaml:"tool_failures,omitempty"`
 	PremiumRequests         float64   `yaml:"premium_requests,omitempty"`
 	Prompt                  string    `yaml:"prompt,omitempty"`
 	Result                  string    `yaml:"result,omitempty"`

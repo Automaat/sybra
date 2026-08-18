@@ -92,6 +92,7 @@ export class AgentRun {
     "escalationReason"?: string;
     "startedAt": string;
     "costUsd": number;
+    "toolFailures"?: number;
     "premiumRequests"?: number;
     "prompt"?: string;
     "result": string;

@@ -110,6 +110,7 @@ type RunPatch struct {
 	// Cost/tokens
 	CostUSD         *float64
 	PremiumRequests *float64
+	ToolFailures    *int
 
 	// Verdict
 	Verdict                *string
@@ -171,6 +172,9 @@ func applyRunCostTokens(run *AgentRun, p RunPatch) {
 	}
 	if p.PremiumRequests != nil {
 		run.PremiumRequests = *p.PremiumRequests
+	}
+	if p.ToolFailures != nil {
+		run.ToolFailures = *p.ToolFailures
 	}
 }
 
