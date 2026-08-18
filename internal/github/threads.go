@@ -1,6 +1,7 @@
 package github
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -14,7 +15,10 @@ type ReviewThread struct {
 	AuthorLogin     string // login of the thread's first comment author
 	LastAuthorLogin string // login of the thread's most recent comment author
 	IsResolved      bool
-	IsOutdated      bool // the anchored code changed since the comment — i.e. addressed
+	IsOutdated      bool   // the anchored code changed since the comment — i.e. addressed
+	Path            string // file the thread is anchored to, empty for a file-level thread
+	Line            int    // line the thread is anchored to, 0 when the anchor is gone
+	CommentCount    int    // total comments on the thread, the monotone "was it answered" signal
 }
 
 const reviewThreadsQuery = `query($owner: String!, $name: String!, $number: Int!) {
@@ -25,6 +29,9 @@ const reviewThreadsQuery = `query($owner: String!, $name: String!, $number: Int!
           id
           isResolved
           isOutdated
+          path
+          line
+          comments { totalCount }
           first: comments(first: 1) { nodes { author { login } } }
           last: comments(last: 1) { nodes { author { login } } }
         }
@@ -42,7 +49,12 @@ type gqlReviewThreadsResponse struct {
 						ID         string `json:"id"`
 						IsResolved bool   `json:"isResolved"`
 						IsOutdated bool   `json:"isOutdated"`
-						First      struct {
+						Path       string `json:"path"`
+						Line       int    `json:"line"`
+						Comments   struct {
+							TotalCount int `json:"totalCount"`
+						} `json:"comments"`
+						First struct {
 							Nodes []struct {
 								Author struct {
 									Login string `json:"login"`
@@ -73,15 +85,21 @@ type gqlReviewThreadsResponse struct {
 // thread beyond the first 100 would not be auto-resolved and that PR would need
 // a manual merge.
 func FetchReviewThreads(repo string, number int) ([]ReviewThread, error) {
-	return fetchReviewThreadsWith(defaultExecer, repo, number)
+	return fetchReviewThreadsWith(context.Background(), defaultExecer, repo, number)
 }
 
-func fetchReviewThreadsWith(e execer, repo string, number int) ([]ReviewThread, error) {
+// FetchReviewThreadsContext is FetchReviewThreads bound to a caller's context,
+// for the dispatch paths that already carry one.
+func FetchReviewThreadsContext(ctx context.Context, repo string, number int) ([]ReviewThread, error) {
+	return fetchReviewThreadsWith(ctx, defaultExecer, repo, number)
+}
+
+func fetchReviewThreadsWith(ctx context.Context, e execer, repo string, number int) ([]ReviewThread, error) {
 	owner, name, ok := strings.Cut(repo, "/")
 	if !ok || owner == "" || name == "" {
 		return nil, fmt.Errorf("invalid repo %q", repo)
 	}
-	resp, err := runGHAPIWith(e, "", "graphql",
+	resp, err := runGHAPICtxWith(ctx, e, "", "graphql",
 		"-f", "query="+reviewThreadsQuery,
 		"-f", "owner="+owner,
 		"-f", "name="+name,
@@ -114,6 +132,9 @@ func fetchReviewThreadsWith(e execer, repo string, number int) ([]ReviewThread, 
 			LastAuthorLogin: lastLogin,
 			IsResolved:      nodes[i].IsResolved,
 			IsOutdated:      nodes[i].IsOutdated,
+			Path:            nodes[i].Path,
+			Line:            nodes[i].Line,
+			CommentCount:    nodes[i].Comments.TotalCount,
 		})
 	}
 	return threads, nil

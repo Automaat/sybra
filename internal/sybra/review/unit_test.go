@@ -316,7 +316,7 @@ func TestCommentsPrompt_DetectsForkRemote(t *testing.T) {
 		Number:      1178,
 		HeadRefName: "fix/example",
 		URL:         "https://github.com/acme/widgets/pull/1178",
-	}, project.SigningAuto)
+	}, project.SigningAuto, reviewThreadBrief{})
 
 	assertPRFixPromptUsesResolvedPushRemote(t, prompt, "fix/example")
 	for _, want := range []string{

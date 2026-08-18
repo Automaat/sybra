@@ -103,6 +103,7 @@ const (
 	StepStampPRAttribution  StepType = "stamp_pr_attribution"
 	StepRerequestReview     StepType = "rerequest_review"
 	StepVerifyCommits       StepType = "verify_commits"
+	StepVerifyReviewThreads StepType = "verify_review_threads"
 	StepLinkPRAndReview     StepType = "link_pr_and_review"
 	StepEvaluate            StepType = "evaluate"
 	StepRequireSidecar      StepType = "require_sidecar"
@@ -289,6 +290,7 @@ func init() {
 		StepStampPRAttribution:   {sync: bindSyncTaskInfoStep((*Engine).execStampPRAttribution), reducer: stepReducerDispatch},
 		StepRerequestReview:      {sync: bindSyncTaskInfoStep((*Engine).execRerequestReview), reducer: stepReducerDispatch},
 		StepVerifyCommits:        {sync: bindSyncExecTaskInfoStep((*Engine).execVerifyCommits), reducer: stepReducerDispatch},
+		StepVerifyReviewThreads:  {sync: bindSyncExecTaskInfoStep((*Engine).execVerifyReviewThreads), reducer: stepReducerDispatch},
 		StepLinkPRAndReview:      {sync: bindSyncExecTaskInfoStep((*Engine).execLinkPRAndReview), reducer: stepReducerDispatch},
 		StepEvaluate:             {sync: bindSyncExecTaskInfoStep((*Engine).execEvaluate), reducer: stepReducerDispatch},
 		StepRequireSidecar:       {sync: bindSyncExecTaskInfoStep((*Engine).execRequireSidecarWithExec), reducer: stepReducerDispatch},
