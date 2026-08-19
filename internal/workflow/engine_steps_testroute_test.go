@@ -3980,16 +3980,22 @@ func TestAdvanceStep_StaleSurfaceVarDoesNotMislabelALaterInfraFailure(t *testing
 	wf := &Execution{
 		WorkflowID:  "testing-task",
 		CurrentStep: testVerdictSourceStep,
-		State:       ExecRunning,
+		State:       ExecWaiting,
 		Variables: map[string]string{
 			"step." + testVerdictSourceStep + "." + testSurfaceUnavailableKey: "k8s",
 		},
 		StartedAt: time.Now().UTC(),
 	}
 	tasks.Put(TaskInfo{ID: "t-stale", Status: "testing", AgentMode: "headless", Workflow: wf})
-	prepareTestVerdictAttemptVars(wf, testVerdictSourceStep, "## Problem\nbody")
-	if got := wf.Variables["step."+testVerdictSourceStep+"."+testSurfaceUnavailableKey]; got != "" {
-		t.Errorf("surface var = %q, want cleared before a fresh attempt", got)
+
+	engine.ResumeStalled()
+
+	if got := agents.CallCount(); got != 1 {
+		t.Fatalf("StartAgent calls = %d, want 1 — the tester must be re-dispatched", got)
+	}
+	dispatched, _ := tasks.GetTask("t-stale")
+	if got := dispatched.Workflow.Variables["step."+testVerdictSourceStep+"."+testSurfaceUnavailableKey]; got != "" {
+		t.Errorf("surface var = %q, want the dispatch path to clear it", got)
 	}
 	if err := engine.AdvanceStep("t-stale", StepOutput{
 		StepID: testVerdictSourceStep,
