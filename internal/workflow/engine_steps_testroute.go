@@ -45,6 +45,7 @@ const (
 	testFailureBodyStartLenKey = "body_start_len"
 	testVerdictOutcomeKey      = "outcome"
 	testFailureFingerprintKey  = "failure_fingerprint"
+	testSurfaceUnavailableKey  = "surface_unavailable"
 	testFailuresHeading        = "## Test Failures"
 	acceptanceLedgerHeading    = "## Acceptance Ledger"
 	// resolvedTestFailuresHeading is what a stale "## Test Failures" section
@@ -189,9 +190,30 @@ func (e *Engine) openPRForUnrunnableTestingGate(taskID, stepID string) (StepOutp
 	return StepOutput{StepID: stepID, Status: "completed", Output: "infra failure — opened pr"}, nil
 }
 
+func (e *Engine) routeUnstartableSurface(taskID, stepID, surface string) (StepOutput, error) {
+	if !e.openPROnUnrunnableGate.Load() {
+		reason := "manual testing needs a " + surface + " surface this host cannot start — rerun testing where that surface exists"
+		if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
+			return StepOutput{}, err
+		}
+		e.logger.Warn("workflow.test.surface-unavailable", "task_id", taskID, "surface", surface)
+		return StepOutput{StepID: stepID, Status: "completed", Output: "surface unavailable"}, nil
+	}
+	reason := "manual testing needs a " + surface + " surface this host cannot start (not a product defect) — opening PR for CI and human review"
+	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.ReadyPR, reason); err != nil {
+		return StepOutput{}, err
+	}
+	e.logger.Warn("workflow.test.surface-unavailable.open-pr", "task_id", taskID, "surface", surface)
+	return StepOutput{StepID: stepID, Status: "completed", Output: "surface unavailable — opened pr"}, nil
+}
+
 func (e *Engine) routeNonProductTestOutcome(taskID, stepID, outcome string, wfExec *Execution, t TaskInfo) (StepOutput, bool, error) {
 	switch outcome {
 	case testOutcomeInfraFailure:
+		if surface := wfExec.Variables["step."+testVerdictSourceStep+"."+testSurfaceUnavailableKey]; surface != "" {
+			out, err := e.routeUnstartableSurface(taskID, stepID, surface)
+			return out, true, err
+		}
 		if e.openPROnUnrunnableGate.Load() {
 			out, err := e.retryOrOpenPRForUnrunnableGate(taskID, stepID, wfExec, t)
 			return out, true, err
@@ -220,7 +242,7 @@ func clearTestVerdictVars(wfExec *Execution) {
 	if wfExec == nil || wfExec.Variables == nil {
 		return
 	}
-	for _, suffix := range []string{".verdict", "." + testVerdictOutcomeKey, "." + testVerdictTaintedKey, "." + testFailureFingerprintKey} {
+	for _, suffix := range []string{".verdict", "." + testVerdictOutcomeKey, "." + testVerdictTaintedKey, "." + testFailureFingerprintKey, "." + testSurfaceUnavailableKey} {
 		delete(wfExec.Variables, "step."+testVerdictSourceStep+suffix)
 	}
 }
@@ -1448,6 +1470,13 @@ func applyTestVerdictCompletion(wfExec *Execution, output *StepOutput, body stri
 	}
 	if output.Status == "completed" && outcome == testOutcomePass && v == "PASS" {
 		if ok, reason := hasManualPassEvidence(output.Output, t); !ok {
+			if surface := unstartableSurface(output.Output, t); surface != "" {
+				wfExec.SetVar("step."+output.StepID+"."+testVerdictOutcomeKey, testOutcomeInfraFailure)
+				wfExec.SetVar("step."+output.StepID+"."+testSurfaceUnavailableKey, surface)
+				output.Status = "failed"
+				output.Output = appendUnstartableSurface(output.Output, surface)
+				return "", testOutcomeInfraFailure, ""
+			}
 			wfExec.SetVar("step."+output.StepID+"."+testVerdictOutcomeKey, testOutcomeMissingEvidence)
 			wfExec.SetVar("step."+output.StepID+"."+testVerdictTaintedKey, testProtocolMissingEvidence)
 			output.Status = "failed"
@@ -1471,6 +1500,58 @@ func applyTestVerdictCompletion(wfExec *Execution, output *StepOutput, body stri
 
 func appendTestProtocolViolation(output, detail string) string {
 	msg := "test-runner protocol violation: " + detail
+	if strings.TrimSpace(output) == "" {
+		return msg
+	}
+	return strings.TrimRight(output, "\n") + "\n\n" + msg
+}
+
+func unstartableSurface(output string, t TaskInfo) string {
+	parsed, ok := parseStructuredTestOutput(output)
+	if !ok {
+		return ""
+	}
+	if strings.ToUpper(strings.TrimSpace(parsed.Verdict)) != "PASS" {
+		return ""
+	}
+	if normalizeTestOutcome(parsed.Outcome) != testOutcomePass {
+		return ""
+	}
+	if strings.TrimSpace(parsed.FailuresMarkdown) != "" {
+		return ""
+	}
+	surface := normalizeSurfaceKind(parsed.SurfaceKind)
+	if surface == "" || isManualTestExemption(surface, t) {
+		return ""
+	}
+	if surface == "library" || surface == "docs" || surface == "none" {
+		return ""
+	}
+	if parsed.AppStarted {
+		return ""
+	}
+	if !readinessProbeReportsUnavailable(parsed.ReadinessProbe) {
+		return ""
+	}
+	if !hasManualProbeEvidence(parsed.ManualProbes) && !hasRegressionCheckEvidence(parsed.AutomatedChecks) {
+		return ""
+	}
+	return surface
+}
+
+func readinessProbeReportsUnavailable(probe readinessProbeEvidence) bool {
+	if strings.TrimSpace(probe.Command) == "" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(string(probe.Status))) {
+	case "unavailable", "unreachable", "not_available", "not-available", "missing":
+		return true
+	}
+	return false
+}
+
+func appendUnstartableSurface(output, surface string) string {
+	msg := "test-runner could not start the " + surface + " surface on this host: readiness probe reported it unavailable"
 	if strings.TrimSpace(output) == "" {
 		return msg
 	}

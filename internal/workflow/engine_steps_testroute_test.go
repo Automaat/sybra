@@ -1527,6 +1527,32 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			want:       testOutcomePass,
 			wantStatus: "completed",
 		},
+		{
+			name:       "unstartable_k8s_surface_is_an_unrunnable_gate",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"k8s","app_started":false,"start_command":"","readiness_probe":{"command":"kubectl config view --minify","actual":"No current context","observed":"kubectl reported that no current context exists","output":"error: current-context must exist in order to minify","status":"unavailable"},"manual_probes":[{"command":"helm package deployments/charts/app","expected":"the chart packages","actual":"the chart packaged","observed":"helm package succeeded","output":"Successfully packaged chart","status":"pass"}],"automated_checks":[{"command":"go test ./pkg/...","actual":"Exit code 0","output":"ok","status":"pass"}]}`,
+			bodySuffix: "",
+			want:       testOutcomeInfraFailure,
+			wantStatus: "failed",
+		},
+		{
+			name:       "unstartable_surface_without_supporting_evidence_stays_missing_evidence",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"k8s","app_started":false,"start_command":"","readiness_probe":{"command":"kubectl config view --minify","actual":"No current context","observed":"kubectl reported that no current context exists","output":"error: current-context must exist in order to minify","status":"unavailable"},"manual_probes":[],"automated_checks":[]}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:       "startable_surface_that_was_never_started_stays_missing_evidence",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web","app_started":false,"start_command":"","readiness_probe":{"command":"curl -fsS http://127.0.0.1:8080/health","actual":"HTTP 200","output":"ok","status":"pass"},"manual_probes":[{"command":"helm package deployments/charts/app","expected":"the chart packages","actual":"the chart packaged","observed":"helm package succeeded","output":"Successfully packaged chart","status":"pass"}]}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
 	}
 
 	for _, tc := range cases {
@@ -3843,5 +3869,61 @@ func TestRouteTestResult_ReDispatch_Escalates(t *testing.T) {
 	ti, _ := tasks.GetTask("t5")
 	if ti.Status != "human-required" {
 		t.Errorf("status = %q, want human-required", ti.Status)
+	}
+}
+
+func TestRouteTestResult_UnstartableSurfaceOpensPRWithoutSpendingRetries(t *testing.T) {
+	t.Parallel()
+	e, tasks := makeTestEngine(t)
+	tasks.Put(TaskInfo{ID: "t-surface", Status: "testing"})
+	wf := &Execution{
+		WorkflowID: "testing-task",
+		StartedAt:  time.Now().UTC(),
+		Variables: map[string]string{
+			"step." + testVerdictSourceStep + "." + testVerdictOutcomeKey:     testOutcomeInfraFailure,
+			"step." + testVerdictSourceStep + "." + testSurfaceUnavailableKey: "k8s",
+		},
+	}
+	out, err := e.execRouteTestResult("t-surface", &Step{ID: "route_test"}, wf, mustGetTaskInfo(t, tasks, "t-surface"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Output != "surface unavailable — opened pr" {
+		t.Errorf("output = %q, want surface unavailable — opened pr", out.Output)
+	}
+	ti, _ := tasks.GetTask("t-surface")
+	if ti.Status != "ready-pr" {
+		t.Errorf("status = %q, want ready-pr", ti.Status)
+	}
+	if reason := tasks.Reason("t-surface"); !strings.Contains(reason, "k8s") {
+		t.Errorf("reason = %q, want the surface named", reason)
+	}
+	if got := wf.Variables[testingAutoRetryKey(testOutcomeInfraFailure)]; got != "" {
+		t.Errorf("auto-retry counter = %q, want no retry spent on an absent surface", got)
+	}
+}
+
+func TestRouteTestResult_UnstartableSurfaceEscalatesWhenOpenPRDisabled(t *testing.T) {
+	t.Parallel()
+	e, tasks := makeTestEngine(t)
+	e.SetOpenPROnUnrunnableGate(false)
+	tasks.Put(TaskInfo{ID: "t-surface-off", Status: "testing"})
+	wf := &Execution{
+		WorkflowID: "testing-task",
+		StartedAt:  time.Now().UTC(),
+		Variables: map[string]string{
+			"step." + testVerdictSourceStep + "." + testVerdictOutcomeKey:     testOutcomeInfraFailure,
+			"step." + testVerdictSourceStep + "." + testSurfaceUnavailableKey: "k8s",
+		},
+	}
+	if _, err := e.execRouteTestResult("t-surface-off", &Step{ID: "route_test"}, wf, mustGetTaskInfo(t, tasks, "t-surface-off")); err != nil {
+		t.Fatal(err)
+	}
+	ti, _ := tasks.GetTask("t-surface-off")
+	if ti.Status != "human-required" {
+		t.Errorf("status = %q, want human-required", ti.Status)
+	}
+	if reason := tasks.Reason("t-surface-off"); !strings.Contains(reason, "k8s") {
+		t.Errorf("reason = %q, want the surface named", reason)
 	}
 }
