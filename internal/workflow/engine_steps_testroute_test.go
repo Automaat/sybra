@@ -1530,7 +1530,15 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 		{
 			name:       "unstartable_k8s_surface_is_an_unrunnable_gate",
 			status:     "completed",
-			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"k8s","app_started":false,"start_command":"","readiness_probe":{"command":"kubectl config view --minify","actual":"No current context","observed":"kubectl reported that no current context exists","output":"error: current-context must exist in order to minify","status":"unavailable"},"manual_probes":[{"command":"helm package deployments/charts/app","expected":"the chart packages","actual":"the chart packaged","observed":"helm package succeeded","output":"Successfully packaged chart","status":"pass"}],"automated_checks":[{"command":"go test ./pkg/...","actual":"Exit code 0","output":"ok","status":"pass"}]}`,
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"k8s","app_started":false,"start_command":"","unable_to_run_reason":"the host has no kubernetes context","readiness_probe":{"command":"kubectl config view --minify","actual":"No current context","observed":"kubectl reported that no current context exists","output":"error: current-context must exist in order to minify","status":"unavailable"},"manual_probes":[{"command":"helm package deployments/charts/app","expected":"the chart packages","actual":"the chart packaged","observed":"helm package succeeded","output":"Successfully packaged chart","status":"pass"}],"automated_checks":[{"command":"go test ./pkg/...","actual":"Exit code 0","output":"ok","status":"pass"}]}`,
+			bodySuffix: "",
+			want:       testOutcomeInfraFailure,
+			wantStatus: "failed",
+		},
+		{
+			name:       "unstartable_web_surface_is_an_unrunnable_gate_too",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web","app_started":false,"start_command":"","unable_to_run_reason":"the sandbox denies every listening port","readiness_probe":{"command":"curl -fsS http://127.0.0.1:8080/health","actual":"connection refused","output":"curl: (7) Failed to connect","status":"unavailable"},"automated_checks":[{"command":"go test ./pkg/...","actual":"Exit code 0","output":"ok","status":"pass"}]}`,
 			bodySuffix: "",
 			want:       testOutcomeInfraFailure,
 			wantStatus: "failed",
@@ -1538,7 +1546,25 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 		{
 			name:       "unstartable_surface_without_supporting_evidence_stays_missing_evidence",
 			status:     "completed",
-			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"k8s","app_started":false,"start_command":"","readiness_probe":{"command":"kubectl config view --minify","actual":"No current context","observed":"kubectl reported that no current context exists","output":"error: current-context must exist in order to minify","status":"unavailable"},"manual_probes":[],"automated_checks":[]}`,
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"k8s","app_started":false,"start_command":"","unable_to_run_reason":"the host has no kubernetes context","readiness_probe":{"command":"kubectl config view --minify","actual":"No current context","observed":"kubectl reported that no current context exists","output":"error: current-context must exist in order to minify","status":"unavailable"},"manual_probes":[],"automated_checks":[]}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:       "unstartable_surface_with_a_throwaway_probe_stays_missing_evidence",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web","app_started":false,"start_command":"","unable_to_run_reason":"cannot start it","readiness_probe":{"command":"true","status":"unavailable"},"manual_probes":[{"command":"ls","actual":"x"}],"automated_checks":[]}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:       "unstartable_surface_without_a_declared_reason_stays_missing_evidence",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"k8s","app_started":false,"start_command":"","readiness_probe":{"command":"kubectl config view --minify","actual":"No current context","observed":"kubectl reported that no current context exists","output":"error: current-context must exist in order to minify","status":"unavailable"},"automated_checks":[{"command":"go test ./pkg/...","actual":"Exit code 0","output":"ok","status":"pass"}]}`,
 			bodySuffix: "",
 			want:       testOutcomeMissingEvidence,
 			wantStatus: "failed",
@@ -1547,7 +1573,7 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 		{
 			name:       "startable_surface_that_was_never_started_stays_missing_evidence",
 			status:     "completed",
-			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web","app_started":false,"start_command":"","readiness_probe":{"command":"curl -fsS http://127.0.0.1:8080/health","actual":"HTTP 200","output":"ok","status":"pass"},"manual_probes":[{"command":"helm package deployments/charts/app","expected":"the chart packages","actual":"the chart packaged","observed":"helm package succeeded","output":"Successfully packaged chart","status":"pass"}]}`,
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web","app_started":false,"start_command":"","unable_to_run_reason":"the host has no kubernetes context","readiness_probe":{"command":"curl -fsS http://127.0.0.1:8080/health","actual":"HTTP 200","output":"ok","status":"pass"},"manual_probes":[{"command":"helm package deployments/charts/app","expected":"the chart packages","actual":"the chart packaged","observed":"helm package succeeded","output":"Successfully packaged chart","status":"pass"}]}`,
 			bodySuffix: "",
 			want:       testOutcomeMissingEvidence,
 			wantStatus: "failed",
@@ -3872,7 +3898,86 @@ func TestRouteTestResult_ReDispatch_Escalates(t *testing.T) {
 	}
 }
 
-func TestRouteTestResult_UnstartableSurfaceOpensPRWithoutSpendingRetries(t *testing.T) {
+func TestAdvanceStep_UnstartableSurfaceOpensPRWithoutRerunningTheTester(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.Save(*mustBuiltinDefinition(t, "testing-task")); err != nil {
+		t.Fatalf("save testing-task: %v", err)
+	}
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
+	tasks.Put(TaskInfo{
+		ID:        "t-advance",
+		Status:    "testing",
+		AgentMode: "headless",
+		Workflow: &Execution{
+			WorkflowID:  "testing-task",
+			CurrentStep: testVerdictSourceStep,
+			State:       ExecRunning,
+			Variables:   map[string]string{},
+			StartedAt:   time.Now().UTC(),
+		},
+	})
+	report := `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"k8s",` +
+		`"app_started":false,"start_command":"","unable_to_run_reason":"the host has no kubernetes context",` +
+		`"readiness_probe":{"command":"kubectl config view --minify","actual":"No current context",` +
+		`"output":"error: current-context must exist in order to minify","status":"unavailable"},` +
+		`"manual_probes":[],"automated_checks":[{"command":"go test ./pkg/...","actual":"Exit code 0","output":"ok","status":"pass"}]}`
+	if err := engine.AdvanceStep("t-advance", StepOutput{
+		StepID: testVerdictSourceStep,
+		Status: "completed",
+		Output: report,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := agents.CallCount(); got != 0 {
+		t.Fatalf("StartAgent calls = %d, want 0 — no rerun against an absent surface", got)
+	}
+	ti, _ := tasks.GetTask("t-advance")
+	if ti.Status != "ready-pr" {
+		t.Fatalf("status = %q, want ready-pr", ti.Status)
+	}
+	if reason := tasks.Reason("t-advance"); !strings.Contains(reason, "k8s") {
+		t.Fatalf("reason = %q, want the surface named", reason)
+	}
+}
+
+func TestAdvanceStep_StaleSurfaceVarDoesNotMislabelALaterInfraFailure(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.Save(*mustBuiltinDefinition(t, "testing-task")); err != nil {
+		t.Fatalf("save testing-task: %v", err)
+	}
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
+	wf := &Execution{
+		WorkflowID:  "testing-task",
+		CurrentStep: testVerdictSourceStep,
+		State:       ExecRunning,
+		Variables: map[string]string{
+			"step." + testVerdictSourceStep + "." + testSurfaceUnavailableKey: "k8s",
+		},
+		StartedAt: time.Now().UTC(),
+	}
+	tasks.Put(TaskInfo{ID: "t-stale", Status: "testing", AgentMode: "headless", Workflow: wf})
+	prepareTestVerdictAttemptVars(wf, testVerdictSourceStep, "## Problem\nbody")
+	if got := wf.Variables["step."+testVerdictSourceStep+"."+testSurfaceUnavailableKey]; got != "" {
+		t.Fatalf("surface var = %q, want cleared before a fresh attempt", got)
+	}
+	if err := engine.AdvanceStep("t-stale", StepOutput{
+		StepID: testVerdictSourceStep,
+		Status: "failed",
+		Output: "provider crashed: context deadline exceeded",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ti, _ := tasks.GetTask("t-stale")
+	if ti.Status == "ready-pr" {
+		t.Fatalf("an unrelated infra failure was routed as an unstartable surface: reason=%q", tasks.Reason("t-stale"))
+	}
+}
+
+func TestRouteTestResult_UnstartableSurfaceOpensPR(t *testing.T) {
 	t.Parallel()
 	e, tasks := makeTestEngine(t)
 	tasks.Put(TaskInfo{ID: "t-surface", Status: "testing"})
@@ -3897,9 +4002,6 @@ func TestRouteTestResult_UnstartableSurfaceOpensPRWithoutSpendingRetries(t *test
 	}
 	if reason := tasks.Reason("t-surface"); !strings.Contains(reason, "k8s") {
 		t.Errorf("reason = %q, want the surface named", reason)
-	}
-	if got := wf.Variables[testingAutoRetryKey(testOutcomeInfraFailure)]; got != "" {
-		t.Errorf("auto-retry counter = %q, want no retry spent on an absent surface", got)
 	}
 }
 

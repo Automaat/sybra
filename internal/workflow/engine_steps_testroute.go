@@ -527,6 +527,7 @@ func prepareTestVerdictAttemptVars(wfExec *Execution, stepID, body string) {
 	delete(wfExec.Variables, "step."+stepID+"."+testVerdictTaintedKey)
 	delete(wfExec.Variables, "step."+stepID+"."+testVerdictOutcomeKey)
 	delete(wfExec.Variables, "step."+stepID+"."+testFailureFingerprintKey)
+	delete(wfExec.Variables, "step."+stepID+"."+testSurfaceUnavailableKey)
 }
 
 func (e *Engine) prepareTestStepCompletion(taskID string, t TaskInfo, output *StepOutput, wfExec *Execution, body *string) error {
@@ -1013,7 +1014,7 @@ func hasManualPassEvidence(output string, t TaskInfo) (ok bool, reason string) {
 		return false, "PASS skipped manual testing without an explicit docs/library exemption"
 	}
 	if !parsed.AppStarted {
-		return false, "PASS report did not confirm app_started"
+		return false, "PASS report did not confirm app_started — when the surface cannot start on this host, say why in unable_to_run_reason and report readiness_probe.status as unavailable"
 	}
 	if strings.TrimSpace(parsed.StartCommand) == "" {
 		return false, "PASS report omitted start_command"
@@ -1530,13 +1531,32 @@ func unstartableSurface(output string, t TaskInfo) string {
 	if parsed.AppStarted {
 		return ""
 	}
+	if strings.TrimSpace(parsed.UnableToRunReason) == "" {
+		return ""
+	}
 	if !readinessProbeReportsUnavailable(parsed.ReadinessProbe) {
 		return ""
 	}
-	if !hasManualProbeEvidence(parsed.ManualProbes) && !hasRegressionCheckEvidence(parsed.AutomatedChecks) {
+	if !hasUnstartableSurfaceEvidence(parsed) {
 		return ""
 	}
 	return surface
+}
+
+func hasUnstartableSurfaceEvidence(parsed structuredTestOutput) bool {
+	if hasRegressionCheckEvidence(parsed.AutomatedChecks) {
+		return true
+	}
+	for _, p := range parsed.ManualProbes {
+		cmd := strings.ToLower(strings.TrimSpace(p.Command))
+		if cmd == "" || !hasRegressionCheckCommandEvidence(cmd) {
+			continue
+		}
+		if hasSuccessfulCheckResult(p.Actual, p.Output, p.Observed, p.Status) {
+			return true
+		}
+	}
+	return false
 }
 
 func readinessProbeReportsUnavailable(probe readinessProbeEvidence) bool {

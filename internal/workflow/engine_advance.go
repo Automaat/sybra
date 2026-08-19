@@ -213,6 +213,10 @@ func (e *Engine) retryFailedStepIfConfigured(taskID string, def *Definition, cur
 	if output.Status != "failed" || currentStep.Config.MaxRetries == 0 || task.Status == taskstatus.HumanRequired {
 		return false, nil
 	}
+	if currentStep.ID == testVerdictSourceStep &&
+		wfExec.Variables["step."+testVerdictSourceStep+"."+testSurfaceUnavailableKey] != "" {
+		return false, nil
+	}
 	retries := wfExec.CountStep(output.StepID)
 	if retries <= currentStep.Config.MaxRetries {
 		e.logger.Info("workflow.retry", "task_id", taskID, "step", output.StepID,
