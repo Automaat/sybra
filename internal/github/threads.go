@@ -19,6 +19,7 @@ type ReviewThread struct {
 	Path            string // file the thread is anchored to, empty for a file-level thread
 	Line            int    // line the thread is anchored to, 0 when the anchor is gone
 	CommentCount    int    // total comments on the thread, the monotone "was it answered" signal
+	LastCommentBody string // body of the most recent comment, for reading what the harness replied
 }
 
 const reviewThreadsQuery = `query($owner: String!, $name: String!, $number: Int!) {
@@ -33,7 +34,7 @@ const reviewThreadsQuery = `query($owner: String!, $name: String!, $number: Int!
           line
           comments { totalCount }
           first: comments(first: 1) { nodes { author { login } } }
-          last: comments(last: 1) { nodes { author { login } } }
+          last: comments(last: 1) { nodes { author { login } body } }
         }
       }
     }
@@ -66,6 +67,7 @@ type gqlReviewThreadsResponse struct {
 								Author struct {
 									Login string `json:"login"`
 								} `json:"author"`
+								Body string `json:"body"`
 							} `json:"nodes"`
 						} `json:"last"`
 					} `json:"nodes"`
@@ -119,12 +121,13 @@ func fetchReviewThreadsWith(ctx context.Context, e execer, repo string, number i
 	nodes := gqlResp.Data.Repository.PullRequest.ReviewThreads.Nodes
 	threads := make([]ReviewThread, 0, len(nodes))
 	for i := range nodes {
-		var firstLogin, lastLogin string
+		var firstLogin, lastLogin, lastBody string
 		if len(nodes[i].First.Nodes) > 0 {
 			firstLogin = nodes[i].First.Nodes[0].Author.Login
 		}
 		if len(nodes[i].Last.Nodes) > 0 {
 			lastLogin = nodes[i].Last.Nodes[0].Author.Login
+			lastBody = nodes[i].Last.Nodes[0].Body
 		}
 		threads = append(threads, ReviewThread{
 			ID:              nodes[i].ID,
@@ -135,6 +138,7 @@ func fetchReviewThreadsWith(ctx context.Context, e execer, repo string, number i
 			Path:            nodes[i].Path,
 			Line:            nodes[i].Line,
 			CommentCount:    nodes[i].Comments.TotalCount,
+			LastCommentBody: lastBody,
 		})
 	}
 	return threads, nil

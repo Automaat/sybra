@@ -7,6 +7,14 @@ import "encoding/json"
 // dispatcher and read back by the verify_review_threads step.
 const PRReviewThreadBriefVar = "pr_review_thread_brief"
 
+// PRReviewAgentLoginVar names the workflow variable carrying the GitHub login
+// the fix run posts its replies under. verify_review_threads needs it to tell
+// the run's own reply from a reviewer's comment: the harness attribution footer
+// cannot, because Sybra's own review agent stamps the same footer on the review
+// comments it writes, so a thread opened by another Sybra instance carries it
+// from its first comment on.
+const PRReviewAgentLoginVar = "pr_review_agent_login"
+
 // BriefedReviewThread records one actionable review thread as it looked when
 // the pr-fix agent was briefed on it.
 //

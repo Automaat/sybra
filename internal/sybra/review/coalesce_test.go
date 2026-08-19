@@ -48,7 +48,7 @@ func TestCoalescedFixPrompt(t *testing.T) {
 	if strings.Contains(single, "multiple open issues") {
 		t.Errorf("single-issue prompt must not carry the coalesced header:\n%s", single)
 	}
-	if !strings.Contains(single, "/fix-review") {
+	if !strings.Contains(single, "reply on every thread") {
 		t.Errorf("single comments prompt missing its body:\n%s", single)
 	}
 
@@ -56,7 +56,7 @@ func TestCoalescedFixPrompt(t *testing.T) {
 		{Kind: github.PRIssueCIFailure, PR: pr},
 		{Kind: github.PRIssueComments, PR: pr},
 	}, "", project.SigningAuto, reviewThreadBrief{})
-	for _, want := range []string{"multiple open issues", "Failing CI", "Review comments", "/fix-review", "gh run view"} {
+	for _, want := range []string{"multiple open issues", "Failing CI", "Review comments", "reply on every thread", "gh run view"} {
 		if !strings.Contains(multi, want) {
 			t.Errorf("coalesced prompt missing %q:\n%s", want, multi)
 		}
