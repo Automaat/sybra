@@ -1545,12 +1545,12 @@ func unstartableSurface(output string, t TaskInfo) string {
 
 func hasUnstartableSurfaceEvidence(parsed structuredTestOutput) bool {
 	for _, c := range parsed.AutomatedChecks {
-		if recordedCheckSucceeded(c.Command, c.Output, c.Observed) {
+		if recordedCheckSucceeded(c.Command, c.Output, c.Observed) || hasRawRegressionCheckEvidence(c.Raw) {
 			return true
 		}
 	}
 	for _, p := range parsed.ManualProbes {
-		if recordedCheckSucceeded(p.Command, p.Output, p.Observed) {
+		if recordedCheckSucceeded(p.Command, p.Output, p.Observed) || hasRawRegressionCheckEvidence(p.Raw) {
 			return true
 		}
 	}
@@ -1568,19 +1568,29 @@ func recordedCheckSucceeded(command string, output, observed evidenceText) bool 
 	return hasSuccessfulCheckResult(output, observed)
 }
 
+var probeSuccessTokenPattern = regexp.MustCompile(`\b(ok|pass|passed|success|successful|healthy|serving|ready|2\d\d)\b`)
+
+func probeTranscriptReportsAbsence(parts ...string) bool {
+	lower := strings.ToLower(strings.TrimSpace(strings.Join(collectNonEmptyStrings(parts...), "\n")))
+	if lower == "" {
+		return false
+	}
+	if hasFailureCheckResult(lower) {
+		return true
+	}
+	return !probeSuccessTokenPattern.MatchString(lower)
+}
+
 func readinessProbeReportsUnavailable(probe readinessProbeEvidence) bool {
 	if strings.TrimSpace(probe.Command) == "" {
-		return false
+		return hasRawReadinessProbeEvidence(probe.Raw) && probeTranscriptReportsAbsence(probe.Raw)
 	}
 	switch strings.ToLower(strings.TrimSpace(string(probe.Status))) {
 	case "unavailable", "unreachable", "not_available", "not-available", "missing":
 	default:
 		return false
 	}
-	if strings.TrimSpace(string(probe.Output)) == "" && strings.TrimSpace(string(probe.Observed)) == "" {
-		return false
-	}
-	return !hasSuccessfulCheckResult(probe.Output, probe.Observed)
+	return probeTranscriptReportsAbsence(string(probe.Output), string(probe.Observed))
 }
 
 func appendUnstartableSurface(output, surface string) string {
