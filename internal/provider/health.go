@@ -350,6 +350,9 @@ func (c *Checker) clearExpiredRateLimits() {
 func (c *Checker) clearExpiredRateLimitsLocked(now time.Time) []Status {
 	var toEmit []Status
 	for _, s := range c.statuses {
+		if c.authHeldLocked(s.Provider) {
+			continue
+		}
 		if !s.RateLimitedUntil.IsZero() && now.After(s.RateLimitedUntil) {
 			s.RateLimitedUntil = time.Time{}
 			if s.Reason == RateLimitReason {
@@ -405,7 +408,7 @@ func (c *Checker) setStatusLocked(name string, next Status, fromProbe bool) (Sta
 			prev.LastCheck = next.LastCheck
 			return *prev, false
 		}
-		if next.Healthy && prev.Reason == authFailureReason && c.authHeldLocked(name) {
+		if next.Healthy && c.authHeldLocked(name) {
 			prev.LastCheck = next.LastCheck
 			return *prev, false
 		}
@@ -429,10 +432,8 @@ func (c *Checker) setStatusLocked(name string, next Status, fromProbe bool) (Sta
 		}
 		// Passive failures only upgrade severity; they never mark a provider
 		// healthy and they never overwrite a more-recent probe result.
-		if next.Reason == authFailureReason {
-			c.holdAuthLocked(name)
-		}
-		if !prev.Healthy && prev.Reason == next.Reason && prev.RateLimitedUntil.Equal(next.RateLimitedUntil) {
+		held := next.Reason == authFailureReason && c.holdAuthLocked(name)
+		if !held && !prev.Healthy && prev.Reason == next.Reason && prev.RateLimitedUntil.Equal(next.RateLimitedUntil) {
 			return Status{}, false
 		}
 		prev.Healthy = false
@@ -453,16 +454,18 @@ func (c *Checker) authHeldLocked(name string) bool {
 	return ok && c.now().Before(until)
 }
 
-func (c *Checker) holdAuthLocked(name string) {
+func (c *Checker) holdAuthLocked(name string) bool {
 	cooldown := c.cfg.AuthFailureCooldown
 	if cooldown <= 0 {
 		cooldown = defaultAuthFailureCooldown
 	}
 	until := c.now().Add(cooldown)
-	if prev, ok := c.authHeldUntil[name]; ok && prev.After(until) {
-		return
+	if prev, ok := c.authHeldUntil[name]; ok && !until.After(prev) {
+		return false
 	}
 	c.authHeldUntil[name] = until
+	c.logger.Info("provider.auth_failure.hold", "provider", name, "until", until)
+	return true
 }
 
 func livenessOnlyProbe(provider string) bool {

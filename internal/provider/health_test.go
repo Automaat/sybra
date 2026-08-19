@@ -700,7 +700,13 @@ func TestChecker_AuthHoldSurvivesAnUnhealthyProbe(t *testing.T) {
 	c, _, fake := newTestChecker(t)
 	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
 	c.ReportAuthFailure("claude", "logged_out")
-	c.setStatus("claude", Status{Provider: "claude", Healthy: false, Reason: "logged_out"}, true)
+	for _, intervening := range []Status{
+		{Provider: "claude", Healthy: false, Reason: "logged_out"},
+		{Provider: "claude", Healthy: false, Reason: "probe_error", Detail: "exec: no such file"},
+		{Provider: "claude", Healthy: false, Reason: RateLimitReason},
+	} {
+		c.setStatus("claude", intervening, true)
+	}
 	fake.Advance(5 * time.Minute)
 	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
 	if c.IsHealthy("claude") {
@@ -922,6 +928,9 @@ func TestChecker_AuthHoldKeepsDispatchOnAPeer(t *testing.T) {
 	c.setStatus("codex", Status{Provider: "codex", Healthy: true, Reason: "ok"}, true)
 	c.ReportAuthFailure("claude", "logged_out")
 	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
+	if c.IsHealthy("claude") {
+		t.Fatalf("claude is schedulable again, so no dispatch would ever reach a peer")
+	}
 	if got := c.Failover("claude"); got != "codex" {
 		t.Fatalf("failover = %q, want codex while claude is held out", got)
 	}
@@ -947,5 +956,22 @@ func TestChecker_AuthHoldReachesTheHealthEvent(t *testing.T) {
 	}
 	if !last.AuthHeldUntil.After(last.LastCheck) {
 		t.Fatalf("authHeldUntil %v is not after lastCheck %v", last.AuthHeldUntil, last.LastCheck)
+	}
+}
+
+func TestChecker_AuthHoldSurvivesAnExpiringRateLimit(t *testing.T) {
+	c, _, fake := newTestChecker(t)
+	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
+	c.ReportAuthFailure("claude", "logged_out")
+	c.ReportRateLimit("claude", time.Minute, "429", CooldownFromConfig)
+	fake.Advance(90 * time.Second)
+	c.clearExpiredRateLimits()
+	if c.IsHealthy("claude") {
+		t.Fatalf("an expiring rate limit released a provider a run reported logged out")
+	}
+	fake.Advance(15 * time.Minute)
+	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
+	if !c.IsHealthy("claude") {
+		t.Fatalf("claude never returned after the hold expired")
 	}
 }
