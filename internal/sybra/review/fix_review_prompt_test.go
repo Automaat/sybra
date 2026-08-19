@@ -87,20 +87,14 @@ func TestManualFixReviewPromptPushesThePRBranch(t *testing.T) {
 
 func shellBlocks(prompt string) []string {
 	var blocks []string
-	rest := prompt
-	for {
-		start := strings.Index(rest, "```sh\n")
-		if start < 0 {
-			return blocks
+	for i, fenced := range strings.Split(prompt, "```sh\n") {
+		if i == 0 {
+			continue
 		}
-		rest = rest[start+len("```sh\n"):]
-		end := strings.Index(rest, "```")
-		if end < 0 {
-			return append(blocks, rest)
-		}
-		blocks = append(blocks, rest[:end])
-		rest = rest[end:]
+		block, _, _ := strings.Cut(fenced, "```")
+		blocks = append(blocks, block)
 	}
+	return blocks
 }
 
 // The automatic path knows the PR; only the operator path has to find it.
