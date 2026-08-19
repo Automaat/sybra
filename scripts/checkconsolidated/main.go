@@ -369,7 +369,7 @@ func buildAllowances() map[allowanceKey]allowance { //nolint:funlen // The expli
 	add(kindProvider, "internal/monitor/capacity_dispatch_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"codex": 2})
 	add(kindProvider, "internal/monitor/no_capacity_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 3, "codex": 2, "copilot": 2})
 	add(kindProvider, "internal/prompteval/promptfoo_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 2})
-	add(kindProvider, "internal/provider/health_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 68, "codex": 36, "copilot": 6, "opencode": 4})
+	add(kindProvider, "internal/provider/health_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 59, "codex": 36, "copilot": 6, "opencode": 4})
 	add(kindProvider, "internal/provider/reset_hint_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"codex": 1})
 	add(kindProvider, "internal/recovery/recovery_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 2})
 	add(kindProvider, "internal/routing/service_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 6, "codex": 5})

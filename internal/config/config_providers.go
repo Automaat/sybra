@@ -50,8 +50,9 @@ func (p ProvidersConfig) entryFor(name string) (ProviderEntryConfig, bool) {
 }
 
 type ProviderHealthCheckConfig struct {
-	Enabled         bool `yaml:"enabled" json:"enabled"`
-	IntervalSeconds int  `yaml:"interval_seconds" json:"intervalSeconds"`
+	Enabled                    bool `yaml:"enabled" json:"enabled"`
+	IntervalSeconds            int  `yaml:"interval_seconds" json:"intervalSeconds"`
+	AuthFailureCooldownSeconds int  `yaml:"auth_failure_cooldown_seconds" json:"authFailureCooldownSeconds"`
 }
 
 type ProviderEntryConfig struct {

@@ -774,6 +774,29 @@ func defaultEvaluationSeed() EvaluationConfig {
 	}
 }
 
+func defaultProvidersConfig() ProvidersConfig {
+	return ProvidersConfig{
+		HealthCheck: ProviderHealthCheckConfig{
+			Enabled:                    true,
+			IntervalSeconds:            300,
+			AuthFailureCooldownSeconds: 900,
+		},
+		Claude:   ProviderEntryConfig{Enabled: true, RateLimitCooldownSeconds: 900},
+		Codex:    ProviderEntryConfig{Enabled: true, RateLimitCooldownSeconds: 900},
+		Copilot:  ProviderEntryConfig{Enabled: true, RateLimitCooldownSeconds: 900},
+		OpenCode: ProviderEntryConfig{Enabled: true, RateLimitCooldownSeconds: 900},
+		Limits: ProviderLimitsConfig{
+			Enabled:                 true,
+			SessionThresholdPercent: 85,
+			WeeklyThresholdPercent:  90,
+			PreferUnderused:         true,
+			BackfillDays:            14,
+			MaxInFlightPerProvider:  0,
+		},
+		AutoFailover: true,
+	}
+}
+
 func defaultSeedConfig() *Config {
 	cfg := &Config{
 		SchemaVersion: CurrentSchemaVersion,
@@ -845,25 +868,7 @@ func defaultSeedConfig() *Config {
 			RestartDelaySeconds: 2,
 			CoalesceSeconds:     3600,
 		},
-		Providers: ProvidersConfig{
-			HealthCheck: ProviderHealthCheckConfig{
-				Enabled:         true,
-				IntervalSeconds: 300,
-			},
-			Claude:   ProviderEntryConfig{Enabled: true, RateLimitCooldownSeconds: 900},
-			Codex:    ProviderEntryConfig{Enabled: true, RateLimitCooldownSeconds: 900},
-			Copilot:  ProviderEntryConfig{Enabled: true, RateLimitCooldownSeconds: 900},
-			OpenCode: ProviderEntryConfig{Enabled: true, RateLimitCooldownSeconds: 900},
-			Limits: ProviderLimitsConfig{
-				Enabled:                 true,
-				SessionThresholdPercent: 85,
-				WeeklyThresholdPercent:  90,
-				PreferUnderused:         true,
-				BackfillDays:            14,
-				MaxInFlightPerProvider:  0,
-			},
-			AutoFailover: true,
-		},
+		Providers: defaultProvidersConfig(),
 		Cluster: ClusterConfig{
 			Role: ClusterRoleStandalone,
 		},
@@ -1862,6 +1867,9 @@ func applyProvidersDefaults(cfg *Config) {
 	}
 	if cfg.Providers.HealthCheck.IntervalSeconds < 60 {
 		cfg.Providers.HealthCheck.IntervalSeconds = 60
+	}
+	if cfg.Providers.HealthCheck.AuthFailureCooldownSeconds <= 0 {
+		cfg.Providers.HealthCheck.AuthFailureCooldownSeconds = 900
 	}
 	if cfg.Providers.Claude.RateLimitCooldownSeconds <= 0 {
 		cfg.Providers.Claude.RateLimitCooldownSeconds = 900
