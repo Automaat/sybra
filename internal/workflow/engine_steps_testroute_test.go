@@ -1571,6 +1571,33 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			wantTaint:  testProtocolMissingEvidence,
 		},
 		{
+			name:       "readiness_probe_that_recorded_nothing_stays_missing_evidence",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web","app_started":false,"start_command":"","unable_to_run_reason":"could not start it here","readiness_probe":{"command":"curl -fsS http://127.0.0.1:8080/health","expected":"","actual":"","observed":"","output":"","status":"unavailable"},"manual_probes":[],"automated_checks":[{"command":"go test ./...","actual":"Exit code 0","output":"ok","status":"pass"}]}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:       "readiness_probe_whose_transcript_contradicts_its_status_stays_missing_evidence",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web","app_started":false,"start_command":"","unable_to_run_reason":"could not start it here","readiness_probe":{"command":"curl -fsS http://127.0.0.1:8080/health","expected":"","actual":"HTTP 200 OK","observed":"the endpoint answered","output":"{\"status\":\"ok\"}","status":"unavailable"},"manual_probes":[],"automated_checks":[{"command":"go test ./...","actual":"Exit code 0","output":"ok","status":"pass"}]}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:       "check_that_recorded_only_a_status_word_stays_missing_evidence",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"cli","app_started":false,"start_command":"","unable_to_run_reason":"could not start it here","readiness_probe":{"command":"./bin/app --version","expected":"a version","actual":"no such file","observed":"the binary is absent","output":"sh: ./bin/app: No such file or directory","status":"unavailable"},"manual_probes":[],"automated_checks":[{"command":"go test ./...","status":"pass"}]}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
 			name:       "startable_surface_that_was_never_started_stays_missing_evidence",
 			status:     "completed",
 			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web","app_started":false,"start_command":"","unable_to_run_reason":"the host has no kubernetes context","readiness_probe":{"command":"curl -fsS http://127.0.0.1:8080/health","actual":"HTTP 200","output":"ok","status":"pass"},"manual_probes":[{"command":"helm package deployments/charts/app","expected":"the chart packages","actual":"the chart packaged","observed":"helm package succeeded","output":"Successfully packaged chart","status":"pass"}]}`,
@@ -3962,7 +3989,7 @@ func TestAdvanceStep_StaleSurfaceVarDoesNotMislabelALaterInfraFailure(t *testing
 	tasks.Put(TaskInfo{ID: "t-stale", Status: "testing", AgentMode: "headless", Workflow: wf})
 	prepareTestVerdictAttemptVars(wf, testVerdictSourceStep, "## Problem\nbody")
 	if got := wf.Variables["step."+testVerdictSourceStep+"."+testSurfaceUnavailableKey]; got != "" {
-		t.Fatalf("surface var = %q, want cleared before a fresh attempt", got)
+		t.Errorf("surface var = %q, want cleared before a fresh attempt", got)
 	}
 	if err := engine.AdvanceStep("t-stale", StepOutput{
 		StepID: testVerdictSourceStep,

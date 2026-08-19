@@ -1014,7 +1014,7 @@ func hasManualPassEvidence(output string, t TaskInfo) (ok bool, reason string) {
 		return false, "PASS skipped manual testing without an explicit docs/library exemption"
 	}
 	if !parsed.AppStarted {
-		return false, "PASS report did not confirm app_started — when the surface cannot start on this host, say why in unable_to_run_reason and report readiness_probe.status as unavailable"
+		return false, "PASS report did not confirm app_started"
 	}
 	if strings.TrimSpace(parsed.StartCommand) == "" {
 		return false, "PASS report omitted start_command"
@@ -1544,19 +1544,28 @@ func unstartableSurface(output string, t TaskInfo) string {
 }
 
 func hasUnstartableSurfaceEvidence(parsed structuredTestOutput) bool {
-	if hasRegressionCheckEvidence(parsed.AutomatedChecks) {
-		return true
+	for _, c := range parsed.AutomatedChecks {
+		if recordedCheckSucceeded(c.Command, c.Output, c.Observed) {
+			return true
+		}
 	}
 	for _, p := range parsed.ManualProbes {
-		cmd := strings.ToLower(strings.TrimSpace(p.Command))
-		if cmd == "" || !hasRegressionCheckCommandEvidence(cmd) {
-			continue
-		}
-		if hasSuccessfulCheckResult(p.Actual, p.Output, p.Observed, p.Status) {
+		if recordedCheckSucceeded(p.Command, p.Output, p.Observed) {
 			return true
 		}
 	}
 	return false
+}
+
+func recordedCheckSucceeded(command string, output, observed evidenceText) bool {
+	cmd := strings.ToLower(strings.TrimSpace(command))
+	if cmd == "" || !hasRegressionCheckCommandEvidence(cmd) {
+		return false
+	}
+	if strings.TrimSpace(string(output)) == "" && strings.TrimSpace(string(observed)) == "" {
+		return false
+	}
+	return hasSuccessfulCheckResult(output, observed)
 }
 
 func readinessProbeReportsUnavailable(probe readinessProbeEvidence) bool {
@@ -1565,9 +1574,13 @@ func readinessProbeReportsUnavailable(probe readinessProbeEvidence) bool {
 	}
 	switch strings.ToLower(strings.TrimSpace(string(probe.Status))) {
 	case "unavailable", "unreachable", "not_available", "not-available", "missing":
-		return true
+	default:
+		return false
 	}
-	return false
+	if strings.TrimSpace(string(probe.Output)) == "" && strings.TrimSpace(string(probe.Observed)) == "" {
+		return false
+	}
+	return !hasSuccessfulCheckResult(probe.Output, probe.Observed)
 }
 
 func appendUnstartableSurface(output, surface string) string {
