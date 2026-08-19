@@ -3976,7 +3976,7 @@ func TestAdvanceStep_UnstartableSurfaceOpensPRWithoutRerunningTheTester(t *testi
 	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	tasks.Put(TaskInfo{
 		ID:        "t-advance",
-		Status:    "testing",
+		Status:    taskstatus.Testing,
 		AgentMode: "headless",
 		Workflow: &Execution{
 			WorkflowID:  "testing-task",
@@ -4002,7 +4002,7 @@ func TestAdvanceStep_UnstartableSurfaceOpensPRWithoutRerunningTheTester(t *testi
 		t.Fatalf("StartAgent calls = %d, want 0 — no rerun against an absent surface", got)
 	}
 	ti, _ := tasks.GetTask("t-advance")
-	if ti.Status != "ready-pr" {
+	if ti.Status != taskstatus.ReadyPR {
 		t.Fatalf("status = %q, want ready-pr", ti.Status)
 	}
 	if reason := tasks.Reason("t-advance"); !strings.Contains(reason, "k8s") {
@@ -4027,7 +4027,7 @@ func TestAdvanceStep_StaleSurfaceVarDoesNotMislabelALaterInfraFailure(t *testing
 		},
 		StartedAt: time.Now().UTC(),
 	}
-	tasks.Put(TaskInfo{ID: "t-stale", Status: "testing", AgentMode: "headless", Workflow: wf})
+	tasks.Put(TaskInfo{ID: "t-stale", Status: taskstatus.Testing, AgentMode: "headless", Workflow: wf})
 
 	engine.ResumeStalled()
 
@@ -4046,7 +4046,7 @@ func TestAdvanceStep_StaleSurfaceVarDoesNotMislabelALaterInfraFailure(t *testing
 		t.Fatal(err)
 	}
 	ti, _ := tasks.GetTask("t-stale")
-	if ti.Status == "ready-pr" {
+	if ti.Status == taskstatus.ReadyPR {
 		t.Fatalf("an unrelated infra failure was routed as an unstartable surface: reason=%q", tasks.Reason("t-stale"))
 	}
 }
@@ -4054,7 +4054,7 @@ func TestAdvanceStep_StaleSurfaceVarDoesNotMislabelALaterInfraFailure(t *testing
 func TestRouteTestResult_UnstartableSurfaceOpensPR(t *testing.T) {
 	t.Parallel()
 	e, tasks := makeTestEngine(t)
-	tasks.Put(TaskInfo{ID: "t-surface", Status: "testing"})
+	tasks.Put(TaskInfo{ID: "t-surface", Status: taskstatus.Testing})
 	wf := &Execution{
 		WorkflowID: "testing-task",
 		StartedAt:  time.Now().UTC(),
@@ -4071,7 +4071,7 @@ func TestRouteTestResult_UnstartableSurfaceOpensPR(t *testing.T) {
 		t.Errorf("output = %q, want surface unavailable — opened pr", out.Output)
 	}
 	ti, _ := tasks.GetTask("t-surface")
-	if ti.Status != "ready-pr" {
+	if ti.Status != taskstatus.ReadyPR {
 		t.Errorf("status = %q, want ready-pr", ti.Status)
 	}
 	if reason := tasks.Reason("t-surface"); !strings.Contains(reason, "k8s") {
@@ -4083,7 +4083,7 @@ func TestRouteTestResult_UnstartableSurfaceEscalatesWhenOpenPRDisabled(t *testin
 	t.Parallel()
 	e, tasks := makeTestEngine(t)
 	e.SetOpenPROnUnrunnableGate(false)
-	tasks.Put(TaskInfo{ID: "t-surface-off", Status: "testing"})
+	tasks.Put(TaskInfo{ID: "t-surface-off", Status: taskstatus.Testing})
 	wf := &Execution{
 		WorkflowID: "testing-task",
 		StartedAt:  time.Now().UTC(),
@@ -4096,7 +4096,7 @@ func TestRouteTestResult_UnstartableSurfaceEscalatesWhenOpenPRDisabled(t *testin
 		t.Fatal(err)
 	}
 	ti, _ := tasks.GetTask("t-surface-off")
-	if ti.Status != "human-required" {
+	if ti.Status != taskstatus.HumanRequired {
 		t.Errorf("status = %q, want human-required", ti.Status)
 	}
 	if reason := tasks.Reason("t-surface-off"); !strings.Contains(reason, "k8s") {
