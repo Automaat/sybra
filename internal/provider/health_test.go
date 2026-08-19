@@ -670,8 +670,8 @@ func TestFailover_NoFixedPriority(t *testing.T) {
 	}
 }
 
-func TestChecker_PassiveAuthPersistsUntilProbe(t *testing.T) {
-	c, _, _ := newTestChecker(t)
+func TestChecker_PassiveAuthHoldsUntilCooldownExpires(t *testing.T) {
+	c, _, fake := newTestChecker(t)
 	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
 	c.ReportAuthFailure("claude", "logged_out")
 	if c.IsHealthy("claude") {
@@ -682,10 +682,52 @@ func TestChecker_PassiveAuthPersistsUntilProbe(t *testing.T) {
 	if c.IsHealthy("claude") {
 		t.Fatalf("still unhealthy")
 	}
-	// Successful probe clears it.
+	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
+	if c.IsHealthy("claude") {
+		t.Fatalf("a probe inside the hold window resurrected a provider a run reported logged out")
+	}
+	if c.RateLimited("claude") {
+		t.Fatalf("an auth hold must not read as a rate-limit cooldown")
+	}
+	fake.Advance(16 * time.Minute)
 	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
 	if !c.IsHealthy("claude") {
-		t.Fatalf("probe should clear passive failure")
+		t.Fatalf("probe should clear the auth hold once the cooldown expires")
+	}
+}
+
+func TestChecker_AuthHoldSurvivesAnUnhealthyProbe(t *testing.T) {
+	c, _, fake := newTestChecker(t)
+	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
+	c.ReportAuthFailure("claude", "logged_out")
+	c.setStatus("claude", Status{Provider: "claude", Healthy: false, Reason: "logged_out"}, true)
+	fake.Advance(5 * time.Minute)
+	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
+	if c.IsHealthy("claude") {
+		t.Fatalf("the hold was dropped by an intervening unhealthy probe")
+	}
+	fake.Advance(11 * time.Minute)
+	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
+	if !c.IsHealthy("claude") {
+		t.Fatalf("provider never recovered after the hold expired")
+	}
+}
+
+func TestChecker_AuthHoldExtendsOnARepeatedRunFailure(t *testing.T) {
+	c, _, fake := newTestChecker(t)
+	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
+	c.ReportAuthFailure("claude", "logged_out")
+	fake.Advance(10 * time.Minute)
+	c.ReportAuthFailure("claude", "logged_out")
+	fake.Advance(6 * time.Minute)
+	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
+	if c.IsHealthy("claude") {
+		t.Fatalf("the second run failure did not extend the hold")
+	}
+	fake.Advance(10 * time.Minute)
+	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
+	if !c.IsHealthy("claude") {
+		t.Fatalf("provider never recovered after the extended hold expired")
 	}
 }
 
@@ -872,4 +914,38 @@ func TestNilChecker_IsAnAbsentGateNotAPanic(t *testing.T) {
 	}
 	gate.ReportAuthFailure("codex", "logged_out")
 	gate.ReportRateLimit("codex", time.Minute, "429", CooldownFromConfig)
+}
+
+func TestChecker_AuthHoldKeepsDispatchOnAPeer(t *testing.T) {
+	c, _, fake := newTestChecker(t)
+	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
+	c.setStatus("codex", Status{Provider: "codex", Healthy: true, Reason: "ok"}, true)
+	c.ReportAuthFailure("claude", "logged_out")
+	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
+	if got := c.Failover("claude"); got != "codex" {
+		t.Fatalf("failover = %q, want codex while claude is held out", got)
+	}
+	fake.Advance(16 * time.Minute)
+	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
+	if !c.IsHealthy("claude") {
+		t.Fatalf("claude never returned after the hold expired")
+	}
+}
+
+func TestChecker_AuthHoldReachesTheHealthEvent(t *testing.T) {
+	c, fe, _ := newTestChecker(t)
+	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
+	c.ReportAuthFailure("claude", "logged_out")
+	fe.mu.Lock()
+	defer fe.mu.Unlock()
+	last := fe.events[len(fe.events)-1]
+	if last.Provider != "claude" || last.Healthy {
+		t.Fatalf("last event = %+v, want an unhealthy claude event", last)
+	}
+	if last.AuthHeldUntil.IsZero() {
+		t.Fatal("health event omits authHeldUntil, so an operator cannot see when the provider returns")
+	}
+	if !last.AuthHeldUntil.After(last.LastCheck) {
+		t.Fatalf("authHeldUntil %v is not after lastCheck %v", last.AuthHeldUntil, last.LastCheck)
+	}
 }

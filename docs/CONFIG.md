@@ -189,6 +189,7 @@ copilot, opencode) and their background health-check loop. A missing block defau
 |---|---|---|---|---|---|---|---|---|---|
 | `execution.providers.health_check.enabled` | `bool` | `true` |  |  | `providers.health_check.enabled` | `false` | `restart` |  |  |
 | `execution.providers.health_check.interval` | `int` | `300` | `seconds` |  | `providers.health_check.interval_seconds`, `providers.health_check.interval` | `false` | `restart` |  |  |
+| `execution.providers.health_check.auth_failure_cooldown` | `int` | `900` | `seconds` |  | `providers.health_check.auth_failure_cooldown_seconds`, `providers.health_check.auth_failure_cooldown` | `false` | `restart` |  |  |
 
 ### ProviderEntryConfig (`execution.providers.claude`)
 
