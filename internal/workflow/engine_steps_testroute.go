@@ -1570,9 +1570,14 @@ func recordedCheckSucceeded(command string, output, observed evidenceText) bool 
 
 var probeSuccessTokenPattern = regexp.MustCompile(`\b(ok|pass|passed|success|successful|healthy|serving|ready|2\d\d)\b`)
 
+var probeAnsweredPattern = regexp.MustCompile(`\bhttp/\d(?:\.\d)?\s+\d{3}\b`)
+
 func probeTranscriptReportsAbsence(parts ...string) bool {
 	lower := strings.ToLower(strings.TrimSpace(strings.Join(collectNonEmptyStrings(parts...), "\n")))
 	if lower == "" {
+		return false
+	}
+	if probeAnsweredPattern.MatchString(lower) {
 		return false
 	}
 	if hasFailureCheckResult(lower) {

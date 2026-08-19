@@ -1603,6 +1603,15 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			wantStatus: "failed",
 		},
 		{
+			name:       "a_probe_that_got_an_http_status_back_stays_missing_evidence",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web","app_started":false,"start_command":"","unable_to_run_reason":"the health endpoint did not answer","readiness_probe":{"command":"curl -fsS http://127.0.0.1:5173/health","actual":"HTTP 404","observed":"the dev server answered but /health is not routed","output":"HTTP/1.1 404 Not Found","status":"unavailable"},"manual_probes":[],"automated_checks":[{"command":"go test ./pkg/...","actual":"Exit code 0","output":"ok","status":"pass"}]}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
 			name:       "readiness_probe_that_recorded_nothing_stays_missing_evidence",
 			status:     "completed",
 			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web","app_started":false,"start_command":"","unable_to_run_reason":"could not start it here","readiness_probe":{"command":"curl -fsS http://127.0.0.1:8080/health","expected":"","actual":"","observed":"","output":"","status":"unavailable"},"manual_probes":[],"automated_checks":[{"command":"go test ./...","actual":"Exit code 0","output":"ok","status":"pass"}]}`,
