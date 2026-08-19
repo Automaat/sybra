@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/clock"
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 func TestParseClaudeAuthStatus(t *testing.T) {
@@ -672,67 +673,67 @@ func TestFailover_NoFixedPriority(t *testing.T) {
 
 func TestChecker_PassiveAuthHoldsUntilCooldownExpires(t *testing.T) {
 	c, _, fake := newTestChecker(t)
-	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
-	c.ReportAuthFailure("claude", "logged_out")
-	if c.IsHealthy("claude") {
+	c.setStatus(providerid.Claude, Status{Provider: providerid.Claude, Healthy: true, Reason: "ok"}, true)
+	c.ReportAuthFailure(providerid.Claude, "logged_out")
+	if c.IsHealthy(providerid.Claude) {
 		t.Fatalf("should be unhealthy after passive signal")
 	}
 	// A second passive signal should not reset LastCheck needlessly or emit again.
-	c.ReportAuthFailure("claude", "logged_out")
-	if c.IsHealthy("claude") {
+	c.ReportAuthFailure(providerid.Claude, "logged_out")
+	if c.IsHealthy(providerid.Claude) {
 		t.Fatalf("still unhealthy")
 	}
-	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
-	if c.IsHealthy("claude") {
+	c.setStatus(providerid.Claude, Status{Provider: providerid.Claude, Healthy: true, Reason: "ok"}, true)
+	if c.IsHealthy(providerid.Claude) {
 		t.Fatalf("a probe inside the hold window resurrected a provider a run reported logged out")
 	}
-	if c.RateLimited("claude") {
+	if c.RateLimited(providerid.Claude) {
 		t.Fatalf("an auth hold must not read as a rate-limit cooldown")
 	}
 	fake.Advance(16 * time.Minute)
-	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
-	if !c.IsHealthy("claude") {
+	c.setStatus(providerid.Claude, Status{Provider: providerid.Claude, Healthy: true, Reason: "ok"}, true)
+	if !c.IsHealthy(providerid.Claude) {
 		t.Fatalf("probe should clear the auth hold once the cooldown expires")
 	}
 }
 
 func TestChecker_AuthHoldSurvivesAnUnhealthyProbe(t *testing.T) {
 	c, _, fake := newTestChecker(t)
-	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
-	c.ReportAuthFailure("claude", "logged_out")
+	c.setStatus(providerid.Claude, Status{Provider: providerid.Claude, Healthy: true, Reason: "ok"}, true)
+	c.ReportAuthFailure(providerid.Claude, "logged_out")
 	for _, intervening := range []Status{
-		{Provider: "claude", Healthy: false, Reason: "logged_out"},
-		{Provider: "claude", Healthy: false, Reason: "probe_error", Detail: "exec: no such file"},
-		{Provider: "claude", Healthy: false, Reason: RateLimitReason},
+		{Provider: providerid.Claude, Healthy: false, Reason: "logged_out"},
+		{Provider: providerid.Claude, Healthy: false, Reason: "probe_error", Detail: "exec: no such file"},
+		{Provider: providerid.Claude, Healthy: false, Reason: RateLimitReason},
 	} {
-		c.setStatus("claude", intervening, true)
+		c.setStatus(providerid.Claude, intervening, true)
 	}
 	fake.Advance(5 * time.Minute)
-	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
-	if c.IsHealthy("claude") {
+	c.setStatus(providerid.Claude, Status{Provider: providerid.Claude, Healthy: true, Reason: "ok"}, true)
+	if c.IsHealthy(providerid.Claude) {
 		t.Fatalf("the hold was dropped by an intervening unhealthy probe")
 	}
 	fake.Advance(11 * time.Minute)
-	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
-	if !c.IsHealthy("claude") {
+	c.setStatus(providerid.Claude, Status{Provider: providerid.Claude, Healthy: true, Reason: "ok"}, true)
+	if !c.IsHealthy(providerid.Claude) {
 		t.Fatalf("provider never recovered after the hold expired")
 	}
 }
 
 func TestChecker_AuthHoldExtendsOnARepeatedRunFailure(t *testing.T) {
 	c, _, fake := newTestChecker(t)
-	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
-	c.ReportAuthFailure("claude", "logged_out")
+	c.setStatus(providerid.Claude, Status{Provider: providerid.Claude, Healthy: true, Reason: "ok"}, true)
+	c.ReportAuthFailure(providerid.Claude, "logged_out")
 	fake.Advance(10 * time.Minute)
-	c.ReportAuthFailure("claude", "logged_out")
+	c.ReportAuthFailure(providerid.Claude, "logged_out")
 	fake.Advance(6 * time.Minute)
-	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
-	if c.IsHealthy("claude") {
+	c.setStatus(providerid.Claude, Status{Provider: providerid.Claude, Healthy: true, Reason: "ok"}, true)
+	if c.IsHealthy(providerid.Claude) {
 		t.Fatalf("the second run failure did not extend the hold")
 	}
 	fake.Advance(10 * time.Minute)
-	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
-	if !c.IsHealthy("claude") {
+	c.setStatus(providerid.Claude, Status{Provider: providerid.Claude, Healthy: true, Reason: "ok"}, true)
+	if !c.IsHealthy(providerid.Claude) {
 		t.Fatalf("provider never recovered after the extended hold expired")
 	}
 }
@@ -924,31 +925,31 @@ func TestNilChecker_IsAnAbsentGateNotAPanic(t *testing.T) {
 
 func TestChecker_AuthHoldKeepsDispatchOnAPeer(t *testing.T) {
 	c, _, fake := newTestChecker(t)
-	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
-	c.setStatus("codex", Status{Provider: "codex", Healthy: true, Reason: "ok"}, true)
-	c.ReportAuthFailure("claude", "logged_out")
-	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
-	if c.IsHealthy("claude") {
+	c.setStatus(providerid.Claude, Status{Provider: providerid.Claude, Healthy: true, Reason: "ok"}, true)
+	c.setStatus(providerid.Codex, Status{Provider: providerid.Codex, Healthy: true, Reason: "ok"}, true)
+	c.ReportAuthFailure(providerid.Claude, "logged_out")
+	c.setStatus(providerid.Claude, Status{Provider: providerid.Claude, Healthy: true, Reason: "ok"}, true)
+	if c.IsHealthy(providerid.Claude) {
 		t.Fatalf("claude is schedulable again, so no dispatch would ever reach a peer")
 	}
-	if got := c.Failover("claude"); got != "codex" {
+	if got := c.Failover(providerid.Claude); got != providerid.Codex {
 		t.Fatalf("failover = %q, want codex while claude is held out", got)
 	}
 	fake.Advance(16 * time.Minute)
-	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
-	if !c.IsHealthy("claude") {
+	c.setStatus(providerid.Claude, Status{Provider: providerid.Claude, Healthy: true, Reason: "ok"}, true)
+	if !c.IsHealthy(providerid.Claude) {
 		t.Fatalf("claude never returned after the hold expired")
 	}
 }
 
 func TestChecker_AuthHoldReachesTheHealthEvent(t *testing.T) {
 	c, fe, _ := newTestChecker(t)
-	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
-	c.ReportAuthFailure("claude", "logged_out")
+	c.setStatus(providerid.Claude, Status{Provider: providerid.Claude, Healthy: true, Reason: "ok"}, true)
+	c.ReportAuthFailure(providerid.Claude, "logged_out")
 	fe.mu.Lock()
 	defer fe.mu.Unlock()
 	last := fe.events[len(fe.events)-1]
-	if last.Provider != "claude" || last.Healthy {
+	if last.Provider != providerid.Claude || last.Healthy {
 		t.Fatalf("last event = %+v, want an unhealthy claude event", last)
 	}
 	if last.AuthHeldUntil.IsZero() {
@@ -961,17 +962,17 @@ func TestChecker_AuthHoldReachesTheHealthEvent(t *testing.T) {
 
 func TestChecker_AuthHoldSurvivesAnExpiringRateLimit(t *testing.T) {
 	c, _, fake := newTestChecker(t)
-	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
-	c.ReportAuthFailure("claude", "logged_out")
-	c.ReportRateLimit("claude", time.Minute, "429", CooldownFromConfig)
+	c.setStatus(providerid.Claude, Status{Provider: providerid.Claude, Healthy: true, Reason: "ok"}, true)
+	c.ReportAuthFailure(providerid.Claude, "logged_out")
+	c.ReportRateLimit(providerid.Claude, time.Minute, "429", CooldownFromConfig)
 	fake.Advance(90 * time.Second)
 	c.clearExpiredRateLimits()
-	if c.IsHealthy("claude") {
+	if c.IsHealthy(providerid.Claude) {
 		t.Fatalf("an expiring rate limit released a provider a run reported logged out")
 	}
 	fake.Advance(15 * time.Minute)
-	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
-	if !c.IsHealthy("claude") {
+	c.setStatus(providerid.Claude, Status{Provider: providerid.Claude, Healthy: true, Reason: "ok"}, true)
+	if !c.IsHealthy(providerid.Claude) {
 		t.Fatalf("claude never returned after the hold expired")
 	}
 }
