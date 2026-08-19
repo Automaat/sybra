@@ -143,14 +143,7 @@ func (r *Handler) StartFixReviewAgent(t task.Task) error {
 // execution; calling agent.Manager.Run directly leaves a daemon run without
 // durable completion or recovery authority.
 func (r *Handler) startPreparedFixReviewWorkflow(t task.Task, dir string) error {
-	prompt := fmt.Sprintf(
-		"Resolve the pull request associated with the current worktree using "+
-			"`gh pr view --json url --jq .url`, then run `/fix-review <resolved-url> --auto`.\n\n"+
-			"IMPORTANT: when committing, use conventional commit format "+
-			"`fix(review): address PR review comments` (type(scope) required by repo hooks). "+
-			"Sign the commit with `git commit %s`. Push the branch when done.",
-		r.signingPolicy().CommitFlags(context.Background()),
-	) + reviewHoldFixSuffix(r.cfg)
+	prompt := manualFixReviewPrompt(r.signingPolicy()) + reviewHoldFixSuffix(r.cfg)
 	vars := map[string]string{
 		"prompt":                            prompt + PRFixResultContract,
 		"pr_issue_kind":                     string(github.PRIssueComments),
@@ -169,6 +162,7 @@ func (r *Handler) startPreparedFixReviewWorkflow(t task.Task, dir string) error 
 		pr := github.PullRequest{Repository: t.ProjectID, Number: t.PRNumber}
 		if brief := fetchReviewThreadBrief(context.Background(), pr, r.agentLogin(context.Background())); brief.vars() != "" {
 			vars[workflow.PRReviewThreadBriefVar] = brief.vars()
+			vars[workflow.PRReviewAgentLoginVar] = brief.agentLogin
 			vars["prompt"] = prompt + "\n\n" + brief.prompt + PRFixResultContract
 		}
 	}

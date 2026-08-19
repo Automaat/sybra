@@ -10,14 +10,15 @@ import (
 )
 
 // reviewThreadBrief is the Go-fetched ground truth about the review threads a
-// pr-fix run is expected to answer. The agent enumerates threads itself inside
-// /fix-review, so this exists to bound that enumeration from outside: the
+// pr-fix run is expected to answer. The agent enumerates threads itself, from
+// the prompt's runbook, so this exists to bound that enumeration from outside: the
 // prompt states how many threads the harness sees, and verify_review_threads
 // later re-checks the same set. Without it an agent whose own fetch fails
 // answers a fraction of the feedback and still reports success.
 type reviewThreadBrief struct {
-	threads []workflow.BriefedReviewThread
-	prompt  string
+	threads    []workflow.BriefedReviewThread
+	prompt     string
+	agentLogin string
 }
 
 // vars returns the workflow variable value carrying this brief, empty when
@@ -46,6 +47,7 @@ func fetchReviewThreadBrief(ctx context.Context, pr github.PullRequest, agentLog
 		brief reviewThreadBrief
 		locs  []string
 	)
+	brief.agentLogin = agentLogin
 	for i := range all {
 		if !actionableReviewThread(all[i], agentLogin) {
 			continue

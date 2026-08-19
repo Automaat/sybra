@@ -146,9 +146,33 @@ func TestCommentsPromptCarriesTheBrief(t *testing.T) {
 
 	brief := reviewThreadBrief{prompt: "The harness counted 2 review thread(s) on this PR still waiting on a reply from you:\n- internal/a.go:12 by reviewer"}
 	withBrief := commentsPrompt(context.Background(), pr, project.SigningAuto, brief)
-	for _, want := range []string{"harness counted 2", "internal/a.go:12", "/fix-review"} {
+	for _, want := range []string{"harness counted 2", "internal/a.go:12", "reply on every thread"} {
 		if !strings.Contains(withBrief, want) {
 			t.Errorf("prompt missing %q:\n%s", want, withBrief)
+		}
+	}
+}
+
+// A conceded-then-deferred reply reads as handled to every later gate, so the
+// rule that forbids it has to reach the agent on both dispatch paths, not just
+// through the skill body it may or may not follow closely.
+func TestReviewFixPolicyReachesBothDispatchPrompts(t *testing.T) {
+	t.Parallel()
+
+	pr := github.PullRequest{Number: 7, Repository: "o/r", HeadRefName: "feat", URL: "https://github.com/o/r/pull/7"}
+	prompts := map[string]string{
+		"automatic": commentsPrompt(context.Background(), pr, project.SigningAuto, reviewThreadBrief{}),
+		"manual":    manualFixReviewPrompt(project.SigningAuto),
+	}
+
+	for name, prompt := range prompts {
+		if !strings.Contains(prompt, reviewFixPolicy) {
+			t.Errorf("%s dispatch prompt is missing the review-fix policy:\n%s", name, prompt)
+		}
+	}
+	for _, want := range []string{"never a follow-up", "Ties go to the reviewer", "A question is a fix request"} {
+		if !strings.Contains(reviewFixPolicy, want) {
+			t.Errorf("review-fix policy missing %q", want)
 		}
 	}
 }

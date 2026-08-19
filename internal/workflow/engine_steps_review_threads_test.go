@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Automaat/sybra/internal/attribution"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/taskstatus"
 )
@@ -110,6 +111,242 @@ func TestUntouchedBriefedThreads(t *testing.T) {
 				t.Errorf("untouched = %v, want %v", ids, tc.want)
 			}
 		})
+	}
+}
+
+func TestIsDeferralReply(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{
+			name: "an applied reply passes",
+			body: "**Applied** — injected a stepping clock (abc1234).",
+		},
+		{
+			name: "an invalid reply passes, disagreement is not deferral",
+			body: "**Skipped (invalid)** — already at store.go:42. Happy to revisit if I'm reading this wrong.",
+		},
+		{
+			name: "an answer with evidence passes",
+			body: "**Answered** — the nil case cannot happen; the caller checks at api.go:88.",
+		},
+		{
+			name: "a deferred call is Go vocabulary, not a deferral",
+			body: "**Applied** — the handle is now closed in a deferred call (abc1234).",
+		},
+		{
+			name: "a separate process is not a separate PR",
+			body: "**Applied** — moved the spawn into a separate process group (abc1234).",
+		},
+		{
+			name: "a separate printf is not a separate PR",
+			body: "**Applied** — split the log line into a separate printf (abc1234).",
+		},
+		{
+			name: "its own prompt is not its own PR",
+			body: "**Applied** — the runbook now renders its own prompt (abc1234).",
+		},
+		{
+			name: "another problem is not another PR",
+			body: "**Answered** — that is another problem entirely; api.go:88 already guards it. No change needed.",
+		},
+		{
+			name: "a value deferred by design is not a deferral of the fix",
+			body: "**Answered** — the value is deferred until first use by design; store.go:42.",
+		},
+		{
+			name: "a follow-up promise is a deferral",
+			body: "Valid point, but deferred: happy to pick this up as a follow-up.",
+			want: true,
+		},
+		{
+			name: "a separate-PR promise is a deferral",
+			body: "Agreed, though this belongs in a separate PR.",
+			want: true,
+		},
+		{
+			name: "leaving it as-is for now is a deferral",
+			body: "Real trade-off. Leaving the sleep as-is for now.",
+			want: true,
+		},
+		{
+			name: "left as-is for now is the same deferral in past tense",
+			body: "Left the sleep as-is for now; the refactor is bigger than this PR.",
+			want: true,
+		},
+		{
+			name: "picking it up separately is a deferral",
+			body: "Agreed — happy to pick this up separately.",
+			want: true,
+		},
+		{
+			name: "a follow-up issue is a deferral",
+			body: "Good catch. I'll open a follow-up issue for this.",
+			want: true,
+		},
+		{
+			name: "out of scope is a deferral",
+			body: "Out of scope here, but noted.",
+			want: true,
+		},
+		{
+			name: "a subsequent PR is a deferral",
+			body: "Fair point. I'll do this in a subsequent PR.",
+			want: true,
+		},
+		{
+			name: "deferring to a later PR is a deferral",
+			body: "Agreed; deferring to a later PR.",
+			want: true,
+		},
+		{
+			name: "not in this change is a deferral",
+			body: "Not in this change — filing a ticket instead.",
+			want: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			body := tc.body + "\n\n" + attribution.Footer
+			if got := isDeferralReply(body); got != tc.want {
+				t.Errorf("isDeferralReply(%q) = %v, want %v", body, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDeferredBriefedThreads(t *testing.T) {
+	t.Parallel()
+
+	const agent = "sybra-bot"
+	briefed := []BriefedReviewThread{{ID: "t1", Comments: 1}, {ID: "t2", Comments: 1}}
+	deferral := "Agreed, deferred to a follow-up.\n\n" + attribution.Footer
+	applied := "**Applied** — done in abc1234.\n\n" + attribution.Footer
+
+	tests := []struct {
+		name      string
+		login     string
+		untouched []BriefedReviewThread
+		live      []github.ReviewThread
+		want      []string
+	}{
+		{
+			name:  "fixed threads are not deferrals",
+			login: agent,
+			live: []github.ReviewThread{
+				{ID: "t1", CommentCount: 2, LastAuthorLogin: agent, LastCommentBody: applied},
+				{ID: "t2", CommentCount: 2, LastAuthorLogin: agent, LastCommentBody: applied},
+			},
+		},
+		{
+			name:  "a resolved thread is the reviewer's own call",
+			login: agent,
+			live: []github.ReviewThread{
+				{ID: "t1", CommentCount: 2, IsResolved: true, LastAuthorLogin: agent, LastCommentBody: deferral},
+			},
+		},
+		{
+			name:  "an outdated thread means the anchored code moved",
+			login: agent,
+			live: []github.ReviewThread{
+				{ID: "t1", CommentCount: 2, IsOutdated: true, LastAuthorLogin: agent, LastCommentBody: deferral},
+			},
+		},
+		{
+			// Sybra's own review agent stamps the harness footer on the review
+			// comments it writes, so on a PR reviewed by another instance the
+			// reviewer's text carries it too. Only the login separates them.
+			name:  "a reviewer's own comment is never this run's deferral",
+			login: agent,
+			live: []github.ReviewThread{
+				{ID: "t1", CommentCount: 2, LastAuthorLogin: "reviewer", LastCommentBody: deferral},
+			},
+		},
+		{
+			name: "an unknown login leaves the run unverified rather than parking it",
+			live: []github.ReviewThread{
+				{ID: "t1", CommentCount: 2, LastAuthorLogin: agent, LastCommentBody: deferral},
+			},
+		},
+		{
+			// Already reported as unanswered. Counting it again would name one
+			// thread as two and call an unanswered thread answered.
+			name:      "an unanswered thread is not also a deferral",
+			login:     agent,
+			untouched: []BriefedReviewThread{{ID: "t1", Comments: 1}},
+			live: []github.ReviewThread{
+				{ID: "t1", CommentCount: 1, LastAuthorLogin: agent, LastCommentBody: deferral},
+			},
+		},
+		{
+			name:  "a deferral reply is held against the run",
+			login: agent,
+			live: []github.ReviewThread{
+				{ID: "t1", CommentCount: 2, LastAuthorLogin: agent, LastCommentBody: applied},
+				{ID: "t2", CommentCount: 2, LastAuthorLogin: agent, LastCommentBody: deferral, Path: "internal/b.go", Line: 40},
+			},
+			want: []string{"t2"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var ids []string
+			for _, g := range deferredBriefedThreads(briefed, tc.untouched, tc.live, tc.login) {
+				ids = append(ids, g.ID)
+			}
+			if strings.Join(ids, ",") != strings.Join(tc.want, ",") {
+				t.Errorf("deferred = %v, want %v", ids, tc.want)
+			}
+		})
+	}
+}
+
+// A thread the agent replied to counts as answered by comment count alone, so
+// without the deferral floor a run that conceded every point and changed
+// nothing reached the reviewer as a finished fix.
+func TestExecVerifyReviewThreads_DeferralParksTheTask(t *testing.T) {
+	t.Parallel()
+
+	const agent = "sybra-bot"
+	deferral := "Valid point, but deferred — happy to pick this up as a follow-up.\n\n" + attribution.Footer
+	tasks := newMemTasks()
+	info := TaskInfo{ID: "task-1", Status: taskstatus.InProgress, PRNumber: 7, ProjectID: "o/r"}
+	tasks.Put(info)
+	engine := newEngineForEval(t, tasks)
+	engine.pr.ThreadFetcher = stubThreadFetcher{threads: []github.ReviewThread{
+		{ID: "t1", CommentCount: 2, LastAuthorLogin: agent, LastCommentBody: "**Applied** — done.\n\n" + attribution.Footer},
+		{ID: "t2", CommentCount: 2, LastAuthorLogin: agent, LastCommentBody: deferral, Path: "internal/b.go", Line: 40},
+	}}
+
+	vars := map[string]string{
+		PRReviewAgentLoginVar: agent,
+		PRReviewThreadBriefVar: MarshalBriefedReviewThreads([]BriefedReviewThread{
+			{ID: "t1", Comments: 1},
+			{ID: "t2", Comments: 1},
+		}),
+	}
+	step := &Step{ID: "verify_review_threads", Type: StepVerifyReviewThreads}
+	if _, err := engine.execVerifyReviewThreads("task-1", step, &Execution{Variables: vars}, info); err != nil {
+		t.Fatalf("execVerifyReviewThreads: %v", err)
+	}
+
+	got, _ := tasks.GetTask("task-1")
+	if got.Status != taskstatus.HumanRequired {
+		t.Fatalf("status = %q, want %q", got.Status, taskstatus.HumanRequired)
+	}
+	reason := tasks.reasons["task-1"]
+	for _, want := range []string{"1 of 2", "deferral", "internal/b.go:40"} {
+		if !strings.Contains(reason, want) {
+			t.Errorf("reason %q missing %q", reason, want)
+		}
 	}
 }
 
