@@ -3898,4 +3898,17 @@ func TestBuildErrorSample_MarksTheAgentAuthoredContent(t *testing.T) {
 	if empty := buildErrorSample("boom", []StreamEvent{}); empty.ContentIsAgentMessage {
 		t.Fatal("a sample with no terminal result claimed agent-authored content")
 	}
+
+	// A provider adapter folds a CLI error envelope into a result event, so an
+	// error-shaped result is the CLI speaking, not the agent.
+	for _, cliError := range []StreamEvent{
+		{Type: "result", Content: "not logged in", ErrorType: "error"},
+		{Type: "result", Content: "not logged in", ErrorStatus: 401},
+		{Type: "result", Content: "not logged in", Subtype: "error_during_execution"},
+	} {
+		got := buildErrorSample("", []StreamEvent{cliError})
+		if got.ContentIsAgentMessage {
+			t.Fatalf("a CLI error envelope was read as agent prose, so a bare refusal is dropped: %+v", cliError)
+		}
+	}
 }
