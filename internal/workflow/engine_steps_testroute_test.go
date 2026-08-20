@@ -4103,3 +4103,124 @@ func TestRouteTestResult_UnstartableSurfaceEscalatesWhenOpenPRDisabled(t *testin
 		t.Errorf("reason = %q, want the surface named", reason)
 	}
 }
+
+func TestProseUnstartableClaim_ReadsOnlyTheStructuralFields(t *testing.T) {
+	t.Parallel()
+	full := "surface_kind: k8s\napp_started: false\nunable_to_run_reason: this host has no kubernetes cluster\n" +
+		"readiness_probe: kubectl get nodes -> The connection to the server was refused\n" +
+		"automated_checks: go test ./... -> ok, all packages pass\n\nTEST_VERDICT: PASS\n"
+	cases := []struct {
+		name   string
+		report string
+		want   bool
+	}{
+		{name: "a complete prose claim", report: full, want: true},
+		{name: "a denial that explains itself", report: strings.Replace(full, "app_started: false", "app_started: false (webkit is missing here)", 1), want: true},
+		{name: "a denial written as a sentence", report: strings.Replace(full, "app_started: false", "app_started: never started, the binary is absent", 1), want: true},
+		{name: "no surface named", report: strings.Replace(full, "surface_kind: k8s\n", "", 1)},
+		{name: "an exempt surface", report: strings.Replace(full, "surface_kind: k8s", "surface_kind: library", 1)},
+		{name: "the app was started", report: strings.Replace(full, "app_started: false", "app_started: true", 1)},
+		{name: "an unreadable app_started", report: strings.Replace(full, "app_started: false", "app_started: partially, the worker came up", 1)},
+		{name: "no reason given", report: strings.Replace(full, "unable_to_run_reason: this host has no kubernetes cluster\n", "", 1)},
+		{name: "no probe recorded", report: strings.Replace(full, "readiness_probe: kubectl get nodes -> The connection to the server was refused\n", "", 1)},
+		{name: "a failure also reported", report: full + "\n## Test Failures\n\nThe save button does nothing.\n"},
+		{name: "a structured report", report: `{"verdict":"PASS","outcome":"pass","surface_kind":"k8s","app_started":false}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := proseUnstartableClaim(tc.report, TaskInfo{}); got != tc.want {
+				t.Fatalf("proseUnstartableClaim = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestApplyTestVerdictCompletion_ProseClaimAsksForTheSchemaForm(t *testing.T) {
+	t.Parallel()
+	report := "surface_kind: k8s\napp_started: false\nunable_to_run_reason: this host has no kubernetes cluster\n" +
+		"readiness_probe: kubectl get nodes -> The connection to the server was refused\n" +
+		"automated_checks: go test ./... -> ok, all packages pass\n\nTEST_VERDICT: PASS\n"
+	wf := &Execution{Variables: map[string]string{}}
+	out := StepOutput{StepID: testVerdictSourceStep, Status: "completed", Output: report}
+
+	violation, outcome, _ := applyTestVerdictCompletion(wf, &out, "## Problem\nbody", TaskInfo{})
+
+	if outcome != testOutcomeMissingEvidence || violation != testProtocolMissingEvidence {
+		t.Fatalf("outcome/violation = %q/%q, want a prose PASS to stay unroutable", outcome, violation)
+	}
+	if wf.Variables["step."+testVerdictSourceStep+"."+testSurfaceUnavailableKey] != "" {
+		t.Fatal("a prose report routed to a PR without a schema-shaped re-emission")
+	}
+	if wf.Variables["step."+testVerdictSourceStep+"."+testSchemaReaskKey] == "" {
+		t.Fatal("the runner was not asked for the schema form, so the retry repeats the same prose")
+	}
+}
+
+func TestRouteTestResult_ProseClaimReasksForSchemaNotEvidence(t *testing.T) {
+	t.Parallel()
+	e, tasks := makeTestEngine(t)
+	tasks.Put(TaskInfo{ID: "t-prose", Status: taskstatus.Testing})
+	wf := &Execution{
+		WorkflowID: "testing-task",
+		StartedAt:  time.Now().UTC(),
+		Variables: map[string]string{
+			"step." + testVerdictSourceStep + "." + testVerdictTaintedKey: testProtocolMissingEvidence,
+			"step." + testVerdictSourceStep + "." + testSchemaReaskKey:    "1",
+		},
+	}
+	if _, err := e.execRouteTestResult("t-prose", &Step{ID: "route_test"}, wf, mustGetTaskInfo(t, tasks, "t-prose")); err != nil && !errors.Is(err, errStepParked) {
+		t.Fatal(err)
+	}
+	note := wf.Variables[testingReaskNoteVar]
+	if !strings.Contains(note, "schema") {
+		t.Fatalf("reask note = %q, want the schema-shaped re-emission asked for", note)
+	}
+	if strings.Contains(note, "lacked machine-checkable") {
+		t.Fatal("the runner was told its evidence was missing when its own fields already made the claim")
+	}
+}
+
+func TestReaskNotes_NameNoRoutingConsequence(t *testing.T) {
+	t.Parallel()
+	for name, note := range map[string]string{
+		"schema":          schemaReask,
+		"missing":         missingEvidenceReask,
+		"fix suggestions": fixSuggestionsReask,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			lower := strings.ToLower(note)
+			for _, leak := range []string{"routes the task", "opens a pr", "instead of a rerun", string(taskstatus.ReadyPR)} {
+				if strings.Contains(lower, leak) {
+					t.Fatalf("re-ask reaches the runner prompt and names a routing consequence (%q):\n%s", leak, note)
+				}
+			}
+		})
+	}
+}
+
+func TestRouteTestResult_ProseClaimEscalatesWithItsOwnReason(t *testing.T) {
+	t.Parallel()
+	e, tasks := makeTestEngine(t)
+	tasks.Put(TaskInfo{ID: "t-prose-exhausted", Status: taskstatus.Testing})
+	wf := &Execution{
+		WorkflowID: "testing-task",
+		StartedAt:  time.Now().UTC(),
+		Variables: map[string]string{
+			"step." + testVerdictSourceStep + "." + testVerdictTaintedKey: testProtocolMissingEvidence,
+			"step." + testVerdictSourceStep + "." + testSchemaReaskKey:    "1",
+			testingAutoRetryKey(testOutcomeMissingEvidence):               strconv.Itoa(testingAutoRetryCap),
+		},
+	}
+	if _, err := e.execRouteTestResult("t-prose-exhausted", &Step{ID: "route_test"}, wf, mustGetTaskInfo(t, tasks, "t-prose-exhausted")); err != nil {
+		t.Fatal(err)
+	}
+	reason := tasks.Reason("t-prose-exhausted")
+	if strings.Contains(reason, "lacked machine-checkable evidence") {
+		t.Fatalf("the operator is sent after missing evidence for a report that had it: %q", reason)
+	}
+	if !strings.Contains(reason, "schema") {
+		t.Fatalf("reason = %q, want the operator pointed at the provider's schema support", reason)
+	}
+}
