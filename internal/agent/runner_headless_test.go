@@ -3895,7 +3895,7 @@ func TestBuildErrorSample_MarksTheAgentAuthoredContent(t *testing.T) {
 	if sample.Content != stream[1].Content {
 		t.Fatalf("content = %q, want the terminal result", sample.Content)
 	}
-	if empty := buildErrorSample("boom", nil); empty.ContentIsAgentMessage {
+	if empty := buildErrorSample("boom", []StreamEvent{}); empty.ContentIsAgentMessage {
 		t.Fatal("a sample with no terminal result claimed agent-authored content")
 	}
 }
