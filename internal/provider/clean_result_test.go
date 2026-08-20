@@ -107,8 +107,8 @@ func TestAuthContent_TerseRefusalStillClassifies(t *testing.T) {
 	}{
 		providerid.Claude:   {ClassifyClaudeError, "Not logged in · Please run /login"},
 		providerid.Codex:    {ClassifyCodexError, "Not logged in. Please run: codex login"},
-		providerid.Copilot:  {ClassifyCopilotError, "not logged in"},
-		providerid.OpenCode: {ClassifyOpenCodeError, "not authenticated"},
+		providerid.Copilot:  {ClassifyCopilotError, "Not logged in. Please run: copilot login"},
+		providerid.OpenCode: {ClassifyOpenCodeError, "Invalid API key. Please run: opencode auth login"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -125,5 +125,80 @@ func TestAuthContent_StderrRefusalIgnoresContentLength(t *testing.T) {
 	got := ClassifyClaudeError(ErrorSample{Stderr: "not logged in", Content: long})
 	if got.Signal != SignalAuthFailure {
 		t.Fatalf("a refusal on the CLI's own channel was ignored: %+v", got)
+	}
+}
+
+// llmexec classifies against the provider CLI's whole stdout, not a terse
+// result line, and only fails over to a peer when the signal is not None. A
+// refusal buried in that envelope has to keep classifying or a logged-out
+// first provider hard-fails the job instead of falling over.
+func TestAuthContent_RefusalInsideACliEnvelopeStillClassifies(t *testing.T) {
+	envelopes := map[string]struct {
+		classify func(ErrorSample) Classification
+		blob     string
+	}{
+		providerid.Claude: {ClassifyClaudeError, `{"type":"result","subtype":"error_during_execution",` +
+			`"is_error":true,"duration_ms":412,"num_turns":0,"session_id":"3f2b1c9a-7d44-4e10-9c33-8a1f2e6b5d70",` +
+			`"result":"Not logged in · Please run /login","total_cost_usd":0,"usage":{"input_tokens":0,` +
+			`"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}`},
+		providerid.Codex: {ClassifyCodexError, `{"id":"0","msg":{"type":"session_configured","session_id":` +
+			`"019bd4f0-8c21-7a3e-9f55-6d2c8b4e1a90","model":"gpt-5.6","history_log_id":0}}` + "\n" +
+			`{"id":"0","msg":{"type":"error","message":"Not logged in. Please run: codex login"}}` + "\n" +
+			`{"id":"0","msg":{"type":"task_complete","last_agent_message":null}}`},
+		providerid.Copilot: {ClassifyCopilotError, `{"error":{"type":"auth","code":"unauthenticated","message":` +
+			`"Not logged in. Please run: copilot login"},"data":null,"request_id":` +
+			`"7c1f0b2a-53de-4a88-9b17-2e6d4c8f0a35","usage":{"premium_requests":0,"input_tokens":0,` +
+			`"output_tokens":0},"model":"claude-sonnet-4.5"}`},
+		providerid.OpenCode: {ClassifyOpenCodeError, `{"error":{"name":"AuthError","data":{"providerID":` +
+			`"anthropic","message":"Invalid API key. Please run: opencode auth login"}},"parts":[],` +
+			`"sessionID":"ses_6b2f9c1d0","messageID":"msg_4a7e3f style","tokens":{"input":0,"output":0,` +
+			`"reasoning":0,"cache":{"read":0,"write":0}},"cost":0}`},
+	}
+	for name, tc := range envelopes {
+		t.Run(name, func(t *testing.T) {
+			if len(tc.blob) < 200 {
+				t.Fatalf("envelope is %d chars, too short to exercise a realistic blob", len(tc.blob))
+			}
+			got := tc.classify(ErrorSample{Content: strings.ToLower(tc.blob)})
+			if got.Signal != SignalAuthFailure {
+				t.Fatalf("a refusal inside a %d-char CLI envelope was dropped, so the job cannot fail over: %+v", len(tc.blob), got)
+			}
+		})
+	}
+}
+
+// An agent that quotes a provider's refusal verbatim in its report is still
+// reporting, not being refused — the run the provider served proves it.
+func TestAuthContent_ServedRunQuotingARefusalIsNotOne(t *testing.T) {
+	cases := map[string]struct {
+		classify func(ErrorSample) Classification
+		content  string
+	}{
+		providerid.Claude:   {ClassifyClaudeError, "no change needed: the cli already prints \"not logged in · please run /login\""},
+		providerid.Codex:    {ClassifyCodexError, "no change needed: the cli already prints \"not logged in. please run: codex login\""},
+		providerid.Copilot:  {ClassifyCopilotError, "no change needed: the cli already prints \"please run: copilot login\""},
+		providerid.OpenCode: {ClassifyOpenCodeError, "no change needed: the cli already prints \"invalid api key\""},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := tc.classify(ErrorSample{Content: tc.content, ContentIsCleanResult: true})
+			if got.Signal == SignalAuthFailure {
+				t.Fatalf("a run the provider served was read as a refusal: %+v", got)
+			}
+		})
+	}
+}
+
+func TestOpenCodeQuotaContent_DoesNotParkOnItsOwnProse(t *testing.T) {
+	prose := "I reviewed the quota handling. The client now reports a rate limit " +
+		"distinctly from an exhausted quota, and the retry path waits on the reset " +
+		"header rather than a fixed delay. Tests cover both branches."
+	got := ClassifyOpenCodeError(ErrorSample{Content: prose, ContentIsCleanResult: true})
+	if got.Signal == SignalRateLimit {
+		t.Fatalf("a served run was parked off its own prose: %+v", got)
+	}
+	refused := ClassifyOpenCodeError(ErrorSample{Content: "rate limit exceeded, retry later"})
+	if refused.Signal != SignalRateLimit {
+		t.Fatalf("a real rate-limit refusal was dropped: %+v", refused)
 	}
 }
