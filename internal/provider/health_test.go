@@ -976,3 +976,48 @@ func TestChecker_AuthHoldSurvivesAnExpiringRateLimit(t *testing.T) {
 		t.Fatalf("claude never returned after the hold expired")
 	}
 }
+
+func TestChecker_LivenessProbeCannotResurrectAfterAReasonChange(t *testing.T) {
+	for _, name := range []string{providerid.Copilot, providerid.OpenCode} {
+		t.Run(name, func(t *testing.T) {
+			c, _, fake := newTestChecker(t)
+			c.SetProviderEnabled(name, true)
+			c.setStatus(name, Status{Provider: name, Healthy: true, Reason: "ok"}, true)
+			c.ReportAuthFailure(name, "logged_out")
+
+			for range 3 {
+				c.setStatus(name, Status{Provider: name, Healthy: false, Reason: "probe_error", Detail: "exec: no such file"}, true)
+			}
+			if got := c.Reason(name); got != "probe_error" {
+				t.Fatalf("reason = %q, want the intervening probe errors to have overwritten it", got)
+			}
+
+			fake.Advance(30 * time.Minute)
+			c.setStatus(name, Status{Provider: name, Healthy: true, Reason: "ok"}, true)
+
+			if c.IsHealthy(name) {
+				t.Fatalf("a version-only probe resurrected %s after a run reported it logged out", name)
+			}
+			if got := c.Reason(name); got != "logged_out" {
+				t.Fatalf("reason = %q, want logged_out so the operator sees the real cause", got)
+			}
+		})
+	}
+}
+
+func TestChecker_AuthCapableProbeClearsTheRunFailureMarker(t *testing.T) {
+	c, _, fake := newTestChecker(t)
+	c.setStatus(providerid.Claude, Status{Provider: providerid.Claude, Healthy: true, Reason: "ok"}, true)
+	c.ReportAuthFailure(providerid.Claude, "logged_out")
+	fake.Advance(16 * time.Minute)
+	c.setStatus(providerid.Claude, Status{Provider: providerid.Claude, Healthy: true, Reason: "ok"}, true)
+	if !c.IsHealthy(providerid.Claude) {
+		t.Fatalf("an auth-checking probe never returned the provider after the hold expired")
+	}
+	c.mu.RLock()
+	marked := c.authRunFailed[providerid.Claude]
+	c.mu.RUnlock()
+	if marked {
+		t.Fatal("the run-failure marker survived a probe that checks credentials")
+	}
+}
