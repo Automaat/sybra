@@ -1510,7 +1510,10 @@ func appendTestProtocolViolation(output, detail string) string {
 func unstartableSurface(output string, t TaskInfo) string {
 	parsed, ok := parseStructuredTestOutput(output)
 	if !ok {
-		return unstartableSurfacePlainText(output, t)
+		parsed, ok = plainTextAsStructured(output)
+		if !ok {
+			return ""
+		}
 	}
 	if strings.ToUpper(strings.TrimSpace(parsed.Verdict)) != "PASS" {
 		return ""
@@ -1543,37 +1546,92 @@ func unstartableSurface(output string, t TaskInfo) string {
 	return surface
 }
 
-func unstartableSurfacePlainText(output string, t TaskInfo) string {
-	surface := normalizeSurfaceKind(firstPlainEvidenceField(output, "surface_kind", "surface kind"))
-	if surface == "" || isManualTestExemption(surface, t) {
-		return ""
-	}
-	if surface == "library" || surface == "docs" || surface == "none" {
-		return ""
-	}
-	if containsAny(strings.ToLower(output), "app_started: true", "app started: true") {
-		return ""
-	}
-	if firstPlainEvidenceField(output, "unable_to_run_reason", "unable to run manual test") == "" {
-		return ""
-	}
-	if !plainProbeReportsUnavailable(firstPlainEvidenceField(output, "readiness_probe", "readiness probe")) {
-		return ""
-	}
-	if !hasPlainTextRegressionCheckEvidence(output) {
-		return ""
-	}
-	return surface
+var plainSurfaceAbsentTokens = []string{
+	"unavailable", "unreachable", "not available", "missing",
+	"connection refused", "refused", "cannot connect", "could not connect",
+	"command not found", "not found", "no such", "not installed",
+	"not running", "does not exist", "no cluster", "no current context",
 }
 
-func plainProbeReportsUnavailable(probe string) bool {
-	if strings.TrimSpace(probe) == "" {
-		return false
+// plainTextAsStructured lifts a prose test report into the same shape a
+// schema-enforcing provider returns, so one gate judges both. Providers that
+// ignore the output schema answer in prose, and a second gate written against
+// prose drifted weaker than the structured one it was meant to mirror.
+func plainTextAsStructured(output string) (structuredTestOutput, bool) {
+	surface := firstPlainEvidenceField(output, "surface_kind", "surface kind")
+	if strings.TrimSpace(surface) == "" {
+		return structuredTestOutput{}, false
 	}
-	if !containsAny(strings.ToLower(probe), "unavailable", "unreachable", "not available", "missing") {
-		return false
+	parsed := structuredTestOutput{
+		Verdict:           "PASS",
+		Outcome:           testOutcomePass,
+		FailuresMarkdown:  testFailSectionOf(output),
+		SurfaceKind:       surface,
+		AppStarted:        flexBool(plainFieldIsTrue(output, "app_started", "app started")),
+		StartCommand:      firstPlainEvidenceField(output, "start_command", "start command"),
+		UnableToRunReason: firstPlainEvidenceField(output, "unable_to_run_reason", "unable to run manual test"),
 	}
-	return probeTranscriptReportsAbsence(probe)
+	if probe := firstPlainEvidenceField(output, "readiness_probe", "readiness probe"); probe != "" {
+		command, transcript := splitPlainEvidenceLine(probe)
+		parsed.ReadinessProbe = readinessProbeEvidence{
+			Command: command,
+			Output:  evidenceText(transcript),
+			Status:  evidenceText(plainProbeStatus(probe)),
+		}
+	}
+	for _, line := range plainEvidenceValues(output, "automated_checks", "automated checks", "regression check", "test harness") {
+		command, transcript := splitPlainEvidenceLine(line)
+		parsed.AutomatedChecks = append(parsed.AutomatedChecks, automatedCheckEvidence{
+			Command: command,
+			Output:  evidenceText(transcript),
+		})
+	}
+	return parsed, true
+}
+
+func plainFieldIsTrue(output string, names ...string) bool {
+	v := strings.ToLower(strings.Trim(firstPlainEvidenceField(output, names...), " \t`\"'"))
+	return v == "true" || v == "yes"
+}
+
+// splitPlainEvidenceLine separates the command a prose line names from the
+// result it recorded. The command is excluded from the transcript so a path or
+// flag reading as success or failure never decides what the run observed.
+func splitPlainEvidenceLine(line string) (command, transcript string) {
+	lower := strings.ToLower(line)
+	for _, sep := range []string{"->", "=>", "output:", "observed:", "actual:", " -- "} {
+		if before, after, ok := strings.Cut(lower, sep); ok {
+			return strings.TrimSpace(before), strings.TrimSpace(after)
+		}
+	}
+	return strings.TrimSpace(lower), ""
+}
+
+func plainProbeStatus(probe string) string {
+	if containsAny(strings.ToLower(probe), plainSurfaceAbsentTokens...) {
+		return "unavailable"
+	}
+	return ""
+}
+
+func plainEvidenceValues(output string, names ...string) []string {
+	var values []string
+	for _, line := range reportScanLines(output) {
+		field, value, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		field = strings.ReplaceAll(strings.Trim(strings.ToLower(field), "-* \t`"), " ", "_")
+		for _, name := range names {
+			if field == strings.ReplaceAll(strings.ToLower(strings.TrimSpace(name)), " ", "_") {
+				if v := strings.TrimSpace(value); v != "" {
+					values = append(values, v)
+				}
+				break
+			}
+		}
+	}
+	return values
 }
 
 func hasUnstartableSurfaceEvidence(parsed structuredTestOutput) bool {
@@ -1601,7 +1659,7 @@ func recordedCheckSucceeded(command string, output, observed evidenceText) bool 
 	return hasSuccessfulCheckResult(output, observed)
 }
 
-var probeSuccessTokenPattern = regexp.MustCompile(`\b(ok|pass|passed|success|successful|healthy|serving|ready|2\d\d)\b`)
+var probeSuccessTokenPattern = regexp.MustCompile(`\b(ok|pass|passed|success|successful|healthy|serving|ready|2\d\d)\b|\bexit (?:code|status) 0\b`)
 
 var probeAnsweredPattern = regexp.MustCompile(`\bhttp/\d(?:\.\d)?\s+\d{3}\b`)
 

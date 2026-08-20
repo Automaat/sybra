@@ -1638,6 +1638,84 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			wantTaint:  testProtocolMissingEvidence,
 		},
 		{
+			name:       "a_prose_check_with_no_recorded_result_stays_missing_evidence",
+			status:     "completed",
+			output:     "surface_kind: web\napp_started: false\nunable_to_run_reason: no browser on this host\nreadiness_probe: curl -fsS http://127.0.0.1:5173/ -> connection refused\nautomated_checks: go test\n\nTEST_VERDICT: PASS\n",
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:       "a_prose_report_that_started_the_app_stays_missing_evidence",
+			status:     "completed",
+			output:     "surface_kind: web\napp_started:true\nstart_command: npm run dev\nunable_to_run_reason: I ran out of time to click through the ui\nreadiness_probe: curl -fsS http://127.0.0.1:5173/ -> connection refused\nautomated_checks: go test ./... -> ok, all packages pass\n\nTEST_VERDICT: PASS\n",
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:       "a_prose_report_also_carrying_a_failure_section_stays_missing_evidence",
+			status:     "completed",
+			output:     "surface_kind: web\napp_started: false\nunable_to_run_reason: could not start the ui\nreadiness_probe: curl -fsS http://127.0.0.1:5173/ -> connection refused\nautomated_checks: go test ./... -> ok, all packages pass\n\n## Test Failures\n\nThe save button does nothing when submitted.\n\nTEST_VERDICT: PASS\n",
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:       "a_prose_probe_naming_no_command_stays_missing_evidence",
+			status:     "completed",
+			output:     "surface_kind: web\napp_started: false\nunable_to_run_reason: no browser on this host\nreadiness_probe: unavailable\nautomated_checks: go test ./... -> ok, all packages pass\n\nTEST_VERDICT: PASS\n",
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:       "a_prose_probe_whose_port_was_open_stays_missing_evidence",
+			status:     "completed",
+			output:     "surface_kind: web\napp_started: false\nunable_to_run_reason: I did not exercise the ui\nreadiness_probe: nc -z 127.0.0.1 5173 -> exit code 0 (status: unavailable)\nautomated_checks: go test ./... -> ok, all packages pass\n\nTEST_VERDICT: PASS\n",
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:       "a_prose_probe_with_a_missing_docker_daemon_routes",
+			status:     "completed",
+			output:     "surface_kind: web\napp_started: false\nunable_to_run_reason: no container runtime in this sandbox\nreadiness_probe: docker info -> Cannot connect to the Docker daemon at unix:///var/run/docker.sock\nautomated_checks: go test ./... -> ok, all packages pass\n\nTEST_VERDICT: PASS\n",
+			bodySuffix: "",
+			want:       testOutcomeInfraFailure,
+			wantStatus: "failed",
+		},
+		{
+			name:       "a_prose_probe_with_a_missing_binary_routes",
+			status:     "completed",
+			output:     "surface_kind: k8s\napp_started: false\nunable_to_run_reason: the cluster tool is not installed here\nreadiness_probe: k3d cluster list -> bash: k3d: command not found\nautomated_checks: go test ./... -> ok, all packages pass\n\nTEST_VERDICT: PASS\n",
+			bodySuffix: "",
+			want:       testOutcomeInfraFailure,
+			wantStatus: "failed",
+		},
+		{
+			name:       "a_prose_probe_whose_url_reads_as_ready_routes",
+			status:     "completed",
+			output:     "surface_kind: server\napp_started: false\nunable_to_run_reason: nothing is listening in this sandbox\nreadiness_probe: curl -fsS http://127.0.0.1:8080/health/ready -> connection refused\nautomated_checks: go test ./... -> ok, all packages pass\n\nTEST_VERDICT: PASS\n",
+			bodySuffix: "",
+			want:       testOutcomeInfraFailure,
+			wantStatus: "failed",
+		},
+		{
+			name:       "a_prose_probe_claiming_nothing_stays_missing_evidence",
+			status:     "completed",
+			output:     "surface_kind: web\napp_started: false\nunable_to_run_reason: I did not get to the ui\nreadiness_probe: curl -fsS http://127.0.0.1:5173/ -> (no output captured)\nautomated_checks: go test ./... -> ok, all packages pass\n\nTEST_VERDICT: PASS\n",
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
 			name:       "a_prose_report_without_a_probe_stays_missing_evidence",
 			status:     "completed",
 			output:     "surface_kind: k8s\napp_started: false\nunable_to_run_reason: this host has no kubernetes cluster\nautomated_checks: go test ./... -> ok, exit code 0\n\nTEST_VERDICT: PASS\n",
@@ -4136,5 +4214,37 @@ func TestRouteTestResult_UnstartableSurfaceEscalatesWhenOpenPRDisabled(t *testin
 	}
 	if reason := tasks.Reason("t-surface-off"); !strings.Contains(reason, "k8s") {
 		t.Errorf("reason = %q, want the surface named", reason)
+	}
+}
+
+func TestUnstartableSurface_ProseExemptSurfacesNeverRoute(t *testing.T) {
+	t.Parallel()
+	checks := "automated_checks: go test ./... -> ok, all packages pass\n"
+	for _, surface := range []string{"library", "docs", "none"} {
+		t.Run(surface, func(t *testing.T) {
+			t.Parallel()
+			report := "surface_kind: " + surface + "\napp_started: false\n" +
+				"unable_to_run_reason: no runnable surface\n" +
+				"readiness_probe: ./bin/app --version -> command not found\n" +
+				checks + "\nTEST_VERDICT: PASS\n"
+			if got := unstartableSurface(report, TaskInfo{}); got != "" {
+				t.Fatalf("unstartableSurface = %q, want no route for an exempt surface", got)
+			}
+		})
+	}
+}
+
+func TestUnstartableSurface_ProseAndStructuredAgree(t *testing.T) {
+	t.Parallel()
+	prose := "surface_kind: web\napp_started: false\n" +
+		"unable_to_run_reason: nothing is listening in this sandbox\n" +
+		"readiness_probe: curl -fsS http://127.0.0.1:5173/ -> connection refused\n" +
+		"automated_checks: go test ./... -> ok, all packages pass\n\nTEST_VERDICT: PASS\n"
+	structured := `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web",` +
+		`"app_started":false,"start_command":"","unable_to_run_reason":"nothing is listening in this sandbox",` +
+		`"readiness_probe":{"command":"curl -fsS http://127.0.0.1:5173/","output":"connection refused","status":"unavailable"},` +
+		`"manual_probes":[],"automated_checks":[{"command":"go test ./...","output":"ok, all packages pass"}]}`
+	if got, want := unstartableSurface(prose, TaskInfo{}), unstartableSurface(structured, TaskInfo{}); got != want {
+		t.Fatalf("prose routed to %q but the same report structured routed to %q", got, want)
 	}
 }
