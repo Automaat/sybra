@@ -46,6 +46,7 @@ const (
 	testVerdictOutcomeKey      = "outcome"
 	testFailureFingerprintKey  = "failure_fingerprint"
 	testSurfaceUnavailableKey  = "surface_unavailable"
+	testSchemaReaskKey         = "schema_reask"
 	testFailuresHeading        = "## Test Failures"
 	acceptanceLedgerHeading    = "## Acceptance Ledger"
 	// resolvedTestFailuresHeading is what a stale "## Test Failures" section
@@ -87,6 +88,19 @@ const (
 	// runner is told exactly which machine-checkable evidence its prior report
 	// lacked, rather than being re-run blind.
 	testingReaskNoteVar = "testing_reask_note"
+
+	// schemaReask is sent when a prose report already claims, in its own
+	// fields, that the surface could not be started. Whether a transcript
+	// proves that claim is not decidable from free prose, so the runner is
+	// asked for the same report in the schema the router can check rather
+	// than having its wording refereed.
+	schemaReask = "Your PASS report says the product surface could not be started on this host. " +
+		"That routes the task to a PR instead of a rerun, but only from a schema-shaped report. " +
+		"Re-emit the SAME findings as the JSON verdict object the output schema defines: " +
+		"surface_kind, app_started, unable_to_run_reason, a readiness_probe whose command, output " +
+		"and status fields are filled in separately, and automated_checks carrying each command " +
+		"with its recorded result. Do not change what you observed, and do not start the surface " +
+		"if it genuinely cannot start here."
 
 	missingEvidenceReask = "Your previous FAIL report was rejected because it lacked machine-checkable " +
 		"evidence. For EVERY claimed defect you MUST include: the exact command you ran, its verbatim " +
@@ -242,7 +256,7 @@ func clearTestVerdictVars(wfExec *Execution) {
 	if wfExec == nil || wfExec.Variables == nil {
 		return
 	}
-	for _, suffix := range []string{".verdict", "." + testVerdictOutcomeKey, "." + testVerdictTaintedKey, "." + testFailureFingerprintKey, "." + testSurfaceUnavailableKey} {
+	for _, suffix := range []string{".verdict", "." + testVerdictOutcomeKey, "." + testVerdictTaintedKey, "." + testFailureFingerprintKey, "." + testSurfaceUnavailableKey, "." + testSchemaReaskKey} {
 		delete(wfExec.Variables, "step."+testVerdictSourceStep+suffix)
 	}
 }
@@ -528,6 +542,7 @@ func prepareTestVerdictAttemptVars(wfExec *Execution, stepID, body string) {
 	delete(wfExec.Variables, "step."+stepID+"."+testVerdictOutcomeKey)
 	delete(wfExec.Variables, "step."+stepID+"."+testFailureFingerprintKey)
 	delete(wfExec.Variables, "step."+stepID+"."+testSurfaceUnavailableKey)
+	delete(wfExec.Variables, "step."+stepID+"."+testSchemaReaskKey)
 }
 
 func (e *Engine) prepareTestStepCompletion(taskID string, t TaskInfo, output *StepOutput, wfExec *Execution, body *string) error {
@@ -1471,6 +1486,9 @@ func applyTestVerdictCompletion(wfExec *Execution, output *StepOutput, body stri
 	}
 	if output.Status == "completed" && outcome == testOutcomePass && v == "PASS" {
 		if ok, reason := hasManualPassEvidence(output.Output, t); !ok {
+			if proseUnstartableClaim(output.Output, t) {
+				wfExec.SetVar("step."+output.StepID+"."+testSchemaReaskKey, "1")
+			}
 			if surface := unstartableSurface(output.Output, t); surface != "" {
 				wfExec.SetVar("step."+output.StepID+"."+testVerdictOutcomeKey, testOutcomeInfraFailure)
 				wfExec.SetVar("step."+output.StepID+"."+testSurfaceUnavailableKey, surface)
@@ -1507,13 +1525,55 @@ func appendTestProtocolViolation(output, detail string) string {
 	return strings.TrimRight(output, "\n") + "\n\n" + msg
 }
 
+// proseUnstartableClaim reports whether a non-structured PASS already says, in
+// its own fields, that the product surface could not be started here. Only the
+// structural fields are read. Whether a transcript proves the claim is left to
+// the schema-shaped re-emission, because deciding it from free prose needs a
+// vocabulary of what a failure reads like, and every word added to catch a
+// report that skipped the surface rejects an honest one that used the word
+// plainly.
+func proseUnstartableClaim(output string, t TaskInfo) bool {
+	if _, structured := parseStructuredTestOutput(output); structured {
+		return false
+	}
+	surface := normalizeSurfaceKind(firstPlainEvidenceField(output, "surface_kind", "surface kind"))
+	if surface == "" || isManualTestExemption(surface, t) {
+		return false
+	}
+	if surface == "library" || surface == "docs" || surface == "none" {
+		return false
+	}
+	if !plainReportDeniesStart(output) {
+		return false
+	}
+	if firstPlainEvidenceField(output, "unable_to_run_reason", "unable to run manual test") == "" {
+		return false
+	}
+	if firstPlainEvidenceField(output, "readiness_probe", "readiness probe") == "" {
+		return false
+	}
+	return strings.TrimSpace(testFailSectionOf(output)) == ""
+}
+
+// plainReportDeniesStart reads the app_started field and treats anything it
+// cannot read as started, so an unreadable value never earns the claim.
+func plainReportDeniesStart(output string) bool {
+	v := strings.ToLower(strings.TrimSpace(firstPlainEvidenceField(output, "app_started", "app started")))
+	if v == "" {
+		return false
+	}
+	first := strings.Trim(strings.Fields(v)[0], " \t`\"'.,;:-")
+	switch first {
+	case "false", "no", "not", "never":
+		return true
+	}
+	return false
+}
+
 func unstartableSurface(output string, t TaskInfo) string {
 	parsed, ok := parseStructuredTestOutput(output)
 	if !ok {
-		parsed, ok = plainTextAsStructured(output)
-		if !ok {
-			return ""
-		}
+		return ""
 	}
 	if strings.ToUpper(strings.TrimSpace(parsed.Verdict)) != "PASS" {
 		return ""
@@ -1546,186 +1606,6 @@ func unstartableSurface(output string, t TaskInfo) string {
 	return surface
 }
 
-// probeStatedAbsenceTokens are the phrases that describe what a probe found,
-// as opposed to the label a runner applies to its own result. Only these
-// outrank an exit status: a list-style probe exits zero and prints that
-// nothing is there, while "(status: unavailable)" beside a zero exit is a
-// claim the transcript does not support.
-var probeStatedAbsenceTokens = []string{
-	"connection refused", "refused", "cannot connect", "could not connect",
-	"unable to connect", "command not found", "not found", "no such",
-	"not installed", "not running", "does not exist", "no cluster",
-	"no clusters", "no current context", "no contexts", "timed out",
-	"permission denied", "no route to host", "cannot open display",
-	"no display", "no driver", "empty reply",
-}
-
-// plainSurfaceAbsentTokens is the residual prose-only rule. A structured
-// tester declares an unavailable status in its own field; a prose tester has
-// to work the words into the transcript, so this list is what stands in for
-// that field and it has to cover what the real tools print.
-var plainSurfaceAbsentTokens = []string{
-	"unavailable", "unreachable", "not available", "missing",
-	"connection refused", "refused", "cannot connect", "could not connect",
-	"unable to connect", "command not found", "not found", "no such",
-	"not installed", "not running", "is not running", "does not exist",
-	"no cluster", "no clusters", "no current context", "no contexts",
-	"timed out", "timeout", "permission denied", "no route to host",
-	"cannot open display", "no display", "no driver", "empty reply",
-}
-
-// plainTextAsStructured lifts a prose test report into the same shape a
-// schema-enforcing provider returns, so one gate judges both. Providers that
-// ignore the output schema answer in prose, and a second gate written against
-// prose drifted weaker than the structured one it was meant to mirror.
-func plainTextAsStructured(output string) (structuredTestOutput, bool) {
-	surface := firstPlainEvidenceField(output, "surface_kind", "surface kind")
-	if strings.TrimSpace(surface) == "" {
-		return structuredTestOutput{}, false
-	}
-	parsed := structuredTestOutput{
-		Verdict:           "PASS",
-		Outcome:           testOutcomePass,
-		FailuresMarkdown:  plainFailuresSection(output),
-		SurfaceKind:       surface,
-		AppStarted:        flexBool(!plainFieldDeniesStart(output)),
-		UnableToRunReason: firstPlainEvidenceField(output, "unable_to_run_reason", "unable to run manual test"),
-	}
-	probes := plainEvidenceValues(output, "readiness_probe", "readiness probe")
-	// Exactly one probe, or none: a second line is the one that would
-	// contradict the route, so a report carrying two is judged on neither.
-	if len(probes) == 1 {
-		command, transcript := splitPlainEvidenceLine(probes[0])
-		parsed.ReadinessProbe = readinessProbeEvidence{
-			Command: command,
-			Output:  evidenceText(transcript),
-			Status:  evidenceText(plainProbeStatus(probes[0])),
-		}
-	}
-	for _, line := range plainEvidenceValues(output, "automated_checks", "automated checks", "regression check", "test harness") {
-		if hasFailureCheckResult(strings.ToLower(line)) {
-			continue
-		}
-		command, transcript := splitPlainEvidenceLine(line)
-		parsed.AutomatedChecks = append(parsed.AutomatedChecks, automatedCheckEvidence{
-			Command: command,
-			Output:  evidenceText(transcript),
-		})
-	}
-	for _, line := range plainEvidenceValues(output, "manual_probes", "manual probes", "manual probe") {
-		if hasFailureCheckResult(strings.ToLower(line)) {
-			continue
-		}
-		command, transcript := splitPlainEvidenceLine(line)
-		parsed.ManualProbes = append(parsed.ManualProbes, manualProbeEvidence{
-			Command: command,
-			Output:  evidenceText(transcript),
-		})
-	}
-	return parsed, true
-}
-
-// plainFieldDeniesStart reports whether the report explicitly says the app was
-// not started. Anything else counts as started, so a qualified or unreadable
-// value fails closed rather than opening a PR that claims the host could not
-// start what the report says it started.
-// plainFailuresSection drops a failures heading whose body says nothing. A
-// prose tester writes "## Test Failures / None." on a PASS, where a structured
-// one simply sends an empty string.
-func plainFailuresSection(output string) string {
-	section := testFailSectionOf(output)
-	if section == "" {
-		return ""
-	}
-	var body []string
-	for line := range strings.SplitSeq(section, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || isTestFailuresHeading(trimmed) ||
-			strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") ||
-			strings.HasPrefix(trimmed, testVerdictPass) || strings.HasPrefix(trimmed, testVerdictFail) {
-			continue
-		}
-		body = append(body, strings.ToLower(strings.Trim(trimmed, " -*.`")))
-	}
-	joined := strings.TrimSpace(strings.Join(body, " "))
-	if joined == "" {
-		return ""
-	}
-	for _, empty := range []string{"none", "n/a", "na", "nothing", "no failures"} {
-		if strings.HasPrefix(joined, empty) {
-			return ""
-		}
-	}
-	return section
-}
-
-func plainFieldDeniesStart(output string) bool {
-	v := strings.ToLower(strings.TrimSpace(firstPlainEvidenceField(output, "app_started", "app started")))
-	if v == "" {
-		return true
-	}
-	first := strings.Trim(strings.Fields(v)[0], " \t`\"'.,;:-")
-	return first == "false" || first == "no"
-}
-
-// splitPlainEvidenceLine separates the command a prose line names from the
-// result it recorded. The command is excluded from the transcript so a path or
-// flag reading as success or failure never decides what the run observed.
-func splitPlainEvidenceLine(line string) (command, transcript string) {
-	lower := strings.ToLower(line)
-	earliest, at := "", -1
-	for _, sep := range []string{"->", "=>", "output:", "observed:", "actual:", " -- "} {
-		if i := strings.Index(lower, sep); i >= 0 && (at < 0 || i < at) {
-			earliest, at = sep, i
-		}
-	}
-	if earliest == "" {
-		return strings.TrimSpace(lower), ""
-	}
-	before, after, _ := strings.Cut(lower, earliest)
-	return strings.TrimSpace(before), strings.TrimSpace(after)
-}
-
-// plainProbeStatus stands in for the status field a structured tester fills.
-// The whole line is scanned for a recorded HTTP response, because the split
-// keeps the command out of the transcript and a runner can put the answer it
-// got on the command side of the separator.
-func plainProbeStatus(probe string) string {
-	lower := strings.ToLower(probe)
-	if probeAnsweredPattern.MatchString(lower) || probeNumericAnswerPattern.MatchString(lower) {
-		return ""
-	}
-	// A zero exit is the surface answering only when the line says nothing
-	// about what was missing: a list command exits zero to report an absence.
-	if probeZeroExitPattern.MatchString(lower) && !containsAny(lower, probeStatedAbsenceTokens...) {
-		return ""
-	}
-	if containsAny(lower, plainSurfaceAbsentTokens...) {
-		return "unavailable"
-	}
-	return ""
-}
-
-func plainEvidenceValues(output string, names ...string) []string {
-	var values []string
-	for _, line := range reportScanLines(output) {
-		field, value, ok := strings.Cut(line, ":")
-		if !ok {
-			continue
-		}
-		field = strings.ReplaceAll(strings.Trim(strings.ToLower(field), "-* \t`"), " ", "_")
-		for _, name := range names {
-			if field == strings.ReplaceAll(strings.ToLower(strings.TrimSpace(name)), " ", "_") {
-				if v := strings.TrimSpace(value); v != "" {
-					values = append(values, v)
-				}
-				break
-			}
-		}
-	}
-	return values
-}
-
 func hasUnstartableSurfaceEvidence(parsed structuredTestOutput) bool {
 	for _, c := range parsed.AutomatedChecks {
 		if recordedCheckSucceeded(c.Command, c.Output, c.Observed) || hasRawRegressionCheckEvidence(c.Raw) {
@@ -1753,18 +1633,7 @@ func recordedCheckSucceeded(command string, output, observed evidenceText) bool 
 
 var probeSuccessTokenPattern = regexp.MustCompile(`\b(ok|pass|passed|success|successful|healthy|serving|ready|2\d\d)\b`)
 
-var probeZeroExitPattern = regexp.MustCompile(`\bexit (?:code|status) 0\b`)
-
-// probeNumericAnswerPattern catches a status code reported as a bare number,
-// which is what `curl -w '%{http_code}'` prints. It requires a word naming what
-// the number is, so an address or a port never reads as a response.
-var probeNumericAnswerPattern = regexp.MustCompile(`\b(?:http_code|status|code|returned|printed|responded|answered)\b[^\d]{0,12}[1-5]\d\d\b`)
-
-var probeAnsweredPattern = regexp.MustCompile(`\bhttp/\d(?:\.\d)?\s+\d{3}\b|` +
-	`\b[1-5]\d\d\s+(?:ok|created|accepted|no content|moved permanently|found|not modified|` +
-	`bad request|unauthorized|payment required|forbidden|not found|method not allowed|` +
-	`request timeout|conflict|gone|unprocessable entity|too many requests|` +
-	`internal server error|not implemented|bad gateway|service unavailable|gateway timeout)\b`)
+var probeAnsweredPattern = regexp.MustCompile(`\bhttp/\d(?:\.\d)?\s+\d{3}\b`)
 
 func probeTranscriptReportsAbsence(parts ...string) bool {
 	lower := strings.ToLower(strings.TrimSpace(strings.Join(collectNonEmptyStrings(parts...), "\n")))
@@ -1774,17 +1643,10 @@ func probeTranscriptReportsAbsence(parts ...string) bool {
 	if probeAnsweredPattern.MatchString(lower) {
 		return false
 	}
-	// A stated absence outranks the scans below: every list-style probe
-	// (cluster list, get-contexts, docker ps) exits zero and prints that
-	// nothing is there, so an exit status must not overrule the sentence
-	// beside it.
-	if containsAny(lower, probeStatedAbsenceTokens...) && !probeSuccessTokenPattern.MatchString(lower) {
-		return true
-	}
 	if hasFailureCheckResult(lower) {
 		return true
 	}
-	return !probeSuccessTokenPattern.MatchString(lower) && !probeZeroExitPattern.MatchString(lower)
+	return !probeSuccessTokenPattern.MatchString(lower)
 }
 
 func readinessProbeReportsUnavailable(probe readinessProbeEvidence) bool {
@@ -2671,7 +2533,11 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 		// Protocol violations describe the runner, not the code. Re-ask the
 		// tester with the specific contract it broke before involving a human.
 		if violation == testProtocolMissingEvidence {
-			return e.retryOrEscalateTransient(taskID, step.ID, testOutcomeMissingEvidence, missingEvidenceReask,
+			reask := missingEvidenceReask
+			if wfExec.Variables["step."+testVerdictSourceStep+"."+testSchemaReaskKey] != "" {
+				reask = schemaReask
+			}
+			return e.retryOrEscalateTransient(taskID, step.ID, testOutcomeMissingEvidence, reask,
 				"test-runner report lacked machine-checkable evidence after auto-retries — needs local reproduction",
 				"protocol violation: "+violation, "workflow.test.protocol-violation", wfExec, t)
 		}
