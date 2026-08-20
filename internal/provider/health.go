@@ -642,13 +642,15 @@ func (c *Checker) ReportAuthFailure(provider, reason string) {
 	if c == nil {
 		return
 	}
-	if reason == "" {
-		reason = authFailureReason
+	detail := reason
+	if detail == authFailureReason {
+		detail = ""
 	}
 	c.setStatus(provider, Status{
 		Provider:  provider,
 		Healthy:   false,
-		Reason:    reason,
+		Reason:    authFailureReason,
+		Detail:    detail,
 		LastCheck: c.now(),
 	}, false)
 }
@@ -777,7 +779,6 @@ func (c *Checker) SetProviderEnabled(provider string, v bool) {
 		s.Reason = "disabled"
 	} else {
 		delete(c.authRunFailed, provider)
-		delete(c.authHeldUntil, provider)
 		if s.Reason == "disabled" || s.Reason == authFailureReason {
 			s.Reason = "unknown"
 		}

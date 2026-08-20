@@ -1063,3 +1063,32 @@ func TestChecker_BlockedLivenessProbeEmitsOneFlipAndKeepsDetailHonest(t *testing
 		t.Fatalf("detail = %q, want no unrelated explanation beside a logged_out reason", snap.Detail)
 	}
 }
+
+func TestChecker_ReEnablingDoesNotCancelTheAuthCooldown(t *testing.T) {
+	c, _, _ := newTestChecker(t)
+	c.setStatus(providerid.Claude, Status{Provider: providerid.Claude, Healthy: true, Reason: "ok"}, true)
+	c.ReportAuthFailure(providerid.Claude, "logged_out")
+
+	c.SetProviderEnabled(providerid.Claude, false)
+	c.SetProviderEnabled(providerid.Claude, true)
+	c.setStatus(providerid.Claude, Status{Provider: providerid.Claude, Healthy: true, Reason: "ok"}, true)
+
+	if c.IsHealthy(providerid.Claude) {
+		t.Fatal("a toggle is not a login: the cooldown was cancelled and dispatch would resume against a logged-out provider")
+	}
+}
+
+func TestChecker_AuthFailureUnderAnyReasonStillHolds(t *testing.T) {
+	c, _, _ := newTestChecker(t)
+	c.SetProviderEnabled(providerid.Copilot, true)
+	c.setStatus(providerid.Copilot, Status{Provider: providerid.Copilot, Healthy: true, Reason: "ok"}, true)
+	c.ReportAuthFailure(providerid.Copilot, "invalid_api_key")
+	c.setStatus(providerid.Copilot, Status{Provider: providerid.Copilot, Healthy: true, Reason: "ok"}, true)
+
+	if c.IsHealthy(providerid.Copilot) {
+		t.Fatal("an auth failure reported under another reason left the provider schedulable")
+	}
+	if got := c.Reason(providerid.Copilot); got != "logged_out" {
+		t.Fatalf("reason = %q, want the caller's wording kept out of the key the guards read", got)
+	}
+}
