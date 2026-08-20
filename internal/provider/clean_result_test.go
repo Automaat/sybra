@@ -3,6 +3,8 @@ package provider
 import (
 	"strings"
 	"testing"
+
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 // A provider usage cap arrives on a subtype:"success" result with the limit
@@ -64,5 +66,64 @@ func TestNonCleanResultContent_UnaffectedByLengthBudget(t *testing.T) {
 	got := ClassifyClaudeError(ErrorSample{Content: long})
 	if got.Signal != SignalRateLimit {
 		t.Errorf("signal = %v, want SignalRateLimit — a failed run's content is still evidence", got.Signal)
+	}
+}
+
+// The auth needles have the same problem the limit needles had: "not logged
+// in" is exactly what an agent writes when it works on a login path. A run the
+// provider served is not a refusal, and a refusal is one terse line.
+func TestAuthContent_DistinguishesProviderRefusalFromAgentProse(t *testing.T) {
+	prose := "I finished the change to the login error path. The handler previously " +
+		"returned a bare 401 with no body, so a caller could not tell an expired token " +
+		"from a missing one. It now writes the message \"not logged in\" alongside the " +
+		"status, and the tests cover both branches plus the refresh path. Nothing else " +
+		"in the package changed, and the existing callers keep compiling."
+	classifiers := map[string]func(ErrorSample) Classification{
+		providerid.Claude:   ClassifyClaudeError,
+		providerid.Codex:    ClassifyCodexError,
+		providerid.Copilot:  ClassifyCopilotError,
+		providerid.OpenCode: ClassifyOpenCodeError,
+	}
+	for name, classify := range classifiers {
+		t.Run(name+"_clean_run", func(t *testing.T) {
+			got := classify(ErrorSample{Content: prose, ContentIsCleanResult: true})
+			if got.Signal == SignalAuthFailure {
+				t.Fatalf("a run the provider served was classified as an auth failure: %+v", got)
+			}
+		})
+		t.Run(name+"_failed_run_long_report", func(t *testing.T) {
+			got := classify(ErrorSample{Content: prose})
+			if got.Signal == SignalAuthFailure {
+				t.Fatalf("an agent report was classified as an auth failure: %+v", got)
+			}
+		})
+	}
+}
+
+func TestAuthContent_TerseRefusalStillClassifies(t *testing.T) {
+	cases := map[string]struct {
+		classify func(ErrorSample) Classification
+		content  string
+	}{
+		providerid.Claude:   {ClassifyClaudeError, "Not logged in · Please run /login"},
+		providerid.Codex:    {ClassifyCodexError, "Not logged in. Please run: codex login"},
+		providerid.Copilot:  {ClassifyCopilotError, "not logged in"},
+		providerid.OpenCode: {ClassifyOpenCodeError, "not authenticated"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := tc.classify(ErrorSample{Content: tc.content})
+			if got.Signal != SignalAuthFailure {
+				t.Fatalf("a terse provider refusal was not classified as an auth failure: %+v", got)
+			}
+		})
+	}
+}
+
+func TestAuthContent_StderrRefusalIgnoresContentLength(t *testing.T) {
+	long := strings.Repeat("the agent wrote a long report about the login path. ", 40)
+	got := ClassifyClaudeError(ErrorSample{Stderr: "not logged in", Content: long})
+	if got.Signal != SignalAuthFailure {
+		t.Fatalf("a refusal on the CLI's own channel was ignored: %+v", got)
 	}
 }
