@@ -1510,7 +1510,7 @@ func appendTestProtocolViolation(output, detail string) string {
 func unstartableSurface(output string, t TaskInfo) string {
 	parsed, ok := parseStructuredTestOutput(output)
 	if !ok {
-		return ""
+		return unstartableSurfacePlainText(output, t)
 	}
 	if strings.ToUpper(strings.TrimSpace(parsed.Verdict)) != "PASS" {
 		return ""
@@ -1541,6 +1541,39 @@ func unstartableSurface(output string, t TaskInfo) string {
 		return ""
 	}
 	return surface
+}
+
+func unstartableSurfacePlainText(output string, t TaskInfo) string {
+	surface := normalizeSurfaceKind(firstPlainEvidenceField(output, "surface_kind", "surface kind"))
+	if surface == "" || isManualTestExemption(surface, t) {
+		return ""
+	}
+	if surface == "library" || surface == "docs" || surface == "none" {
+		return ""
+	}
+	if containsAny(strings.ToLower(output), "app_started: true", "app started: true") {
+		return ""
+	}
+	if firstPlainEvidenceField(output, "unable_to_run_reason", "unable to run manual test") == "" {
+		return ""
+	}
+	if !plainProbeReportsUnavailable(firstPlainEvidenceField(output, "readiness_probe", "readiness probe")) {
+		return ""
+	}
+	if !hasPlainTextRegressionCheckEvidence(output) {
+		return ""
+	}
+	return surface
+}
+
+func plainProbeReportsUnavailable(probe string) bool {
+	if strings.TrimSpace(probe) == "" {
+		return false
+	}
+	if !containsAny(strings.ToLower(probe), "unavailable", "unreachable", "not available", "missing") {
+		return false
+	}
+	return probeTranscriptReportsAbsence(probe)
 }
 
 func hasUnstartableSurfaceEvidence(parsed structuredTestOutput) bool {
