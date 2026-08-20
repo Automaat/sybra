@@ -3877,3 +3877,38 @@ func TestBankEstimatedCost_ConcurrentCallsAreSafe(t *testing.T) {
 		t.Fatalf("CostUSD = %.4f after concurrent banking, want the stable estimate", got)
 	}
 }
+
+// The provider classifier narrows its auth needles for content the agent
+// wrote, so this is the one place that distinction is established. Without the
+// flag every terminal result is treated as a CLI surface and an agent's report
+// about a login path parks its provider again.
+func TestBuildErrorSample_MarksTheAgentAuthoredContent(t *testing.T) {
+	t.Parallel()
+	stream := []StreamEvent{
+		{Type: "assistant", Content: "working on the login path"},
+		{Type: "result", Content: "the handler now returns \"not logged in\" for an expired token"},
+	}
+	sample := buildErrorSample("", stream)
+	if !sample.ContentIsAgentMessage {
+		t.Fatal("a terminal result was not marked as agent-authored, so its prose is matched as a CLI refusal")
+	}
+	if sample.Content != stream[1].Content {
+		t.Fatalf("content = %q, want the terminal result", sample.Content)
+	}
+	if empty := buildErrorSample("boom", []StreamEvent{}); empty.ContentIsAgentMessage {
+		t.Fatal("a sample with no terminal result claimed agent-authored content")
+	}
+
+	// A provider adapter folds a CLI error envelope into a result event, so an
+	// error-shaped result is the CLI speaking, not the agent.
+	for _, cliError := range []StreamEvent{
+		{Type: "result", Content: "not logged in", ErrorType: "error"},
+		{Type: "result", Content: "not logged in", ErrorStatus: 401},
+		{Type: "result", Content: "not logged in", Subtype: "error_during_execution"},
+	} {
+		got := buildErrorSample("", []StreamEvent{cliError})
+		if got.ContentIsAgentMessage {
+			t.Fatalf("a CLI error envelope was read as agent prose, so a bare refusal is dropped: %+v", cliError)
+		}
+	}
+}
