@@ -4180,3 +4180,47 @@ func TestRouteTestResult_ProseClaimReasksForSchemaNotEvidence(t *testing.T) {
 		t.Fatal("the runner was told its evidence was missing when its own fields already made the claim")
 	}
 }
+
+func TestReaskNotes_NameNoRoutingConsequence(t *testing.T) {
+	t.Parallel()
+	for name, note := range map[string]string{
+		"schema":          schemaReask,
+		"missing":         missingEvidenceReask,
+		"fix suggestions": fixSuggestionsReask,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			lower := strings.ToLower(note)
+			for _, leak := range []string{"routes the task", "opens a pr", "instead of a rerun", string(taskstatus.ReadyPR)} {
+				if strings.Contains(lower, leak) {
+					t.Fatalf("re-ask reaches the runner prompt and names a routing consequence (%q):\n%s", leak, note)
+				}
+			}
+		})
+	}
+}
+
+func TestRouteTestResult_ProseClaimEscalatesWithItsOwnReason(t *testing.T) {
+	t.Parallel()
+	e, tasks := makeTestEngine(t)
+	tasks.Put(TaskInfo{ID: "t-prose-exhausted", Status: taskstatus.Testing})
+	wf := &Execution{
+		WorkflowID: "testing-task",
+		StartedAt:  time.Now().UTC(),
+		Variables: map[string]string{
+			"step." + testVerdictSourceStep + "." + testVerdictTaintedKey: testProtocolMissingEvidence,
+			"step." + testVerdictSourceStep + "." + testSchemaReaskKey:    "1",
+			testingAutoRetryKey(testOutcomeMissingEvidence):               strconv.Itoa(testingAutoRetryCap),
+		},
+	}
+	if _, err := e.execRouteTestResult("t-prose-exhausted", &Step{ID: "route_test"}, wf, mustGetTaskInfo(t, tasks, "t-prose-exhausted")); err != nil {
+		t.Fatal(err)
+	}
+	reason := tasks.Reason("t-prose-exhausted")
+	if strings.Contains(reason, "lacked machine-checkable evidence") {
+		t.Fatalf("the operator is sent after missing evidence for a report that had it: %q", reason)
+	}
+	if !strings.Contains(reason, "schema") {
+		t.Fatalf("reason = %q, want the operator pointed at the provider's schema support", reason)
+	}
+}

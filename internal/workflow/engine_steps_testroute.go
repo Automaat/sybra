@@ -95,12 +95,15 @@ const (
 	// asked for the same report in the schema the router can check rather
 	// than having its wording refereed.
 	schemaReask = "Your PASS report says the product surface could not be started on this host. " +
-		"That routes the task to a PR instead of a rerun, but only from a schema-shaped report. " +
 		"Re-emit the SAME findings as the JSON verdict object the output schema defines: " +
 		"surface_kind, app_started, unable_to_run_reason, a readiness_probe whose command, output " +
 		"and status fields are filled in separately, and automated_checks carrying each command " +
 		"with its recorded result. Do not change what you observed, and do not start the surface " +
 		"if it genuinely cannot start here."
+
+	missingEvidenceHumanReason = "test-runner report lacked machine-checkable evidence after auto-retries — needs local reproduction"
+
+	schemaReaskHumanReason = "test-runner says the product surface cannot start on this host but never emitted the schema form — check whether its provider honours the output schema"
 
 	missingEvidenceReask = "Your previous FAIL report was rejected because it lacked machine-checkable " +
 		"evidence. For EVERY claimed defect you MUST include: the exact command you ran, its verbatim " +
@@ -2533,12 +2536,11 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 		// Protocol violations describe the runner, not the code. Re-ask the
 		// tester with the specific contract it broke before involving a human.
 		if violation == testProtocolMissingEvidence {
-			reask := missingEvidenceReask
+			reask, humanReason := missingEvidenceReask, missingEvidenceHumanReason
 			if wfExec.Variables["step."+testVerdictSourceStep+"."+testSchemaReaskKey] != "" {
-				reask = schemaReask
+				reask, humanReason = schemaReask, schemaReaskHumanReason
 			}
-			return e.retryOrEscalateTransient(taskID, step.ID, testOutcomeMissingEvidence, reask,
-				"test-runner report lacked machine-checkable evidence after auto-retries — needs local reproduction",
+			return e.retryOrEscalateTransient(taskID, step.ID, testOutcomeMissingEvidence, reask, humanReason,
 				"protocol violation: "+violation, "workflow.test.protocol-violation", wfExec, t)
 		}
 		return e.retryOrEscalateTransient(taskID, step.ID, testOutcomeProtocolViolation, fixSuggestionsReask,
