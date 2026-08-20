@@ -4357,3 +4357,106 @@ func TestUnstartableSurface_ProseRoundTwoPayloads(t *testing.T) {
 		})
 	}
 }
+
+func TestUnstartableSurface_StructuredPathKeepsItsBar(t *testing.T) {
+	t.Parallel()
+	checks := `"automated_checks":[{"command":"go test ./...","output":"ok, all packages pass"}]`
+	cases := []struct {
+		name  string
+		probe string
+		want  string
+	}{
+		{
+			name:  "an app that answered while reporting a missing page",
+			probe: `{"command":"curl -fsS http://127.0.0.1:5173/","output":"ok, 200 response, but the /users page said not found","status":"unavailable"}`,
+		},
+		{
+			name:  "a healthy surface reporting a stopped worker",
+			probe: `{"command":"curl -fsS http://127.0.0.1:5173/health","output":"healthy, but the worker is not running","status":"unavailable"}`,
+		},
+		{
+			name:  "a list command that exited zero and found nothing",
+			probe: `{"command":"k3d cluster list","output":"exit code 0, No clusters found","status":"unavailable"}`,
+			want:  "k8s",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			report := `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"k8s",` +
+				`"app_started":false,"start_command":"","unable_to_run_reason":"nothing to reach here",` +
+				`"readiness_probe":` + tc.probe + `,"manual_probes":[],` + checks + `}`
+			want := tc.want
+			if want != "" {
+				want = "k8s"
+			}
+			if got := unstartableSurface(report, TaskInfo{}); got != want {
+				t.Fatalf("unstartableSurface = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestUnstartableSurface_ProseRoundThreePayloads(t *testing.T) {
+	t.Parallel()
+	checks := "automated_checks: go test ./... -> ok, all packages pass\n"
+	head := "surface_kind: web\napp_started: false\nunable_to_run_reason: nothing is listening\n"
+	cases := []struct {
+		name   string
+		report string
+		want   string
+	}{
+		{
+			name:   "a failures body inside a fence",
+			report: head + "readiness_probe: curl -fsS http://127.0.0.1:5173/ -> connection refused\n" + checks + "\n## Test Failures\n\n```\nThe save button does nothing when submitted.\n```\n",
+		},
+		{
+			name:   "a failures body indented",
+			report: head + "readiness_probe: curl -fsS http://127.0.0.1:5173/ -> connection refused\n" + checks + "\n## Test Failures\n\n    The save button does nothing when submitted.\n",
+		},
+		{
+			name:   "a status code printed as a bare number",
+			report: head + "readiness_probe: curl -o /dev/null -w '%{http_code}' http://127.0.0.1:5173/ printed 200 -> unavailable\n" + checks,
+		},
+		{
+			name:   "a result stranded between two separators",
+			report: head + "readiness_probe: curl -sS http://127.0.0.1:5173/ output: page rendered, exit code 0 -> unavailable\n" + checks,
+		},
+		{
+			name:   "a success recorded before a later separator",
+			report: head + "readiness_probe: curl -sS http://127.0.0.1:5173/ output: ok, 200 served -> unavailable\n" + checks,
+		},
+		{
+			name:   "a health endpoint that answered with a broken dependency",
+			report: head + "readiness_probe: curl -fsS http://127.0.0.1:5173/health -> ok, 200, {\"db\":\"connection refused\"}\n" + checks,
+		},
+		{
+			name:   "a denial that explains itself",
+			report: "surface_kind: web\napp_started: false (webkit is missing on this host)\nunable_to_run_reason: no browser\nreadiness_probe: curl -fsS http://127.0.0.1:5173/ -> connection refused\n" + checks,
+			want:   "web",
+		},
+		{
+			name:   "a denial written as a sentence",
+			report: "surface_kind: web\napp_started: no, the dev server never came up\nunable_to_run_reason: no browser\nreadiness_probe: curl -fsS http://127.0.0.1:5173/ -> connection refused\n" + checks,
+			want:   "web",
+		},
+		{
+			name:   "a failures section that says none with a reason",
+			report: head + "readiness_probe: curl -fsS http://127.0.0.1:5173/ -> connection refused\n" + checks + "\n## Test Failures\n\nNone - could not start the surface.\n",
+			want:   "web",
+		},
+		{
+			name:   "a failures section that says no failures observed",
+			report: head + "readiness_probe: curl -fsS http://127.0.0.1:5173/ -> connection refused\n" + checks + "\n## Test Failures\n\nNo failures observed.\n",
+			want:   "web",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := unstartableSurface(tc.report+"\nTEST_VERDICT: PASS\n", TaskInfo{}); got != tc.want {
+				t.Fatalf("unstartableSurface = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

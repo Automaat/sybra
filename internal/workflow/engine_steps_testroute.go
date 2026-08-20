@@ -1638,23 +1638,34 @@ func plainFailuresSection(output string) string {
 		return ""
 	}
 	var body []string
-	for _, line := range reportScanLines(section) {
-		if isTestFailuresHeading(line) || strings.HasPrefix(line, testVerdictPass) || strings.HasPrefix(line, testVerdictFail) {
+	for line := range strings.SplitSeq(section, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || isTestFailuresHeading(trimmed) ||
+			strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") ||
+			strings.HasPrefix(trimmed, testVerdictPass) || strings.HasPrefix(trimmed, testVerdictFail) {
 			continue
 		}
-		body = append(body, strings.ToLower(strings.Trim(line, " -*.`")))
+		body = append(body, strings.ToLower(strings.Trim(trimmed, " -*.`")))
 	}
 	joined := strings.TrimSpace(strings.Join(body, " "))
-	switch joined {
-	case "", "none", "n/a", "na", "nothing", "no failures":
+	if joined == "" {
 		return ""
+	}
+	for _, empty := range []string{"none", "n/a", "na", "nothing", "no failures"} {
+		if strings.HasPrefix(joined, empty) {
+			return ""
+		}
 	}
 	return section
 }
 
 func plainFieldDeniesStart(output string) bool {
-	v := strings.ToLower(strings.Trim(firstPlainEvidenceField(output, "app_started", "app started"), " \t`\"'.,;"))
-	return v == "" || v == "false" || v == "no"
+	v := strings.ToLower(strings.TrimSpace(firstPlainEvidenceField(output, "app_started", "app started")))
+	if v == "" {
+		return true
+	}
+	first := strings.Trim(strings.Fields(v)[0], " \t`\"'.,;:-")
+	return first == "false" || first == "no"
 }
 
 // splitPlainEvidenceLine separates the command a prose line names from the
@@ -1662,12 +1673,17 @@ func plainFieldDeniesStart(output string) bool {
 // flag reading as success or failure never decides what the run observed.
 func splitPlainEvidenceLine(line string) (command, transcript string) {
 	lower := strings.ToLower(line)
+	earliest, at := "", -1
 	for _, sep := range []string{"->", "=>", "output:", "observed:", "actual:", " -- "} {
-		if before, after, ok := strings.Cut(lower, sep); ok {
-			return strings.TrimSpace(before), strings.TrimSpace(after)
+		if i := strings.Index(lower, sep); i >= 0 && (at < 0 || i < at) {
+			earliest, at = sep, i
 		}
 	}
-	return strings.TrimSpace(lower), ""
+	if earliest == "" {
+		return strings.TrimSpace(lower), ""
+	}
+	before, after, _ := strings.Cut(lower, earliest)
+	return strings.TrimSpace(before), strings.TrimSpace(after)
 }
 
 // plainProbeStatus stands in for the status field a structured tester fills.
@@ -1676,7 +1692,12 @@ func splitPlainEvidenceLine(line string) (command, transcript string) {
 // got on the command side of the separator.
 func plainProbeStatus(probe string) string {
 	lower := strings.ToLower(probe)
-	if probeAnsweredPattern.MatchString(lower) {
+	if probeAnsweredPattern.MatchString(lower) || probeNumericAnswerPattern.MatchString(lower) {
+		return ""
+	}
+	// A zero exit is the surface answering only when the line says nothing
+	// about what was missing: a list command exits zero to report an absence.
+	if probeZeroExitPattern.MatchString(lower) && !containsAny(lower, probeStatedAbsenceTokens...) {
 		return ""
 	}
 	if containsAny(lower, plainSurfaceAbsentTokens...) {
@@ -1730,7 +1751,14 @@ func recordedCheckSucceeded(command string, output, observed evidenceText) bool 
 	return hasSuccessfulCheckResult(output, observed)
 }
 
-var probeSuccessTokenPattern = regexp.MustCompile(`\b(ok|pass|passed|success|successful|healthy|serving|ready|2\d\d)\b|\bexit (?:code|status) 0\b`)
+var probeSuccessTokenPattern = regexp.MustCompile(`\b(ok|pass|passed|success|successful|healthy|serving|ready|2\d\d)\b`)
+
+var probeZeroExitPattern = regexp.MustCompile(`\bexit (?:code|status) 0\b`)
+
+// probeNumericAnswerPattern catches a status code reported as a bare number,
+// which is what `curl -w '%{http_code}'` prints. It requires a word naming what
+// the number is, so an address or a port never reads as a response.
+var probeNumericAnswerPattern = regexp.MustCompile(`\b(?:http_code|status|code|returned|printed|responded|answered)\b[^\d]{0,12}[1-5]\d\d\b`)
 
 var probeAnsweredPattern = regexp.MustCompile(`\bhttp/\d(?:\.\d)?\s+\d{3}\b|` +
 	`\b[1-5]\d\d\s+(?:ok|created|accepted|no content|moved permanently|found|not modified|` +
@@ -1750,13 +1778,13 @@ func probeTranscriptReportsAbsence(parts ...string) bool {
 	// (cluster list, get-contexts, docker ps) exits zero and prints that
 	// nothing is there, so an exit status must not overrule the sentence
 	// beside it.
-	if containsAny(lower, probeStatedAbsenceTokens...) {
+	if containsAny(lower, probeStatedAbsenceTokens...) && !probeSuccessTokenPattern.MatchString(lower) {
 		return true
 	}
 	if hasFailureCheckResult(lower) {
 		return true
 	}
-	return !probeSuccessTokenPattern.MatchString(lower)
+	return !probeSuccessTokenPattern.MatchString(lower) && !probeZeroExitPattern.MatchString(lower)
 }
 
 func readinessProbeReportsUnavailable(probe readinessProbeEvidence) bool {
