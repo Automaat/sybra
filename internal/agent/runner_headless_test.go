@@ -3877,3 +3877,25 @@ func TestBankEstimatedCost_ConcurrentCallsAreSafe(t *testing.T) {
 		t.Fatalf("CostUSD = %.4f after concurrent banking, want the stable estimate", got)
 	}
 }
+
+// The provider classifier narrows its auth needles for content the agent
+// wrote, so this is the one place that distinction is established. Without the
+// flag every terminal result is treated as a CLI surface and an agent's report
+// about a login path parks its provider again.
+func TestBuildErrorSample_MarksTheAgentAuthoredContent(t *testing.T) {
+	t.Parallel()
+	stream := []StreamEvent{
+		{Type: "assistant", Content: "working on the login path"},
+		{Type: "result", Content: "the handler now returns \"not logged in\" for an expired token"},
+	}
+	sample := buildErrorSample("", stream)
+	if !sample.ContentIsAgentMessage {
+		t.Fatal("a terminal result was not marked as agent-authored, so its prose is matched as a CLI refusal")
+	}
+	if sample.Content != stream[1].Content {
+		t.Fatalf("content = %q, want the terminal result", sample.Content)
+	}
+	if empty := buildErrorSample("boom", nil); empty.ContentIsAgentMessage {
+		t.Fatal("a sample with no terminal result claimed agent-authored content")
+	}
+}

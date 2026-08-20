@@ -85,6 +85,7 @@ func buildErrorSample(stderrOut string, attemptEvents []StreamEvent) provider.Er
 		sample.ErrorType = e.ErrorType
 		sample.ErrorStatus = e.ErrorStatus
 		sample.Content = e.Content
+		sample.ContentIsAgentMessage = true
 		break
 	}
 	return sample

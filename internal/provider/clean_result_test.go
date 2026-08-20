@@ -86,13 +86,13 @@ func TestAuthContent_DistinguishesProviderRefusalFromAgentProse(t *testing.T) {
 	}
 	for name, classify := range classifiers {
 		t.Run(name+"_clean_run", func(t *testing.T) {
-			got := classify(ErrorSample{Content: prose, ContentIsCleanResult: true})
+			got := classify(ErrorSample{Content: prose, ContentIsAgentMessage: true, ContentIsCleanResult: true})
 			if got.Signal == SignalAuthFailure {
 				t.Fatalf("a run the provider served was classified as an auth failure: %+v", got)
 			}
 		})
 		t.Run(name+"_failed_run_long_report", func(t *testing.T) {
-			got := classify(ErrorSample{Content: prose})
+			got := classify(ErrorSample{Content: prose, ContentIsAgentMessage: true})
 			if got.Signal == SignalAuthFailure {
 				t.Fatalf("an agent report was classified as an auth failure: %+v", got)
 			}
@@ -112,7 +112,7 @@ func TestAuthContent_TerseRefusalStillClassifies(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			got := tc.classify(ErrorSample{Content: tc.content})
+			got := tc.classify(ErrorSample{Content: tc.content, ContentIsAgentMessage: true})
 			if got.Signal != SignalAuthFailure {
 				t.Fatalf("a terse provider refusal was not classified as an auth failure: %+v", got)
 			}
@@ -181,7 +181,7 @@ func TestAuthContent_ServedRunQuotingARefusalIsNotOne(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			got := tc.classify(ErrorSample{Content: tc.content, ContentIsCleanResult: true})
+			got := tc.classify(ErrorSample{Content: tc.content, ContentIsAgentMessage: true, ContentIsCleanResult: true})
 			if got.Signal == SignalAuthFailure {
 				t.Fatalf("a run the provider served was read as a refusal: %+v", got)
 			}
@@ -193,12 +193,44 @@ func TestOpenCodeQuotaContent_DoesNotParkOnItsOwnProse(t *testing.T) {
 	prose := "I reviewed the quota handling. The client now reports a rate limit " +
 		"distinctly from an exhausted quota, and the retry path waits on the reset " +
 		"header rather than a fixed delay. Tests cover both branches."
-	got := ClassifyOpenCodeError(ErrorSample{Content: prose, ContentIsCleanResult: true})
+	got := ClassifyOpenCodeError(ErrorSample{Content: prose, ContentIsAgentMessage: true, ContentIsCleanResult: true})
 	if got.Signal == SignalRateLimit {
 		t.Fatalf("a served run was parked off its own prose: %+v", got)
 	}
 	refused := ClassifyOpenCodeError(ErrorSample{Content: "rate limit exceeded, retry later"})
 	if refused.Signal != SignalRateLimit {
 		t.Fatalf("a real rate-limit refusal was dropped: %+v", refused)
+	}
+}
+
+// The two version-only providers are never told by their probe that they are
+// logged out, so a refusal that arrives on a run's stdout is the only signal
+// there is. An envelope carrying no instruction text must still classify, or
+// they stay healthy and every dispatch burns a request with no failover.
+func TestAuthContent_InstructionFreeEnvelopeStillClassifies(t *testing.T) {
+	cases := map[string]struct {
+		classify func(ErrorSample) Classification
+		blob     string
+	}{
+		providerid.Copilot: {ClassifyCopilotError, `{"error":{"type":"auth","code":"unauthenticated",` +
+			`"message":"you are not logged in."},"data":null,"request_id":"7c1f0b2a-53de-4a88-9b17-2e6d4c8f0a35",` +
+			`"usage":{"premium_requests":0,"input_tokens":0,"output_tokens":0}}`},
+		providerid.OpenCode: {ClassifyOpenCodeError, `{"error":{"name":"providerautherror","data":{"message":` +
+			`"ai_apicallerror: unauthorized"}},"parts":[],"sessionid":"ses_6b2f9c1d0","tokens":{"input":0,` +
+			`"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"cost":0}`},
+		providerid.Codex: {ClassifyCodexError, `{"id":"0","msg":{"type":"session_configured","session_id":` +
+			`"019bd4f0-8c21-7a3e-9f55-6d2c8b4e1a90","model":"gpt-5.6"}}` + "\n" +
+			`{"id":"0","msg":{"type":"error","message":"not logged in"}}`},
+		providerid.Claude: {ClassifyClaudeError, `{"type":"result","subtype":"error_during_execution",` +
+			`"is_error":true,"session_id":"3f2b1c9a-7d44-4e10-9c33-8a1f2e6b5d70",` +
+			`"result":"not logged in","total_cost_usd":0}`},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := tc.classify(ErrorSample{Content: tc.blob})
+			if got.Signal != SignalAuthFailure {
+				t.Fatalf("a refusal with no instruction text was dropped from a CLI envelope: %+v", got)
+			}
+		})
 	}
 }

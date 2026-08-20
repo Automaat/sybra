@@ -113,6 +113,11 @@ type ErrorSample struct {
 	ErrorStatus          int
 	Content              string
 	ContentIsCleanResult bool
+	// ContentIsAgentMessage marks the one source whose Content is prose the
+	// agent wrote rather than a surface the CLI controls. Only that source
+	// needs the anchored auth needles; a CLI envelope can be matched on the
+	// bare phrases the provider actually prints.
+	ContentIsAgentMessage bool
 }
 
 // ClassifyClaudeError decides whether a failed claude run should mark the
@@ -130,7 +135,7 @@ func ClassifyClaudeError(s ErrorSample) Classification {
 	stderr := strings.ToLower(s.Stderr)
 	content := strings.ToLower(s.Content)
 	if containsAny(stderr, "not logged in", "please run claude auth login", "unauthorized") ||
-		containsAuthContent(content, s.ContentIsCleanResult, claudeAuthContentNeedles...) {
+		containsAuthContent(s, content, claudeAuthBroadNeedles, claudeAuthContentNeedles) {
 		return classified(SignalAuthFailure, "logged_out", 0, CooldownFromConfig)
 	}
 	// Weekly-limit phrasing is checked before the structured 429/rate_limit_error
@@ -217,7 +222,7 @@ func ClassifyCodexError(s ErrorSample) Classification {
 	stderr := strings.ToLower(s.Stderr)
 	content := strings.ToLower(s.Content)
 	if containsAny(stderr, "not logged in", "please run: codex login", "please run codex login", "unauthorized") ||
-		containsAuthContent(content, s.ContentIsCleanResult, codexAuthContentNeedles...) {
+		containsAuthContent(s, content, codexAuthBroadNeedles, codexAuthContentNeedles) {
 		return classified(SignalAuthFailure, "logged_out", 0, CooldownFromConfig)
 	}
 	// Weekly-limit phrasing is checked before the structured 429/rate_limit
@@ -277,7 +282,7 @@ func ClassifyCopilotError(s ErrorSample) Classification {
 	stderr := strings.ToLower(s.Stderr)
 	content := strings.ToLower(s.Content)
 	authNeedles := []string{"not logged in", "not authenticated", "please run: copilot login", "run `copilot login`", "run 'copilot login'", "unauthorized"}
-	if containsAny(stderr, authNeedles...) || containsAuthContent(content, s.ContentIsCleanResult, copilotAuthContentNeedles...) {
+	if containsAny(stderr, authNeedles...) || containsAuthContent(s, content, authNeedles, copilotAuthContentNeedles) {
 		return classified(SignalAuthFailure, "logged_out", 0, CooldownFromConfig)
 	}
 	// Copilot meters usage in "premium requests"; an exhausted allowance is the
@@ -302,7 +307,7 @@ func ClassifyOpenCodeError(s ErrorSample) Classification {
 	authNeedles := []string{"not authenticated", "not logged in", "unauthorized", "invalid api key", "missing api key"}
 	if containsAny(strings.ToLower(s.ErrorType), authNeedles...) ||
 		containsAny(strings.ToLower(s.Stderr), authNeedles...) ||
-		containsAuthContent(strings.ToLower(s.Content), s.ContentIsCleanResult, openCodeAuthContentNeedles...) {
+		containsAuthContent(s, strings.ToLower(s.Content), authNeedles, openCodeAuthContentNeedles) {
 		return classified(SignalAuthFailure, "logged_out", 0, CooldownFromConfig)
 	}
 	quotaNeedles := []string{"rate limit", "too many requests", "quota", "insufficient credits", "credit balance"}
@@ -315,18 +320,25 @@ func ClassifyOpenCodeError(s ErrorSample) Classification {
 }
 
 // containsAuthContent reports whether a run's terminal content is the provider
-// refusing it on credentials. On many runs that content is the AGENT's own
-// final message, and "not logged in" is exactly what an agent writes when it
-// works on a login path — so the bare phrases that are right for the CLI's own
-// error channel are wrong here. Only the anchored forms a provider actually
-// prints count, and a run the provider served is never a refusal whatever its
-// text says.
-func containsAuthContent(content string, cleanResult bool, anchored ...string) bool {
-	if cleanResult {
+// refusing it on credentials. When that content is the AGENT's own final
+// message, only the anchored forms count: "not logged in" is exactly what an
+// agent writes when it works on a login path, so the phrase has to arrive with
+// the instruction that follows it. A CLI envelope carries no agent prose, so
+// there the bare phrases the provider prints are matched as before. A run the
+// provider served is never a refusal, whatever its text says.
+func containsAuthContent(s ErrorSample, content string, broad, anchored []string) bool {
+	if s.ContentIsCleanResult {
 		return false
 	}
-	return containsAny(content, anchored...)
+	if s.ContentIsAgentMessage {
+		return containsAny(content, anchored...)
+	}
+	return containsAny(content, broad...)
 }
+
+var claudeAuthBroadNeedles = []string{"not logged in", "please run claude auth login"}
+
+var codexAuthBroadNeedles = []string{"not logged in", "please run: codex login"}
 
 var claudeAuthContentNeedles = []string{
 	"not logged in · please run", "not logged in. please run",
@@ -343,8 +355,8 @@ var copilotAuthContentNeedles = []string{
 }
 
 var openCodeAuthContentNeedles = []string{
-	"invalid api key", "missing api key", "please run: opencode auth login",
-	"run `opencode auth login`", "not logged in. please run",
+	"please run: opencode auth login", "run `opencode auth login`",
+	"not logged in. please run", "not authenticated. please run",
 }
 
 // cleanResultLimitBudget bounds how long a clean run's content may be and
