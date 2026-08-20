@@ -95,6 +95,7 @@ type Checker struct {
 	// flash a global provider outage or gate otherwise-working agents.
 	probeFailures map[string]int
 	authHeldUntil map[string]time.Time
+	authRunFailed map[string]bool
 
 	emit   func(event string, data any)
 	logger *slog.Logger
@@ -145,6 +146,7 @@ func New(cfg Config, emit func(string, any), logger *slog.Logger) *Checker {
 		statuses:      make(map[string]*Status),
 		probeFailures: make(map[string]int),
 		authHeldUntil: make(map[string]time.Time),
+		authRunFailed: make(map[string]bool),
 		emit:          emit,
 		logger:        logger,
 		probeClaude:   ProbeClaude,
@@ -350,7 +352,7 @@ func (c *Checker) clearExpiredRateLimits() {
 func (c *Checker) clearExpiredRateLimitsLocked(now time.Time) []Status {
 	var toEmit []Status
 	for _, s := range c.statuses {
-		if c.authHeldLocked(s.Provider) {
+		if c.authHeldLocked(s.Provider) || c.authRunFailed[s.Provider] {
 			continue
 		}
 		if !s.RateLimitedUntil.IsZero() && now.After(s.RateLimitedUntil) {
@@ -402,11 +404,19 @@ func (c *Checker) setStatusLocked(name string, next Status, fromProbe bool) (Sta
 		// Claude/Codex auth-status probes, that proves liveness but says nothing
 		// about credentials. Do not let it resurrect a provider a real run just
 		// reported as logged out.
-		if next.Healthy && prev.Reason == authFailureReason && livenessOnlyProbe(name) {
+		if next.Healthy && livenessOnlyProbe(name) && c.authRunFailed[name] {
 			// Keep the auth failure authoritative, while still recording that the
 			// liveness probe completed successfully for diagnostics/UI freshness.
+			changed := prev.Healthy || prev.Reason != authFailureReason
 			prev.LastCheck = next.LastCheck
-			return *prev, false
+			prev.Healthy = false
+			if prev.Reason != authFailureReason {
+				// The detail explains the reason being replaced, not the auth
+				// failure, so an operator is never shown one beside the other.
+				prev.Detail = ""
+			}
+			prev.Reason = authFailureReason
+			return *prev, changed
 		}
 		if next.Healthy && c.authHeldLocked(name) {
 			prev.LastCheck = next.LastCheck
@@ -432,7 +442,13 @@ func (c *Checker) setStatusLocked(name string, next Status, fromProbe bool) (Sta
 		}
 		// Passive failures only upgrade severity; they never mark a provider
 		// healthy and they never overwrite a more-recent probe result.
-		held := next.Reason == authFailureReason && c.holdAuthLocked(name)
+		held := false
+		if next.Reason == authFailureReason {
+			if livenessOnlyProbe(name) {
+				c.authRunFailed[name] = true
+			}
+			held = c.holdAuthLocked(name)
+		}
 		if !held && !prev.Healthy && prev.Reason == next.Reason && prev.RateLimitedUntil.Equal(next.RateLimitedUntil) {
 			return Status{}, false
 		}
@@ -630,13 +646,15 @@ func (c *Checker) ReportAuthFailure(provider, reason string) {
 	if c == nil {
 		return
 	}
-	if reason == "" {
-		reason = authFailureReason
+	detail := reason
+	if detail == authFailureReason {
+		detail = ""
 	}
 	c.setStatus(provider, Status{
 		Provider:  provider,
 		Healthy:   false,
-		Reason:    reason,
+		Reason:    authFailureReason,
+		Detail:    detail,
 		LastCheck: c.now(),
 	}, false)
 }
@@ -763,8 +781,11 @@ func (c *Checker) SetProviderEnabled(provider string, v bool) {
 	if !v {
 		s.Healthy = false
 		s.Reason = "disabled"
-	} else if s.Reason == "disabled" {
-		s.Reason = "unknown"
+	} else {
+		delete(c.authRunFailed, provider)
+		if s.Reason == "disabled" || s.Reason == authFailureReason {
+			s.Reason = "unknown"
+		}
 	}
 	c.probeFailures[provider] = 0
 	snapshot := *s
