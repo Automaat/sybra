@@ -1005,19 +1005,61 @@ func TestChecker_LivenessProbeCannotResurrectAfterAReasonChange(t *testing.T) {
 	}
 }
 
-func TestChecker_AuthCapableProbeClearsTheRunFailureMarker(t *testing.T) {
+func TestChecker_ReEnablingClearsARunAuthFailure(t *testing.T) {
 	c, _, fake := newTestChecker(t)
-	c.setStatus(providerid.Claude, Status{Provider: providerid.Claude, Healthy: true, Reason: "ok"}, true)
-	c.ReportAuthFailure(providerid.Claude, "logged_out")
+	c.SetProviderEnabled(providerid.Copilot, true)
+	c.setStatus(providerid.Copilot, Status{Provider: providerid.Copilot, Healthy: true, Reason: "ok"}, true)
+	c.ReportAuthFailure(providerid.Copilot, "logged_out")
 	fake.Advance(16 * time.Minute)
-	c.setStatus(providerid.Claude, Status{Provider: providerid.Claude, Healthy: true, Reason: "ok"}, true)
-	if !c.IsHealthy(providerid.Claude) {
-		t.Fatalf("an auth-checking probe never returned the provider after the hold expired")
+
+	c.SetProviderEnabled(providerid.Copilot, false)
+	c.SetProviderEnabled(providerid.Copilot, true)
+	c.setStatus(providerid.Copilot, Status{Provider: providerid.Copilot, Healthy: true, Reason: "ok"}, true)
+
+	if !c.IsHealthy(providerid.Copilot) {
+		t.Fatalf("re-enabling the provider left it held out: reason=%q", c.Reason(providerid.Copilot))
 	}
-	c.mu.RLock()
-	marked := c.authRunFailed[providerid.Claude]
-	c.mu.RUnlock()
-	if marked {
-		t.Fatal("the run-failure marker survived a probe that checks credentials")
+}
+
+func TestChecker_ExpiringRateLimitDoesNotReleaseARunAuthFailure(t *testing.T) {
+	c, _, fake := newTestChecker(t)
+	c.SetProviderEnabled(providerid.Copilot, true)
+	c.setStatus(providerid.Copilot, Status{Provider: providerid.Copilot, Healthy: true, Reason: "ok"}, true)
+	c.ReportAuthFailure(providerid.Copilot, "logged_out")
+	c.ReportRateLimit(providerid.Copilot, time.Minute, "429", CooldownFromConfig)
+
+	fake.Advance(16 * time.Minute)
+	c.clearExpiredRateLimits()
+
+	if c.IsHealthy(providerid.Copilot) {
+		t.Fatalf("an expiring rate limit released a provider a run found logged out: reason=%q", c.Reason(providerid.Copilot))
+	}
+}
+
+func TestChecker_BlockedLivenessProbeEmitsOneFlipAndKeepsDetailHonest(t *testing.T) {
+	c, fe, _ := newTestChecker(t)
+	c.SetProviderEnabled(providerid.Copilot, true)
+	c.setStatus(providerid.Copilot, Status{Provider: providerid.Copilot, Healthy: true, Reason: "ok"}, true)
+	c.ReportAuthFailure(providerid.Copilot, "logged_out")
+	c.setStatus(providerid.Copilot, Status{Provider: providerid.Copilot, Healthy: false, Reason: "probe_error", Detail: "exec: no such file"}, true)
+
+	before := fe.count()
+	c.setStatus(providerid.Copilot, Status{Provider: providerid.Copilot, Healthy: true, Reason: "ok"}, true)
+	if got := fe.count() - before; got != 1 {
+		t.Fatalf("flips on the blocked probe = %d, want exactly 1", got)
+	}
+	for range 3 {
+		c.setStatus(providerid.Copilot, Status{Provider: providerid.Copilot, Healthy: true, Reason: "ok"}, true)
+	}
+	if got := fe.count() - before; got != 1 {
+		t.Fatalf("flips after repeated blocked probes = %d, want the first one only", got)
+	}
+
+	snap := c.Snapshot()[providerid.Copilot]
+	if snap.Reason != "logged_out" {
+		t.Fatalf("reason = %q, want logged_out", snap.Reason)
+	}
+	if snap.Detail != "" {
+		t.Fatalf("detail = %q, want no unrelated explanation beside a logged_out reason", snap.Detail)
 	}
 }

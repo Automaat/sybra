@@ -352,7 +352,7 @@ func (c *Checker) clearExpiredRateLimits() {
 func (c *Checker) clearExpiredRateLimitsLocked(now time.Time) []Status {
 	var toEmit []Status
 	for _, s := range c.statuses {
-		if c.authHeldLocked(s.Provider) {
+		if c.authHeldLocked(s.Provider) || c.authRunFailed[s.Provider] {
 			continue
 		}
 		if !s.RateLimitedUntil.IsZero() && now.After(s.RateLimitedUntil) {
@@ -411,14 +411,12 @@ func (c *Checker) setStatusLocked(name string, next Status, fromProbe bool) (Sta
 			prev.LastCheck = next.LastCheck
 			prev.Healthy = false
 			prev.Reason = authFailureReason
+			prev.Detail = ""
 			return *prev, changed
 		}
 		if next.Healthy && c.authHeldLocked(name) {
 			prev.LastCheck = next.LastCheck
 			return *prev, false
-		}
-		if next.Healthy {
-			delete(c.authRunFailed, name)
 		}
 		// Active probes overwrite unconditionally, but preserve an in-flight
 		// rate-limit window when the probe still reports healthy — the window
@@ -442,7 +440,9 @@ func (c *Checker) setStatusLocked(name string, next Status, fromProbe bool) (Sta
 		// healthy and they never overwrite a more-recent probe result.
 		held := false
 		if next.Reason == authFailureReason {
-			c.authRunFailed[name] = true
+			if livenessOnlyProbe(name) {
+				c.authRunFailed[name] = true
+			}
 			held = c.holdAuthLocked(name)
 		}
 		if !held && !prev.Healthy && prev.Reason == next.Reason && prev.RateLimitedUntil.Equal(next.RateLimitedUntil) {
@@ -775,8 +775,12 @@ func (c *Checker) SetProviderEnabled(provider string, v bool) {
 	if !v {
 		s.Healthy = false
 		s.Reason = "disabled"
-	} else if s.Reason == "disabled" {
-		s.Reason = "unknown"
+	} else {
+		delete(c.authRunFailed, provider)
+		delete(c.authHeldUntil, provider)
+		if s.Reason == "disabled" || s.Reason == authFailureReason {
+			s.Reason = "unknown"
+		}
 	}
 	c.probeFailures[provider] = 0
 	snapshot := *s
