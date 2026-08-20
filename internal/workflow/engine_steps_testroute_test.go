@@ -4248,3 +4248,112 @@ func TestUnstartableSurface_ProseAndStructuredAgree(t *testing.T) {
 		t.Fatalf("prose routed to %q but the same report structured routed to %q", got, want)
 	}
 }
+
+func TestUnstartableSurface_ProseRoundTwoPayloads(t *testing.T) {
+	t.Parallel()
+	checks := "automated_checks: go test ./... -> ok, all packages pass\n"
+	cases := []struct {
+		name   string
+		report string
+		want   string
+	}{
+		{
+			name: "an answer parked on the command side of the separator",
+			report: "surface_kind: web\napp_started: false\nunable_to_run_reason: I chose not to exercise the ui\n" +
+				"readiness_probe: curl -fsS http://127.0.0.1:5173/health (output: HTTP/1.1 200 OK) -> unavailable\n" + checks,
+		},
+		{
+			name: "an answer with only one separator after it",
+			report: "surface_kind: web\napp_started: false\nunable_to_run_reason: I chose not to exercise the ui\n" +
+				"readiness_probe: curl http://127.0.0.1:5173/ returned HTTP/1.1 200 OK -- unavailable\n" + checks,
+		},
+		{
+			name: "a qualified app_started",
+			report: "surface_kind: web\napp_started: true - the dev server came up on 5173\nstart_command: npm run dev\n" +
+				"unable_to_run_reason: I ran out of time to click through the ui\n" +
+				"readiness_probe: curl -fsS http://127.0.0.1:5173/ -> connection refused\n" + checks,
+		},
+		{
+			name: "app_started with a trailing period",
+			report: "surface_kind: web\napp_started: True.\nunable_to_run_reason: I ran out of time\n" +
+				"readiness_probe: curl -fsS http://127.0.0.1:5173/ -> connection refused\n" + checks,
+		},
+		{
+			name: "a status code with no version prefix",
+			report: "surface_kind: web\napp_started: false\nunable_to_run_reason: the health path is not routed\n" +
+				"readiness_probe: curl -fsS http://127.0.0.1:5173/health -> 404 Not Found\n" + checks,
+		},
+		{
+			name: "a gateway error naming the surface unavailable",
+			report: "surface_kind: web\napp_started: false\nunable_to_run_reason: the proxy did not route\n" +
+				"readiness_probe: curl -fsS http://127.0.0.1:5173/ -> 502 Bad Gateway, service unavailable\n" + checks,
+		},
+		{
+			name: "a check whose failure sits left of the separator",
+			report: "surface_kind: web\napp_started: false\nunable_to_run_reason: no browser here\n" +
+				"readiness_probe: curl -fsS http://127.0.0.1:5173/ -> connection refused\n" +
+				"automated_checks: go test ./... FAIL github.com/x 3 tests failed -> ok\n",
+		},
+		{
+			name: "two probes disagreeing",
+			report: "surface_kind: web\napp_started: false\nunable_to_run_reason: no browser here\n" +
+				"readiness_probe: curl -fsS http://127.0.0.1:5173/ -> connection refused\n" +
+				"readiness_probe: curl -fsS http://127.0.0.1:5173/ -> HTTP/1.1 200 OK\n" + checks,
+		},
+		{
+			name: "a list probe that exited zero and found nothing",
+			report: "surface_kind: k8s\napp_started: false\nunable_to_run_reason: no cluster on this host\n" +
+				"readiness_probe: k3d cluster list -> exit code 0, No clusters found\n" + checks,
+			want: "k8s",
+		},
+		{
+			name: "a probe that timed out",
+			report: "surface_kind: web\napp_started: false\nunable_to_run_reason: nothing answered\n" +
+				"readiness_probe: curl -fsS --max-time 5 http://127.0.0.1:5173/ -> (28) Operation timed out after 5001 milliseconds\n" + checks,
+			want: "web",
+		},
+		{
+			name: "a probe refused by the daemon socket",
+			report: "surface_kind: web\napp_started: false\nunable_to_run_reason: no container runtime\n" +
+				"readiness_probe: docker info -> Got permission denied while trying to connect to the Docker daemon socket\n" + checks,
+			want: "web",
+		},
+		{
+			name: "a cluster the tool could not reach",
+			report: "surface_kind: k8s\napp_started: false\nunable_to_run_reason: no cluster reachable\n" +
+				"readiness_probe: kubectl get nodes -> Unable to connect to the server: dial tcp 10.0.0.1:6443: i/o timeout\n" + checks,
+			want: "k8s",
+		},
+		{
+			name: "a failures section that says none",
+			report: "surface_kind: web\napp_started: false\nunable_to_run_reason: no browser here\n" +
+				"readiness_probe: curl -fsS http://127.0.0.1:5173/ -> connection refused\n" + checks +
+				"\n## Test Failures\n\nNone.\n",
+			want: "web",
+		},
+		{
+			name: "a second check line carrying the passing result",
+			report: "surface_kind: k8s\napp_started: false\nunable_to_run_reason: no cluster on this host\n" +
+				"readiness_probe: kubectl get nodes -> connection refused\n" +
+				"automated_checks: golangci-lint run\n" +
+				"automated_checks: go test ./pkg/... -> ok, all packages pass\n",
+			want: "k8s",
+		},
+		{
+			name: "corroboration recorded under manual probes",
+			report: "surface_kind: k8s\napp_started: false\nunable_to_run_reason: no cluster on this host\n" +
+				"readiness_probe: kubectl get nodes -> connection refused\n" +
+				"manual_probes: go test ./pkg/... -> ok, all packages pass\n",
+			want: "k8s",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := unstartableSurface(tc.report+"\nTEST_VERDICT: PASS\n", TaskInfo{})
+			if got != tc.want {
+				t.Fatalf("unstartableSurface = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

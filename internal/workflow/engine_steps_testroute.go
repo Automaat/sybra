@@ -1546,11 +1546,32 @@ func unstartableSurface(output string, t TaskInfo) string {
 	return surface
 }
 
+// probeStatedAbsenceTokens are the phrases that describe what a probe found,
+// as opposed to the label a runner applies to its own result. Only these
+// outrank an exit status: a list-style probe exits zero and prints that
+// nothing is there, while "(status: unavailable)" beside a zero exit is a
+// claim the transcript does not support.
+var probeStatedAbsenceTokens = []string{
+	"connection refused", "refused", "cannot connect", "could not connect",
+	"unable to connect", "command not found", "not found", "no such",
+	"not installed", "not running", "does not exist", "no cluster",
+	"no clusters", "no current context", "no contexts", "timed out",
+	"permission denied", "no route to host", "cannot open display",
+	"no display", "no driver", "empty reply",
+}
+
+// plainSurfaceAbsentTokens is the residual prose-only rule. A structured
+// tester declares an unavailable status in its own field; a prose tester has
+// to work the words into the transcript, so this list is what stands in for
+// that field and it has to cover what the real tools print.
 var plainSurfaceAbsentTokens = []string{
 	"unavailable", "unreachable", "not available", "missing",
 	"connection refused", "refused", "cannot connect", "could not connect",
-	"command not found", "not found", "no such", "not installed",
-	"not running", "does not exist", "no cluster", "no current context",
+	"unable to connect", "command not found", "not found", "no such",
+	"not installed", "not running", "is not running", "does not exist",
+	"no cluster", "no clusters", "no current context", "no contexts",
+	"timed out", "timeout", "permission denied", "no route to host",
+	"cannot open display", "no display", "no driver", "empty reply",
 }
 
 // plainTextAsStructured lifts a prose test report into the same shape a
@@ -1565,23 +1586,38 @@ func plainTextAsStructured(output string) (structuredTestOutput, bool) {
 	parsed := structuredTestOutput{
 		Verdict:           "PASS",
 		Outcome:           testOutcomePass,
-		FailuresMarkdown:  testFailSectionOf(output),
+		FailuresMarkdown:  plainFailuresSection(output),
 		SurfaceKind:       surface,
-		AppStarted:        flexBool(plainFieldIsTrue(output, "app_started", "app started")),
-		StartCommand:      firstPlainEvidenceField(output, "start_command", "start command"),
+		AppStarted:        flexBool(!plainFieldDeniesStart(output)),
 		UnableToRunReason: firstPlainEvidenceField(output, "unable_to_run_reason", "unable to run manual test"),
 	}
-	if probe := firstPlainEvidenceField(output, "readiness_probe", "readiness probe"); probe != "" {
-		command, transcript := splitPlainEvidenceLine(probe)
+	probes := plainEvidenceValues(output, "readiness_probe", "readiness probe")
+	// Exactly one probe, or none: a second line is the one that would
+	// contradict the route, so a report carrying two is judged on neither.
+	if len(probes) == 1 {
+		command, transcript := splitPlainEvidenceLine(probes[0])
 		parsed.ReadinessProbe = readinessProbeEvidence{
 			Command: command,
 			Output:  evidenceText(transcript),
-			Status:  evidenceText(plainProbeStatus(probe)),
+			Status:  evidenceText(plainProbeStatus(probes[0])),
 		}
 	}
 	for _, line := range plainEvidenceValues(output, "automated_checks", "automated checks", "regression check", "test harness") {
+		if hasFailureCheckResult(strings.ToLower(line)) {
+			continue
+		}
 		command, transcript := splitPlainEvidenceLine(line)
 		parsed.AutomatedChecks = append(parsed.AutomatedChecks, automatedCheckEvidence{
+			Command: command,
+			Output:  evidenceText(transcript),
+		})
+	}
+	for _, line := range plainEvidenceValues(output, "manual_probes", "manual probes", "manual probe") {
+		if hasFailureCheckResult(strings.ToLower(line)) {
+			continue
+		}
+		command, transcript := splitPlainEvidenceLine(line)
+		parsed.ManualProbes = append(parsed.ManualProbes, manualProbeEvidence{
 			Command: command,
 			Output:  evidenceText(transcript),
 		})
@@ -1589,9 +1625,36 @@ func plainTextAsStructured(output string) (structuredTestOutput, bool) {
 	return parsed, true
 }
 
-func plainFieldIsTrue(output string, names ...string) bool {
-	v := strings.ToLower(strings.Trim(firstPlainEvidenceField(output, names...), " \t`\"'"))
-	return v == "true" || v == "yes"
+// plainFieldDeniesStart reports whether the report explicitly says the app was
+// not started. Anything else counts as started, so a qualified or unreadable
+// value fails closed rather than opening a PR that claims the host could not
+// start what the report says it started.
+// plainFailuresSection drops a failures heading whose body says nothing. A
+// prose tester writes "## Test Failures / None." on a PASS, where a structured
+// one simply sends an empty string.
+func plainFailuresSection(output string) string {
+	section := testFailSectionOf(output)
+	if section == "" {
+		return ""
+	}
+	var body []string
+	for _, line := range reportScanLines(section) {
+		if isTestFailuresHeading(line) || strings.HasPrefix(line, testVerdictPass) || strings.HasPrefix(line, testVerdictFail) {
+			continue
+		}
+		body = append(body, strings.ToLower(strings.Trim(line, " -*.`")))
+	}
+	joined := strings.TrimSpace(strings.Join(body, " "))
+	switch joined {
+	case "", "none", "n/a", "na", "nothing", "no failures":
+		return ""
+	}
+	return section
+}
+
+func plainFieldDeniesStart(output string) bool {
+	v := strings.ToLower(strings.Trim(firstPlainEvidenceField(output, "app_started", "app started"), " \t`\"'.,;"))
+	return v == "" || v == "false" || v == "no"
 }
 
 // splitPlainEvidenceLine separates the command a prose line names from the
@@ -1607,8 +1670,16 @@ func splitPlainEvidenceLine(line string) (command, transcript string) {
 	return strings.TrimSpace(lower), ""
 }
 
+// plainProbeStatus stands in for the status field a structured tester fills.
+// The whole line is scanned for a recorded HTTP response, because the split
+// keeps the command out of the transcript and a runner can put the answer it
+// got on the command side of the separator.
 func plainProbeStatus(probe string) string {
-	if containsAny(strings.ToLower(probe), plainSurfaceAbsentTokens...) {
+	lower := strings.ToLower(probe)
+	if probeAnsweredPattern.MatchString(lower) {
+		return ""
+	}
+	if containsAny(lower, plainSurfaceAbsentTokens...) {
 		return "unavailable"
 	}
 	return ""
@@ -1661,7 +1732,11 @@ func recordedCheckSucceeded(command string, output, observed evidenceText) bool 
 
 var probeSuccessTokenPattern = regexp.MustCompile(`\b(ok|pass|passed|success|successful|healthy|serving|ready|2\d\d)\b|\bexit (?:code|status) 0\b`)
 
-var probeAnsweredPattern = regexp.MustCompile(`\bhttp/\d(?:\.\d)?\s+\d{3}\b`)
+var probeAnsweredPattern = regexp.MustCompile(`\bhttp/\d(?:\.\d)?\s+\d{3}\b|` +
+	`\b[1-5]\d\d\s+(?:ok|created|accepted|no content|moved permanently|found|not modified|` +
+	`bad request|unauthorized|payment required|forbidden|not found|method not allowed|` +
+	`request timeout|conflict|gone|unprocessable entity|too many requests|` +
+	`internal server error|not implemented|bad gateway|service unavailable|gateway timeout)\b`)
 
 func probeTranscriptReportsAbsence(parts ...string) bool {
 	lower := strings.ToLower(strings.TrimSpace(strings.Join(collectNonEmptyStrings(parts...), "\n")))
@@ -1670,6 +1745,13 @@ func probeTranscriptReportsAbsence(parts ...string) bool {
 	}
 	if probeAnsweredPattern.MatchString(lower) {
 		return false
+	}
+	// A stated absence outranks the scans below: every list-style probe
+	// (cluster list, get-contexts, docker ps) exits zero and prints that
+	// nothing is there, so an exit status must not overrule the sentence
+	// beside it.
+	if containsAny(lower, probeStatedAbsenceTokens...) {
+		return true
 	}
 	if hasFailureCheckResult(lower) {
 		return true
