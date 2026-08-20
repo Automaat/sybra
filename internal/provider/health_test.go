@@ -1092,3 +1092,17 @@ func TestChecker_AuthFailureUnderAnyReasonStillHolds(t *testing.T) {
 		t.Fatalf("reason = %q, want the caller's wording kept out of the key the guards read", got)
 	}
 }
+
+func TestChecker_BlockedProbeKeepsTheAuthDetail(t *testing.T) {
+	c, _, _ := newTestChecker(t)
+	c.SetProviderEnabled(providerid.Copilot, true)
+	c.setStatus(providerid.Copilot, Status{Provider: providerid.Copilot, Healthy: true, Reason: "ok"}, true)
+	c.ReportAuthFailure(providerid.Copilot, "invalid_api_key")
+
+	c.setStatus(providerid.Copilot, Status{Provider: providerid.Copilot, Healthy: true, Reason: "ok"}, true)
+
+	snap := c.Snapshot()[providerid.Copilot]
+	if snap.Detail != "invalid_api_key" {
+		t.Fatalf("detail = %q, want the caller's explanation of the auth failure kept", snap.Detail)
+	}
+}

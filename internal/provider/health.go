@@ -410,8 +410,12 @@ func (c *Checker) setStatusLocked(name string, next Status, fromProbe bool) (Sta
 			changed := prev.Healthy || prev.Reason != authFailureReason
 			prev.LastCheck = next.LastCheck
 			prev.Healthy = false
+			if prev.Reason != authFailureReason {
+				// The detail explains the reason being replaced, not the auth
+				// failure, so an operator is never shown one beside the other.
+				prev.Detail = ""
+			}
 			prev.Reason = authFailureReason
-			prev.Detail = ""
 			return *prev, changed
 		}
 		if next.Healthy && c.authHeldLocked(name) {
