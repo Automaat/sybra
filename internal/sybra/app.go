@@ -354,7 +354,10 @@ func NewApp(logger *slog.Logger, logLevel *slog.LevelVar, cfg *config.Config, op
 	a.activeCfg.Store(cfg)
 	// Pre-allocate service structs so Wails can bind them before startup().
 	// Fields are populated in startup() once dependencies are initialized.
-	a.taskSvc = &TaskService{}
+	// The wait group is handed over here rather than in startup: a request can
+	// reach a bound service before startup finishes wiring it, and detached
+	// follow-up work needs somewhere to be tracked from the first call.
+	a.taskSvc = &TaskService{wg: &a.wg}
 	a.planSvc = &PlanningService{}
 	a.agentSvc = &AgentService{}
 	a.orchSvc = &OrchestratorService{}

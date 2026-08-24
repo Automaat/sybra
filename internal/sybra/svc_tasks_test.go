@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1723,5 +1725,37 @@ func TestTaskServiceListOmitsHeavyRunTextButGetKeepsIt(t *testing.T) {
 	}
 	if got.AgentRuns[0].Prompt != "large historical prompt" || got.AgentRuns[0].Result != "large historical result" {
 		t.Fatalf("GetTask lost run text: %+v", got.AgentRuns[0])
+	}
+}
+
+func TestTaskServiceDetach_SurvivesAnUnwiredService(t *testing.T) {
+	t.Parallel()
+	var svc TaskService
+	done := make(chan struct{})
+	svc.detach(func() { close(done) })
+	select {
+	case <-done:
+		t.Fatal("follow-up ran with no wait group to track it, so shutdown could not wait for it")
+	default:
+	}
+}
+
+func TestTaskServiceDetach_RunsAndIsWaitedForWhenWired(t *testing.T) {
+	t.Parallel()
+	var wg sync.WaitGroup
+	svc := TaskService{wg: &wg}
+	var ran atomic.Bool
+	svc.detach(func() { ran.Store(true) })
+	wg.Wait()
+	if !ran.Load() {
+		t.Fatal("a wired service dropped its follow-up work")
+	}
+}
+
+func TestNewApp_WiresTheTaskServiceWaitGroupBeforeStartup(t *testing.T) {
+	t.Parallel()
+	a := NewApp(discardLogger(), &slog.LevelVar{}, testConfig(t))
+	if a.taskSvc == nil || a.taskSvc.wg == nil {
+		t.Fatal("the task service is bound before startup wires it, so its wait group must be set at allocation")
 	}
 }
