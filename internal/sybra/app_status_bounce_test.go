@@ -147,9 +147,13 @@ func TestStatusBounceForgetsATaskItStoppedTracking(t *testing.T) {
 
 	a.statusBounceMu.Lock()
 	defer a.statusBounceMu.Unlock()
-	for _, edges := range a.statusBounces[id].edges {
+	state, tracked := a.statusBounces[id]
+	if !tracked {
+		return
+	}
+	for edge, edges := range state.edges {
 		if len(edges) > 1 {
-			t.Fatalf("edge kept %d entries, want the aged-out ones dropped", len(edges))
+			t.Fatalf("edge %q kept %d entries, want the aged-out ones dropped", edge, len(edges))
 		}
 	}
 }
