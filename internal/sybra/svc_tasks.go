@@ -105,20 +105,6 @@ type TaskService struct {
 	followerStatusMu sync.Mutex
 }
 
-// detach runs best-effort follow-up work outside the caller's turn, tracked so
-// shutdown waits for it. The service struct is allocated before startup wires
-// its dependencies so the frontend can bind to it, which leaves a window where
-// a request arrives with no wait group to track anything; dropping the
-// follow-up is right there, because every caller of this is work a later
-// reconcile repeats anyway and a nil group would otherwise panic the handler
-// after the write it was following up on already succeeded.
-func (s *TaskService) detach(fn func()) {
-	if s == nil || s.wg == nil {
-		return
-	}
-	s.wg.Go(fn)
-}
-
 func (s *TaskService) config() *config.Config {
 	if s.currentConfig != nil {
 		return s.currentConfig()
@@ -915,13 +901,13 @@ func (s *TaskService) CreateTaskWithInit(title, body, mode string, init task.Upd
 
 	if prRepo != "" {
 		s.enrichReconciling.Store(t.ID, struct{}{})
-		s.detach(func() {
+		s.wg.Go(func() {
 			defer s.enrichReconciling.Delete(t.ID)
 			s.enrichFromPR(t.ID, prRepo, prNumber)
 		})
 	} else if issueRepo != "" {
 		s.enrichReconciling.Store(t.ID, struct{}{})
-		s.detach(func() {
+		s.wg.Go(func() {
 			defer s.enrichReconciling.Delete(t.ID)
 			s.enrichFromIssue(t.ID, issueRepo, issueNumber)
 		})
@@ -962,7 +948,7 @@ func (s *TaskService) startCreatedWorkflow(t task.Task) {
 	info := taskToInfo(t)
 	if def := s.workflowEngine.MatchWorkflow(info, "task.created"); def != nil {
 		s.logger.Info("workflow.auto-start", "task_id", t.ID, "workflow", def.ID)
-		s.detach(func() {
+		s.wg.Go(func() {
 			if wfErr := s.workflowEngine.StartWorkflow(t.ID, def.ID); wfErr != nil &&
 				!errors.Is(wfErr, workflow.ErrAutoDispatchDisabled) {
 				s.logger.Error("workflow.auto-start.failed", "task_id", t.ID, "err", wfErr)
@@ -1087,7 +1073,7 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 		return t, boardRejectionFor("task", id, translateTaskLockTimeout(err))
 	}
 	s.appendManualHumanRequiredDecision(cur, t, decisionReason)
-	s.detach(func() {
+	s.wg.Go(func() {
 		// UpdateTask is a Wails-bound method the frontend awaits synchronously;
 		// the follower push carries a bounded remote round trip, so run it
 		// detached to avoid blocking the IPC caller. It's best-effort anyway —
@@ -1095,7 +1081,7 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 		s.pushFieldEditToFollower(id, updates, t)
 	})
 	if task.IsTerminalStatus(t.Status) {
-		s.detach(func() {
+		s.wg.Go(func() {
 			// context.Background(): UpdateTask is a Wails-bound method; this
 			// runs in a detached background goroutine with no ctx to thread.
 			s.worktrees.Remove(context.Background(), t.ID)
@@ -1119,7 +1105,7 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 			(cur.Workflow.State == workflow.ExecCompleted || cur.Workflow.State == workflow.ExecFailed) &&
 			!s.agents.HasRunningAgentForTask(id) {
 			s.logger.Info("workflow.restart", "task_id", id, "from_workflow", cur.Workflow.WorkflowID, "status", newStatus)
-			s.detach(func() {
+			s.wg.Go(func() {
 				dispatched, wfErr := s.redispatchStatusChanged(id, newStatus)
 				if errors.Is(wfErr, workflow.ErrAutoDispatchDisabled) {
 					return
@@ -1721,14 +1707,14 @@ func (s *TaskService) ReconcilePendingEnrichment() {
 		s.logger.Info("enrich-reconcile.retry", "task_id", id, "title", t.Title)
 		if prRepo != "" {
 			repo, number := prRepo, prNumber
-			s.detach(func() {
+			s.wg.Go(func() {
 				defer s.enrichReconciling.Delete(id)
 				s.enrichFromPR(id, repo, number)
 			})
 			continue
 		}
 		repo, number := issueRepo, issueNumber
-		s.detach(func() {
+		s.wg.Go(func() {
 			defer s.enrichReconciling.Delete(id)
 			s.enrichFromIssue(id, repo, number)
 		})

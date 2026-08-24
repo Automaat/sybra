@@ -390,6 +390,7 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 	httpapi.Mount(controlMux, map[string]httpapi.Service{
 		"TaskService": httpapi.NewService(&TaskService{
 			tasks: taskMgr, agents: agentMgr, logger: logger, cfg: config.DefaultConfig(),
+			wg: &sync.WaitGroup{},
 		}, "GetTask", "UpdateTask").WithReadOnly("GetTask"),
 	}, logger, nil)
 	approvalServer.SetVerifierControl(controlMux)

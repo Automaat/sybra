@@ -36,11 +36,22 @@ func (a *App) wireVerifierControl() {
 	if a.agentSvc == nil || a.agentSvc.approval == nil {
 		return
 	}
+	a.agentSvc.approval.SetVerifierControl(a.verifierControlMux())
+}
+
+// verifierControlMux builds the two-method channel a task-scoped agent reaches
+// its board through. It carries the same admission the board applies: a
+// verifier agent outlives a restart by design, so without it the agent's
+// writes are still accepted while the app is draining — landing follow-up work
+// behind a wait group Shutdown is already parked on, and leaving a straggler
+// writing after Shutdown returns. A refusal is a 503, which the agent's CLI
+// retries.
+func (a *App) verifierControlMux() http.Handler {
 	mux := http.NewServeMux()
 	httpapi.Mount(mux, map[string]httpapi.Service{
 		"TaskService": httpapi.NewService(a.taskSvc, "GetTask", "UpdateTask").WithReadOnly("GetTask"),
-	}, a.logger, nil)
-	a.agentSvc.approval.SetVerifierControl(mux)
+	}, a.logger, a.HTTPAdmission)
+	return mux
 }
 
 // ServiceRegistry returns the named service instances for HTTP dispatch.
