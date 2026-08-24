@@ -979,8 +979,31 @@ func (a *App) maybeQuarantineStatusBounce(taskID, from, to string) bool {
 
 const statusBounceLimit = 3
 
+// statusBounceWindow bounds how far apart two transitions may be and still
+// count toward the same loop. Two automations contending for one task rewrite
+// it within seconds of each other; a task working through one PR-fix round
+// after another produces the same pair of transitions minutes or hours apart,
+// because a round takes an agent run to complete. Without a window those
+// ordinary rounds accumulate for the life of the process and a PR needing a
+// few fixes is guaranteed to trip the detector.
+const statusBounceWindow = 5 * time.Minute
+
 type statusBounceState struct {
-	edges map[string]int
+	edges map[string][]time.Time
+}
+
+// recent returns how many times an edge was taken inside the window, dropping
+// the entries that have aged out.
+func (s *statusBounceState) recent(edge string, now time.Time) int {
+	cutoff := now.Add(-statusBounceWindow)
+	kept := s.edges[edge][:0]
+	for _, at := range s.edges[edge] {
+		if at.After(cutoff) {
+			kept = append(kept, at)
+		}
+	}
+	s.edges[edge] = kept
+	return len(kept)
 }
 
 // statusBounceTripped reports whether this transition completes a repeated
@@ -988,6 +1011,10 @@ type statusBounceState struct {
 // bulk status edits and legitimate retries can repeat one direction, whereas
 // a reciprocal pair is the distinctive signature of competing automations.
 func (a *App) statusBounceTripped(taskID, from, to string) bool {
+	return a.statusBounceTrippedAt(taskID, from, to, time.Now())
+}
+
+func (a *App) statusBounceTrippedAt(taskID, from, to string, now time.Time) bool {
 	if taskID == "" || from == "" || to == "" || from == to ||
 		from == string(task.StatusBlocked) || to == string(task.StatusBlocked) {
 		return false
@@ -1001,11 +1028,12 @@ func (a *App) statusBounceTripped(taskID, from, to string) bool {
 	}
 	state := a.statusBounces[taskID]
 	if state == nil {
-		state = &statusBounceState{edges: make(map[string]int)}
+		state = &statusBounceState{edges: make(map[string][]time.Time)}
 		a.statusBounces[taskID] = state
 	}
-	state.edges[key]++
-	return state.edges[key] >= statusBounceLimit && state.edges[reverse] >= statusBounceLimit-1
+	state.edges[key] = append(state.edges[key], now)
+	return state.recent(key, now) >= statusBounceLimit &&
+		state.recent(reverse, now) >= statusBounceLimit-1
 }
 
 func (a *App) closeLinkedIssueOnDone(taskID string) {

@@ -17,6 +17,7 @@ import (
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/errclass"
 	"github.com/Automaat/sybra/internal/experience"
@@ -816,6 +817,13 @@ func (r *Handler) logPollSummary(monitoredPRs []github.PullRequest, eligible, is
 	r.logger.Info("reviews.poll", "monitored", len(monitoredPRs), "monitored_prs", nums, "eligible", eligible, "issues", issues)
 }
 
+// taskIsPaused reports whether a task was deliberately quarantined and is
+// waiting on a human, as opposed to blocked by something a later automation
+// can clear on its own.
+func taskIsPaused(t task.Task) bool {
+	return t.Status == task.StatusBlocked && t.AutonomyOutcome == autonomy.OutcomeQuarantined
+}
+
 func (r *Handler) handleTaskPRIssues(ctx context.Context, taskID string, issues []github.PRIssue) {
 	kinds := make([]string, 0, len(issues))
 	for i := range issues {
@@ -837,6 +845,14 @@ func (r *Handler) handleTaskPRIssues(ctx context.Context, taskID string, issues 
 	// after we've prepped a worktree and emitted audit noise.
 	if r.WorkflowEngine != nil && r.WorkflowEngine.HasActiveWorkflow(taskID) {
 		r.logger.Info("reviews.dispatch.gate", "task_id", taskID, "gate", "active_workflow")
+		return
+	}
+	// A task paused for a suspected loop must stay paused. The pause is
+	// written by whichever path observed the transition; without this gate a
+	// dispatch from here starts work seconds later and writes the task back to
+	// in-progress, erasing both the pause and the record that it happened.
+	if t, err := r.tasks.Get(taskID); err == nil && taskIsPaused(t) {
+		r.logger.Info("reviews.dispatch.gate", "task_id", taskID, "gate", "paused")
 		return
 	}
 

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/intervention"
@@ -1674,5 +1675,41 @@ func TestApplyPRPhaseSkipsNoOp(t *testing.T) {
 	}
 	if after.Status != task.StatusInReview {
 		t.Errorf("applyPRPhase changed status to %q", after.Status)
+	}
+}
+
+func TestHandleTaskPRIssues_SkipsAPausedTask(t *testing.T) {
+	r, tasks := newOutboundTestHandler(t)
+	created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := tasks.Apply(task.TransitionIntent{
+		TaskID: created.ID, ToStatus: task.StatusBlocked, Actor: "test",
+		Extra: task.Update{
+			StatusReason:    task.Ptr("automatic status loop detected; task paused"),
+			AutonomyOutcome: task.QuarantinedOutcome(),
+		},
+		OperatorOverride: true,
+	}); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+
+	var merged bool
+	r.mergePR = func(string, int) error { merged = true; return nil }
+	r.handleTaskPRIssues(t.Context(), created.ID, []github.PRIssue{{
+		Kind: github.PRIssueReadyToMerge, TaskID: created.ID,
+		PR: github.PullRequest{Number: 7, Repository: "pet-owner/pet-repo", Mergeable: "MERGEABLE", CIStatus: "SUCCESS"},
+	}})
+
+	if merged {
+		t.Fatal("a paused task was acted on, so the pause neither stopped the work nor survived it")
+	}
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Status != task.StatusBlocked || got.AutonomyOutcome != autonomy.OutcomeQuarantined {
+		t.Fatalf("status/outcome = %q/%q, want the pause intact", got.Status, got.AutonomyOutcome)
 	}
 }

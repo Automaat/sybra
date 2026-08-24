@@ -2,6 +2,7 @@ package sybra
 
 import (
 	"testing"
+	"time"
 
 	"github.com/Automaat/sybra/internal/task"
 )
@@ -68,5 +69,37 @@ func TestStatusHookBlocksRepeatedReciprocalLoop(t *testing.T) {
 	}
 	if got.Escalation.Code != "workflow.status_bounce" {
 		t.Fatalf("escalation = %+v, want workflow.status_bounce", got.Escalation)
+	}
+}
+
+func TestStatusBounceIgnoresRoundsSpacedFurtherApartThanTheWindow(t *testing.T) {
+	var a App
+	const id = "task-sequential"
+	base := time.Now()
+
+	for round := range statusBounceLimit + 2 {
+		at := base.Add(time.Duration(round) * 30 * time.Minute)
+		if a.statusBounceTrippedAt(id, string(task.StatusInReview), string(task.StatusInProgress), at) {
+			t.Fatalf("round %d: a task working through one fix round after another was paused as a loop", round+1)
+		}
+		if a.statusBounceTrippedAt(id, string(task.StatusInProgress), string(task.StatusInReview), at.Add(9*time.Minute)) {
+			t.Fatalf("round %d: a fix round finishing normally was paused as a loop", round+1)
+		}
+	}
+}
+
+func TestStatusBounceStillCatchesContentionInsideTheWindow(t *testing.T) {
+	var a App
+	const id = "task-contended"
+	base := time.Now()
+	tripped := false
+
+	for i := range statusBounceLimit {
+		at := base.Add(time.Duration(i) * 20 * time.Second)
+		tripped = a.statusBounceTrippedAt(id, string(task.StatusInReview), string(task.StatusInProgress), at) || tripped
+		tripped = a.statusBounceTrippedAt(id, string(task.StatusInProgress), string(task.StatusInReview), at.Add(10*time.Second)) || tripped
+	}
+	if !tripped {
+		t.Fatal("two automations rewriting one task within seconds of each other were not caught")
 	}
 }
