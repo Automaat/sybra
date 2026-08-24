@@ -793,11 +793,16 @@ func (h *Handler) salvageInterruptedReview(ag *agent.Agent) {
 		h.logger.Warn("review.interrupted.get-task", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
 		return
 	}
-	if strings.TrimSpace(current.CodeReview) != "" {
-		return
-	}
 	transcript := interruptedReviewAssistantTranscript(ag)
 	if transcript == "" {
+		return
+	}
+	// A round that produced assistant output reviewed something, whether or not
+	// there is room to store it. Marking only the rounds whose content lands
+	// would leave every later cost-stopped round on a task charging nothing,
+	// because the first salvage keeps the sidecar occupied.
+	h.markReviewSalvaged(ag)
+	if strings.TrimSpace(current.CodeReview) != "" {
 		return
 	}
 	var b strings.Builder
@@ -812,6 +817,17 @@ func (h *Handler) salvageInterruptedReview(ag *agent.Agent) {
 	content := b.String()
 	if _, err := h.tasks.UpdateBy(ag.TaskID, "completion.salvage_interrupted_review", task.Update{CodeReview: &content}); err != nil {
 		h.logger.Warn("review.interrupted.write", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
+	}
+}
+
+// markReviewSalvaged records that a run reviewed something despite failing, so
+// the lifetime ceiling counts it. No outcome value can say that on its own.
+func (h *Handler) markReviewSalvaged(ag *agent.Agent) {
+	salvaged := true
+	if err := h.tasks.UpdateRunBy(ag.TaskID, "completion.salvage_interrupted_review", ag.ID, task.RunPatch{
+		ReviewSalvaged: &salvaged,
+	}); err != nil {
+		h.logger.Warn("review.interrupted.mark", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
 	}
 }
 

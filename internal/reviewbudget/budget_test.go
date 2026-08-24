@@ -193,3 +193,41 @@ func TestBudget_ARunThatNeverStartedCountsNowhere(t *testing.T) {
 		t.Fatalf("LifetimeSpent = %d, want 0 for a run that never saw its instructions", got)
 	}
 }
+
+func TestLifetimeSpent_CountsASalvagedReview(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	b := Budget{PerHour: 3, PerTask: 6}
+	runs := []Run{
+		{Role: ReviewRole, StartedAt: now.Add(-4 * time.Hour), Outcome: SuccessOutcome, TurnCount: 5},
+		{Role: ReviewRole, StartedAt: now.Add(-3 * time.Hour), Outcome: "failure", TurnCount: 9, Salvaged: true},
+		{Role: ReviewRole, StartedAt: now.Add(-2 * time.Hour), Outcome: "failure", TurnCount: 3},
+		{Role: ReviewRole, StartedAt: now.Add(-time.Hour), Outcome: "", TurnCount: 4},
+	}
+	if got := b.LifetimeSpent(runs); got != 2 {
+		t.Fatalf("LifetimeSpent = %d, want 2 — the successful round and the salvaged one", got)
+	}
+}
+
+func TestLifetimeSpent_CountsASalvageStoppedOnItsFirstTurn(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	b := Budget{PerHour: 3, PerTask: 6}
+	// The cost ceiling is checked before anything counts a turn, so the most
+	// expensive round a task can run reaches the budget looking like one that
+	// never started. Its salvaged review says otherwise.
+	runs := []Run{{Role: ReviewRole, StartedAt: now, Outcome: "failure", TurnCount: 0, Salvaged: true}}
+	if got := b.LifetimeSpent(runs); got != 1 {
+		t.Fatalf("LifetimeSpent = %d, want 1 — a review salvaged on its first turn still reviewed something", got)
+	}
+}
+
+func TestLifetimeSpent_AnUnsalvagedFirstTurnFailureCountsNowhere(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	b := Budget{PerHour: 3, PerTask: 6}
+	runs := []Run{{Role: ReviewRole, StartedAt: now, Outcome: "failure", TurnCount: 0}}
+	if got := b.LifetimeSpent(runs); got != 0 {
+		t.Fatalf("LifetimeSpent = %d, want 0 — nothing was salvaged, so nothing was reviewed", got)
+	}
+}

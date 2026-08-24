@@ -1303,6 +1303,7 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 		ResumeZeroOutputStall:   Ptr(true),
 		TurnCount:               Ptr(17),
 		ToolFailures:            Ptr(4),
+		ReviewSalvaged:          Ptr(true),
 	}
 	assertRunPatchCoversEveryField(t, patch)
 
@@ -1348,6 +1349,7 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 		Verdict:                 "sybra_bug",
 		VerdictRendered:         true,
 		RecoveryReplayRejected:  true,
+		ReviewSalvaged:          true,
 		LogFile:                 "/tmp/sybra/agent-payload.ndjson",
 		SessionID:               "session-123",
 		ProtocolViolation:       "missing-json",
@@ -1470,6 +1472,12 @@ func assertAgentRunPayload(t *testing.T, got, want AgentRun) {
 	}
 	if got.TurnCount != want.TurnCount {
 		t.Errorf("TurnCount = %d, want %d", got.TurnCount, want.TurnCount)
+	}
+	if got.RecoveryReplayRejected != want.RecoveryReplayRejected {
+		t.Errorf("RecoveryReplayRejected = %v, want %v", got.RecoveryReplayRejected, want.RecoveryReplayRejected)
+	}
+	if got.ReviewSalvaged != want.ReviewSalvaged {
+		t.Errorf("ReviewSalvaged = %v, want %v", got.ReviewSalvaged, want.ReviewSalvaged)
 	}
 }
 

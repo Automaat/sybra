@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/fsutil"
+	"github.com/Automaat/sybra/internal/reviewbudget"
 	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/watchdogreason"
@@ -1120,4 +1122,125 @@ func itoa(n int) string {
 		n /= 10
 	}
 	return string(buf[pos:])
+}
+
+func TestSalvageInterruptedReviewMarksTheRunAsSalvaged(t *testing.T) {
+	taskMgr := newMinimalTaskManager(t)
+	tk, err := taskMgr.Create("review task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := taskMgr.AddRun(tk.ID, task.AgentRun{
+		AgentID: "review-agent", Role: string(agent.RoleReview),
+		StartedAt: time.Now(), Outcome: "failure",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	h := &Handler{logger: discardLogger(), tasks: taskMgr}
+	ag := &agent.Agent{ID: "review-agent", TaskID: tk.ID, Name: agent.RoleReview.AgentName(tk.Title)}
+	ag.SetEscalationReason("cost")
+	ag.AppendOutput(agent.StreamEvent{Type: "assistant", Content: "partial findings before the cost stop"})
+
+	h.salvageInterruptedReview(ag)
+
+	got, err := taskMgr.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.CodeReview == "" {
+		t.Fatal("no review was salvaged, so there is nothing for the budget to count")
+	}
+	idx := slices.IndexFunc(got.AgentRuns, func(r task.AgentRun) bool { return r.AgentID == "review-agent" })
+	if idx < 0 {
+		t.Fatal("run missing from the task")
+	}
+	if !got.AgentRuns[idx].ReviewSalvaged {
+		t.Fatal("a run that left a review behind was not marked, so the lifetime ceiling will not count it")
+	}
+}
+
+func TestSalvageInterruptedReviewMarksALaterRoundToo(t *testing.T) {
+	taskMgr := newMinimalTaskManager(t)
+	tk, err := taskMgr.Create("review task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	existing := "# Interrupted Code Review\n\nround one salvage"
+	if _, err := taskMgr.Update(tk.ID, task.Update{CodeReview: &existing}); err != nil {
+		t.Fatal(err)
+	}
+	if err := taskMgr.AddRun(tk.ID, task.AgentRun{
+		AgentID: "review-b", Role: string(agent.RoleReview),
+		StartedAt: time.Now(), Outcome: "failure",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	h := &Handler{logger: discardLogger(), tasks: taskMgr}
+	ag := &agent.Agent{ID: "review-b", TaskID: tk.ID, Name: agent.RoleReview.AgentName(tk.Title)}
+	ag.SetEscalationReason("cost")
+	ag.AppendOutput(agent.StreamEvent{Type: "assistant", Content: "round two findings before the cost stop"})
+
+	h.salvageInterruptedReview(ag)
+
+	got, err := taskMgr.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.CodeReview != existing {
+		t.Fatal("round one's salvaged review was overwritten")
+	}
+	idx := slices.IndexFunc(got.AgentRuns, func(r task.AgentRun) bool { return r.AgentID == "review-b" })
+	if idx < 0 || !got.AgentRuns[idx].ReviewSalvaged {
+		t.Fatal("a later cost-stopped round was not marked, so every round after the first charges nothing")
+	}
+}
+
+func TestSalvagedRunReachesTheLifetimeBudget(t *testing.T) {
+	taskMgr := newMinimalTaskManager(t)
+	tk, err := taskMgr.Create("review task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := taskMgr.AddRun(tk.ID, task.AgentRun{
+		AgentID: "review-agent", Role: string(agent.RoleReview),
+		StartedAt: time.Now(), Outcome: "failure",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	budget := reviewbudget.Budget{PerHour: 3, PerTask: 6}
+	before, err := taskMgr.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := budget.LifetimeSpent(budgetRunsOf(before)); got != 0 {
+		t.Fatalf("LifetimeSpent = %d before the salvage, want 0", got)
+	}
+
+	h := &Handler{logger: discardLogger(), tasks: taskMgr}
+	ag := &agent.Agent{ID: "review-agent", TaskID: tk.ID, Name: agent.RoleReview.AgentName(tk.Title)}
+	ag.SetEscalationReason("cost")
+	ag.AppendOutput(agent.StreamEvent{Type: "assistant", Content: "findings before the cost stop"})
+	h.salvageInterruptedReview(ag)
+
+	after, err := taskMgr.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := budget.LifetimeSpent(budgetRunsOf(after)); got != 1 {
+		t.Fatalf("LifetimeSpent = %d after the salvage, want 1 — the marker never reached the budget", got)
+	}
+}
+
+func budgetRunsOf(t task.Task) []reviewbudget.Run {
+	runs := make([]reviewbudget.Run, len(t.AgentRuns))
+	for i := range t.AgentRuns {
+		runs[i] = reviewbudget.Run{
+			Role: t.AgentRuns[i].Role, StartedAt: t.AgentRuns[i].StartedAt,
+			Outcome: t.AgentRuns[i].Outcome, TurnCount: t.AgentRuns[i].TurnCount,
+			Salvaged: t.AgentRuns[i].ReviewSalvaged,
+		}
+	}
+	return runs
 }
