@@ -57,7 +57,15 @@ func dispatchedReview(run Run) bool {
 // ceiling bounds how many times a task may really be reviewed, so it must be
 // spent only on rounds that reviewed something.
 func reviewedTheChange(run Run) bool {
-	return dispatchedReview(run) && (run.Outcome == SuccessOutcome || run.Salvaged)
+	if run.Role != ReviewRole {
+		return false
+	}
+	// A salvaged run is direct evidence it reviewed something, so it bypasses
+	// the turn-count proxy the other cases lean on. The cost ceiling can stop a
+	// review on its first assistant event, before anything increments that
+	// count, and the proxy would then read the most expensive round there is as
+	// a run that never started.
+	return run.Salvaged || (dispatchedReview(run) && run.Outcome == SuccessOutcome)
 }
 
 // Budget bounds one task's automated review-role dispatches three ways:
