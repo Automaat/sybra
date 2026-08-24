@@ -190,8 +190,8 @@ func TestPrepareReviewVerdictAttemptVars_DropsThePreviousRoundsVerdict(t *testin
 	if got := wf.Variables[reviewVerdictVar]; got != "" {
 		t.Fatalf("verdict = %q, want the previous round's answer dropped before a new review runs", got)
 	}
-	if got := wf.Variables[reviewVerdictSourceStepVar]; got != "" {
-		t.Fatalf("source step = %q, want it dropped with the verdict", got)
+	if got := wf.Variables[reviewVerdictSourceStepVar]; got != "code_review_simple" {
+		t.Fatalf("source step = %q, want the step being dispatched so a rewind returns to it", got)
 	}
 	if got := wf.Variables["unrelated"]; got != "keep" {
 		t.Fatalf("unrelated var = %q, want it untouched", got)
@@ -232,5 +232,32 @@ func TestAdvanceStep_FailedReviewDoesNotRouteOnTheLastVerdict(t *testing.T) {
 	stored, _ := tasks.GetTask("t-stale")
 	if got := stored.Workflow.Variables[reviewVerdictVar]; got != "" {
 		t.Fatalf("verdict = %q, want dispatching a fresh review to drop the previous round's answer", got)
+	}
+}
+
+func TestPrepareReviewVerdictAttemptVars_KeepsTheStaffLaneRewindTarget(t *testing.T) {
+	t.Parallel()
+	wf := &Execution{Variables: map[string]string{
+		reviewVerdictVar:           reviewVerdictNeedsFixes,
+		reviewVerdictSourceStepVar: "code_review_staff",
+	}}
+	prepareReviewVerdictAttemptVars(wf, &Step{ID: "code_review_staff", Config: StepConfig{Role: reviewAgentRole}})
+
+	if got := wf.Variables[reviewVerdictSourceStepVar]; got != "code_review_staff" {
+		t.Fatalf("source step = %q, want a staff review to rewind to itself rather than the cheap review", got)
+	}
+}
+
+func TestRouteReviewVerdict_StopsInsteadOfFixingWhenItEscalated(t *testing.T) {
+	t.Parallel()
+	def := mustBuiltinDefinition(t, "simple-task-review")
+	step := def.StepByID("route_review_verdict")
+	if step == nil {
+		t.Fatal("route_review_verdict missing from the builtin")
+	}
+	first := step.Next[0]
+	if first.When == nil || first.When.Field != "task.status" ||
+		first.When.Value != string(taskstatus.HumanRequired) || first.GoTo != "" {
+		t.Fatalf("first edge = %+v, want a human-required stop before the fix edge", first)
 	}
 }

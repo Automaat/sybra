@@ -8,9 +8,9 @@ import (
 func TestBudget_HourlyExceeded(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	runs := []Run{
-		{Role: ReviewRole, StartedAt: now.Add(-90 * time.Minute)}, // outside the window
-		{Role: ReviewRole, StartedAt: now.Add(-30 * time.Minute)},
-		{Role: ReviewRole, StartedAt: now.Add(-10 * time.Minute)},
+		{Role: ReviewRole, StartedAt: now.Add(-90 * time.Minute), Outcome: SuccessOutcome}, // outside the window
+		{Role: ReviewRole, StartedAt: now.Add(-30 * time.Minute), Outcome: SuccessOutcome},
+		{Role: ReviewRole, StartedAt: now.Add(-10 * time.Minute), Outcome: SuccessOutcome},
 		{Role: ReviewRole, StartedAt: now.Add(-5 * time.Minute), Outcome: "failure", TurnCount: 0}, // provider never started
 		{Role: "fix-review", StartedAt: now.Add(-5 * time.Minute)},                                 // wrong role
 	}
@@ -43,11 +43,11 @@ func TestBudget_HourlyExceeded(t *testing.T) {
 func TestBudget_LifetimeExceeded(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	runs := []Run{
-		{Role: ReviewRole, StartedAt: now.Add(-48 * time.Hour)},
-		{Role: ReviewRole, StartedAt: now.Add(-24 * time.Hour)},
-		{Role: ReviewRole, StartedAt: now.Add(-time.Hour)},
+		{Role: ReviewRole, StartedAt: now.Add(-48 * time.Hour), Outcome: SuccessOutcome},
+		{Role: ReviewRole, StartedAt: now.Add(-24 * time.Hour), Outcome: SuccessOutcome},
+		{Role: ReviewRole, StartedAt: now.Add(-time.Hour), Outcome: SuccessOutcome},
 		{Role: ReviewRole, StartedAt: now.Add(-30 * time.Minute), Outcome: "failure", TurnCount: 0},
-		{Role: "fix-review", StartedAt: now.Add(-30 * time.Minute)},
+		{Role: "fix-review", StartedAt: now.Add(-30 * time.Minute), Outcome: SuccessOutcome},
 	}
 
 	tests := []struct {
@@ -77,9 +77,9 @@ func TestBudget_LifetimeExceeded(t *testing.T) {
 func TestBudget_Exhausted(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	runs := []Run{
-		{Role: ReviewRole, StartedAt: now.Add(-50 * time.Minute)},
-		{Role: ReviewRole, StartedAt: now.Add(-10 * time.Minute)},
-		{Role: ReviewRole, StartedAt: now.Add(-2 * time.Hour)},
+		{Role: ReviewRole, StartedAt: now.Add(-50 * time.Minute), Outcome: SuccessOutcome},
+		{Role: ReviewRole, StartedAt: now.Add(-10 * time.Minute), Outcome: SuccessOutcome},
+		{Role: ReviewRole, StartedAt: now.Add(-2 * time.Hour), Outcome: SuccessOutcome},
 	}
 
 	if !(Budget{PerHour: 2}).Exhausted(runs, now) {
@@ -150,10 +150,11 @@ func TestLifetimeSpent_IgnoresRunsThatReviewedNothing(t *testing.T) {
 	now := time.Now().UTC()
 	b := Budget{PerHour: 3, PerTask: 6}
 	runs := []Run{
-		{Role: ReviewRole, StartedAt: now.Add(-5 * time.Hour), Outcome: "success", TurnCount: 4},
-		{Role: ReviewRole, StartedAt: now.Add(-4 * time.Hour), Outcome: "success", TurnCount: 9},
+		{Role: ReviewRole, StartedAt: now.Add(-5 * time.Hour), Outcome: SuccessOutcome, TurnCount: 4},
+		{Role: ReviewRole, StartedAt: now.Add(-4 * time.Hour), Outcome: SuccessOutcome, TurnCount: 9},
 		{Role: ReviewRole, StartedAt: now.Add(-3 * time.Hour), Outcome: "failure", TurnCount: 1},
 		{Role: ReviewRole, StartedAt: now.Add(-2 * time.Hour), Outcome: "failure", TurnCount: 0},
+		{Role: ReviewRole, StartedAt: now.Add(-time.Hour), Outcome: "", TurnCount: 6},
 	}
 	if got := b.LifetimeSpent(runs); got != 2 {
 		t.Fatalf("LifetimeSpent = %d, want 2 — only the runs that produced a review", got)

@@ -30,6 +30,12 @@ type Run struct {
 	TurnCount int
 }
 
+// SuccessOutcome is the AgentRun.Outcome a run records when it completed
+// normally, mirroring task.RunOutcomeSuccess. Spelled here rather than
+// imported so this package keeps depending on neither internal/task nor
+// internal/workflow.
+const SuccessOutcome = "success"
+
 // dispatchedReview reports whether a run occupied a review dispatch slot,
 // whatever came of it. A provider process that fails before its first
 // assistant event never even saw its instructions, so it is not a dispatch the
@@ -38,15 +44,15 @@ func dispatchedReview(run Run) bool {
 	return run.Role == ReviewRole && (run.Outcome != "failure" || run.TurnCount != 0)
 }
 
-// reviewedTheChange reports whether a run actually produced a review. A run
-// that ended in failure reviewed nothing, however far it got first: a revoked
-// credential is reported on the run's own first turn, which is enough to look
-// like work to a turn count but leaves no verdict behind. The lifetime ceiling
-// bounds how many times a task may really be reviewed, so it must not be spent
-// on rounds that reviewed nothing. The rolling-hour breaker still counts them,
-// so a provider failing in a loop is caught there rather than here.
+// reviewedTheChange reports whether a run actually produced a review. Only a
+// successful run did: a revoked credential is reported on the run's own first
+// turn, which is enough to look like work to a turn count but leaves no
+// verdict behind, and a run stopped by a rate limit, a watchdog or a
+// supersede records no outcome at all rather than a failure. The lifetime
+// ceiling bounds how many times a task may really be reviewed, so it must be
+// spent only on rounds that reviewed something.
 func reviewedTheChange(run Run) bool {
-	return dispatchedReview(run) && run.Outcome != "failure"
+	return dispatchedReview(run) && run.Outcome == SuccessOutcome
 }
 
 // Budget bounds one task's automated review-role dispatches three ways:

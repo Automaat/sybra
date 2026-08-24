@@ -1316,12 +1316,12 @@ func TestEngineReviewBudgetExceededTransition_LifetimeCap(t *testing.T) {
 		ID:     "t1",
 		Status: "testing",
 		AgentRuns: []AgentRunInfo{
-			{Role: "review", StartedAt: now.Add(-48 * time.Hour)},
-			{Role: "review", StartedAt: now.Add(-36 * time.Hour)},
-			{Role: "review", StartedAt: now.Add(-24 * time.Hour)},
-			{Role: "review", StartedAt: now.Add(-12 * time.Hour)},
-			{Role: "review", StartedAt: now.Add(-6 * time.Hour)},
-			{Role: "review", StartedAt: now.Add(-2 * time.Hour)},
+			{Role: "review", StartedAt: now.Add(-48 * time.Hour), Outcome: "success"},
+			{Role: "review", StartedAt: now.Add(-36 * time.Hour), Outcome: "success"},
+			{Role: "review", StartedAt: now.Add(-24 * time.Hour), Outcome: "success"},
+			{Role: "review", StartedAt: now.Add(-12 * time.Hour), Outcome: "success"},
+			{Role: "review", StartedAt: now.Add(-6 * time.Hour), Outcome: "success"},
+			{Role: "review", StartedAt: now.Add(-2 * time.Hour), Outcome: "success"},
 		},
 	}
 	next, _, err := e.resolveNext("t1", def, &def.Steps[0], &Execution{Variables: map[string]string{}}, task)
@@ -1401,15 +1401,32 @@ func TestPrimaryLoopCapsBoundAgentRuns(t *testing.T) {
 	now := time.Now()
 	runs := make([]AgentRunInfo, 0, reviewRuns)
 	for i := range reviewRuns - 1 {
-		runs = append(runs, AgentRunInfo{Role: "review", StartedAt: now.Add(-time.Duration(i+2) * time.Hour)})
+		runs = append(runs, AgentRunInfo{Role: "review", StartedAt: now.Add(-time.Duration(i+2) * time.Hour), Outcome: "success"})
 	}
 	e := &Engine{}
 	e.SetReviewRoundsPerHour(-1)
 	if _, lifetime := e.reviewBudgetExhaustion(TaskInfo{AgentRuns: runs}); lifetime {
 		t.Fatalf("lifetime review ceiling fired after %d runs, want room for one more", len(runs))
 	}
-	runs = append(runs, AgentRunInfo{Role: "review", StartedAt: now.Add(-24 * time.Hour)})
+	runs = append(runs, AgentRunInfo{Role: "review", StartedAt: now.Add(-24 * time.Hour), Outcome: "success"})
 	if _, lifetime := e.reviewBudgetExhaustion(TaskInfo{AgentRuns: runs}); !lifetime {
 		t.Fatalf("lifetime review ceiling did not fire after %d runs", len(runs))
+	}
+}
+
+func TestReviewBudgetExhaustion_StalledRunsDoNotSpendTheCeiling(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	e := &Engine{}
+	e.SetReviewRoundsPerHour(-1)
+
+	runs := make([]AgentRunInfo, 0, 6)
+	for i := range 6 {
+		runs = append(runs, AgentRunInfo{
+			Role: "review", StartedAt: now.Add(-time.Duration(i+2) * time.Hour), TurnCount: 4,
+		})
+	}
+	if _, lifetime := e.reviewBudgetExhaustion(TaskInfo{AgentRuns: runs}); lifetime {
+		t.Fatal("six runs that recorded no outcome — rate-limited, watchdog-stopped or superseded — spent the whole ceiling without reviewing anything")
 	}
 }

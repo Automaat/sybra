@@ -80,6 +80,24 @@ func reviewVerdictAutoRetryKey(sourceStep string) string {
 	return "step." + sourceStep + ".review_verdict_retry"
 }
 
+// prepareReviewVerdictAttemptVars drops the previous round's verdict before a
+// review agent is dispatched. The verdict is only written back when that agent
+// completes, so without this a review that dies before producing one leaves
+// the last round's answer in place and route_review_verdict acts on it as if
+// it were fresh. Mirrors prepareTestVerdictAttemptVars on the testing route.
+//
+// The source step is re-pointed rather than dropped. Both the verdict router
+// and require_code_review rewind to whatever it names, and an empty value
+// sends a staff-review task back to the cheap review its lane never runs and
+// keys the retry counter to that step as well.
+func prepareReviewVerdictAttemptVars(wfExec *Execution, step *Step) {
+	if wfExec == nil || step == nil || step.Config.Role != reviewAgentRole {
+		return
+	}
+	delete(wfExec.Variables, reviewVerdictVar)
+	wfExec.SetVar(reviewVerdictSourceStepVar, step.ID)
+}
+
 // execRouteReviewVerdict is a mechanical (no-LLM) router that reads the
 // review-role step's structured verdict (stashed by engine_advance into
 // reviewVerdictVar) and persists it onto the task so a later re-triggered
@@ -91,19 +109,6 @@ func reviewVerdictAutoRetryKey(sourceStep string) string {
 // bounded-retries the review agent (feeding back a schema-conformance reask
 // note) via rewindRetry, then escalates to human-required once the retry
 // budget is spent.
-// prepareReviewVerdictAttemptVars drops the previous round's verdict before a
-// review agent is dispatched. The verdict is only written back when that agent
-// completes, so without this a review that dies before producing one leaves
-// the last round's answer in place and route_review_verdict acts on it as if
-// it were fresh. Mirrors prepareTestVerdictAttemptVars on the testing route.
-func prepareReviewVerdictAttemptVars(wfExec *Execution, step *Step) {
-	if wfExec == nil || step == nil || step.Config.Role != reviewAgentRole {
-		return
-	}
-	delete(wfExec.Variables, reviewVerdictVar)
-	delete(wfExec.Variables, reviewVerdictSourceStepVar)
-}
-
 func (e *Engine) execRouteReviewVerdict(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error) {
 	verdict := wfExec.Variables[reviewVerdictVar]
 	switch verdict {
