@@ -851,7 +851,16 @@ func (r *Handler) handleTaskPRIssues(ctx context.Context, taskID string, issues 
 	// written by whichever path observed the transition; without this gate a
 	// dispatch from here starts work seconds later and writes the task back to
 	// in-progress, erasing both the pause and the record that it happened.
-	if t, err := r.tasks.Get(taskID); err == nil && taskIsPaused(t) {
+	t, err := r.tasks.Get(taskID)
+	if err != nil {
+		// Fail closed, the way every other read of this row here does. The
+		// status hook writes a pause moments before this runs, so contention
+		// on that row is likeliest exactly when a pause has just landed, and
+		// dispatching through the error is the defect this gate exists for.
+		r.logger.Info("reviews.dispatch.gate", "task_id", taskID, "gate", "task_unreadable", "err", err)
+		return
+	}
+	if taskIsPaused(t) {
 		r.logger.Info("reviews.dispatch.gate", "task_id", taskID, "gate", "paused")
 		return
 	}

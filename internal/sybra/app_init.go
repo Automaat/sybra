@@ -854,6 +854,10 @@ func (a *App) initStatusHook() {
 		}
 		a.logAudit(audit.EventTaskStatusChanged, taskID, "", data)
 		if a.maybeQuarantineStatusBounce(taskID, from, to) {
+			// Stop the agent the pause was meant to interrupt. Without this it
+			// runs on, and its completion advances the workflow onto a step
+			// that writes a live status back over the pause.
+			a.releaseTaskAgents(taskID)
 			return
 		}
 
@@ -979,31 +983,57 @@ func (a *App) maybeQuarantineStatusBounce(taskID, from, to string) bool {
 
 const statusBounceLimit = 3
 
-// statusBounceWindow bounds how far apart two transitions may be and still
-// count toward the same loop. Two automations contending for one task rewrite
-// it within seconds of each other; a task working through one PR-fix round
-// after another produces the same pair of transitions minutes or hours apart,
-// because a round takes an agent run to complete. Without a window those
-// ordinary rounds accumulate for the life of the process and a PR needing a
-// few fixes is guaranteed to trip the detector.
-const statusBounceWindow = 5 * time.Minute
+// statusBounceWindow bounds how long a transition is remembered. It is a
+// memory bound rather than the discriminator: a contending pair can repeat on
+// whatever tick its slowest dispatcher polls at, which is minutes, so a window
+// tight enough to exclude sequential fix rounds would also stop catching the
+// contention this detector exists for.
+const statusBounceWindow = 2 * time.Hour
 
 type statusBounceState struct {
-	edges map[string][]time.Time
+	edges map[string][]bounceEdge
 }
 
-// recent returns how many times an edge was taken inside the window, dropping
-// the entries that have aged out.
-func (s *statusBounceState) recent(edge string, now time.Time) int {
+type bounceEdge struct {
+	at    time.Time
+	actor string
+}
+
+// recentActors returns the distinct actors that took an edge inside the
+// window, dropping the entries that have aged out.
+func (s *statusBounceState) recentActors(edge string, now time.Time) map[string]int {
 	cutoff := now.Add(-statusBounceWindow)
 	kept := s.edges[edge][:0]
-	for _, at := range s.edges[edge] {
-		if at.After(cutoff) {
-			kept = append(kept, at)
+	actors := make(map[string]int)
+	for _, e := range s.edges[edge] {
+		if !e.at.After(cutoff) {
+			continue
 		}
+		kept = append(kept, e)
+		actors[e.actor]++
 	}
 	s.edges[edge] = kept
-	return len(kept)
+	if len(kept) == 0 {
+		delete(s.edges, edge)
+	}
+	return actors
+}
+
+// contendingActors reports how many times the busiest actor took an edge that
+// some other actor also took. One automation driving a task through round
+// after round writes both directions itself; two automations fighting over a
+// task write the same pair against each other, and that difference is what
+// separates ordinary work from a loop.
+func contendingActors(forward, reverse map[string]int) int {
+	worst := 0
+	for actor, n := range forward {
+		for other := range reverse {
+			if other != actor && n > worst {
+				worst = n
+			}
+		}
+	}
+	return worst
 }
 
 // statusBounceTripped reports whether this transition completes a repeated
@@ -1011,10 +1041,10 @@ func (s *statusBounceState) recent(edge string, now time.Time) int {
 // bulk status edits and legitimate retries can repeat one direction, whereas
 // a reciprocal pair is the distinctive signature of competing automations.
 func (a *App) statusBounceTripped(taskID, from, to string) bool {
-	return a.statusBounceTrippedAt(taskID, from, to, time.Now())
+	return a.statusBounceTrippedAt(taskID, from, to, a.tasks.LastStatusActor(taskID), time.Now())
 }
 
-func (a *App) statusBounceTrippedAt(taskID, from, to string, now time.Time) bool {
+func (a *App) statusBounceTrippedAt(taskID, from, to, actor string, now time.Time) bool {
 	if taskID == "" || from == "" || to == "" || from == to ||
 		from == string(task.StatusBlocked) || to == string(task.StatusBlocked) {
 		return false
@@ -1028,12 +1058,17 @@ func (a *App) statusBounceTrippedAt(taskID, from, to string, now time.Time) bool
 	}
 	state := a.statusBounces[taskID]
 	if state == nil {
-		state = &statusBounceState{edges: make(map[string][]time.Time)}
+		state = &statusBounceState{edges: make(map[string][]bounceEdge)}
 		a.statusBounces[taskID] = state
 	}
-	state.edges[key] = append(state.edges[key], now)
-	return state.recent(key, now) >= statusBounceLimit &&
-		state.recent(reverse, now) >= statusBounceLimit-1
+	state.edges[key] = append(state.edges[key], bounceEdge{at: now, actor: actor})
+	forward := state.recentActors(key, now)
+	back := state.recentActors(reverse, now)
+	if len(state.edges) == 0 {
+		delete(a.statusBounces, taskID)
+	}
+	return contendingActors(forward, back) >= statusBounceLimit &&
+		contendingActors(back, forward) >= statusBounceLimit-1
 }
 
 func (a *App) closeLinkedIssueOnDone(taskID string) {
