@@ -1303,6 +1303,7 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 		ResumeZeroOutputStall:   Ptr(true),
 		TurnCount:               Ptr(17),
 		ToolFailures:            Ptr(4),
+		ReviewSalvaged:          Ptr(true),
 	}
 	assertRunPatchCoversEveryField(t, patch)
 

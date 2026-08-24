@@ -28,6 +28,9 @@ type Run struct {
 	StartedAt time.Time
 	Outcome   string
 	TurnCount int
+	// Salvaged marks a run that left a review behind without finishing, which
+	// no outcome value can express: the run failed and reviewed something.
+	Salvaged bool
 }
 
 // SuccessOutcome is the AgentRun.Outcome a run records when it completed
@@ -48,11 +51,13 @@ func dispatchedReview(run Run) bool {
 // successful run did: a revoked credential is reported on the run's own first
 // turn, which is enough to look like work to a turn count but leaves no
 // verdict behind, and a run stopped by a rate limit, a watchdog or a
-// supersede records no outcome at all rather than a failure. The lifetime
+// supersede records no outcome at all rather than a failure. A run whose
+// partial review was salvaged is the exception: it failed and still reviewed
+// something, so it is counted. The lifetime
 // ceiling bounds how many times a task may really be reviewed, so it must be
 // spent only on rounds that reviewed something.
 func reviewedTheChange(run Run) bool {
-	return dispatchedReview(run) && run.Outcome == SuccessOutcome
+	return dispatchedReview(run) && (run.Outcome == SuccessOutcome || run.Salvaged)
 }
 
 // Budget bounds one task's automated review-role dispatches three ways:

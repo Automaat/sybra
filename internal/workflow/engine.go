@@ -137,6 +137,9 @@ type AgentRunInfo struct {
 	// TurnCount is zero when the provider child emitted nothing, marking a run
 	// that never saw its instructions rather than one that defied them.
 	TurnCount int
+	// ReviewSalvaged mirrors task.AgentRun.ReviewSalvaged: a review that left
+	// a usable review behind without finishing.
+	ReviewSalvaged bool
 }
 
 // TaskProvider reads and updates tasks.

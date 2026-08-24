@@ -100,6 +100,7 @@ type RunPatch struct {
 	// Lifecycle
 	State                 *string
 	Outcome               *string
+	ReviewSalvaged        *bool
 	EscalationReason      *string
 	Result                *string
 	LogFile               *string
@@ -145,6 +146,9 @@ func applyRunLifecycle(run *AgentRun, p RunPatch) {
 	}
 	if p.Outcome != nil && *p.Outcome != "" {
 		run.Outcome = *p.Outcome
+	}
+	if p.ReviewSalvaged != nil {
+		run.ReviewSalvaged = *p.ReviewSalvaged
 	}
 	if p.EscalationReason != nil && *p.EscalationReason != "" {
 		run.EscalationReason = *p.EscalationReason

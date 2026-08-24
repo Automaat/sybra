@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -1120,4 +1121,40 @@ func itoa(n int) string {
 		n /= 10
 	}
 	return string(buf[pos:])
+}
+
+func TestSalvageInterruptedReviewMarksTheRunAsSalvaged(t *testing.T) {
+	taskMgr := newMinimalTaskManager(t)
+	tk, err := taskMgr.Create("review task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := taskMgr.AddRun(tk.ID, task.AgentRun{
+		AgentID: "review-agent", Role: string(agent.RoleReview),
+		StartedAt: time.Now(), Outcome: "failure",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	h := &Handler{logger: discardLogger(), tasks: taskMgr}
+	ag := &agent.Agent{ID: "review-agent", TaskID: tk.ID, Name: agent.RoleReview.AgentName(tk.Title)}
+	ag.SetEscalationReason("cost")
+	ag.AppendOutput(agent.StreamEvent{Type: "assistant", Content: "partial findings before the cost stop"})
+
+	h.salvageInterruptedReview(ag)
+
+	got, err := taskMgr.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.CodeReview == "" {
+		t.Fatal("no review was salvaged, so there is nothing for the budget to count")
+	}
+	idx := slices.IndexFunc(got.AgentRuns, func(r task.AgentRun) bool { return r.AgentID == "review-agent" })
+	if idx < 0 {
+		t.Fatal("run missing from the task")
+	}
+	if !got.AgentRuns[idx].ReviewSalvaged {
+		t.Fatal("a run that left a review behind was not marked, so the lifetime ceiling will not count it")
+	}
 }

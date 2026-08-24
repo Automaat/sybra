@@ -384,6 +384,7 @@ func taskReviewRuns(t task.Task) []reviewbudget.Run {
 		runs[i] = reviewbudget.Run{
 			Role: t.AgentRuns[i].Role, StartedAt: t.AgentRuns[i].StartedAt,
 			Outcome: t.AgentRuns[i].Outcome, TurnCount: t.AgentRuns[i].TurnCount,
+			Salvaged: t.AgentRuns[i].ReviewSalvaged,
 		}
 	}
 	return runs

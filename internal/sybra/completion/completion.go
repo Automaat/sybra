@@ -812,6 +812,13 @@ func (h *Handler) salvageInterruptedReview(ag *agent.Agent) {
 	content := b.String()
 	if _, err := h.tasks.UpdateBy(ag.TaskID, "completion.salvage_interrupted_review", task.Update{CodeReview: &content}); err != nil {
 		h.logger.Warn("review.interrupted.write", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
+		return
+	}
+	salvaged := true
+	if err := h.tasks.UpdateRunBy(ag.TaskID, "completion.salvage_interrupted_review", ag.ID, task.RunPatch{
+		ReviewSalvaged: &salvaged,
+	}); err != nil {
+		h.logger.Warn("review.interrupted.mark", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
 	}
 }
 
