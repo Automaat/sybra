@@ -199,6 +199,7 @@ type applyOutcome struct {
 	fireHook   bool
 	prevStatus string
 	newStatus  string
+	actor      string
 }
 
 // fireApplyOutcome runs Apply/ApplyFn's unlocked tail: the status hook (only
@@ -207,6 +208,7 @@ type applyOutcome struct {
 // the original single-function Apply did by returning early).
 func (m *Manager) fireApplyOutcome(id string, outcome applyOutcome) {
 	if outcome.fireHook {
+		m.recordStatusActor(id, outcome.actor)
 		m.onStatusHook(id, outcome.prevStatus, outcome.newStatus, outcome.result.Task)
 	}
 	if outcome.result.Applied {
@@ -317,5 +319,6 @@ func (m *Manager) applyLocked(id string, intent TransitionIntent) (applyOutcome,
 		fireHook:   fireHook,
 		prevStatus: prevStatus,
 		newStatus:  newStat,
+		actor:      strings.TrimSpace(intent.Actor),
 	}, nil
 }
