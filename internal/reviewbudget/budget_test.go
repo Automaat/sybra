@@ -144,3 +144,51 @@ func TestBudget_NextAttempt(t *testing.T) {
 		})
 	}
 }
+
+func TestLifetimeSpent_IgnoresRunsThatReviewedNothing(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	b := Budget{PerHour: 3, PerTask: 6}
+	runs := []Run{
+		{Role: ReviewRole, StartedAt: now.Add(-5 * time.Hour), Outcome: "success", TurnCount: 4},
+		{Role: ReviewRole, StartedAt: now.Add(-4 * time.Hour), Outcome: "success", TurnCount: 9},
+		{Role: ReviewRole, StartedAt: now.Add(-3 * time.Hour), Outcome: "failure", TurnCount: 1},
+		{Role: ReviewRole, StartedAt: now.Add(-2 * time.Hour), Outcome: "failure", TurnCount: 0},
+	}
+	if got := b.LifetimeSpent(runs); got != 2 {
+		t.Fatalf("LifetimeSpent = %d, want 2 — only the runs that produced a review", got)
+	}
+	if b.LifetimeExceeded(runs) {
+		t.Fatal("a task was held at its lifetime ceiling by rounds that reviewed nothing")
+	}
+}
+
+func TestHourlySpent_StillCountsAFailedDispatch(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	b := Budget{PerHour: 3, PerTask: 6}
+	runs := []Run{
+		{Role: ReviewRole, StartedAt: now.Add(-10 * time.Minute), Outcome: "failure", TurnCount: 1},
+		{Role: ReviewRole, StartedAt: now.Add(-8 * time.Minute), Outcome: "failure", TurnCount: 1},
+		{Role: ReviewRole, StartedAt: now.Add(-6 * time.Minute), Outcome: "failure", TurnCount: 1},
+	}
+	if got := b.HourlySpent(runs, now); got != 3 {
+		t.Fatalf("HourlySpent = %d, want 3 — a failing loop is still a loop", got)
+	}
+	if !b.HourlyExceeded(runs, now) {
+		t.Fatal("a provider failing in a tight loop was not caught by the rolling-hour breaker")
+	}
+}
+
+func TestBudget_ARunThatNeverStartedCountsNowhere(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	b := Budget{PerHour: 3, PerTask: 6}
+	runs := []Run{{Role: ReviewRole, StartedAt: now.Add(-time.Minute), Outcome: "failure", TurnCount: 0}}
+	if got := b.HourlySpent(runs, now); got != 0 {
+		t.Fatalf("HourlySpent = %d, want 0 for a run that never saw its instructions", got)
+	}
+	if got := b.LifetimeSpent(runs); got != 0 {
+		t.Fatalf("LifetimeSpent = %d, want 0 for a run that never saw its instructions", got)
+	}
+}

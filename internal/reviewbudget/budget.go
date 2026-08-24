@@ -30,12 +30,23 @@ type Run struct {
 	TurnCount int
 }
 
-// consumesBudget reports whether a review run consumed semantic review capacity. A
-// provider process that fails before its first assistant event never reviewed
-// the change, so charging it against either breaker can quarantine a task
-// solely because its CLI or sandbox could not start.
-func consumesBudget(run Run) bool {
+// dispatchedReview reports whether a run occupied a review dispatch slot,
+// whatever came of it. A provider process that fails before its first
+// assistant event never even saw its instructions, so it is not a dispatch the
+// rolling-hour breaker should count against a runaway loop.
+func dispatchedReview(run Run) bool {
 	return run.Role == ReviewRole && (run.Outcome != "failure" || run.TurnCount != 0)
+}
+
+// reviewedTheChange reports whether a run actually produced a review. A run
+// that ended in failure reviewed nothing, however far it got first: a revoked
+// credential is reported on the run's own first turn, which is enough to look
+// like work to a turn count but leaves no verdict behind. The lifetime ceiling
+// bounds how many times a task may really be reviewed, so it must not be spent
+// on rounds that reviewed nothing. The rolling-hour breaker still counts them,
+// so a provider failing in a loop is caught there rather than here.
+func reviewedTheChange(run Run) bool {
+	return dispatchedReview(run) && run.Outcome != "failure"
 }
 
 // Budget bounds one task's automated review-role dispatches three ways:
@@ -55,7 +66,7 @@ func (b Budget) HourlySpent(runs []Run, now time.Time) int {
 	cutoff := now.Add(-time.Hour)
 	spent := 0
 	for i := range runs {
-		if !consumesBudget(runs[i]) {
+		if !dispatchedReview(runs[i]) {
 			continue
 		}
 		if runs[i].StartedAt.After(cutoff) {
@@ -73,11 +84,12 @@ func (b Budget) HourlyExceeded(runs []Run, now time.Time) bool {
 	return b.HourlySpent(runs, now) >= b.PerHour
 }
 
-// LifetimeSpent counts every review-role run in the task's durable history.
+// LifetimeSpent counts the review-role runs in the task's durable history that
+// actually reviewed the change.
 func (b Budget) LifetimeSpent(runs []Run) int {
 	spent := 0
 	for i := range runs {
-		if consumesBudget(runs[i]) {
+		if reviewedTheChange(runs[i]) {
 			spent++
 		}
 	}

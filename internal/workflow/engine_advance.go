@@ -170,7 +170,7 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 func (e *Engine) recordRoleCompletionSideEffects(taskID string, currentStep *Step, wfExec *Execution, output StepOutput) {
 	// Mark task reviewed after a review-role step succeeds.
 	// Persisted so a re-triggered workflow run skips code_review (idempotent).
-	if currentStep.Config.Role == "review" && output.Status == "completed" {
+	if currentStep.Config.Role == reviewAgentRole && output.Status == "completed" {
 		if mErr := e.tasks.MarkTaskReviewed(taskID); mErr != nil {
 			e.logger.Warn("workflow.mark-reviewed.failed", "task_id", taskID, "err", mErr)
 		}

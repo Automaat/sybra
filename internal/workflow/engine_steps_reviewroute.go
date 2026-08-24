@@ -20,6 +20,7 @@ const (
 	// code_review_staff) so route_review_verdict can rewind to the right
 	// step on retry.
 	reviewVerdictVar           = "review_verdict"
+	reviewAgentRole            = "review"
 	reviewVerdictSourceStepVar = "review_verdict_source_step"
 
 	// reviewVerdictAutoRetryCap bounds how many times route_review_verdict
@@ -90,6 +91,19 @@ func reviewVerdictAutoRetryKey(sourceStep string) string {
 // bounded-retries the review agent (feeding back a schema-conformance reask
 // note) via rewindRetry, then escalates to human-required once the retry
 // budget is spent.
+// prepareReviewVerdictAttemptVars drops the previous round's verdict before a
+// review agent is dispatched. The verdict is only written back when that agent
+// completes, so without this a review that dies before producing one leaves
+// the last round's answer in place and route_review_verdict acts on it as if
+// it were fresh. Mirrors prepareTestVerdictAttemptVars on the testing route.
+func prepareReviewVerdictAttemptVars(wfExec *Execution, step *Step) {
+	if wfExec == nil || step == nil || step.Config.Role != reviewAgentRole {
+		return
+	}
+	delete(wfExec.Variables, reviewVerdictVar)
+	delete(wfExec.Variables, reviewVerdictSourceStepVar)
+}
+
 func (e *Engine) execRouteReviewVerdict(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error) {
 	verdict := wfExec.Variables[reviewVerdictVar]
 	switch verdict {
