@@ -58,10 +58,10 @@ func TestReviewPrompts_HonorNeverPolicyOnKeyBearingHost(t *testing.T) {
 	prompts := map[string]string{
 		"branchConflictPrompt":     branchConflictPrompt(ctx, tk, "main", signing),
 		"sameBranchConflictPrompt": sameBranchConflictPrompt(ctx, tk, "origin", signing),
-		"commentsPrompt":           commentsPrompt(ctx, pr, signing),
+		"commentsPrompt":           commentsPrompt(ctx, pr, signing, reviewThreadBrief{}),
 		"buildConflictPrompt":      buildConflictPrompt(ctx, pr, "", signing),
 		"coalescedFixPrompt": coalescedFixPrompt(ctx,
-			[]github.PRIssue{{Kind: github.PRIssueComments, PR: pr}}, "", signing),
+			[]github.PRIssue{{Kind: github.PRIssueComments, PR: pr}}, "", signing, reviewThreadBrief{}),
 	}
 	for name, prompt := range prompts {
 		// Match on "commit" rather than "git commit": these prompts also
@@ -105,7 +105,7 @@ func TestReviewPrompts_HonorRequirePolicyOnKeylessHost(t *testing.T) {
 		t.Fatalf("precondition: host resolves a key, wanted keyless; got %q", got)
 	}
 
-	prompt := commentsPrompt(ctx, github.PullRequest{Number: 1, HeadRefName: "fix/x"}, signing)
+	prompt := commentsPrompt(ctx, github.PullRequest{Number: 1, HeadRefName: "fix/x"}, signing, reviewThreadBrief{})
 	if !strings.Contains(prompt, "git commit -s -S") {
 		t.Errorf("commentsPrompt dropped -S under the require policy:\n%s", prompt)
 	}
@@ -141,7 +141,7 @@ func TestSigningPolicy_LateBoundOverridesStartupSnapshot(t *testing.T) {
 	if got := h.signingPolicy(); got != project.SigningNever {
 		t.Errorf("after reload signingPolicy() = %q, want never", got)
 	}
-	prompt := commentsPrompt(ctx, github.PullRequest{Number: 1, HeadRefName: "fix/x"}, h.signingPolicy())
+	prompt := commentsPrompt(ctx, github.PullRequest{Number: 1, HeadRefName: "fix/x"}, h.signingPolicy(), reviewThreadBrief{})
 	if strings.Contains(prompt, "-S") {
 		t.Errorf("commentsPrompt still instructs -S after reload to never:\n%s", prompt)
 	}

@@ -1813,6 +1813,7 @@ export class ProviderEntryConfig {
 export class ProviderHealthCheckConfig {
     "enabled": boolean;
     "intervalSeconds": number;
+    "authFailureCooldownSeconds": number;
 
     /** Creates a new ProviderHealthCheckConfig instance. */
     constructor($$source: Partial<ProviderHealthCheckConfig> = {}) {
@@ -1821,6 +1822,9 @@ export class ProviderHealthCheckConfig {
         }
         if (!("intervalSeconds" in $$source)) {
             this["intervalSeconds"] = 0;
+        }
+        if (!("authFailureCooldownSeconds" in $$source)) {
+            this["authFailureCooldownSeconds"] = 0;
         }
 
         Object.assign(this, $$source);

@@ -44,19 +44,19 @@ func TestCoalescedFixPrompt(t *testing.T) {
 	t.Parallel()
 	pr := github.PullRequest{Number: 7, Repository: "o/r", HeadRefName: "feat", URL: "https://github.com/o/r/pull/7"}
 
-	single := coalescedFixPrompt(context.Background(), []github.PRIssue{{Kind: github.PRIssueComments, PR: pr}}, "", project.SigningAuto)
+	single := coalescedFixPrompt(context.Background(), []github.PRIssue{{Kind: github.PRIssueComments, PR: pr}}, "", project.SigningAuto, reviewThreadBrief{})
 	if strings.Contains(single, "multiple open issues") {
 		t.Errorf("single-issue prompt must not carry the coalesced header:\n%s", single)
 	}
-	if !strings.Contains(single, "/fix-review") {
+	if !strings.Contains(single, "reply on every thread") {
 		t.Errorf("single comments prompt missing its body:\n%s", single)
 	}
 
 	multi := coalescedFixPrompt(context.Background(), []github.PRIssue{
 		{Kind: github.PRIssueCIFailure, PR: pr},
 		{Kind: github.PRIssueComments, PR: pr},
-	}, "", project.SigningAuto)
-	for _, want := range []string{"multiple open issues", "Failing CI", "Review comments", "/fix-review", "gh run view"} {
+	}, "", project.SigningAuto, reviewThreadBrief{})
+	for _, want := range []string{"multiple open issues", "Failing CI", "Review comments", "reply on every thread", "gh run view"} {
 		if !strings.Contains(multi, want) {
 			t.Errorf("coalesced prompt missing %q:\n%s", want, multi)
 		}
@@ -67,7 +67,7 @@ func TestCoalescedFixPrompt_RequiresLivePRReprobeBeforeNoOp(t *testing.T) {
 	t.Parallel()
 
 	pr := github.PullRequest{Number: 7, Repository: "o/r", HeadRefName: "feat", URL: "https://github.com/o/r/pull/7"}
-	prompt := coalescedFixPrompt(context.Background(), []github.PRIssue{{Kind: github.PRIssueCIFailure, PR: pr}}, "", project.SigningAuto)
+	prompt := coalescedFixPrompt(context.Background(), []github.PRIssue{{Kind: github.PRIssueCIFailure, PR: pr}}, "", project.SigningAuto, reviewThreadBrief{})
 
 	for _, want := range []string{
 		"LIVE_BASE=$(gh pr view 7 --repo o/r --json baseRefName --jq .baseRefName)",
@@ -89,7 +89,7 @@ func TestCoalescedFixPrompt_ApprovedNoopDoesNotRequestHuman(t *testing.T) {
 		Number: 7, Repository: "o/r", HeadRefName: "feat", URL: "https://github.com/o/r/pull/7",
 		ReviewDecision: "APPROVED",
 	}
-	prompt := coalescedFixPrompt(context.Background(), []github.PRIssue{{Kind: github.PRIssueCIFailure, PR: pr}}, "", project.SigningAuto)
+	prompt := coalescedFixPrompt(context.Background(), []github.PRIssue{{Kind: github.PRIssueCIFailure, PR: pr}}, "", project.SigningAuto, reviewThreadBrief{})
 
 	if !strings.Contains(prompt, "Approval preservation") || !strings.Contains(prompt, "SYBRA_PR_FIX_RESULT: no-op") {
 		t.Fatalf("approved PR prompt missing no-op approval guard:\n%s", prompt)
@@ -107,7 +107,7 @@ func TestCoalescedFixPrompt_AddsLivePRReprobeGuardOnce(t *testing.T) {
 		{Kind: github.PRIssueConflict, PR: pr},
 		{Kind: github.PRIssueComments, PR: pr},
 		{Kind: github.PRIssueCIFailure, PR: pr},
-	}, "", project.SigningAuto)
+	}, "", project.SigningAuto, reviewThreadBrief{})
 
 	if got := strings.Count(prompt, "LIVE_BASE=$(gh pr view 7 --repo o/r --json baseRefName --jq .baseRefName)"); got != 1 {
 		t.Fatalf("live re-probe guard count = %d, want 1:\n%s", got, prompt)
@@ -197,18 +197,18 @@ func TestCoalescedFixPrompt_ReviewHold(t *testing.T) {
 	pr := github.PullRequest{Number: 7, Repository: "o/r", HeadRefName: "feat", URL: "https://github.com/o/r/pull/7"}
 	const suffix = "\n\n---\nREVIEW HOLD sentinel"
 
-	withComments := coalescedFixPrompt(context.Background(), []github.PRIssue{{Kind: github.PRIssueComments, PR: pr}}, suffix, project.SigningAuto)
+	withComments := coalescedFixPrompt(context.Background(), []github.PRIssue{{Kind: github.PRIssueComments, PR: pr}}, suffix, project.SigningAuto, reviewThreadBrief{})
 	if !strings.HasSuffix(withComments, suffix) {
 		t.Errorf("comments prompt must end with the hold suffix:\n%s", withComments)
 	}
 
-	noComments := coalescedFixPrompt(context.Background(), []github.PRIssue{{Kind: github.PRIssueCIFailure, PR: pr}}, suffix, project.SigningAuto)
+	noComments := coalescedFixPrompt(context.Background(), []github.PRIssue{{Kind: github.PRIssueCIFailure, PR: pr}}, suffix, project.SigningAuto, reviewThreadBrief{})
 	if strings.Contains(noComments, "REVIEW HOLD") {
 		t.Errorf("a non-comments fix posts no replies, so it must not carry the hold suffix:\n%s", noComments)
 	}
 
 	// Disabled hold (empty suffix) leaves a comments prompt byte-for-byte as-is.
-	plain := coalescedFixPrompt(context.Background(), []github.PRIssue{{Kind: github.PRIssueComments, PR: pr}}, "", project.SigningAuto)
+	plain := coalescedFixPrompt(context.Background(), []github.PRIssue{{Kind: github.PRIssueComments, PR: pr}}, "", project.SigningAuto, reviewThreadBrief{})
 	if strings.Contains(plain, "REVIEW HOLD") {
 		t.Errorf("empty suffix must not alter the prompt:\n%s", plain)
 	}

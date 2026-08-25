@@ -77,6 +77,11 @@ type taskBranchConflictRecoverySpec struct {
 type dispatchFixOptions struct {
 	replaceActiveWorkflow bool
 	cancelReason          string
+	prDispatchReserved    bool
+	// reviewThreads is the harness-side view of the PR's unresolved review
+	// threads, recorded so verify_review_threads can hold the run to it. Empty
+	// for every dispatch that does not include a review-comments issue.
+	reviewThreads reviewThreadBrief
 }
 
 const PRFixResultContract = "\n\nBefore your final response, decide the outcome:\n" +
@@ -775,14 +780,14 @@ func prFixPushPromptWithRemote(branch, intro string, fenced, allowHistoryRewrite
 // prIssueBody returns the pr-fix agent prompt for one fixable issue kind. ok is
 // false for kinds with no agent prompt (ready_to_merge), which never reach the
 // dispatch path.
-func prIssueBody(ctx context.Context, issue github.PRIssue, signing project.SigningPolicy) (string, bool) {
+func prIssueBody(ctx context.Context, issue github.PRIssue, signing project.SigningPolicy, brief reviewThreadBrief) (string, bool) {
 	switch issue.Kind {
 	case github.PRIssueConflict:
 		return conflictPrompt(ctx, issue.PR, signing), true
 	case github.PRIssueCIFailure:
 		return ciFailurePrompt(issue.PR), true
 	case github.PRIssueComments:
-		return commentsPrompt(ctx, issue.PR, signing), true
+		return commentsPrompt(ctx, issue.PR, signing, brief), true
 	default:
 		return "", false
 	}
@@ -849,17 +854,17 @@ func (r *Handler) logPRIssueDetected(taskID string, issue github.PRIssue) {
 // review-hold setting is on AND the set includes a review-comments issue — the
 // only kind that posts thread replies. It overrides the "reply live and push"
 // instructions above, so it must land after them.
-func coalescedFixPrompt(ctx context.Context, issues []github.PRIssue, holdSuffix string, signing project.SigningPolicy) string {
+func coalescedFixPrompt(ctx context.Context, issues []github.PRIssue, holdSuffix string, signing project.SigningPolicy, brief reviewThreadBrief) string {
 	var prompt string
 	if len(issues) == 1 {
-		prompt, _ = prIssueBody(ctx, issues[0], signing)
+		prompt, _ = prIssueBody(ctx, issues[0], signing, brief)
 	} else {
 		var b strings.Builder
 		b.WriteString("This PR has multiple open issues from the same push. Address " +
 			"ALL of them in one pass, then push once at the end (the per-section push " +
 			"commands are equivalent — run it a single time).\n\n")
 		for i := range issues {
-			body, ok := prIssueBody(ctx, issues[i], signing)
+			body, ok := prIssueBody(ctx, issues[i], signing, brief)
 			if !ok {
 				continue
 			}
@@ -886,10 +891,11 @@ func coalescedFixPrompt(ctx context.Context, issues []github.PRIssue, holdSuffix
 	return prompt
 }
 
-func (r *Handler) handlePRIssueReplacingWorkflow(ctx context.Context, issue github.PRIssue, cancelReason string) bool {
+func (r *Handler) handlePRIssueReplacingWorkflowReserved(ctx context.Context, issue github.PRIssue, cancelReason string, prDispatchReserved bool) bool {
 	return r.dispatchFixIssuesWithOptions(ctx, issue.TaskID, []github.PRIssue{issue}, dispatchFixOptions{
 		replaceActiveWorkflow: true,
 		cancelReason:          cancelReason,
+		prDispatchReserved:    prDispatchReserved,
 	})
 }
 
@@ -910,6 +916,14 @@ func (r *Handler) dispatchFixIssuesWithOptions(ctx context.Context, taskID strin
 	t, err := r.tasks.Get(taskID)
 	if err != nil {
 		return false
+	}
+	if !opts.prDispatchReserved {
+		releasePRDispatch, ok := r.tryReservePRDispatch(taskID)
+		if !ok {
+			r.logger.Info("pr-monitor.dispatch-busy", "task_id", taskID)
+			return false
+		}
+		defer releasePRDispatch()
 	}
 	// Stable-sort by fix priority so the primary (index 0) drives worktree prep
 	// and the prompt reads in execution order (conflicts → comments → CI).
@@ -936,6 +950,17 @@ func (r *Handler) dispatchFixIssuesWithOptions(ctx context.Context, taskID strin
 		primary.Kind == github.PRIssueCIFailure &&
 		(r.dispatchFlakyRerun(t, primary) || r.rerunCIFailure(t, primary)) {
 		return true
+	}
+
+	var preparationClaim workflow.DispatchClaim
+	if r.agents != nil && !opts.prDispatchReserved {
+		var claimed bool
+		preparationClaim, claimed = r.agents.TryClaimDispatch(t.ID)
+		if !claimed {
+			r.logger.Info("pr-monitor.dispatch-busy", "task_id", taskID, "reason", "agent_dispatch")
+			return false
+		}
+		defer preparationClaim.Release()
 	}
 
 	dir, ok := r.prepareWorktree(ctx, t, primary)
@@ -967,7 +992,18 @@ func (r *Handler) dispatchFixIssuesWithOptions(ctx context.Context, taskID strin
 	// e.ctx field (Engine.SetContext), not an explicit parameter threaded here.
 	// contextcheck no longer flags this call site (verified with a clean
 	// build+lint cache), so no suppression directive is needed here.
-	return r.dispatchPRIssueWithOptions(ctx, t, primary, handle, coalescedFixPrompt(ctx, handle, reviewHoldFixSuffix(r.cfg), r.signingPolicy()), dir, opts)
+	if preparationClaim != nil {
+		preparationClaim.Release()
+	}
+	// Fetched once here, then used twice: to brief the agent in the prompt and
+	// to hold it to that same set after the run. Read from the comments issue's
+	// own PR, not primary.PR - a coalesced dispatch sorts conflicts first, and
+	// a task can match two different PRs, so the primary is not always the PR
+	// the review threads live on.
+	if i := slices.IndexFunc(handle, func(i github.PRIssue) bool { return i.Kind == github.PRIssueComments }); i >= 0 {
+		opts.reviewThreads = fetchReviewThreadBrief(ctx, handle[i].PR, r.agentLogin(ctx))
+	}
+	return r.dispatchPRIssueWithOptions(ctx, t, primary, handle, coalescedFixPrompt(ctx, handle, reviewHoldFixSuffix(r.cfg), r.signingPolicy(), opts.reviewThreads), dir, opts)
 }
 
 func prHasCurrentApproval(pr github.PullRequest) bool {
@@ -1235,6 +1271,10 @@ func (r *Handler) dispatchPRIssueWithOptions(ctx context.Context, t task.Task, p
 		// instruction, computed once here rather than hardcoded in the YAML.
 		workflow.WorkflowVarCommitSignFlags: r.signingPolicy().CommitFlags(ctx),
 	}
+	if brief := opts.reviewThreads.vars(); brief != "" {
+		vars[workflow.PRReviewThreadBriefVar] = brief
+		vars[workflow.PRReviewAgentLoginVar] = opts.reviewThreads.agentLogin
+	}
 	// Deterministic backstop for review-hold: when the hold is active and this
 	// fix touches review comments, the agent drafted its replies into a pending
 	// review, so route_pr_fix_result must park the task for a human regardless of
@@ -1345,6 +1385,14 @@ func (r *Handler) markConflictRecoveryExhausted(taskID string, kind github.PRIss
 // without ever actually attempting conflict resolution. ResumeStalled is the
 // only thing that should re-drive a parked step once a slot frees.
 func (r *Handler) RecoverStaleBranchConflict(taskID string) bool {
+	return r.recoverStaleBranchConflict(taskID, false)
+}
+
+func (r *Handler) recoverStaleBranchConflictReserved(taskID string) bool {
+	return r.recoverStaleBranchConflict(taskID, true)
+}
+
+func (r *Handler) recoverStaleBranchConflict(taskID string, prDispatchReserved bool) bool {
 	if r == nil || r.WorkflowEngine == nil || r.prTracker == nil {
 		return false
 	}
@@ -1385,9 +1433,9 @@ func (r *Handler) RecoverStaleBranchConflict(taskID string) bool {
 	// context.Background() is a dead end here: RecoverStaleBranchConflict is
 	// wired as agentorch.Orchestrator.ConflictRecovery, a fixed func(taskID string)
 	// bool callback (see internal/sybra/agentorch) with no ctx parameter to thread from.
-	return r.handlePRIssueReplacingWorkflow(context.Background(),
+	return r.handlePRIssueReplacingWorkflowReserved(context.Background(),
 		github.PRIssue{TaskID: taskID, Kind: github.PRIssueConflict, PR: pr},
-		"rebase conflict recovery")
+		"rebase conflict recovery", prDispatchReserved)
 }
 
 // prFixParkedOnConflict reports whether the task's active workflow is a pr-fix
@@ -2129,7 +2177,7 @@ func (r *Handler) prepareWorktree(ctx context.Context, t task.Task, issue github
 		// IS a conflict fix (avoid re-entering ourselves).
 		var recoverFn func(string) bool
 		if issue.Kind != github.PRIssueConflict {
-			recoverFn = r.RecoverStaleBranchConflict
+			recoverFn = r.recoverStaleBranchConflictReserved
 		}
 		if agentorch.MarkRebaseBlocked(r.tasks, t.ID, wtErr, r.logger, recoverFn) {
 			return "", false
@@ -2144,35 +2192,6 @@ func (r *Handler) prepareWorktree(ctx context.Context, t task.Task, issue github
 		return "", false
 	}
 	return d, true
-}
-
-// commentsPrompt instructs the fix agent to address unresolved review comments
-// on the user's own PR via the /fix-review skill (which replies on every
-// thread), then push and re-request review.
-func commentsPrompt(ctx context.Context, pr github.PullRequest, signing project.SigningPolicy) string {
-	return fmt.Sprintf(
-		"Run /fix-review %s --auto\n\n"+
-			"This is your own PR (#%d) — reviewers left comments or unresolved "+
-			"threads. Address the valid ones, reply on every thread, and push.\n\n"+
-			"End every thread reply and any PR comment you post with a blank line "+
-			"then the harness attribution footer, exactly: `_Generated by Sybra "+
-			"harness_`.\n\n"+
-			"Before posting each thread reply, re-fetch that thread and skip it "+
-			"if the authenticated user already posted a reply containing the "+
-			"harness footer on the current PR head. Never post a reply body "+
-			"containing placeholders like `__SHA__`, `<short-sha>`, or "+
-			"`TODO`; replace them before the first API call. If a reply API "+
-			"call succeeds for a thread, do not retry the same thread through "+
-			"another API path.\n\n"+
-			"Never weaken, skip, delete, or hardcode tests to satisfy a comment "+
-			"— fix the underlying code; tampering is detected and blocks the "+
-			"task.\n\n"+
-			"IMPORTANT: when committing, use conventional commit format "+
-			"`fix(review): address PR review comments` (type(scope) required by "+
-			"repo hooks). Sign the commit with `git commit %s`.\n\n"+
-			"%s",
-		pr.URL, pr.Number, signing.CommitFlags(ctx), prFixPushPrompt(pr.HeadRefName, "Push to the same remote create-pr would target for this worktree:", true, false),
-	)
 }
 
 func conflictPrompt(ctx context.Context, pr github.PullRequest, signing project.SigningPolicy) string {

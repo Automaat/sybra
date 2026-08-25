@@ -64,6 +64,31 @@ type Manager struct {
 	// cross-process transitions (where firedStatus is stale or unset).
 	firedMu     sync.RWMutex
 	firedStatus map[string]string
+
+	// statusActor records which subsystem submitted the transition that last
+	// fired onStatusHook, so a hook can tell one automation writing a task
+	// repeatedly from two automations contending over it. Empty for a
+	// transition observed on disk rather than submitted here.
+	actorMu     sync.RWMutex
+	statusActor map[string]string
+}
+
+// LastStatusActor returns the actor that submitted the transition currently
+// being reported to the status hook, or empty when the transition was observed
+// on disk and no actor is known.
+func (m *Manager) LastStatusActor(id string) string {
+	m.actorMu.RLock()
+	defer m.actorMu.RUnlock()
+	return m.statusActor[id]
+}
+
+func (m *Manager) recordStatusActor(id, actor string) {
+	m.actorMu.Lock()
+	defer m.actorMu.Unlock()
+	if m.statusActor == nil {
+		m.statusActor = make(map[string]string)
+	}
+	m.statusActor[id] = actor
 }
 
 // SetStatusChangeHook registers a callback fired on every status transition.
@@ -194,6 +219,7 @@ func (m *Manager) OnExternalUpdate(path string) {
 	m.recordFiredStatus(id, newStatus)
 	unlock()
 
+	m.recordStatusActor(id, "")
 	m.onStatusHook(id, prev, newStatus, t)
 }
 

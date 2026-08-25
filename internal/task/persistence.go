@@ -96,9 +96,11 @@ type agentRunRecord struct {
 	SkillConformance        string    `yaml:"skill_conformance,omitempty"`
 	State                   string    `yaml:"state"`
 	Outcome                 string    `yaml:"outcome,omitempty"`
+	ReviewSalvaged          bool      `yaml:"review_salvaged,omitempty"`
 	EscalationReason        string    `yaml:"escalation_reason,omitempty"`
 	StartedAt               time.Time `yaml:"started_at"`
 	CostUSD                 float64   `yaml:"cost_usd,omitempty"`
+	ToolFailures            int       `yaml:"tool_failures,omitempty"`
 	PremiumRequests         float64   `yaml:"premium_requests,omitempty"`
 	Prompt                  string    `yaml:"prompt,omitempty"`
 	Result                  string    `yaml:"result,omitempty"`

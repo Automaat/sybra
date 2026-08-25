@@ -15,16 +15,17 @@ import (
 
 // Compile-time interface checks.
 var (
-	_ workflow.PRLinker           = (*LinkerAdapter)(nil)
-	_ workflow.PRStateFetcher     = (*StateFetcherAdapter)(nil)
-	_ workflow.PRHeadFetcher      = (*HeadFetcherAdapter)(nil)
-	_ workflow.PRMetaFetcher      = (*MetaFetcherAdapter)(nil)
-	_ workflow.PRCreator          = (*CreatorAdapter)(nil)
-	_ workflow.PRCloser           = (*CloserAdapter)(nil)
-	_ workflow.PRFinder           = (*FinderAdapter)(nil)
-	_ workflow.PRExistenceChecker = (*ExistenceCheckerAdapter)(nil)
-	_ workflow.PRContentGenerator = (*ContentGeneratorAdapter)(nil)
-	_ workflow.PRReviewRequester  = (*ReviewRequesterAdapter)(nil)
+	_ workflow.PRLinker              = (*LinkerAdapter)(nil)
+	_ workflow.PRStateFetcher        = (*StateFetcherAdapter)(nil)
+	_ workflow.PRReviewThreadFetcher = (*ThreadFetcherAdapter)(nil)
+	_ workflow.PRHeadFetcher         = (*HeadFetcherAdapter)(nil)
+	_ workflow.PRMetaFetcher         = (*MetaFetcherAdapter)(nil)
+	_ workflow.PRCreator             = (*CreatorAdapter)(nil)
+	_ workflow.PRCloser              = (*CloserAdapter)(nil)
+	_ workflow.PRFinder              = (*FinderAdapter)(nil)
+	_ workflow.PRExistenceChecker    = (*ExistenceCheckerAdapter)(nil)
+	_ workflow.PRContentGenerator    = (*ContentGeneratorAdapter)(nil)
+	_ workflow.PRReviewRequester     = (*ReviewRequesterAdapter)(nil)
 )
 
 // LinkerAdapter wires the workflow engine's PRLinker interface to the github
@@ -45,6 +46,14 @@ type StateFetcherAdapter struct{}
 
 func (StateFetcherAdapter) FetchPRState(repo string, number int) (github.PRState, error) {
 	return github.FetchPRState(repo, number)
+}
+
+// ThreadFetcherAdapter wires the workflow engine's PRReviewThreadFetcher
+// interface to the github package.
+type ThreadFetcherAdapter struct{}
+
+func (ThreadFetcherAdapter) FetchReviewThreads(ctx context.Context, repo string, number int) ([]github.ReviewThread, error) {
+	return github.FetchReviewThreadsContext(ctx, repo, number)
 }
 
 // HeadFetcherAdapter wires the workflow engine's PRHeadFetcher interface to

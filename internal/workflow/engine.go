@@ -137,6 +137,9 @@ type AgentRunInfo struct {
 	// TurnCount is zero when the provider child emitted nothing, marking a run
 	// that never saw its instructions rather than one that defied them.
 	TurnCount int
+	// ReviewSalvaged mirrors task.AgentRun.ReviewSalvaged: a review that left
+	// a usable review behind without finishing.
+	ReviewSalvaged bool
 }
 
 // TaskProvider reads and updates tasks.
@@ -313,6 +316,11 @@ type PRReviewRequester interface {
 // and the agent's sentinel is trusted as-is, so tests don't need to wire one.
 type PRStateFetcher interface {
 	FetchPRState(repo string, number int) (github.PRState, error)
+}
+
+// PRReviewThreadFetcher lists a PR's review threads.
+type PRReviewThreadFetcher interface {
+	FetchReviewThreads(ctx context.Context, repo string, number int) ([]github.ReviewThread, error)
 }
 
 // PRHeadFetcher looks up a PR's live head commit SHA. Used by `push_branch`
@@ -789,6 +797,7 @@ type PRSurface struct {
 	Linker           PRLinker
 	ReviewRequester  PRReviewRequester
 	StateFetcher     PRStateFetcher
+	ThreadFetcher    PRReviewThreadFetcher
 	HeadFetcher      PRHeadFetcher
 	MetaFetcher      PRMetaFetcher
 	PushPreflighter  PushCredentialPreflighter
@@ -841,6 +850,7 @@ func (s PRSurface) missing() []string {
 		namedDependency{"PR.Linker", s.Linker},
 		namedDependency{"PR.ReviewRequester", s.ReviewRequester},
 		namedDependency{"PR.StateFetcher", s.StateFetcher},
+		namedDependency{"PR.ThreadFetcher", s.ThreadFetcher},
 		namedDependency{"PR.HeadFetcher", s.HeadFetcher},
 		namedDependency{"PR.MetaFetcher", s.MetaFetcher},
 		namedDependency{"PR.Creator", s.Creator},

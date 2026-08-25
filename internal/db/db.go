@@ -163,12 +163,14 @@ func (d *DB) writePlaceholder(b *strings.Builder, n int) {
 
 // ExecContext runs a '?'-placeholder statement against the backend.
 func (d *DB) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
-	return d.sqlDB.ExecContext(ctx, d.Rebind(query), args...)
+	res, err := d.sqlDB.ExecContext(ctx, d.Rebind(query), args...)
+	return res, Contended(err)
 }
 
 // QueryContext runs a '?'-placeholder query against the backend.
 func (d *DB) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
-	return d.sqlDB.QueryContext(ctx, d.Rebind(query), args...)
+	rows, err := d.sqlDB.QueryContext(ctx, d.Rebind(query), args...)
+	return rows, Contended(err)
 }
 
 // QueryRowContext runs a '?'-placeholder single-row query against the backend.
@@ -237,7 +239,7 @@ func (d *DB) WithAdvisoryLock(ctx context.Context, key LockKey, fn func() error)
 func (d *DB) InTx(ctx context.Context, fn func(*sql.Tx) error) error {
 	tx, err := d.sqlDB.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin transaction: %w", err)
+		return fmt.Errorf("begin transaction: %w", Contended(err))
 	}
 	committed := false
 	defer func() {
@@ -246,10 +248,10 @@ func (d *DB) InTx(ctx context.Context, fn func(*sql.Tx) error) error {
 		}
 	}()
 	if err := fn(tx); err != nil {
-		return err
+		return Contended(err)
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit transaction: %w", err)
+		return fmt.Errorf("commit transaction: %w", Contended(err))
 	}
 	committed = true
 	return nil

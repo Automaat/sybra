@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/intervention"
@@ -1674,5 +1675,75 @@ func TestApplyPRPhaseSkipsNoOp(t *testing.T) {
 	}
 	if after.Status != task.StatusInReview {
 		t.Errorf("applyPRPhase changed status to %q", after.Status)
+	}
+}
+
+func TestHandleTaskPRIssues_SkipsAPausedTask(t *testing.T) {
+	r, tasks := newOutboundTestHandler(t)
+	projDir := t.TempDir()
+	projStore, err := project.NewStore(projDir, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	mustWriteProjectYAML(t, projDir, "pet-owner/pet-repo", project.ProjectTypePet)
+	r.projects = projStore
+
+	created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := tasks.Apply(task.TransitionIntent{
+		TaskID: created.ID, ToStatus: task.StatusBlocked, Actor: "test",
+		Extra: task.Update{
+			ProjectID:       task.Ptr("pet-owner/pet-repo"),
+			StatusReason:    task.Ptr("automatic status loop detected; task paused"),
+			AutonomyOutcome: task.QuarantinedOutcome(),
+		},
+		OperatorOverride: true,
+	}); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+
+	var merged bool
+	r.mergePR = func(string, int) error { merged = true; return nil }
+	r.handleTaskPRIssues(t.Context(), created.ID, []github.PRIssue{{
+		Kind: github.PRIssueReadyToMerge, TaskID: created.ID,
+		PR: github.PullRequest{Number: 7, Repository: "pet-owner/pet-repo", Mergeable: "MERGEABLE", CIStatus: "SUCCESS"},
+	}})
+
+	if merged {
+		t.Fatal("a paused task was acted on, so the pause neither stopped the work nor survived it")
+	}
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Status != task.StatusBlocked || got.AutonomyOutcome != autonomy.OutcomeQuarantined {
+		t.Fatalf("status/outcome = %q/%q, want the pause intact", got.Status, got.AutonomyOutcome)
+	}
+}
+
+func TestTaskIsPaused_OnlyMatchesADeliberateQuarantine(t *testing.T) {
+	t.Parallel()
+	cases := map[string]struct {
+		status  task.Status
+		outcome autonomy.Outcome
+		want    bool
+	}{
+		"paused for a loop":            {task.StatusBlocked, autonomy.OutcomeQuarantined, true},
+		"blocked awaiting repair":      {task.StatusBlocked, "", false},
+		"blocked after a retry":        {task.StatusBlocked, autonomy.OutcomeRetried, false},
+		"quarantined but running":      {task.StatusInProgress, autonomy.OutcomeQuarantined, false},
+		"quarantined and back in test": {task.StatusTesting, autonomy.OutcomeQuarantined, false},
+		"ordinary in-review":           {task.StatusInReview, "", false},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			got := taskIsPaused(task.Task{Status: tc.status, AutonomyOutcome: tc.outcome})
+			if got != tc.want {
+				t.Fatalf("taskIsPaused = %v, want %v — a wrong answer either strands work or lets a pause be overwritten", got, tc.want)
+			}
+		})
 	}
 }

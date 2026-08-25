@@ -844,6 +844,7 @@ func toRunInfos(runs []task.AgentRun) []workflow.AgentRunInfo {
 			FinalCommitSource:      runs[i].FinalCommitSource,
 			SubagentCallCount:      runs[i].SubagentCallCount,
 			TurnCount:              runs[i].TurnCount,
+			ReviewSalvaged:         runs[i].ReviewSalvaged,
 		}
 	}
 	return out

@@ -238,11 +238,18 @@ type AgentRun struct {
 	// definitive terminal outcome (still running, or stalled/rate-limited and
 	// due for retry) — callers must not infer success from Outcome == "".
 	Outcome string `json:"outcome,omitempty"`
+	// ReviewSalvaged marks a review run that left a usable review behind even
+	// though it did not finish — the cost guardrail stops one mid-flight and
+	// its partial transcript is written to the task. The review budget counts
+	// rounds that reviewed something, and Outcome alone cannot tell this run
+	// apart from one that produced nothing.
+	ReviewSalvaged bool `json:"reviewSalvaged,omitempty"`
 	// EscalationReason records the guardrail reason that stopped the run
 	// ("cost" or "turns"). Empty for ordinary completions.
 	EscalationReason string    `json:"escalationReason,omitempty"`
 	StartedAt        time.Time `json:"startedAt"`
 	CostUSD          float64   `json:"costUsd"`
+	ToolFailures     int       `json:"toolFailures,omitempty"`
 	PremiumRequests  float64   `json:"premiumRequests,omitempty"`
 	Prompt           string    `json:"prompt,omitempty"`
 	Result           string    `json:"result"`

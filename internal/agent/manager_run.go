@@ -569,7 +569,9 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	if err := m.injectSandboxHome(&cfg); err != nil {
 		return cfg, nil, err
 	}
-	m.injectShellTempPrefix(&cfg)
+	if err := m.injectShellTempPrefix(&cfg); err != nil {
+		return cfg, nil, err
+	}
 	if err := injectScratchEnvironment(&cfg); err != nil {
 		return cfg, nil, err
 	}
@@ -875,9 +877,13 @@ func systemSandboxKey(cfg *RunConfig) string {
 
 const scratchHomePrompt = `## Temporary files
 
-When a command or test needs a disposable HOME, use $SYBRA_SCRATCH_HOME. It
-lives outside the Git worktree. Never create fake homes, caches, or other
-runtime state inside the worktree.`
+When a command or test needs a disposable HOME, use $SYBRA_SCRATCH_HOME. For
+ordinary scratch files - command output you read back, intermediate JSON, a
+query you build up - use $SYBRA_SCRATCH_DIR. Both live outside the Git worktree.
+
+Do not write to /tmp. It is world-writable and shared with unrelated tasks, so
+the sandbox does not grant it and the write fails with a permission error.
+Never create fake homes, caches, or other runtime state inside the worktree.`
 
 // shellTempPrefixEnv is zsh's temp-file prefix, and the reason a contained run
 // can use a heredoc at all. zsh writes every heredoc body to a file under
@@ -903,9 +909,9 @@ const shellTempPrefixEnv = "TMPPREFIX"
 // state every run was already in; refusing to dispatch over it would turn one
 // stray file in an agent-writable directory into a task that can never run
 // again, on every posture including off.
-func (m *Manager) injectShellTempPrefix(cfg *RunConfig) {
+func (m *Manager) injectShellTempPrefix(cfg *RunConfig) error {
 	if strings.TrimSpace(cfg.resolvedSandboxHome) == "" {
-		return
+		return nil
 	}
 	// Strip first. A caller-supplied prefix can name any writable path,
 	// including one inside the worktree, so a directory this cannot create
@@ -913,10 +919,14 @@ func (m *Manager) injectShellTempPrefix(cfg *RunConfig) {
 	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, shellTempPrefixEnv)
 	dir := filepath.Join(cfg.resolvedSandboxHome, "zsh")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
+		if m.resolvedSandboxModeFor(cfg) == "enforce" {
+			return fmt.Errorf("agent.Run: create shell temp prefix directory %q: %w", dir, err)
+		}
 		m.logger.Warn("agent.shell_temp_prefix.failed", "task_id", cfg.TaskID, "dir", dir, "err", err)
-		return
+		return nil
 	}
 	cfg.ExtraEnv = append(cfg.ExtraEnv, shellTempPrefixEnv+"="+filepath.Join(dir, "zsh"))
+	return nil
 }
 
 // injectScratchEnvironment gives every sandbox-home-backed run an explicit
@@ -934,11 +944,15 @@ func injectScratchEnvironment(cfg *RunConfig) error {
 	if err := os.MkdirAll(scratchHome, 0o700); err != nil {
 		return fmt.Errorf("agent.Run: create task scratch directory %q: %w", scratchHome, err)
 	}
+	scratchDir := filepath.Join(cfg.resolvedSandboxHome, "scratch")
+	if err := os.MkdirAll(scratchDir, 0o700); err != nil {
+		return fmt.Errorf("agent.Run: create task scratch file directory %q: %w", scratchDir, err)
+	}
 	// Do not replace TMPDIR/TMP/TEMP here. Provider and harness control files
 	// may already live beneath the caller's process temp root; changing that
 	// root makes those paths fail validation and can change CLI behaviour.
-	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, "SYBRA_SCRATCH_HOME")
-	cfg.ExtraEnv = append(cfg.ExtraEnv, "SYBRA_SCRATCH_HOME="+scratchHome)
+	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, "SYBRA_SCRATCH_HOME", "SYBRA_SCRATCH_DIR")
+	cfg.ExtraEnv = append(cfg.ExtraEnv, "SYBRA_SCRATCH_HOME="+scratchHome, "SYBRA_SCRATCH_DIR="+scratchDir)
 	if !strings.Contains(cfg.Prompt, scratchHomePrompt) {
 		if cfg.Prompt != "" {
 			cfg.Prompt = strings.TrimRight(cfg.Prompt, "\n") + "\n\n"
@@ -1113,6 +1127,23 @@ func (m *Manager) injectSharedBuildCache(cfg *RunConfig) error {
 // subprocess spawns. report never blocks: the same failures are logged and
 // this run's spec falls back to "off" (unwrapped) instead of erroring, so a
 // misconfigured or unsupported host cannot break the default posture.
+// resolvedSandboxModeFor reports the posture this run will use, applying the
+// manager default when the run names none. Unparseable values read as the
+// empty string; injectProcessSandbox reports that error properly.
+func (m *Manager) resolvedSandboxModeFor(cfg *RunConfig) string {
+	requested := cfg.SandboxMode
+	if strings.TrimSpace(requested) == "" {
+		m.mu.RLock()
+		requested = m.defaultSandboxMode
+		m.mu.RUnlock()
+	}
+	mode, err := config.NormalizeSandboxMode(requested)
+	if err != nil {
+		return ""
+	}
+	return mode
+}
+
 func (m *Manager) injectProcessSandbox(cfg *RunConfig) error {
 	requested := cfg.SandboxMode
 	if strings.TrimSpace(requested) == "" {

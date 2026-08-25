@@ -66,6 +66,12 @@ function promptForApiToken(): string {
   return entered
 }
 
+const RETRY_AFTER_BUSY_MS = 750
+
+function isReplayable(method: string): boolean {
+  return method.startsWith('List') || method.startsWith('Get')
+}
+
 async function call<T>(service: string, method: string, ...args: unknown[]): Promise<T> {
   const doFetch = () => fetch(`${apiBase()}/${service}/${method}`, {
     method: 'POST',
@@ -78,6 +84,10 @@ async function call<T>(service: string, method: string, ...args: unknown[]): Pro
 
   let res = await doFetch()
   if (res.status === 401 && promptForApiToken()) {
+    res = await doFetch()
+  }
+  if (res.status === 503 && isReplayable(method)) {
+    await new Promise((resolve) => setTimeout(resolve, RETRY_AFTER_BUSY_MS))
     res = await doFetch()
   }
   if (!res.ok) {

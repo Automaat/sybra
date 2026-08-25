@@ -42,7 +42,10 @@ func (m *Manager) OneShotCommand(ctx context.Context, dir, name string, args []s
 		cleanup()
 		return nil, nil, err
 	}
-	m.injectShellTempPrefix(&cfg)
+	if err := m.injectShellTempPrefix(&cfg); err != nil {
+		cleanup()
+		return nil, nil, err
+	}
 	// A one-shot call is a classifier, not an actor. It is given no board and
 	// no GitHub credential, so a prompt-injected instruction inside the text
 	// it classifies has nothing to read them out of.

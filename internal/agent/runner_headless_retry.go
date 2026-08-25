@@ -85,6 +85,12 @@ func buildErrorSample(stderrOut string, attemptEvents []StreamEvent) provider.Er
 		sample.ErrorType = e.ErrorType
 		sample.ErrorStatus = e.ErrorStatus
 		sample.Content = e.Content
+		// A provider adapter maps a CLI error envelope onto a result event
+		// (see ParseOpenCodeLine), so only a result carrying no error marker
+		// is the agent's own message. Anything error-shaped is a surface the
+		// CLI controls and keeps the broad auth needles.
+		sample.ContentIsAgentMessage = e.ErrorType == "" && e.ErrorStatus == 0 &&
+			!resultSubtypeIsError(e.Subtype)
 		break
 	}
 	return sample

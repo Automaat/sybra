@@ -170,7 +170,7 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 func (e *Engine) recordRoleCompletionSideEffects(taskID string, currentStep *Step, wfExec *Execution, output StepOutput) {
 	// Mark task reviewed after a review-role step succeeds.
 	// Persisted so a re-triggered workflow run skips code_review (idempotent).
-	if currentStep.Config.Role == "review" && output.Status == "completed" {
+	if currentStep.Config.Role == reviewAgentRole && output.Status == "completed" {
 		if mErr := e.tasks.MarkTaskReviewed(taskID); mErr != nil {
 			e.logger.Warn("workflow.mark-reviewed.failed", "task_id", taskID, "err", mErr)
 		}
@@ -211,6 +211,10 @@ func (e *Engine) recordRoleCompletionSideEffects(taskID string, currentStep *Ste
 // onExhausted callback owning the escalation outright.
 func (e *Engine) retryFailedStepIfConfigured(taskID string, def *Definition, currentStep *Step, wfExec *Execution, task TaskInfo, output StepOutput, release func()) (handled bool, err error) {
 	if output.Status != "failed" || currentStep.Config.MaxRetries == 0 || task.Status == taskstatus.HumanRequired {
+		return false, nil
+	}
+	if currentStep.ID == testVerdictSourceStep &&
+		wfExec.Variables["step."+testVerdictSourceStep+"."+testSurfaceUnavailableKey] != "" {
 		return false, nil
 	}
 	retries := wfExec.CountStep(output.StepID)
@@ -915,6 +919,7 @@ func (e *Engine) reviewBudgetExhaustion(t TaskInfo) (hourly, lifetime bool) {
 		runs[i] = reviewbudget.Run{
 			Role: t.AgentRuns[i].Role, StartedAt: t.AgentRuns[i].StartedAt,
 			Outcome: t.AgentRuns[i].Outcome, TurnCount: t.AgentRuns[i].TurnCount,
+			Salvaged: t.AgentRuns[i].ReviewSalvaged,
 		}
 	}
 	now := e.now()

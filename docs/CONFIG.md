@@ -189,6 +189,7 @@ copilot, opencode) and their background health-check loop. A missing block defau
 |---|---|---|---|---|---|---|---|---|---|
 | `execution.providers.health_check.enabled` | `bool` | `true` |  |  | `providers.health_check.enabled` | `false` | `restart` |  |  |
 | `execution.providers.health_check.interval` | `int` | `300` | `seconds` |  | `providers.health_check.interval_seconds`, `providers.health_check.interval` | `false` | `restart` |  |  |
+| `execution.providers.health_check.auth_failure_cooldown` | `int` | `900` | `seconds` |  | `providers.health_check.auth_failure_cooldown_seconds`, `providers.health_check.auth_failure_cooldown` | `false` | `restart` |  |  |
 
 ### ProviderEntryConfig (`execution.providers.claude`)
 
@@ -749,6 +750,7 @@ DatabaseConfig selects the durable-storage backend and its connection settings. 
 | `storage.database.max_open_conns` | `int` | `0` |  |  | `database.max_open_conns` | `false` | `restart` |  | MaxOpenConns caps concurrent connections; 0 uses the per-engine default (4 for sqlite, 16 for postgres). |
 | `storage.database.max_idle_conns` | `int` | `0` |  |  | `database.max_idle_conns` | `false` | `restart` |  | MaxIdleConns caps pooled idle connections; 0 uses the per-engine default. |
 | `storage.database.conn_max_lifetime_seconds` | `int` | `0` |  |  | `database.conn_max_lifetime_seconds` | `false` | `restart` |  | ConnMaxLifetimeSeconds retires a pooled connection after this age; 0 keeps it until the driver drops it. |
+| `storage.database.max_task_history_per_task` | `int` | `0` |  |  | `database.max_task_history_per_task` | `false` | `restart` |  | MaxTaskHistoryPerTask caps how many task_history entries one task keeps, trimmed as each new entry lands; 0 uses taskdb.DefaultMaxHistoryPerTask (200), and a negative value disables the cap. Each entry holds a whole task document, so without a cap this is by far the largest table on a busy board. |
 
 ## Observability
 

@@ -143,3 +143,44 @@ describe('event stream connection state', () => {
     expect(FakeEventSource.instances).toHaveLength(1)
   })
 })
+
+describe('busy backend', () => {
+  it('retries once and returns the result the second call carries', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 503, text: async () => '{"error":"backend is busy; retry","code":"unavailable"}' })
+      .mockResolvedValueOnce({ ok: true, status: 200, text: async () => '[{"id":"t1"}]' })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(api.ListTasks()).resolves.toEqual([{ id: 't1' }])
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('surfaces the error when the backend is still busy on the retry', async () => {
+    const busy = { ok: false, status: 503, text: async () => '{"error":"backend is busy; retry","code":"unavailable"}' }
+    const fetchMock = vi.fn().mockResolvedValue(busy)
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(api.ListTasks()).rejects.toThrow('backend is busy; retry')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not resend a mutation, whose retry would land as a new command', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false, status: 503, text: async () => '{"error":"backend is busy; retry","code":"unavailable"}',
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(api.SendMessage('agent-1', 'steer me')).rejects.toThrow('backend is busy; retry')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not retry a genuine server fault', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false, status: 500, text: async () => '{"error":"internal error","code":"internal_error"}',
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(api.ListTasks()).rejects.toThrow('internal error')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+})

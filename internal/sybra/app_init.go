@@ -854,6 +854,10 @@ func (a *App) initStatusHook() {
 		}
 		a.logAudit(audit.EventTaskStatusChanged, taskID, "", data)
 		if a.maybeQuarantineStatusBounce(taskID, from, to) {
+			// Stop the agent the pause was meant to interrupt. Without this it
+			// runs on, and its completion advances the workflow onto a step
+			// that writes a live status back over the pause.
+			a.releaseTaskAgents(taskID)
 			return
 		}
 
@@ -979,8 +983,57 @@ func (a *App) maybeQuarantineStatusBounce(taskID, from, to string) bool {
 
 const statusBounceLimit = 3
 
+// statusBounceWindow bounds how long a transition is remembered. It is a
+// memory bound rather than the discriminator: a contending pair can repeat on
+// whatever tick its slowest dispatcher polls at, which is minutes, so a window
+// tight enough to exclude sequential fix rounds would also stop catching the
+// contention this detector exists for.
+const statusBounceWindow = 2 * time.Hour
+
 type statusBounceState struct {
-	edges map[string]int
+	edges map[string][]bounceEdge
+}
+
+type bounceEdge struct {
+	at    time.Time
+	actor string
+}
+
+// recentActors returns the distinct actors that took an edge inside the
+// window, dropping the entries that have aged out.
+func (s *statusBounceState) recentActors(edge string, now time.Time) map[string]int {
+	cutoff := now.Add(-statusBounceWindow)
+	kept := s.edges[edge][:0]
+	actors := make(map[string]int)
+	for _, e := range s.edges[edge] {
+		if !e.at.After(cutoff) {
+			continue
+		}
+		kept = append(kept, e)
+		actors[e.actor]++
+	}
+	s.edges[edge] = kept
+	if len(kept) == 0 {
+		delete(s.edges, edge)
+	}
+	return actors
+}
+
+// contendingActors reports how many times the busiest actor took an edge that
+// some other actor also took. One automation driving a task through round
+// after round writes both directions itself; two automations fighting over a
+// task write the same pair against each other, and that difference is what
+// separates ordinary work from a loop.
+func contendingActors(forward, reverse map[string]int) int {
+	worst := 0
+	for actor, n := range forward {
+		for other := range reverse {
+			if other != actor && n > worst {
+				worst = n
+			}
+		}
+	}
+	return worst
 }
 
 // statusBounceTripped reports whether this transition completes a repeated
@@ -988,6 +1041,10 @@ type statusBounceState struct {
 // bulk status edits and legitimate retries can repeat one direction, whereas
 // a reciprocal pair is the distinctive signature of competing automations.
 func (a *App) statusBounceTripped(taskID, from, to string) bool {
+	return a.statusBounceTrippedAt(taskID, from, to, a.tasks.LastStatusActor(taskID), time.Now())
+}
+
+func (a *App) statusBounceTrippedAt(taskID, from, to, actor string, now time.Time) bool {
 	if taskID == "" || from == "" || to == "" || from == to ||
 		from == string(task.StatusBlocked) || to == string(task.StatusBlocked) {
 		return false
@@ -1001,11 +1058,17 @@ func (a *App) statusBounceTripped(taskID, from, to string) bool {
 	}
 	state := a.statusBounces[taskID]
 	if state == nil {
-		state = &statusBounceState{edges: make(map[string]int)}
+		state = &statusBounceState{edges: make(map[string][]bounceEdge)}
 		a.statusBounces[taskID] = state
 	}
-	state.edges[key]++
-	return state.edges[key] >= statusBounceLimit && state.edges[reverse] >= statusBounceLimit-1
+	state.edges[key] = append(state.edges[key], bounceEdge{at: now, actor: actor})
+	forward := state.recentActors(key, now)
+	back := state.recentActors(reverse, now)
+	if len(state.edges) == 0 {
+		delete(a.statusBounces, taskID)
+	}
+	return contendingActors(forward, back) >= statusBounceLimit &&
+		contendingActors(back, forward) >= statusBounceLimit-1
 }
 
 func (a *App) closeLinkedIssueOnDone(taskID string) {
@@ -1471,16 +1534,17 @@ func (a *App) initProviderHealth(ctx context.Context, emit func(string, any)) {
 		return
 	}
 	pc := provider.New(provider.Config{
-		Interval:           time.Duration(a.cfg.Providers.HealthCheck.IntervalSeconds) * time.Second,
-		ClaudeEnabled:      a.cfg.Providers.Claude.Enabled,
-		CodexEnabled:       a.cfg.Providers.Codex.Enabled,
-		CopilotEnabled:     a.cfg.Providers.Copilot.Enabled,
-		OpenCodeEnabled:    a.cfg.Providers.OpenCode.Enabled,
-		AutoFailover:       a.cfg.Providers.AutoFailover,
-		ClaudeRLCooldown:   time.Duration(a.cfg.Providers.Claude.RateLimitCooldownSeconds) * time.Second,
-		CodexRLCooldown:    time.Duration(a.cfg.Providers.Codex.RateLimitCooldownSeconds) * time.Second,
-		CopilotRLCooldown:  time.Duration(a.cfg.Providers.Copilot.RateLimitCooldownSeconds) * time.Second,
-		OpenCodeRLCooldown: time.Duration(a.cfg.Providers.OpenCode.RateLimitCooldownSeconds) * time.Second,
+		Interval:            time.Duration(a.cfg.Providers.HealthCheck.IntervalSeconds) * time.Second,
+		ClaudeEnabled:       a.cfg.Providers.Claude.Enabled,
+		CodexEnabled:        a.cfg.Providers.Codex.Enabled,
+		CopilotEnabled:      a.cfg.Providers.Copilot.Enabled,
+		OpenCodeEnabled:     a.cfg.Providers.OpenCode.Enabled,
+		AutoFailover:        a.cfg.Providers.AutoFailover,
+		ClaudeRLCooldown:    time.Duration(a.cfg.Providers.Claude.RateLimitCooldownSeconds) * time.Second,
+		CodexRLCooldown:     time.Duration(a.cfg.Providers.Codex.RateLimitCooldownSeconds) * time.Second,
+		CopilotRLCooldown:   time.Duration(a.cfg.Providers.Copilot.RateLimitCooldownSeconds) * time.Second,
+		OpenCodeRLCooldown:  time.Duration(a.cfg.Providers.OpenCode.RateLimitCooldownSeconds) * time.Second,
+		AuthFailureCooldown: time.Duration(a.cfg.Providers.HealthCheck.AuthFailureCooldownSeconds) * time.Second,
 	}, emit, a.logger)
 	// New seeds every provider Healthy=false until probed; probe once here,
 	// before the gate is live, so startLifecycle's dispatch never sees a
@@ -1639,6 +1703,7 @@ func (a *App) workflowDependencies(agentLauncher *agentAdapter) workflow.Depende
 			Linker:           workflowpr.LinkerAdapter{},
 			ReviewRequester:  workflowpr.ReviewRequesterAdapter{},
 			StateFetcher:     workflowpr.StateFetcherAdapter{},
+			ThreadFetcher:    workflowpr.ThreadFetcherAdapter{},
 			HeadFetcher:      workflowpr.HeadFetcherAdapter{},
 			MetaFetcher:      workflowpr.MetaFetcherAdapter{},
 			Creator:          workflowpr.CreatorAdapter{},
@@ -2266,6 +2331,7 @@ func (a *App) openTaskPersistence(ctx context.Context) task.Persistence {
 		a.logger.Error("task.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
 		return nil
 	}
+	sqlStore.SetMaxHistoryPerTask(a.cfg.Database.MaxTaskHistoryPerTask)
 	projectionCtx, projectionCancel := context.WithTimeout(ctx, importTimeout)
 	defer projectionCancel()
 	if err := sqlStore.BackfillBoardProjections(projectionCtx); err != nil {
@@ -2274,7 +2340,24 @@ func (a *App) openTaskPersistence(ctx context.Context) task.Persistence {
 		// retry the remaining legacy rows next start instead of failing startup.
 		a.logger.Error("task.board_projection.backfill", "err", err)
 	}
+	a.trimTaskHistory(ctx, sqlStore)
 	return taskdb.NewPersistence(sqlStore)
+}
+
+// trimTaskHistory brings a board that ran without a cap down to it.
+//
+// Off the startup path: the per-write trim already bounds every task from here
+// on, so this is catch-up for what accumulated before, and a board large enough
+// to need it is exactly the one that must not wait for it before serving. It is
+// tracked on the App's wait group so Shutdown cannot close the database out from
+// under it, and it runs after the board-projection backfill rather than beside
+// it, because sqlite admits one writer and the two would otherwise contend.
+func (a *App) trimTaskHistory(ctx context.Context, store *taskdb.SQLStore) {
+	a.wg.Go(func() {
+		if err := store.TrimHistoryOverCap(ctx); err != nil {
+			a.logger.Warn("task.history.trim_over_cap", "err", err)
+		}
+	})
 }
 
 // openProjectStore returns the project records for the configured backend,
