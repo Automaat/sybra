@@ -13,6 +13,7 @@ import (
 	"github.com/Automaat/sybra/internal/errclass"
 	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/prreview"
 	"github.com/Automaat/sybra/internal/taskstatus"
 	"github.com/Automaat/sybra/internal/textutil"
 )
@@ -235,6 +236,10 @@ func (e *Engine) humanRequiredPR(taskID string, step *Step, reason string) (Step
 // (out, err) immediately — either the push failed permanently (human-required)
 // or it was parked for a bounded retry (errStepParked).
 func (e *Engine) pushTaskBranch(taskID string, step *Step, wfExec *Execution, t TaskInfo, wtPath, branch string) (out StepOutput, err error, ok bool) {
+	if prreview.Is(t.ID, t.Branch, t.PRNumber, t.Tags) {
+		out, err = e.humanRequiredPR(taskID, step, fmt.Sprintf("task only reviews pull request #%d: refusing to push its branch", t.PRNumber))
+		return out, err, false
+	}
 	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
 	defer cancel()
 	if preflightErr := e.preflightPushCredentials(ctx, wtPath); preflightErr != nil {

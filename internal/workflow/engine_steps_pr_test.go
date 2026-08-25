@@ -52,6 +52,15 @@ func newPRWorktree(t *testing.T, branch string) (bare, wtPath string) {
 	return bare, wtPath
 }
 
+func remoteBranchSHA(t *testing.T, wtPath, branch string) string {
+	t.Helper()
+	out, err := exec.Command("git", "-C", wtPath, "ls-remote", "origin", "refs/heads/"+branch).CombinedOutput()
+	if err != nil {
+		t.Fatalf("git ls-remote: %v\n%s", err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
 func commitFile(t *testing.T, wtPath, name, msg string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(wtPath, name), []byte(msg+"\n"), 0o644); err != nil {
@@ -1298,5 +1307,38 @@ func TestExecCreatePR_AdoptsExistingPROnAlreadyExistsConflict(t *testing.T) {
 	}
 	if ti.Status == "human-required" {
 		t.Errorf("must not escalate to human-required when the PR already exists: %s", tasks.Reason("t1"))
+	}
+}
+
+func TestExecPushBranch_RefusesPRReviewTask(t *testing.T) {
+	// Given a review task on another author's pull request branch
+	_, wtPath := newPRWorktree(t, "feat/other-author")
+	commitFile(t, wtPath, "change.txt", "chore: local work on the reviewed branch")
+	before := remoteBranchSHA(t, wtPath, "feat/other-author")
+
+	review := TaskInfo{
+		ID: "t1", Status: "ready-pr", Branch: "feat/other-author",
+		PRNumber: 7, ProjectID: "acme/widgets", Tags: []string{"review"},
+	}
+	tasks := newMemTasks()
+	tasks.Put(review)
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
+
+	// When the deterministic push step runs
+	out, err := engine.execPushBranch("t1", newPushBranchStep(), &Execution{Variables: map[string]string{}}, review)
+	if err != nil {
+		t.Fatalf("execPushBranch: %v", err)
+	}
+
+	// Then the branch is left where it was and the task waits for a human
+	if after := remoteBranchSHA(t, wtPath, "feat/other-author"); after != before {
+		t.Fatalf("reviewed branch moved on the remote: %s -> %s", before, after)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "human-required" {
+		t.Fatalf("task status = %q, want human-required", ti.Status)
+	}
+	if out.Status != "completed" {
+		t.Fatalf("step status = %q, want completed", out.Status)
 	}
 }
