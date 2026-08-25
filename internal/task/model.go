@@ -580,9 +580,12 @@ func (t Task) DirName() string {
 // TagReview marks a task created to review a pull request Sybra did not open.
 const TagReview = prreview.Tag
 
+// TagAdoptedPR marks a review-tagged task whose pull request Sybra itself opened.
+const TagAdoptedPR = prreview.TagAdopted
+
 // IsPRReview reports whether t reviews a linked pull request it must not write to.
 func (t Task) IsPRReview() bool {
-	return prreview.Is(t.ID, t.Branch, t.PRNumber, t.Tags)
+	return prreview.Is(t.PRNumber, t.Tags)
 }
 
 // isTamperFlagged reports whether a task's status/blocker combination

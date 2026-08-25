@@ -166,3 +166,36 @@ func TestStartAgentRefusesCodeAuthorRoleOnPRReviewTask(t *testing.T) {
 		t.Fatalf("error = %v, want a refusal naming the reviewed pull request", err)
 	}
 }
+
+func TestStartAgentRefusesImplementationOnPRReviewTask(t *testing.T) {
+	// Given a review task on another author's pull request
+	h := setupReviewDispatchHarness(t)
+
+	// When the implementation role is dispatched with no pre-staged worktree
+	_, _, _, err := h.aa.StartAgent(
+		h.task.ID,
+		string(agent.RoleImplementation),
+		"headless",
+		"sonnet",
+		"claude",
+		"prompt",
+		"",
+		nil,
+		true,
+		false,
+		"",
+		"",
+		workflow.AgentAssignment{},
+	)
+
+	// Then the orchestrator refuses it instead of checking out the reviewed branch
+	if err == nil {
+		t.Fatal("StartAgent accepted an implementation dispatch on a PR review task")
+	}
+	if !strings.Contains(err.Error(), "only reviews pull request") {
+		t.Fatalf("error = %v, want a refusal naming the reviewed pull request", err)
+	}
+	if exec.Command("git", "-C", h.src, "rev-parse", "--verify", "refs/heads/"+h.branch).Run() == nil {
+		t.Fatal("implementation dispatch published the reviewed branch")
+	}
+}

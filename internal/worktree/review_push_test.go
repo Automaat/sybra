@@ -50,7 +50,7 @@ func TestPrepareForTask_PushesOwnBranch(t *testing.T) {
 	}
 }
 
-func TestPrepareForTask_SkipsPushForPRReviewTask(t *testing.T) {
+func TestPrepareForTask_RefusesPRReviewTask(t *testing.T) {
 	// Given a review task carrying another author's PR branch
 	h := prepareHarness(t, nil, 30*time.Second)
 	tags := []string{task.TagReview}
@@ -59,12 +59,13 @@ func TestPrepareForTask_SkipsPushForPRReviewTask(t *testing.T) {
 		PRNumber: task.Ptr(382),
 	})
 
-	// When the worktree is prepared
-	if _, err := h.m.PrepareForTask(context.Background(), tk, nil); err != nil {
-		t.Fatalf("PrepareForTask: %v", err)
-	}
+	// When a writable worktree is requested for it
+	_, err := h.m.PrepareForTask(context.Background(), tk, nil)
 
-	// Then nothing is pushed to that branch
+	// Then it is refused and nothing reaches that branch
+	if !errors.Is(err, ErrReviewTaskNotWritable) {
+		t.Fatalf("PrepareForTask error = %v, want ErrReviewTaskNotWritable", err)
+	}
 	if remoteHasBranch(t, h.src, "feat/theirs") {
 		t.Fatal("review task pushed to a branch it does not own")
 	}

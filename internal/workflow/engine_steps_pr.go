@@ -236,7 +236,7 @@ func (e *Engine) humanRequiredPR(taskID string, step *Step, reason string) (Step
 // (out, err) immediately — either the push failed permanently (human-required)
 // or it was parked for a bounded retry (errStepParked).
 func (e *Engine) pushTaskBranch(taskID string, step *Step, wfExec *Execution, t TaskInfo, wtPath, branch string) (out StepOutput, err error, ok bool) {
-	if prreview.Is(t.ID, t.Branch, t.PRNumber, t.Tags) {
+	if prreview.Is(t.PRNumber, t.Tags) {
 		out, err = e.humanRequiredPR(taskID, step, fmt.Sprintf("task only reviews pull request #%d: refusing to push its branch", t.PRNumber))
 		return out, err, false
 	}

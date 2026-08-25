@@ -197,6 +197,9 @@ func (m *Manager) PrepareForTask(ctx context.Context, t task.Task, onPhase func(
 		return "", fmt.Errorf("prepare worktree for reuse: %w", ErrAgentRunning)
 	}
 
+	if t.IsPRReview() {
+		return "", fmt.Errorf("%w: task %s only reviews pull request %d", ErrReviewTaskNotWritable, t.ID, t.PRNumber)
+	}
 	proj, err := m.projects.Get(t.ProjectID)
 	if err != nil {
 		return "", fmt.Errorf("get project: %w", err)

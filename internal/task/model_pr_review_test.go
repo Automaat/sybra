@@ -13,7 +13,8 @@ func TestIsPRReview(t *testing.T) {
 		{"pr without review tag", Task{PRNumber: 7, Tags: []string{"backend"}}, false},
 		{"no tags", Task{PRNumber: 7}, false},
 		{"another author branch", Task{PRNumber: 7, Tags: []string{TagReview}, Branch: "feat/theirs"}, true},
-		{"branch minted for another task", Task{ID: "aa11bb22", PRNumber: 7, Tags: []string{TagReview}, Branch: "fix/adopted-orphan-696bc049"}, false},
+		{"adopted own pull request", Task{ID: "aa11bb22", PRNumber: 7, Tags: []string{TagReview, TagAdoptedPR}, Branch: "fix/adopted-orphan-696bc049"}, false},
+		{"branch that merely looks minted", Task{ID: "aa11bb22", PRNumber: 7, Tags: []string{TagReview}, Branch: "feat/login-bug-12345678"}, true},
 		{"branch minted for this task", Task{ID: "696bc049", PRNumber: 7, Tags: []string{TagReview}, Branch: "chore/review-their-work-696bc049"}, true},
 	}
 	for _, tc := range tests {

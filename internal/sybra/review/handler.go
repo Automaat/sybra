@@ -2051,7 +2051,7 @@ func (r *Handler) adoptTasklessPRs(tasks []task.Task, prs []github.PullRequest) 
 				continue
 			}
 		}
-		tags := []string{"review"}
+		tags := []string{task.TagReview, task.TagAdoptedPR}
 		t, err := r.tasks.CreateFull(pr.Title, pr.URL+"\n\nAdopted orphaned Sybra PR (its tracking task was lost).", "headless", task.Update{
 			Tags:      &tags,
 			ProjectID: task.Ptr(pr.Repository),

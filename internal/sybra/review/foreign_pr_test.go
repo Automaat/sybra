@@ -49,8 +49,8 @@ func TestDispatchFixIssues_AllowsAdoptedOrphanOnOwnPR(t *testing.T) {
 	// Given an adopted orphan task: Sybra's own PR, review-tagged, on a Sybra branch
 	h := newAutoResolveHarness(t, true)
 	tk, pr := h.newConflictTask(t)
-	tagTaskAsReview(t, h, tk.ID)
-	if _, err := h.tasks.Update(tk.ID, task.Update{Branch: task.Ptr("fix/adopted-orphan-696bc049")}); err != nil {
+	tags := []string{task.TagReview, task.TagAdoptedPR}
+	if _, err := h.tasks.Update(tk.ID, task.Update{Tags: &tags, Branch: task.Ptr("fix/adopted-orphan-696bc049")}); err != nil {
 		t.Fatal(err)
 	}
 	pr.Author = "sybra-bot"

@@ -547,6 +547,9 @@ func (o *Orchestrator) resolveDispatchDir(ctx context.Context, t task.Task, task
 	if o.worktrees == nil {
 		return t, fallbackDispatchDir(dir), nil
 	}
+	if t.IsPRReview() {
+		return t, "", fmt.Errorf("task %s only reviews pull request %d: refusing a writable worktree", taskID, t.PRNumber)
+	}
 	var assignErr error
 	t, assignErr = o.AutoAssignProject(t)
 	if assignErr != nil {
