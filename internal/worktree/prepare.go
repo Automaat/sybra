@@ -40,6 +40,9 @@ var ErrAgentRunning = worktreeerr.ErrAgentRunning
 // than guess at.
 var ErrTaskBranchMissing = errors.New("task branch does not exist locally or on origin")
 
+// ErrReviewTaskNotWritable marks a refusal to hand a PR-review task a writable checkout.
+var ErrReviewTaskNotWritable = errors.New("task only reviews its pull request")
+
 // ErrLocalWorkPreserved marks a deliberate refusal to recreate a worktree
 // containing local state. Callers must surface recovery guidance rather than
 // counting it as a transient preparation failure.
@@ -741,6 +744,16 @@ func (m *Manager) PrepareForReview(ctx context.Context, t task.Task) (string, er
 // PrepareForBranchFix creates a worktree checking out the task's OWN branch
 // (resolved by name via branchNameForTask, not via a PR lookup) so a no-PR
 // conflict-recovery agent can merge base in and push. Sibling of
+func (m *Manager) admitFixPreparation(t task.Task, prNumber int) error {
+	if t.IsPRReview() {
+		return fmt.Errorf("%w: task %s only reviews pull request %d", ErrReviewTaskNotWritable, t.ID, prNumber)
+	}
+	if m.prBranch == nil {
+		return fmt.Errorf("resolve pr branch for %d: no PR branch resolver configured", prNumber)
+	}
+	return nil
+}
+
 // PrepareForFix for tasks with no PR yet (still in
 // implementation/review/testing, or at create_pr): the same non-rebasing
 // checkout dance, minus PrepareForFix's PR-head fallback — a task's own
@@ -1068,6 +1081,9 @@ func (m *Manager) PrepareForFix(ctx context.Context, t task.Task, prNumber int) 
 		m.logger.Warn("fix.worktree.fetch", "project", proj.ID, "err", err)
 	}
 
+	if err := m.admitFixPreparation(t, prNumber); err != nil {
+		return "", err
+	}
 	branch, err := m.prBranch(t.ProjectID, prNumber)
 	if err != nil {
 		return "", fmt.Errorf("fetch pr branch: %w", err)

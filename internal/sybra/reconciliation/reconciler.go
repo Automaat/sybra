@@ -252,7 +252,7 @@ func contentDigest(content string) string {
 }
 
 func (r *Reconciler) observeGit(ctx context.Context, t *task.Task, path string) (reconcile.GitState, error) {
-	g := reconcile.GitState{Available: true, Branch: t.Branch, Healthy: project.WorktreeHealthy(ctx, path)}
+	g := reconcile.GitState{Available: true, Branch: t.Branch, PushForbidden: t.IsPRReview(), Healthy: project.WorktreeHealthy(ctx, path)}
 	if !g.Healthy {
 		return g, nil
 	}

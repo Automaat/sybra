@@ -864,7 +864,7 @@ func TestCreateReviewTaskPassesUpdatedTaskToTriage(t *testing.T) {
 		logger: slog.New(slog.DiscardHandler),
 		tasks:  tasks,
 	}
-	r.createReviewTaskWithTriage(t.Context(), github.PullRequest{
+	r.createReviewTaskWithTriage("owner", github.PullRequest{
 		Number:        2708,
 		Title:         "docs: explain precedence",
 		URL:           "https://github.com/owner/repo/pull/2708",
@@ -917,7 +917,7 @@ func TestCreateReviewTaskStoresSameRepoHeadBranch(t *testing.T) {
 		tasks:         tasks,
 		viewerLoginFn: func() string { return "owner" },
 	}
-	r.createReviewTaskWithTriage(t.Context(), github.PullRequest{
+	r.createReviewTaskWithTriage("owner", github.PullRequest{
 		Number:        2709,
 		Title:         "fix: owned branch",
 		URL:           "https://github.com/owner/repo/pull/2709",
@@ -953,7 +953,7 @@ func TestCreateReviewTaskSkipsAnotherAuthorsHeadBranch(t *testing.T) {
 		tasks:         tasks,
 		viewerLoginFn: func() string { return "owner" },
 	}
-	r.createReviewTaskWithTriage(t.Context(), github.PullRequest{
+	r.createReviewTaskWithTriage("owner", github.PullRequest{
 		Number:        2710,
 		Title:         "feat: their branch",
 		URL:           "https://github.com/owner/repo/pull/2710",

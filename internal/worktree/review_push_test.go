@@ -2,6 +2,7 @@ package worktree
 
 import (
 	"context"
+	"errors"
 	"os/exec"
 	"testing"
 	"time"
@@ -66,5 +67,23 @@ func TestPrepareForTask_SkipsPushForPRReviewTask(t *testing.T) {
 	// Then nothing is pushed to that branch
 	if remoteHasBranch(t, h.src, "feat/theirs") {
 		t.Fatal("review task pushed to a branch it does not own")
+	}
+}
+
+func TestPrepareForFix_RefusesPRReviewTask(t *testing.T) {
+	// Given a review task on another author's pull request
+	h := prepareHarness(t, nil, 30*time.Second)
+	tags := []string{task.TagReview}
+	tk := prepareTaskOnBranch(t, h, "Review: their work", "feat/theirs", task.Update{
+		Tags:     &tags,
+		PRNumber: task.Ptr(382),
+	})
+
+	// When a fix worktree is requested for it
+	_, err := h.m.PrepareForFix(context.Background(), tk, 382)
+
+	// Then it is refused instead of checked out for writing
+	if !errors.Is(err, ErrReviewTaskNotWritable) {
+		t.Fatalf("PrepareForFix error = %v, want ErrReviewTaskNotWritable", err)
 	}
 }

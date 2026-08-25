@@ -2,6 +2,7 @@ package task
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
 	"time"
 
@@ -583,9 +584,14 @@ func (t Task) DirName() string {
 // TagReview marks a task created to review a pull request Sybra did not open.
 const TagReview = "review"
 
+var sybraMintedBranchRe = regexp.MustCompile(`-[0-9a-f]{8}$`)
+
 // IsPRReview reports whether t reviews a linked pull request it must not write to.
 func (t Task) IsPRReview() bool {
-	return t.PRNumber > 0 && slices.Contains(t.Tags, TagReview)
+	if t.PRNumber <= 0 || !slices.Contains(t.Tags, TagReview) {
+		return false
+	}
+	return !sybraMintedBranchRe.MatchString(t.Branch)
 }
 
 func isTamperFlagged(status Status, state blocker.State) bool {

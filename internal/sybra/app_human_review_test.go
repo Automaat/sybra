@@ -5140,3 +5140,40 @@ func TestTailFileReadsOnlyBoundedSuffixOfLargeLog(t *testing.T) {
 		t.Fatalf("tail length = %d, want <= %d", len(got), humanReviewLogTailBytes)
 	}
 }
+
+func TestHumanReviewSpawn_SkipsPRReviewTask(t *testing.T) {
+	// Given a review task on another author's pull request, parked for a human
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("Review: their work", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.UpdateMap(tk.ID, map[string]any{
+		"project_id": "Automaat/sybra",
+		"status":     string(task.StatusHumanRequired),
+		"pr_number":  382,
+		"branch":     "feat/theirs",
+		"tags":       []string{task.TagReview},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	h.prepareTaskWorktree = func(task.Task) (string, error) {
+		t.Fatal("human review prepared a writable worktree for a PR review task")
+		return "", nil
+	}
+	h.agents = &fakeHumanReviewAgentRunner{run: func(agent.RunConfig) (*agent.Agent, error) {
+		t.Fatal("human review dispatched an agent onto a PR review task")
+		return nil, errors.New("unreachable")
+	}}
+
+	// When the human-review handler considers it
+	spawned := h.maybeSpawn(context.Background(), tk.ID, string(task.StatusInReview))
+
+	// Then nothing is spawned against the pull request it only reviews
+	if spawned {
+		t.Fatal("human review spawned on a PR review task")
+	}
+}

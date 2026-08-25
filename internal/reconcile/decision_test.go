@@ -29,6 +29,12 @@ func TestDecideMatrix(t *testing.T) {
 		{"bad git quarantines", func(s *Snapshot) { s.Git.Healthy = false }, ActionQuarantine},
 		{"missing remote pushes", func(s *Snapshot) { s.Git.RemoteSHA = "" }, ActionPush},
 		{"local ahead pushes", func(s *Snapshot) { s.Git.RemoteSHA = "old"; s.Git.Ahead = 1 }, ActionPush},
+		{"forbidden push on missing remote advances", func(s *Snapshot) { s.Git.RemoteSHA = ""; s.Git.PushForbidden = true }, ActionAdvance},
+		{"forbidden push while ahead advances", func(s *Snapshot) {
+			s.Git.RemoteSHA = "old"
+			s.Git.Ahead = 1
+			s.Git.PushForbidden = true
+		}, ActionAdvance},
 		{"remote ahead adopts", func(s *Snapshot) { s.Git.RemoteSHA = "remote-new-sha"; s.Git.Behind = 1 }, ActionAdoptRemote},
 		{"diverged repairs", func(s *Snapshot) { s.Git.RemoteSHA = "other" }, ActionRepair},
 		{"successful empty equivalent advances to workflow policy", func(s *Snapshot) { s.Git.TreeEquivalentToBase = true; s.Git.TaskWorkReachable = false }, ActionAdvance},

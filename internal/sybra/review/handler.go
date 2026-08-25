@@ -228,12 +228,16 @@ func (r *Handler) agentLogin(ctx context.Context) string {
 	return github.ViewerLoginCtx(ctx)
 }
 
-func (r *Handler) selfAuthoredPR(ctx context.Context, pr github.PullRequest) bool {
-	return github.SameActor(pr.Author, r.agentLogin(ctx))
+func selfAuthoredPR(pr github.PullRequest, viewer string) bool {
+	return github.SameActor(pr.Author, viewer)
 }
 
 func (r *Handler) foreignPR(ctx context.Context, pr github.PullRequest) bool {
-	return strings.TrimSpace(pr.Author) != "" && !r.selfAuthoredPR(ctx, pr)
+	viewer := strings.TrimSpace(r.agentLogin(ctx))
+	if viewer == "" || strings.TrimSpace(pr.Author) == "" {
+		return false
+	}
+	return !selfAuthoredPR(pr, viewer)
 }
 
 // pollFast/pollSlow resolve the review poll cadence from config (github.*),

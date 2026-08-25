@@ -20,11 +20,11 @@ import (
 	"github.com/Automaat/sybra/internal/worktree"
 )
 
-func (r *Handler) createReviewTask(ctx context.Context, pr github.PullRequest, projectID string) {
-	r.createReviewTaskWithTriage(ctx, pr, projectID, r.triageReview)
+func (r *Handler) createReviewTask(viewer string, pr github.PullRequest, projectID string) {
+	r.createReviewTaskWithTriage(viewer, pr, projectID, r.triageReview)
 }
 
-func (r *Handler) createReviewTaskWithTriage(ctx context.Context, pr github.PullRequest, projectID string, triage func(task.Task)) {
+func (r *Handler) createReviewTaskWithTriage(viewer string, pr github.PullRequest, projectID string, triage func(task.Task)) {
 	title := "Review: " + pr.Title
 	body := fmt.Sprintf("%s\n\nAuthor: @%s", pr.URL, pr.Author)
 
@@ -39,7 +39,7 @@ func (r *Handler) createReviewTaskWithTriage(ctx context.Context, pr github.Pull
 		ProjectID: task.Ptr(projectID),
 		PRNumber:  task.Ptr(pr.Number),
 	}
-	if projectHeadRepoMatches(projectID, pr.HeadRepo) && pr.HeadRefName != "" && r.selfAuthoredPR(ctx, pr) {
+	if projectHeadRepoMatches(projectID, pr.HeadRepo) && pr.HeadRefName != "" && selfAuthoredPR(pr, viewer) {
 		u.Branch = task.Ptr(pr.HeadRefName)
 	}
 	t, err := r.tasks.CreateFull(title, body, "headless", u)
@@ -357,6 +357,10 @@ func (r *Handler) maybeCreateReviewTasks(ctx context.Context, tasks []task.Task,
 	}
 
 	matches := github.MatchReviewPRs(reviewPRs, projectMatchers)
+	viewer := ""
+	if len(matches) > 0 {
+		viewer = strings.TrimSpace(r.agentLogin(ctx))
+	}
 	for i := range matches {
 		if matches[i].PR.IsDraft {
 			continue
@@ -367,7 +371,7 @@ func (r *Handler) maybeCreateReviewTasks(ctx context.Context, tasks []task.Task,
 		if r.hasActiveLocalPROwner(tasks, matches[i].ProjectID, matches[i].PR.Number, matches[i].PR.HeadRefName, matches[i].PR.HeadRepo) {
 			continue
 		}
-		r.createReviewTask(ctx, matches[i].PR, matches[i].ProjectID)
+		r.createReviewTask(viewer, matches[i].PR, matches[i].ProjectID)
 	}
 }
 

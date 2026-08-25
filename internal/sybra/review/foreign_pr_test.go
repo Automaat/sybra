@@ -45,11 +45,14 @@ func TestDispatchFixIssues_RefusesReviewTaskOnAnotherAuthorsPR(t *testing.T) {
 	}
 }
 
-func TestDispatchFixIssues_AllowsReviewTaskOnOwnPR(t *testing.T) {
-	// Given a review-tagged task whose PR Sybra itself opened
+func TestDispatchFixIssues_AllowsAdoptedOrphanOnOwnPR(t *testing.T) {
+	// Given an adopted orphan task: Sybra's own PR, review-tagged, on a Sybra branch
 	h := newAutoResolveHarness(t, true)
 	tk, pr := h.newConflictTask(t)
 	tagTaskAsReview(t, h, tk.ID)
+	if _, err := h.tasks.Update(tk.ID, task.Update{Branch: task.Ptr("fix/adopted-orphan-696bc049")}); err != nil {
+		t.Fatal(err)
+	}
 	pr.Author = "sybra-bot"
 	h.r.viewerLoginFn = func() string { return "sybra-bot" }
 	h.r.tryCleanMergeFn = stubMerge(project.CleanMergeConflict, nil)
@@ -62,7 +65,7 @@ func TestDispatchFixIssues_AllowsReviewTaskOnOwnPR(t *testing.T) {
 
 	// Then the fix still runs
 	if !ok {
-		t.Fatal("dispatchFixIssues = false, want true for Sybra's own PR")
+		t.Fatal("dispatchFixIssues = false, want true for Sybra's own adopted PR")
 	}
 }
 
@@ -83,5 +86,33 @@ func TestDispatchFixIssues_AllowsBotPROnNonReviewTask(t *testing.T) {
 	// Then the fix still runs
 	if !ok {
 		t.Fatal("dispatchFixIssues = false, want true for a bot PR on a task Sybra drives")
+	}
+}
+
+func TestForeignPR_UnknownViewerLoginDoesNotRefuse(t *testing.T) {
+	// Given a handler whose viewer login cannot be resolved
+	r := &Handler{viewerLoginFn: func() string { return "" }}
+
+	// When a PR with a known, different author is classified
+	got := r.foreignPR(context.Background(), github.PullRequest{Author: "someone-else"})
+
+	// Then an unresolvable identity is not treated as foreign
+	if got {
+		t.Fatal("foreignPR = true for an unresolvable viewer login; it must not refuse work on an auth blip")
+	}
+}
+
+func TestForeignPR_DifferentAuthorIsForeign(t *testing.T) {
+	// Given a resolvable viewer login
+	r := &Handler{viewerLoginFn: func() string { return "sybra-bot" }}
+
+	// When a PR opened by someone else is classified
+	if !r.foreignPR(context.Background(), github.PullRequest{Author: "someone-else"}) {
+		t.Fatal("foreignPR = false for another author's pull request")
+	}
+
+	// Then Sybra's own PR is not foreign, ignoring the bot suffix
+	if r.foreignPR(context.Background(), github.PullRequest{Author: "sybra-bot[bot]"}) {
+		t.Fatal("foreignPR = true for Sybra's own pull request")
 	}
 }
