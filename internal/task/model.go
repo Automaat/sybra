@@ -2,6 +2,7 @@ package task
 
 import (
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/Automaat/sybra/internal/reject"
@@ -579,6 +580,14 @@ func (t Task) DirName() string {
 // isTamperFlagged reports whether a task's status/blocker combination
 // represents an unblessed tamper flag. Single source of truth for both the
 // derived Task.TamperFlagged field and BlessTampering's precondition check.
+// TagReview marks a task created to review a pull request Sybra did not open.
+const TagReview = "review"
+
+// IsPRReview reports whether t reviews a linked pull request it must not write to.
+func (t Task) IsPRReview() bool {
+	return t.PRNumber > 0 && slices.Contains(t.Tags, TagReview)
+}
+
 func isTamperFlagged(status Status, state blocker.State) bool {
 	return status == StatusHumanRequired && state.Kind == blocker.KindTamperDetected
 }

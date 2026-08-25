@@ -136,10 +136,12 @@ func (m *Manager) SyncTaskBranch(ctx context.Context, t task.Task) (SyncResult, 
 		return SyncFailed, fmt.Errorf("sync branch: reconcile: %w", err)
 	}
 
-	pushErr := project.PushSync(ctx, wtPath, wtBranch)
-	m.logPushSync(t.ID, wtBranch, pushErr)
-	if pushErr != nil && !errors.Is(pushErr, project.ErrBranchMissing) {
-		return SyncFailed, fmt.Errorf("sync branch: push: %w", pushErr)
+	if !m.skipReviewPush(t, wtBranch) {
+		pushErr := project.PushSync(ctx, wtPath, wtBranch)
+		m.logPushSync(t.ID, wtBranch, pushErr)
+		if pushErr != nil && !errors.Is(pushErr, project.ErrBranchMissing) {
+			return SyncFailed, fmt.Errorf("sync branch: push: %w", pushErr)
+		}
 	}
 
 	postHEAD, err := project.CurrentCommit(ctx, wtPath)
@@ -238,7 +240,7 @@ func (m *Manager) PrepareForTask(ctx context.Context, t task.Task, onPhase func(
 		}
 		// Sync remote after rebase.
 		callPhase(onPhase, "Syncing upstream…")
-		m.logPushSync(t.ID, wtBranch, project.PushSync(ctx, wtPath, wtBranch))
+		m.pushPrepared(ctx, t, wtPath, wtBranch)
 		m.logger.Info("worktree.reused-branch", "task_id", t.ID, "path", wtPath, "branch", wtBranch)
 		if err := m.runPrepareSetup(ctx, t.ID, wtPath, proj, "reused branch", onPhase); err != nil {
 			return "", err
@@ -259,8 +261,10 @@ func (m *Manager) PrepareForTask(ctx context.Context, t task.Task, onPhase func(
 	m.installChecks(ctx, wtPath, proj)
 
 	callPhase(onPhase, "Pushing upstream…")
-	if err := project.PushUpstream(ctx, wtPath, wtBranch); err != nil {
-		m.logger.Warn("worktree.push-upstream", "task_id", t.ID, "branch", wtBranch, "err", err)
+	if !m.skipReviewPush(t, wtBranch) {
+		if err := project.PushUpstream(ctx, wtPath, wtBranch); err != nil {
+			m.logger.Warn("worktree.push-upstream", "task_id", t.ID, "branch", wtBranch, "err", err)
+		}
 	}
 
 	path, err := m.finalizeWorktree(ctx, t, wtPath, wtBranch, proj)
@@ -301,7 +305,7 @@ func (m *Manager) prepareExistingWorktree(ctx context.Context, t task.Task, proj
 	}
 	m.logger.Info("worktree.rebased", "task_id", t.ID, "path", wtPath, "base", baseRef)
 	callPhase(onPhase, "Syncing upstream…")
-	m.logPushSync(t.ID, wtBranch, project.PushSync(ctx, wtPath, wtBranch))
+	m.pushPrepared(ctx, t, wtPath, wtBranch)
 	if err := m.runPrepareSetup(ctx, t.ID, wtPath, proj, "reused worktree", onPhase); err != nil {
 		return "", false, err
 	}
@@ -665,10 +669,14 @@ func (m *Manager) PrepareForReview(ctx context.Context, t task.Task) (string, er
 	// The branch name is only a log annotation now (the checkout uses the PR
 	// head ref below), so a transient gh failure must not block worktree
 	// creation.
-	branch, err := m.prBranch(t.ProjectID, t.PRNumber)
-	if err != nil {
-		m.logger.Warn("review.worktree.pr-branch", "project", proj.ID, "pr", t.PRNumber, "err", err)
-		branch = ""
+	branch := ""
+	if m.prBranch != nil {
+		resolved, resolveErr := m.prBranch(t.ProjectID, t.PRNumber)
+		if resolveErr != nil {
+			m.logger.Warn("review.worktree.pr-branch", "project", proj.ID, "pr", t.PRNumber, "err", resolveErr)
+		} else {
+			branch = resolved
+		}
 	}
 
 	// Check out the PR head via refs/pull/<N>/head rather than
