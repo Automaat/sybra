@@ -47,7 +47,18 @@ type Sidecar struct {
 // left a task disagreeing with its own plan or review, and nothing afterwards
 // could tell which of the two was current.
 type SQLStore struct {
-	db *db.DB
+	db                *db.DB
+	maxHistoryPerTask int
+	historySweepBatch int
+}
+
+// SetMaxHistoryPerTask overrides the per-task history cap. 0 restores the
+// default; a negative value keeps every entry.
+func (s *SQLStore) SetMaxHistoryPerTask(n int) {
+	if s == nil {
+		return
+	}
+	s.maxHistoryPerTask = n
 }
 
 func (s *SQLStore) WithTaskLock(ctx context.Context, id string, fn func() error) error {
@@ -226,7 +237,7 @@ func (s *SQLStore) CreateBy(ctx context.Context, t task.Task, sidecars []Sidecar
 				return fmt.Errorf("write sidecar %s: %w", sc.Kind, err)
 			}
 		}
-		return appendHistoryTx(ctx, s.db, tx, HistoryEntry{
+		return s.appendHistoryTx(ctx, tx, HistoryEntry{
 			TaskID: t.ID, Actor: actor, Kind: ChangeCreated, Snapshot: string(doc),
 		})
 	})
@@ -284,7 +295,7 @@ func (s *SQLStore) PutBy(ctx context.Context, t task.Task, sidecars []Sidecar, a
 				return fmt.Errorf("write sidecar %s: %w", sc.Kind, err)
 			}
 		}
-		return appendHistoryTx(ctx, s.db, tx, HistoryEntry{
+		return s.appendHistoryTx(ctx, tx, HistoryEntry{
 			TaskID: t.ID, Actor: actor, Kind: kindFor(existing), Fields: changed,
 			Snapshot: string(doc),
 		})
@@ -312,7 +323,7 @@ func (s *SQLStore) Get(ctx context.Context, id string) (task.Task, []Sidecar, er
 		return task.Task{}, nil, fmt.Errorf("task %q not found: %w", id, os.ErrNotExist)
 	}
 	if err != nil {
-		return task.Task{}, nil, fmt.Errorf("read task: %w", err)
+		return task.Task{}, nil, fmt.Errorf("read task: %w", db.Contended(err))
 	}
 	t, err := task.ParseBytes([]byte(doc))
 	if err != nil {
@@ -352,7 +363,7 @@ func (s *SQLStore) List(ctx context.Context) ([]task.Task, error) {
 		out = append(out, t)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate tasks: %w", err)
+		return nil, fmt.Errorf("iterate tasks: %w", db.Contended(err))
 	}
 	return out, nil
 }
@@ -393,7 +404,7 @@ func (s *SQLStore) listDocuments(ctx context.Context, query string, args ...any)
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate tasks: %w", err)
+		return nil, fmt.Errorf("iterate tasks: %w", db.Contended(err))
 	}
 	return out, nil
 }
@@ -449,7 +460,7 @@ func (s *SQLStore) DeleteBy(ctx context.Context, id, actor string) error {
 		if _, err := tx.ExecContext(ctx, s.db.Rebind(softDeleteTask), db.TimeValue(time.Now().UTC()), id); err != nil {
 			return fmt.Errorf("delete task: %w", err)
 		}
-		return appendHistoryTx(ctx, s.db, tx, HistoryEntry{TaskID: id, Actor: actor, Kind: ChangeDeleted, Snapshot: doc})
+		return s.appendHistoryTx(ctx, tx, HistoryEntry{TaskID: id, Actor: actor, Kind: ChangeDeleted, Snapshot: doc})
 	})
 }
 
@@ -491,7 +502,7 @@ func (s *SQLStore) RestoreBy(ctx context.Context, id, actor string) error {
 		if _, err := tx.ExecContext(ctx, s.db.Rebind(restoreTask), boardDoc, assignedNode, closedAt, id); err != nil {
 			return fmt.Errorf("restore task: %w", err)
 		}
-		return appendHistoryTx(ctx, s.db, tx, HistoryEntry{TaskID: id, Actor: actor, Kind: ChangeRestored, Snapshot: doc})
+		return s.appendHistoryTx(ctx, tx, HistoryEntry{TaskID: id, Actor: actor, Kind: ChangeRestored, Snapshot: doc})
 	})
 }
 
@@ -571,7 +582,7 @@ func (s *SQLStore) PutFnBy(ctx context.Context, id, actor string, fn func(cur ta
 				return fmt.Errorf("write sidecar %s: %w", sc.Kind, err)
 			}
 		}
-		if err := appendHistoryTx(ctx, s.db, tx, HistoryEntry{
+		if err := s.appendHistoryTx(ctx, tx, HistoryEntry{
 			TaskID: next.ID, Actor: actor, Kind: ChangeUpdated, Fields: changed,
 			Snapshot: string(nextDoc),
 		}); err != nil {
