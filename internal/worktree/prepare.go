@@ -765,6 +765,9 @@ func (m *Manager) admitFixPreparation(t task.Task, prNumber int) error {
 // check out. Does not change PrepareForFix's behavior for its own PR-keyed
 // callers. Setup failures are non-gating, same rationale as PrepareForFix.
 func (m *Manager) PrepareForBranchFix(ctx context.Context, t task.Task) (string, error) {
+	if t.IsPRReview() {
+		return "", fmt.Errorf("%w: task %s only reviews pull request %d", ErrReviewTaskNotWritable, t.ID, t.PRNumber)
+	}
 	release, err := m.lockPath(m.PathFor(t))
 	if err != nil {
 		return "", err

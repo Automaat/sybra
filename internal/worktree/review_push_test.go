@@ -88,3 +88,21 @@ func TestPrepareForFix_RefusesPRReviewTask(t *testing.T) {
 		t.Fatalf("PrepareForFix error = %v, want ErrReviewTaskNotWritable", err)
 	}
 }
+
+func TestPrepareForBranchFix_RefusesPRReviewTask(t *testing.T) {
+	// Given a review task on another author's pull request
+	h := prepareHarness(t, nil, 30*time.Second)
+	tags := []string{task.TagReview}
+	tk := prepareTaskOnBranch(t, h, "Review: their work", "feat/theirs", task.Update{
+		Tags:     &tags,
+		PRNumber: task.Ptr(382),
+	})
+
+	// When a branch-fix worktree is requested for it
+	_, err := h.m.PrepareForBranchFix(context.Background(), tk)
+
+	// Then it is refused instead of checked out for writing
+	if !errors.Is(err, ErrReviewTaskNotWritable) {
+		t.Fatalf("PrepareForBranchFix error = %v, want ErrReviewTaskNotWritable", err)
+	}
+}
