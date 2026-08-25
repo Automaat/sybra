@@ -1178,6 +1178,9 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	if err != nil {
 		return "", "", "", err
 	}
+	if t.IsPRReview() && r.AuthorsCode() {
+		return "", "", "", fmt.Errorf("task %s only reviews pull request %d: refusing a writable worktree for role %s", taskID, t.PRNumber, r)
+	}
 
 	cfg := agent.RunConfig{
 		TaskID:                  taskID,

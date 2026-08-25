@@ -12,6 +12,7 @@ import (
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
 )
 
@@ -133,5 +134,35 @@ func TestResolveWorktreeDirReviewRoleChecksOutPRHeadDetached(t *testing.T) {
 	}
 	if exec.Command("git", "-C", h.src, "rev-parse", "--verify", "refs/heads/"+h.branch).Run() == nil {
 		t.Fatal("review dispatch pushed the branch it was only asked to review")
+	}
+}
+
+func TestStartAgentRefusesCodeAuthorRoleOnPRReviewTask(t *testing.T) {
+	// Given a review task on another author's pull request
+	h := setupReviewDispatchHarness(t)
+
+	// When a code-authoring role is dispatched onto it
+	_, _, _, err := h.aa.StartAgent(
+		h.task.ID,
+		string(agent.RoleFixReview),
+		"headless",
+		"sonnet",
+		"claude",
+		"prompt",
+		"",
+		nil,
+		true,
+		false,
+		"",
+		"",
+		workflow.AgentAssignment{},
+	)
+
+	// Then the dispatch is refused instead of taking a writable checkout
+	if err == nil {
+		t.Fatal("StartAgent accepted a code-authoring role on a PR review task")
+	}
+	if !strings.Contains(err.Error(), "only reviews pull request") {
+		t.Fatalf("error = %v, want a refusal naming the reviewed pull request", err)
 	}
 }
