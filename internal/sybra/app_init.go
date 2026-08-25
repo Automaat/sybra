@@ -2330,6 +2330,7 @@ func (a *App) openTaskPersistence(ctx context.Context) task.Persistence {
 		a.logger.Error("task.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
 		return nil
 	}
+	sqlStore.SetMaxHistoryPerTask(a.cfg.Database.MaxTaskHistoryPerTask)
 	projectionCtx, projectionCancel := context.WithTimeout(ctx, importTimeout)
 	defer projectionCancel()
 	if err := sqlStore.BackfillBoardProjections(projectionCtx); err != nil {
@@ -2338,7 +2339,24 @@ func (a *App) openTaskPersistence(ctx context.Context) task.Persistence {
 		// retry the remaining legacy rows next start instead of failing startup.
 		a.logger.Error("task.board_projection.backfill", "err", err)
 	}
+	a.trimTaskHistory(ctx, sqlStore)
 	return taskdb.NewPersistence(sqlStore)
+}
+
+// trimTaskHistory brings a board that ran without a cap down to it.
+//
+// Off the startup path: the per-write trim already bounds every task from here
+// on, so this is catch-up for what accumulated before, and a board large enough
+// to need it is exactly the one that must not wait for it before serving. It is
+// tracked on the App's wait group so Shutdown cannot close the database out from
+// under it, and it runs after the board-projection backfill rather than beside
+// it, because sqlite admits one writer and the two would otherwise contend.
+func (a *App) trimTaskHistory(ctx context.Context, store *taskdb.SQLStore) {
+	a.wg.Go(func() {
+		if err := store.TrimHistoryOverCap(ctx); err != nil {
+			a.logger.Warn("task.history.trim_over_cap", "err", err)
+		}
+	})
 }
 
 // openProjectStore returns the project records for the configured backend,

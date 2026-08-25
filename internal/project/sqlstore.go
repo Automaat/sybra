@@ -207,7 +207,7 @@ func (s *SQLStore) List() ([]Project, error) {
 		out = append(out, p)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate projects: %w", err)
+		return nil, fmt.Errorf("iterate projects: %w", db.Contended(err))
 	}
 	return out, nil
 }
