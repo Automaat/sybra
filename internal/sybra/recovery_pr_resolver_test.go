@@ -103,6 +103,8 @@ func TestResolvePRForTask_IssueFallback(t *testing.T) {
 		branch     string
 		issue      string
 		fork       string
+		projErr    error
+		headErr    error
 		linked     []github.PullRequest
 		want       recovery.PRRef
 		wantLookup bool
@@ -141,31 +143,29 @@ func TestResolvePRForTask_IssueFallback(t *testing.T) {
 			wantLookup: true,
 		},
 		{
-			name:   "our single fork pr is adopted after the branch was renamed",
+			name:   "another task's pr from the same fork is refused",
 			branch: resolverBranch,
 			issue:  resolverIssue,
 			fork:   resolverFork,
 			linked: []github.PullRequest{
-				{Number: 9, HeadRefName: "feat/older-name-abc123", HeadRepoOwner: resolverFork},
-				{Number: 16571, HeadRefName: "fix/their-own-branch", HeadRepoOwner: "stranger"},
-			},
-			want:       recovery.PRRef{Number: 9, State: "OPEN"},
-			wantLookup: true,
-		},
-		{
-			name:   "two of our fork prs on other branches stay ambiguous",
-			branch: resolverBranch,
-			issue:  resolverIssue,
-			fork:   resolverFork,
-			linked: []github.PullRequest{
-				{Number: 9, HeadRefName: "feat/older-name-abc123", HeadRepoOwner: resolverFork},
-				{Number: 10, HeadRefName: "feat/other-name-abc123", HeadRepoOwner: resolverFork},
+				{Number: 9, HeadRefName: "feat/other-task-def456", HeadRepoOwner: resolverFork},
 			},
 			want:       recovery.PRRef{},
 			wantLookup: true,
 		},
 		{
-			name:   "without a fork only an exact branch match is adopted",
+			name:   "a deleted fork leaves no head owner to match",
+			branch: resolverBranch,
+			issue:  resolverIssue,
+			fork:   resolverFork,
+			linked: []github.PullRequest{
+				{Number: 9, HeadRefName: resolverBranch},
+			},
+			want:       recovery.PRRef{},
+			wantLookup: true,
+		},
+		{
+			name:   "an origin-push project adopts its own upstream branch",
 			branch: resolverBranch,
 			issue:  resolverIssue,
 			fork:   "upstream",
@@ -174,6 +174,17 @@ func TestResolvePRForTask_IssueFallback(t *testing.T) {
 				{Number: 10, HeadRefName: resolverBranch, HeadRepoOwner: "upstream"},
 			},
 			want:       recovery.PRRef{Number: 10, State: "OPEN"},
+			wantLookup: true,
+		},
+		{
+			name:   "an origin-push project refuses an outsider fork on our branch",
+			branch: resolverBranch,
+			issue:  resolverIssue,
+			fork:   "upstream",
+			linked: []github.PullRequest{
+				{Number: 901, HeadRefName: resolverBranch, HeadRepoOwner: "outsider"},
+			},
+			want:       recovery.PRRef{},
 			wantLookup: true,
 		},
 		{
@@ -187,6 +198,28 @@ func TestResolvePRForTask_IssueFallback(t *testing.T) {
 			},
 			want:       recovery.PRRef{},
 			wantLookup: true,
+		},
+		{
+			name:    "an unreadable clone refuses to guess an owner",
+			branch:  resolverBranch,
+			issue:   resolverIssue,
+			fork:    resolverFork,
+			headErr: errors.New("resolve fork remote url"),
+			linked: []github.PullRequest{
+				{Number: 9, HeadRefName: resolverBranch, HeadRepoOwner: resolverFork},
+			},
+			want: recovery.PRRef{},
+		},
+		{
+			name:    "an unknown project refuses to guess an owner",
+			branch:  resolverBranch,
+			issue:   resolverIssue,
+			fork:    resolverFork,
+			projErr: errors.New("no such project"),
+			linked: []github.PullRequest{
+				{Number: 9, HeadRefName: resolverBranch, HeadRepoOwner: resolverFork},
+			},
+			want: recovery.PRRef{},
 		},
 		{
 			name:   "an issue in another repo is not consulted",
@@ -215,8 +248,11 @@ func TestResolvePRForTask_IssueFallback(t *testing.T) {
 			// Given a head search that finds nothing
 			var lookedUp bool
 			rp := recoveryPRResolver{
-				projects: stubProjectGetter{},
+				projects: stubProjectGetter{err: tc.projErr},
 				headArg: func(_ context.Context, _, branch string) (string, error) {
+					if tc.headErr != nil {
+						return "", tc.headErr
+					}
 					return tc.fork + ":" + branch, nil
 				},
 				findByBranch: func(_ context.Context, _, _ string) (int, string, bool, error) {

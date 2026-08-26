@@ -29,7 +29,7 @@ func (rp recoveryPRResolver) ResolvePRForTask(ctx context.Context, repo, branch,
 	if branch == "" {
 		return recovery.PRRef{}, nil
 	}
-	head, owner := rp.qualifyHead(ctx, repo, branch)
+	head, wantOwner := rp.resolveHead(ctx, repo, branch)
 	num, state, found, err := rp.findByBranch(ctx, repo, head)
 	if err != nil {
 		return recovery.PRRef{}, err
@@ -37,7 +37,7 @@ func (rp recoveryPRResolver) ResolvePRForTask(ctx context.Context, repo, branch,
 	if found {
 		return recovery.PRRef{Number: num, State: state}, nil
 	}
-	if issue == "" {
+	if issue == "" || wantOwner == "" {
 		return recovery.PRRef{}, nil
 	}
 	parsedRepo, number := github.ParseIssueURL(issue)
@@ -48,10 +48,11 @@ func (rp recoveryPRResolver) ResolvePRForTask(ctx context.Context, repo, branch,
 	if err != nil {
 		return recovery.PRRef{}, err
 	}
-	return ownedLinkedPR(prs, owner, branch), nil
+	return ownedLinkedPR(prs, wantOwner, branch), nil
 }
 
-func (rp recoveryPRResolver) qualifyHead(ctx context.Context, repo, branch string) (head, owner string) {
+func (rp recoveryPRResolver) resolveHead(ctx context.Context, repo, branch string) (head, wantOwner string) {
+	repoOwner, _, _ := strings.Cut(repo, "/")
 	if rp.projects == nil || rp.headArg == nil {
 		return branch, ""
 	}
@@ -63,33 +64,24 @@ func (rp recoveryPRResolver) qualifyHead(ctx context.Context, repo, branch strin
 	if err != nil || head == "" {
 		return branch, ""
 	}
-	owner, _ = github.SplitHead(head)
-	if repoOwner, _, _ := strings.Cut(repo, "/"); strings.EqualFold(owner, repoOwner) {
-		return branch, ""
+	owner, _ := github.SplitHead(head)
+	if owner == "" || strings.EqualFold(owner, repoOwner) {
+		return branch, repoOwner
 	}
 	return head, owner
 }
 
-func ownedLinkedPR(prs []github.PullRequest, forkOwner, branch string) recovery.PRRef {
-	var owned, exact []github.PullRequest
+func ownedLinkedPR(prs []github.PullRequest, wantOwner, branch string) recovery.PRRef {
+	match := recovery.PRRef{}
 	for i := range prs {
-		if prs[i].Number <= 0 || !ownsHeadRepo(prs[i], forkOwner) {
+		pr := &prs[i]
+		if pr.Number <= 0 || pr.HeadRefName != branch || !strings.EqualFold(pr.HeadRepoOwner, wantOwner) {
 			continue
 		}
-		owned = append(owned, prs[i])
-		if prs[i].HeadRefName == branch {
-			exact = append(exact, prs[i])
+		if match.Number > 0 {
+			return recovery.PRRef{}
 		}
+		match = recovery.PRRef{Number: pr.Number, State: "OPEN"}
 	}
-	switch {
-	case len(exact) == 1:
-		return recovery.PRRef{Number: exact[0].Number, State: "OPEN"}
-	case len(exact) == 0 && forkOwner != "" && len(owned) == 1:
-		return recovery.PRRef{Number: owned[0].Number, State: "OPEN"}
-	}
-	return recovery.PRRef{}
-}
-
-func ownsHeadRepo(pr github.PullRequest, forkOwner string) bool {
-	return forkOwner == "" || strings.EqualFold(pr.HeadRepoOwner, forkOwner)
+	return match
 }
