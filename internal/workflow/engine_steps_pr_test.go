@@ -1317,7 +1317,7 @@ func TestExecPushBranch_RefusesPRReviewTask(t *testing.T) {
 	before := remoteBranchSHA(t, wtPath, "feat/other-author")
 
 	review := TaskInfo{
-		ID: "t1", Status: "ready-pr", Branch: "feat/other-author",
+		ID: "t1", Status: taskstatus.ReadyPR, Branch: "feat/other-author",
 		PRNumber: 7, ProjectID: "acme/widgets", Tags: []string{"review"},
 	}
 	tasks := newMemTasks()
@@ -1335,7 +1335,7 @@ func TestExecPushBranch_RefusesPRReviewTask(t *testing.T) {
 	if after := remoteBranchSHA(t, wtPath, "feat/other-author"); after != before {
 		t.Fatalf("reviewed branch moved on the remote: %s -> %s", before, after)
 	}
-	if ti, _ := tasks.GetTask("t1"); ti.Status != "human-required" {
+	if ti, _ := tasks.GetTask("t1"); ti.Status != taskstatus.HumanRequired {
 		t.Fatalf("task status = %q, want human-required", ti.Status)
 	}
 	if out.Status != "completed" {

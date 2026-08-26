@@ -10,6 +10,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -147,7 +148,7 @@ func TestStartAgentRefusesCodeAuthorRoleOnPRReviewTask(t *testing.T) {
 		string(agent.RoleFixReview),
 		"headless",
 		"sonnet",
-		"claude",
+		providerid.Claude,
 		"prompt",
 		"",
 		nil,
@@ -177,7 +178,7 @@ func TestStartAgentRefusesImplementationOnPRReviewTask(t *testing.T) {
 		string(agent.RoleImplementation),
 		"headless",
 		"sonnet",
-		"claude",
+		providerid.Claude,
 		"prompt",
 		"",
 		nil,
