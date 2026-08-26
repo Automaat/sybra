@@ -1333,6 +1333,52 @@ func HardResetWorktree(ctx context.Context, worktreePath, ref string) error {
 	return gitexec.Run(ctx, gitexec.Options{Dir: worktreePath}, "reset", "--hard", ref)
 }
 
+// PushOwner returns the GitHub owner of the remote repoPath pushes to: the
+// fork remote when one is configured, else origin. It reports an error rather
+// than a guess when the repository cannot be read, so a caller that must know
+// which account a branch lands in can fail closed.
+func PushOwner(ctx context.Context, repoPath string) (string, error) {
+	root, err := repoRoot(ctx, repoPath)
+	if err != nil {
+		return "", err
+	}
+	for _, remote := range []string{"fork", "origin"} {
+		raw, err := gitexec.Output(ctx, gitexec.Options{Dir: root}, "config", "--get", "remote."+remote+".url")
+		if err != nil {
+			continue
+		}
+		owner, _, err := ParseGitHubURL(strings.TrimSpace(raw))
+		if err != nil {
+			return "", fmt.Errorf("parse %s remote url: %w", remote, err)
+		}
+		return owner, nil
+	}
+	return "", fmt.Errorf("push owner: no readable github remote in %s", repoPath)
+}
+
+// repoRoot resolves repoPath to the repository it *is*, never one it merely
+// sits inside. Git discovers upwards and resolves a relative path against the
+// process working directory, so a bad path otherwise answers with whatever
+// repository happens to enclose the server.
+func repoRoot(ctx context.Context, repoPath string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(repoPath)
+	if err != nil {
+		return "", fmt.Errorf("push owner: %w", err)
+	}
+	out, err := gitexec.Output(ctx, gitexec.Options{Dir: resolved}, "rev-parse", "--absolute-git-dir")
+	if err != nil {
+		return "", fmt.Errorf("push owner: %s is not a git repository: %w", repoPath, err)
+	}
+	gitDir, err := filepath.EvalSymlinks(strings.TrimSpace(out))
+	if err != nil {
+		return "", fmt.Errorf("push owner: %w", err)
+	}
+	if gitDir != resolved && gitDir != filepath.Join(resolved, ".git") {
+		return "", fmt.Errorf("push owner: %s is not the root of repository %s", repoPath, gitDir)
+	}
+	return resolved, nil
+}
+
 // HeadArg returns the `gh pr create --head` value for branch: a bare branch
 // name when pushing to origin, or "fork-owner:branch" when a fork remote is
 // configured — matching PushRemote's routing decision so the PR always

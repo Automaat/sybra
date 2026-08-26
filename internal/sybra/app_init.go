@@ -2098,7 +2098,7 @@ func (a *App) newRecovery() *recovery.Recovery {
 		WorkflowEngine:     a.workflowEngine,
 		Orchestrator:       a.agentOrch,
 		Projects:           a.projects,
-		PRs:                newRecoveryPRResolver(),
+		PRs:                newRecoveryPRResolver(a.projects),
 		Reconciler:         a.postRunReconciliation(),
 		Logger:             a.logger,
 		Throttle:           a.restartStaleErr,
