@@ -397,6 +397,10 @@ func (h *humanReviewHandler) maybeSpawnWithOptions(ctx context.Context, taskID, 
 		h.skip(taskID, "task_type_umbrella")
 		return false
 	}
+	if t.IsPRReview() {
+		h.skip(taskID, "pr_review_task")
+		return false
+	}
 	// Status guard: the status hook launches maybeSpawn asynchronously
 	// (go a.humanReview.maybeSpawn), so a fast recovery path
 	// (human-required -> ready-pr / in-review) can flip the task out of

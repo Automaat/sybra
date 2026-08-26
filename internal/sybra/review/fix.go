@@ -935,6 +935,12 @@ func (r *Handler) dispatchFixIssuesWithOptions(ctx context.Context, taskID strin
 	}
 	primary := handle[0]
 
+	if t.IsPRReview() && r.foreignPR(ctx, primary.PR) {
+		r.logger.Warn("pr-monitor.foreign-pr.refused",
+			"task_id", t.ID, "pr", primary.PR.Number, "repo", primary.PR.Repository, "author", primary.PR.Author)
+		return false
+	}
+
 	// Early mutation guard: a workflow may already be active for this task
 	// (e.g. an in-flight pr-fix step) — never let the deterministic fast-path
 	// or a fresh worktree prep race it. handleTaskPRIssues already applies this

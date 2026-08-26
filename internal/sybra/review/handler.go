@@ -228,6 +228,18 @@ func (r *Handler) agentLogin(ctx context.Context) string {
 	return github.ViewerLoginCtx(ctx)
 }
 
+func selfAuthoredPR(pr github.PullRequest, viewer string) bool {
+	return github.SameActor(pr.Author, viewer)
+}
+
+func (r *Handler) foreignPR(ctx context.Context, pr github.PullRequest) bool {
+	viewer := strings.TrimSpace(r.agentLogin(ctx))
+	if viewer == "" || strings.TrimSpace(pr.Author) == "" {
+		return false
+	}
+	return !selfAuthoredPR(pr, viewer)
+}
+
 // pollFast/pollSlow resolve the review poll cadence from config (github.*),
 // falling back to the raised defaults, then scaled by GitHub budget pressure.
 // nil cfg (test construction) uses defaults too. These are the Sybra PR stream
@@ -670,8 +682,7 @@ func (r *Handler) processSybraPRPoll(ctx context.Context, tasks []task.Task, sum
 }
 
 func (r *Handler) processAssignedPRPoll(ctx context.Context, tasks []task.Task, summary github.ReviewSummary) bool {
-	_ = ctx
-	r.maybeCreateReviewTasks(tasks, summary.ReviewRequested)
+	r.maybeCreateReviewTasks(ctx, tasks, summary.ReviewRequested)
 	// reconcileReviewTask's gh calls (FetchMyReviewState, FetchPRState,
 	// FetchPRHeadSHA) use the package's legacy ctx-less runGHAPIWith path,
 	// shared by many other github package callers; re-plumbing ctx through
@@ -2040,7 +2051,7 @@ func (r *Handler) adoptTasklessPRs(tasks []task.Task, prs []github.PullRequest) 
 				continue
 			}
 		}
-		tags := []string{"review"}
+		tags := []string{task.TagReview, task.TagAdoptedPR}
 		t, err := r.tasks.CreateFull(pr.Title, pr.URL+"\n\nAdopted orphaned Sybra PR (its tracking task was lost).", "headless", task.Update{
 			Tags:      &tags,
 			ProjectID: task.Ptr(pr.Repository),

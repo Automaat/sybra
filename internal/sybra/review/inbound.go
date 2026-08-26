@@ -20,11 +20,11 @@ import (
 	"github.com/Automaat/sybra/internal/worktree"
 )
 
-func (r *Handler) createReviewTask(pr github.PullRequest, projectID string) {
-	r.createReviewTaskWithTriage(pr, projectID, r.triageReview)
+func (r *Handler) createReviewTask(viewer string, pr github.PullRequest, projectID string) {
+	r.createReviewTaskWithTriage(viewer, pr, projectID, r.triageReview)
 }
 
-func (r *Handler) createReviewTaskWithTriage(pr github.PullRequest, projectID string, triage func(task.Task)) {
+func (r *Handler) createReviewTaskWithTriage(viewer string, pr github.PullRequest, projectID string, triage func(task.Task)) {
 	title := "Review: " + pr.Title
 	body := fmt.Sprintf("%s\n\nAuthor: @%s", pr.URL, pr.Author)
 
@@ -33,13 +33,13 @@ func (r *Handler) createReviewTaskWithTriage(pr github.PullRequest, projectID st
 	// a window where the initial file has no "review" tag, which lets
 	// simple-task-plan claim the task.created workflow slot before pr-review
 	// can match — causing triage loops and incorrect status transitions.
-	tags := []string{"review"}
+	tags := []string{task.TagReview}
 	u := task.Update{
 		Tags:      &tags,
 		ProjectID: task.Ptr(projectID),
 		PRNumber:  task.Ptr(pr.Number),
 	}
-	if projectHeadRepoMatches(projectID, pr.HeadRepo) && pr.HeadRefName != "" {
+	if projectHeadRepoMatches(projectID, pr.HeadRepo) && pr.HeadRefName != "" && selfAuthoredPR(pr, viewer) {
 		u.Branch = task.Ptr(pr.HeadRefName)
 	}
 	t, err := r.tasks.CreateFull(title, body, "headless", u)
@@ -342,7 +342,7 @@ func reviewAgentAlreadyRan(t task.Task) bool {
 	})
 }
 
-func (r *Handler) maybeCreateReviewTasks(tasks []task.Task, reviewPRs []github.PullRequest) {
+func (r *Handler) maybeCreateReviewTasks(ctx context.Context, tasks []task.Task, reviewPRs []github.PullRequest) {
 	projects, err := r.projects.List()
 	if err != nil || len(projects) == 0 {
 		return
@@ -357,6 +357,10 @@ func (r *Handler) maybeCreateReviewTasks(tasks []task.Task, reviewPRs []github.P
 	}
 
 	matches := github.MatchReviewPRs(reviewPRs, projectMatchers)
+	viewer := ""
+	if len(matches) > 0 {
+		viewer = strings.TrimSpace(r.agentLogin(ctx))
+	}
 	for i := range matches {
 		if matches[i].PR.IsDraft {
 			continue
@@ -367,7 +371,7 @@ func (r *Handler) maybeCreateReviewTasks(tasks []task.Task, reviewPRs []github.P
 		if r.hasActiveLocalPROwner(tasks, matches[i].ProjectID, matches[i].PR.Number, matches[i].PR.HeadRefName, matches[i].PR.HeadRepo) {
 			continue
 		}
-		r.createReviewTask(matches[i].PR, matches[i].ProjectID)
+		r.createReviewTask(viewer, matches[i].PR, matches[i].ProjectID)
 	}
 }
 

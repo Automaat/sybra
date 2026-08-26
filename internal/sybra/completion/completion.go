@@ -919,6 +919,10 @@ func (h *Handler) pushFixReviewBranch(ag *agent.Agent) {
 	if t.ProjectID == "" {
 		return
 	}
+	if t.IsPRReview() {
+		h.logger.Info("fix-review.push-skipped", "task_id", ag.TaskID, "agent_id", ag.ID, "branch", t.Branch, "pr", t.PRNumber, "reason", "pr review task")
+		return
+	}
 
 	wtPath := h.worktrees.PathFor(t)
 	if _, err := os.Stat(wtPath); err != nil {

@@ -1178,6 +1178,9 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	if err != nil {
 		return "", "", "", err
 	}
+	if t.IsPRReview() && r.AuthorsCode() {
+		return "", "", "", fmt.Errorf("task %s only reviews pull request %d: refusing a writable worktree for role %s", taskID, t.PRNumber, r)
+	}
 
 	cfg := agent.RunConfig{
 		TaskID:                  taskID,
@@ -1637,6 +1640,14 @@ func (a *agentAdapter) resolveWorktreeDir(t task.Task, taskID string, role agent
 	// workflow step-execution call sites); see the Engine.SetContext /
 	// e.ctx pattern for why threading ctx across that interface is out of
 	// scope for this pass.
+	if role == agent.RoleReview && t.PRNumber != 0 {
+		reviewDir, reviewErr := a.agentOrch.Worktrees().PrepareForReview(context.Background(), t)
+		if reviewErr != nil {
+			claim.Release()
+			return t, "", cleanRetryReset, a.classifyDirectDispatchWorktreeErr(taskID, reviewErr)
+		}
+		return t, reviewDir, cleanRetryReset, nil
+	}
 	d, wtErr := a.agentOrch.Worktrees().PrepareForTask(context.Background(), t, nil)
 	if wtErr != nil {
 		// Release our dispatch claim before classifying/recovering: a

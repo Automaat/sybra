@@ -40,6 +40,9 @@ var ErrAgentRunning = worktreeerr.ErrAgentRunning
 // than guess at.
 var ErrTaskBranchMissing = errors.New("task branch does not exist locally or on origin")
 
+// ErrReviewTaskNotWritable marks a refusal to hand a PR-review task a writable checkout.
+var ErrReviewTaskNotWritable = errors.New("task only reviews its pull request")
+
 // ErrLocalWorkPreserved marks a deliberate refusal to recreate a worktree
 // containing local state. Callers must surface recovery guidance rather than
 // counting it as a transient preparation failure.
@@ -136,10 +139,12 @@ func (m *Manager) SyncTaskBranch(ctx context.Context, t task.Task) (SyncResult, 
 		return SyncFailed, fmt.Errorf("sync branch: reconcile: %w", err)
 	}
 
-	pushErr := project.PushSync(ctx, wtPath, wtBranch)
-	m.logPushSync(t.ID, wtBranch, pushErr)
-	if pushErr != nil && !errors.Is(pushErr, project.ErrBranchMissing) {
-		return SyncFailed, fmt.Errorf("sync branch: push: %w", pushErr)
+	if !m.skipReviewPush(t, wtBranch) {
+		pushErr := project.PushSync(ctx, wtPath, wtBranch)
+		m.logPushSync(t.ID, wtBranch, pushErr)
+		if pushErr != nil && !errors.Is(pushErr, project.ErrBranchMissing) {
+			return SyncFailed, fmt.Errorf("sync branch: push: %w", pushErr)
+		}
 	}
 
 	postHEAD, err := project.CurrentCommit(ctx, wtPath)
@@ -192,6 +197,9 @@ func (m *Manager) PrepareForTask(ctx context.Context, t task.Task, onPhase func(
 		return "", fmt.Errorf("prepare worktree for reuse: %w", ErrAgentRunning)
 	}
 
+	if t.IsPRReview() {
+		return "", fmt.Errorf("%w: task %s only reviews pull request %d", ErrReviewTaskNotWritable, t.ID, t.PRNumber)
+	}
 	proj, err := m.projects.Get(t.ProjectID)
 	if err != nil {
 		return "", fmt.Errorf("get project: %w", err)
@@ -238,7 +246,7 @@ func (m *Manager) PrepareForTask(ctx context.Context, t task.Task, onPhase func(
 		}
 		// Sync remote after rebase.
 		callPhase(onPhase, "Syncing upstream…")
-		m.logPushSync(t.ID, wtBranch, project.PushSync(ctx, wtPath, wtBranch))
+		m.pushPrepared(ctx, t, wtPath, wtBranch)
 		m.logger.Info("worktree.reused-branch", "task_id", t.ID, "path", wtPath, "branch", wtBranch)
 		if err := m.runPrepareSetup(ctx, t.ID, wtPath, proj, "reused branch", onPhase); err != nil {
 			return "", err
@@ -259,8 +267,10 @@ func (m *Manager) PrepareForTask(ctx context.Context, t task.Task, onPhase func(
 	m.installChecks(ctx, wtPath, proj)
 
 	callPhase(onPhase, "Pushing upstream…")
-	if err := project.PushUpstream(ctx, wtPath, wtBranch); err != nil {
-		m.logger.Warn("worktree.push-upstream", "task_id", t.ID, "branch", wtBranch, "err", err)
+	if !m.skipReviewPush(t, wtBranch) {
+		if err := project.PushUpstream(ctx, wtPath, wtBranch); err != nil {
+			m.logger.Warn("worktree.push-upstream", "task_id", t.ID, "branch", wtBranch, "err", err)
+		}
 	}
 
 	path, err := m.finalizeWorktree(ctx, t, wtPath, wtBranch, proj)
@@ -301,7 +311,7 @@ func (m *Manager) prepareExistingWorktree(ctx context.Context, t task.Task, proj
 	}
 	m.logger.Info("worktree.rebased", "task_id", t.ID, "path", wtPath, "base", baseRef)
 	callPhase(onPhase, "Syncing upstream…")
-	m.logPushSync(t.ID, wtBranch, project.PushSync(ctx, wtPath, wtBranch))
+	m.pushPrepared(ctx, t, wtPath, wtBranch)
 	if err := m.runPrepareSetup(ctx, t.ID, wtPath, proj, "reused worktree", onPhase); err != nil {
 		return "", false, err
 	}
@@ -665,10 +675,14 @@ func (m *Manager) PrepareForReview(ctx context.Context, t task.Task) (string, er
 	// The branch name is only a log annotation now (the checkout uses the PR
 	// head ref below), so a transient gh failure must not block worktree
 	// creation.
-	branch, err := m.prBranch(t.ProjectID, t.PRNumber)
-	if err != nil {
-		m.logger.Warn("review.worktree.pr-branch", "project", proj.ID, "pr", t.PRNumber, "err", err)
-		branch = ""
+	branch := ""
+	if m.prBranch != nil {
+		resolved, resolveErr := m.prBranch(t.ProjectID, t.PRNumber)
+		if resolveErr != nil {
+			m.logger.Warn("review.worktree.pr-branch", "project", proj.ID, "pr", t.PRNumber, "err", resolveErr)
+		} else {
+			branch = resolved
+		}
 	}
 
 	// Check out the PR head via refs/pull/<N>/head rather than
@@ -733,6 +747,16 @@ func (m *Manager) PrepareForReview(ctx context.Context, t task.Task) (string, er
 // PrepareForBranchFix creates a worktree checking out the task's OWN branch
 // (resolved by name via branchNameForTask, not via a PR lookup) so a no-PR
 // conflict-recovery agent can merge base in and push. Sibling of
+func (m *Manager) admitFixPreparation(t task.Task, prNumber int) error {
+	if t.IsPRReview() {
+		return fmt.Errorf("%w: task %s only reviews pull request %d", ErrReviewTaskNotWritable, t.ID, prNumber)
+	}
+	if m.prBranch == nil {
+		return fmt.Errorf("resolve pr branch for %d: no PR branch resolver configured", prNumber)
+	}
+	return nil
+}
+
 // PrepareForFix for tasks with no PR yet (still in
 // implementation/review/testing, or at create_pr): the same non-rebasing
 // checkout dance, minus PrepareForFix's PR-head fallback — a task's own
@@ -741,6 +765,9 @@ func (m *Manager) PrepareForReview(ctx context.Context, t task.Task) (string, er
 // check out. Does not change PrepareForFix's behavior for its own PR-keyed
 // callers. Setup failures are non-gating, same rationale as PrepareForFix.
 func (m *Manager) PrepareForBranchFix(ctx context.Context, t task.Task) (string, error) {
+	if t.IsPRReview() {
+		return "", fmt.Errorf("%w: task %s only reviews pull request %d", ErrReviewTaskNotWritable, t.ID, t.PRNumber)
+	}
 	release, err := m.lockPath(m.PathFor(t))
 	if err != nil {
 		return "", err
@@ -1060,6 +1087,9 @@ func (m *Manager) PrepareForFix(ctx context.Context, t task.Task, prNumber int) 
 		m.logger.Warn("fix.worktree.fetch", "project", proj.ID, "err", err)
 	}
 
+	if err := m.admitFixPreparation(t, prNumber); err != nil {
+		return "", err
+	}
 	branch, err := m.prBranch(t.ProjectID, prNumber)
 	if err != nil {
 		return "", fmt.Errorf("fetch pr branch: %w", err)
