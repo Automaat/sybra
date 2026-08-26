@@ -3,6 +3,7 @@ package sybra
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/github"
@@ -42,19 +43,9 @@ func TestResolvePRForTask_HeadSearch(t *testing.T) {
 			wantHead: resolverFork + ":" + resolverBranch,
 		},
 		{
-			name:     "pushing to the upstream repo leaves the head bare",
-			fork:     "upstream",
-			wantHead: resolverBranch,
-		},
-		{
-			name:     "an unresolvable head falls back to the bare branch",
-			headErr:  errors.New("no fork remote"),
-			wantHead: resolverBranch,
-		},
-		{
-			name:     "an unknown project falls back to the bare branch",
-			projErr:  errors.New("no such project"),
-			wantHead: resolverBranch,
+			name:     "pushing to the upstream repo qualifies with the repo owner",
+			fork:     "",
+			wantHead: "upstream:" + resolverBranch,
 		},
 	}
 
@@ -97,14 +88,134 @@ func TestResolvePRForTask_HeadSearch(t *testing.T) {
 	}
 }
 
+func TestResolvePRForTask_UnknownHeadOwner(t *testing.T) {
+	tests := []struct {
+		name    string
+		projErr error
+		headErr error
+	}{
+		{name: "an unregistered project", projErr: errors.New("no such project")},
+		{name: "a fork remote that is not a github url", headErr: errors.New("parse fork remote url")},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Given a project whose push target cannot be established
+			var searched, lookedUp bool
+			rp := recoveryPRResolver{
+				projects: stubProjectGetter{err: tc.projErr},
+				headArg: func(_ context.Context, _, branch string) (string, error) {
+					if tc.headErr != nil {
+						return "", tc.headErr
+					}
+					return resolverFork + ":" + branch, nil
+				},
+				findByBranch: func(_ context.Context, _, _ string) (int, string, bool, error) {
+					searched = true
+					return 217, "MERGED", true, nil
+				},
+				issueLinked: func(_ string, _ int) ([]github.PullRequest, error) {
+					lookedUp = true
+					return []github.PullRequest{{Number: 9, HeadRefName: resolverBranch, HeadRepoOwner: resolverFork}}, nil
+				},
+			}
+
+			// When the task's PR is resolved
+			got, err := rp.ResolvePRForTask(context.Background(), resolverRepo, resolverBranch, resolverIssue)
+
+			// Then neither lookup runs and no PR is adopted
+			if err != nil {
+				t.Fatalf("ResolvePRForTask: %v", err)
+			}
+			if got != (recovery.PRRef{}) {
+				t.Errorf("ref = %+v, want empty", got)
+			}
+			if searched || lookedUp {
+				t.Errorf("searched = %v, looked up = %v, want neither", searched, lookedUp)
+			}
+		})
+	}
+}
+
+func TestResolvePRForTask_BranchSearchFiltersForeignHeads(t *testing.T) {
+	tests := []struct {
+		name      string
+		fork      string
+		headOwner string
+		state     string
+		want      recovery.PRRef
+	}{
+		{
+			name:      "our own fork pr is adopted",
+			fork:      resolverFork,
+			headOwner: resolverFork,
+			state:     "OPEN",
+			want:      recovery.PRRef{Number: 217, State: "OPEN"},
+		},
+		{
+			name:      "an outsider fork reusing our branch is refused",
+			fork:      "",
+			headOwner: "outsider",
+			state:     "OPEN",
+			want:      recovery.PRRef{},
+		},
+		{
+			name:      "a merged outsider pr never lands the task",
+			fork:      "",
+			headOwner: "outsider",
+			state:     "MERGED",
+			want:      recovery.PRRef{},
+		},
+		{
+			name:      "a deleted head repo is refused",
+			fork:      resolverFork,
+			headOwner: "",
+			state:     "OPEN",
+			want:      recovery.PRRef{},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Given the real head filter over a single candidate PR
+			rp := recoveryPRResolver{
+				projects: stubProjectGetter{},
+				headArg: func(_ context.Context, _, branch string) (string, error) {
+					if tc.fork == "" {
+						return branch, nil
+					}
+					return tc.fork + ":" + branch, nil
+				},
+				findByBranch: func(_ context.Context, _, head string) (int, string, bool, error) {
+					wantOwner, _ := github.SplitHead(head)
+					if wantOwner != "" && !strings.EqualFold(tc.headOwner, wantOwner) {
+						return 0, "", false, nil
+					}
+					return 217, tc.state, true, nil
+				},
+				issueLinked: func(string, int) ([]github.PullRequest, error) { return nil, nil },
+			}
+
+			// When the task's PR is resolved
+			got, err := rp.ResolvePRForTask(context.Background(), resolverRepo, resolverBranch, resolverIssue)
+
+			// Then a head repo we do not push to never becomes the task's PR
+			if err != nil {
+				t.Fatalf("ResolvePRForTask: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("ref = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestResolvePRForTask_IssueFallback(t *testing.T) {
 	tests := []struct {
 		name       string
 		branch     string
 		issue      string
 		fork       string
-		projErr    error
-		headErr    error
 		linked     []github.PullRequest
 		want       recovery.PRRef
 		wantLookup bool
@@ -200,28 +311,6 @@ func TestResolvePRForTask_IssueFallback(t *testing.T) {
 			wantLookup: true,
 		},
 		{
-			name:    "an unreadable clone refuses to guess an owner",
-			branch:  resolverBranch,
-			issue:   resolverIssue,
-			fork:    resolverFork,
-			headErr: errors.New("resolve fork remote url"),
-			linked: []github.PullRequest{
-				{Number: 9, HeadRefName: resolverBranch, HeadRepoOwner: resolverFork},
-			},
-			want: recovery.PRRef{},
-		},
-		{
-			name:    "an unknown project refuses to guess an owner",
-			branch:  resolverBranch,
-			issue:   resolverIssue,
-			fork:    resolverFork,
-			projErr: errors.New("no such project"),
-			linked: []github.PullRequest{
-				{Number: 9, HeadRefName: resolverBranch, HeadRepoOwner: resolverFork},
-			},
-			want: recovery.PRRef{},
-		},
-		{
 			name:   "an issue in another repo is not consulted",
 			branch: resolverBranch,
 			issue:  "https://github.com/elsewhere/app/issues/42",
@@ -248,11 +337,8 @@ func TestResolvePRForTask_IssueFallback(t *testing.T) {
 			// Given a head search that finds nothing
 			var lookedUp bool
 			rp := recoveryPRResolver{
-				projects: stubProjectGetter{err: tc.projErr},
+				projects: stubProjectGetter{},
 				headArg: func(_ context.Context, _, branch string) (string, error) {
-					if tc.headErr != nil {
-						return "", tc.headErr
-					}
 					return tc.fork + ":" + branch, nil
 				},
 				findByBranch: func(_ context.Context, _, _ string) (int, string, bool, error) {

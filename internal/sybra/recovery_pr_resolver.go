@@ -29,15 +29,18 @@ func (rp recoveryPRResolver) ResolvePRForTask(ctx context.Context, repo, branch,
 	if branch == "" {
 		return recovery.PRRef{}, nil
 	}
-	head, wantOwner := rp.resolveHead(ctx, repo, branch)
-	num, state, found, err := rp.findByBranch(ctx, repo, head)
+	wantOwner := rp.headOwner(ctx, repo, branch)
+	if wantOwner == "" {
+		return recovery.PRRef{}, nil
+	}
+	num, state, found, err := rp.findByBranch(ctx, repo, wantOwner+":"+branch)
 	if err != nil {
 		return recovery.PRRef{}, err
 	}
 	if found {
 		return recovery.PRRef{Number: num, State: state}, nil
 	}
-	if issue == "" || wantOwner == "" {
+	if issue == "" {
 		return recovery.PRRef{}, nil
 	}
 	parsedRepo, number := github.ParseIssueURL(issue)
@@ -51,24 +54,23 @@ func (rp recoveryPRResolver) ResolvePRForTask(ctx context.Context, repo, branch,
 	return ownedLinkedPR(prs, wantOwner, branch), nil
 }
 
-func (rp recoveryPRResolver) resolveHead(ctx context.Context, repo, branch string) (head, wantOwner string) {
-	repoOwner, _, _ := strings.Cut(repo, "/")
+func (rp recoveryPRResolver) headOwner(ctx context.Context, repo, branch string) string {
 	if rp.projects == nil || rp.headArg == nil {
-		return branch, ""
+		return ""
 	}
 	proj, err := rp.projects.Get(repo)
 	if err != nil {
-		return branch, ""
+		return ""
 	}
-	head, err = rp.headArg(ctx, proj.ClonePath, branch)
+	head, err := rp.headArg(ctx, proj.ClonePath, branch)
 	if err != nil || head == "" {
-		return branch, ""
+		return ""
 	}
-	owner, _ := github.SplitHead(head)
-	if owner == "" || strings.EqualFold(owner, repoOwner) {
-		return branch, repoOwner
+	if owner, _ := github.SplitHead(head); owner != "" {
+		return owner
 	}
-	return head, owner
+	repoOwner, _, _ := strings.Cut(repo, "/")
+	return repoOwner
 }
 
 func ownedLinkedPR(prs []github.PullRequest, wantOwner, branch string) recovery.PRRef {
