@@ -20,25 +20,41 @@ func newRecoveryPRResolver() recoveryPRResolver {
 }
 
 func (rp recoveryPRResolver) ResolvePRForTask(ctx context.Context, repo, branch, issue string) (recovery.PRRef, error) {
-	if branch != "" {
-		num, state, found, err := rp.findByBranch(ctx, repo, branch)
-		if err != nil {
-			return recovery.PRRef{}, err
-		}
-		if found {
-			return recovery.PRRef{Number: num, State: state}, nil
-		}
+	if branch == "" {
+		return recovery.PRRef{}, nil
 	}
-	if issue != "" {
-		if parsedRepo, number := github.ParseIssueURL(issue); number > 0 && parsedRepo == repo {
-			prs, err := rp.issueLinked(repo, number)
-			if err != nil {
-				return recovery.PRRef{}, err
-			}
-			if len(prs) == 1 && prs[0].Number > 0 {
-				return recovery.PRRef{Number: prs[0].Number, State: "OPEN"}, nil
-			}
-		}
+	num, state, found, err := rp.findByBranch(ctx, repo, branch)
+	if err != nil {
+		return recovery.PRRef{}, err
 	}
-	return recovery.PRRef{}, nil
+	if found {
+		return recovery.PRRef{Number: num, State: state}, nil
+	}
+	if issue == "" {
+		return recovery.PRRef{}, nil
+	}
+	parsedRepo, number := github.ParseIssueURL(issue)
+	if number <= 0 || parsedRepo != repo {
+		return recovery.PRRef{}, nil
+	}
+	prs, err := rp.issueLinked(repo, number)
+	if err != nil {
+		return recovery.PRRef{}, err
+	}
+	return ownedLinkedPR(prs, branch), nil
+}
+
+func ownedLinkedPR(prs []github.PullRequest, branch string) recovery.PRRef {
+	_, want := github.SplitHead(branch)
+	match := recovery.PRRef{}
+	for i := range prs {
+		if prs[i].Number <= 0 || prs[i].HeadRefName != want {
+			continue
+		}
+		if match.Number > 0 {
+			return recovery.PRRef{}
+		}
+		match = recovery.PRRef{Number: prs[i].Number, State: "OPEN"}
+	}
+	return match
 }
