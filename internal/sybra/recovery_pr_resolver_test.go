@@ -32,37 +32,29 @@ func (s stubProjectGetter) Get(id string) (project.Project, error) {
 func TestResolvePRForTask_HeadSearch(t *testing.T) {
 	tests := []struct {
 		name     string
-		fork     string
-		headErr  error
-		projErr  error
+		owner    string
 		wantHead string
 	}{
 		{
-			name:     "fork push qualifies the head so the owner filter arms",
-			fork:     resolverFork,
+			name:     "a fork push qualifies the head so the owner filter arms",
+			owner:    resolverFork,
 			wantHead: resolverFork + ":" + resolverBranch,
 		},
 		{
-			name:     "pushing to the upstream repo qualifies with the repo owner",
-			fork:     "",
+			name:     "an origin push qualifies with the upstream account",
+			owner:    "upstream",
 			wantHead: "upstream:" + resolverBranch,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			// Given a resolver whose project resolves to the named fork owner
+			// Given a project that pushes to the named account
 			var gotHead string
 			rp := recoveryPRResolver{
-				projects: stubProjectGetter{err: tc.projErr},
-				headArg: func(_ context.Context, _, branch string) (string, error) {
-					if tc.headErr != nil {
-						return "", tc.headErr
-					}
-					if tc.fork == "" {
-						return branch, nil
-					}
-					return tc.fork + ":" + branch, nil
+				projects: stubProjectGetter{},
+				pushOwner: func(context.Context, string) (string, error) {
+					return tc.owner, nil
 				},
 				findByBranch: func(_ context.Context, _, head string) (int, string, bool, error) {
 					gotHead = head
@@ -90,12 +82,12 @@ func TestResolvePRForTask_HeadSearch(t *testing.T) {
 
 func TestResolvePRForTask_UnknownHeadOwner(t *testing.T) {
 	tests := []struct {
-		name    string
-		projErr error
-		headErr error
+		name     string
+		projErr  error
+		ownerErr error
 	}{
 		{name: "an unregistered project", projErr: errors.New("no such project")},
-		{name: "a fork remote that is not a github url", headErr: errors.New("parse fork remote url")},
+		{name: "a clone with no readable github remote", ownerErr: errors.New("no readable github remote")},
 	}
 
 	for _, tc := range tests {
@@ -104,11 +96,11 @@ func TestResolvePRForTask_UnknownHeadOwner(t *testing.T) {
 			var searched, lookedUp bool
 			rp := recoveryPRResolver{
 				projects: stubProjectGetter{err: tc.projErr},
-				headArg: func(_ context.Context, _, branch string) (string, error) {
-					if tc.headErr != nil {
-						return "", tc.headErr
+				pushOwner: func(context.Context, string) (string, error) {
+					if tc.ownerErr != nil {
+						return "", tc.ownerErr
 					}
-					return resolverFork + ":" + branch, nil
+					return resolverFork, nil
 				},
 				findByBranch: func(_ context.Context, _, _ string) (int, string, bool, error) {
 					searched = true
@@ -180,11 +172,8 @@ func TestResolvePRForTask_BranchSearchFiltersForeignHeads(t *testing.T) {
 			// Given the real head filter over a single candidate PR
 			rp := recoveryPRResolver{
 				projects: stubProjectGetter{},
-				headArg: func(_ context.Context, _, branch string) (string, error) {
-					if tc.fork == "" {
-						return branch, nil
-					}
-					return tc.fork + ":" + branch, nil
+				pushOwner: func(context.Context, string) (string, error) {
+					return tc.fork, nil
 				},
 				findByBranch: func(_ context.Context, _, head string) (int, string, bool, error) {
 					wantOwner, _ := github.SplitHead(head)
@@ -338,8 +327,8 @@ func TestResolvePRForTask_IssueFallback(t *testing.T) {
 			var lookedUp bool
 			rp := recoveryPRResolver{
 				projects: stubProjectGetter{},
-				headArg: func(_ context.Context, _, branch string) (string, error) {
-					return tc.fork + ":" + branch, nil
+				pushOwner: func(context.Context, string) (string, error) {
+					return tc.fork, nil
 				},
 				findByBranch: func(_ context.Context, _, _ string) (int, string, bool, error) {
 					return 0, "", false, nil
@@ -373,7 +362,7 @@ func TestResolvePRForTask_PropagatesLookupErrors(t *testing.T) {
 	base := func() recoveryPRResolver {
 		return recoveryPRResolver{
 			projects:    stubProjectGetter{},
-			headArg:     func(_ context.Context, _, branch string) (string, error) { return branch, nil },
+			pushOwner:   func(context.Context, string) (string, error) { return "upstream", nil },
 			issueLinked: func(string, int) ([]github.PullRequest, error) { return nil, nil },
 			findByBranch: func(_ context.Context, _, _ string) (int, string, bool, error) {
 				return 0, "", false, nil

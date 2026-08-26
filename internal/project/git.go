@@ -1333,6 +1333,28 @@ func HardResetWorktree(ctx context.Context, worktreePath, ref string) error {
 	return gitexec.Run(ctx, gitexec.Options{Dir: worktreePath}, "reset", "--hard", ref)
 }
 
+// PushOwner returns the GitHub owner of the remote repoPath pushes to: the
+// fork remote when one is configured, else origin. It reports an error rather
+// than a guess when the repository cannot be read, so a caller that must know
+// which account a branch lands in can fail closed.
+func PushOwner(ctx context.Context, repoPath string) (string, error) {
+	if strings.TrimSpace(repoPath) == "" {
+		return "", errors.New("push owner: empty repo path")
+	}
+	for _, remote := range []string{"fork", "origin"} {
+		raw, err := gitexec.Output(ctx, gitexec.Options{Dir: repoPath}, "config", "--get", "remote."+remote+".url")
+		if err != nil {
+			continue
+		}
+		owner, _, err := ParseGitHubURL(strings.TrimSpace(raw))
+		if err != nil {
+			return "", fmt.Errorf("parse %s remote url: %w", remote, err)
+		}
+		return owner, nil
+	}
+	return "", fmt.Errorf("push owner: no readable github remote in %s", repoPath)
+}
+
 // HeadArg returns the `gh pr create --head` value for branch: a bare branch
 // name when pushing to origin, or "fork-owner:branch" when a fork remote is
 // configured — matching PushRemote's routing decision so the PR always

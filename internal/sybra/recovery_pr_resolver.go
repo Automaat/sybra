@@ -12,7 +12,7 @@ import (
 type recoveryPRResolver struct {
 	findByBranch func(ctx context.Context, repo, head string) (int, string, bool, error)
 	issueLinked  func(repo string, issueNumber int) ([]github.PullRequest, error)
-	headArg      func(ctx context.Context, worktreePath, branch string) (string, error)
+	pushOwner    func(ctx context.Context, repoPath string) (string, error)
 	projects     recovery.ProjectGetter
 }
 
@@ -20,7 +20,7 @@ func newRecoveryPRResolver(projects recovery.ProjectGetter) recoveryPRResolver {
 	return recoveryPRResolver{
 		findByBranch: github.FindPRForBranchAnyState,
 		issueLinked:  github.FetchIssueLinkedPRs,
-		headArg:      project.HeadArg,
+		pushOwner:    project.PushOwner,
 		projects:     projects,
 	}
 }
@@ -29,7 +29,7 @@ func (rp recoveryPRResolver) ResolvePRForTask(ctx context.Context, repo, branch,
 	if branch == "" {
 		return recovery.PRRef{}, nil
 	}
-	wantOwner := rp.headOwner(ctx, repo, branch)
+	wantOwner := rp.headOwner(ctx, repo)
 	if wantOwner == "" {
 		return recovery.PRRef{}, nil
 	}
@@ -54,23 +54,19 @@ func (rp recoveryPRResolver) ResolvePRForTask(ctx context.Context, repo, branch,
 	return ownedLinkedPR(prs, wantOwner, branch), nil
 }
 
-func (rp recoveryPRResolver) headOwner(ctx context.Context, repo, branch string) string {
-	if rp.projects == nil || rp.headArg == nil {
+func (rp recoveryPRResolver) headOwner(ctx context.Context, repo string) string {
+	if rp.projects == nil || rp.pushOwner == nil {
 		return ""
 	}
 	proj, err := rp.projects.Get(repo)
 	if err != nil {
 		return ""
 	}
-	head, err := rp.headArg(ctx, proj.ClonePath, branch)
-	if err != nil || head == "" {
+	owner, err := rp.pushOwner(ctx, proj.ClonePath)
+	if err != nil {
 		return ""
 	}
-	if owner, _ := github.SplitHead(head); owner != "" {
-		return owner
-	}
-	repoOwner, _, _ := strings.Cut(repo, "/")
-	return repoOwner
+	return owner
 }
 
 func ownedLinkedPR(prs []github.PullRequest, wantOwner, branch string) recovery.PRRef {
