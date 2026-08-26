@@ -81,6 +81,7 @@ const issueLinkedPRsQuery = `query($owner: String!, $name: String!, $number: Int
                 state
                 headRefName
                 author { login type: __typename }
+                headRepository { nameWithOwner owner { login } }
                 repository { name nameWithOwner }
               }
             }
@@ -169,6 +170,12 @@ type gqlCrossReferencedEvent struct {
 			Login string `json:"login"`
 			Type  string `json:"type"`
 		} `json:"author"`
+		HeadRepository struct {
+			NameWithOwner string `json:"nameWithOwner"`
+			Owner         struct {
+				Login string `json:"login"`
+			} `json:"owner"`
+		} `json:"headRepository"`
 		Repository struct {
 			Name          string `json:"name"`
 			NameWithOwner string `json:"nameWithOwner"`
@@ -625,13 +632,15 @@ func fetchIssueLinkedPRsWith(e execer, repo string, issueNumber int) ([]PullRequ
 		}
 		seen[src.Number] = struct{}{}
 		prs = append(prs, PullRequest{
-			Number:      src.Number,
-			Title:       src.Title,
-			URL:         src.URL,
-			HeadRefName: src.HeadRefName,
-			Repository:  src.Repository.NameWithOwner,
-			RepoName:    src.Repository.Name,
-			Author:      src.Author.Login,
+			Number:        src.Number,
+			Title:         src.Title,
+			URL:           src.URL,
+			HeadRefName:   src.HeadRefName,
+			HeadRepo:      src.HeadRepository.NameWithOwner,
+			HeadRepoOwner: src.HeadRepository.Owner.Login,
+			Repository:    src.Repository.NameWithOwner,
+			RepoName:      src.Repository.Name,
+			Author:        src.Author.Login,
 		})
 	}
 	return prs, nil
