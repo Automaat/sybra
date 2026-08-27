@@ -94,7 +94,7 @@ RUN ARCH="$(dpkg --print-architecture)" \
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
 ARG CLAUDE_CODE_VERSION=2.1.222
 # renovate: datasource=npm depName=@openai/codex
-ARG CODEX_VERSION=0.147.0
+ARG CODEX_VERSION=0.149.1
 # renovate: datasource=npm depName=opencode-ai
 ARG OPENCODE_VERSION=1.18.13
 RUN npm install -g \
