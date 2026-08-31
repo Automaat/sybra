@@ -100,7 +100,8 @@ func ComputeAutonomySLOs(sc Scorecard, events []audit.Event, since, until time.T
 		case audit.EventMonitorIncidentObserved:
 			recordIncidentFanout(e.Data, incidents, unknownFanout)
 		case audit.EventMonitorIncidentRemediation:
-			if fp := strVal(e.Data, "fingerprint"); fp != "" {
+			result := strVal(e.Data, "remediation_result")
+			if fp := strVal(e.Data, "fingerprint"); fp != "" && result != "held" && result != "failed" {
 				repairs[fp]++
 			}
 		case audit.EventMonitorIncidentResolved:

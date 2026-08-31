@@ -53,6 +53,21 @@ func TestComputeAutonomySLOsCountsMissingDurationAndOverflowAsUnknown(t *testing
 	}
 }
 
+func TestComputeAutonomySLOsExcludesHeldAndFailedRemediationFromRecoverySuccess(t *testing.T) {
+	base := time.Now().UTC()
+	events := []audit.Event{
+		{Timestamp: base, Type: audit.EventMonitorIncidentRemediation, Data: map[string]any{"fingerprint": "i1", "remediation_result": "held"}},
+		{Timestamp: base, Type: audit.EventMonitorIncidentRemediation, Data: map[string]any{"fingerprint": "i1", "remediation_result": "failed"}},
+		{Timestamp: base, Type: audit.EventMonitorIncidentResolved, Data: map[string]any{"fingerprint": "i1"}},
+		{Timestamp: base, Type: audit.EventMonitorIncidentRemediation, Data: map[string]any{"fingerprint": "i2", "remediation_result": "started"}},
+		{Timestamp: base, Type: audit.EventMonitorIncidentResolved, Data: map[string]any{"fingerprint": "i2"}},
+	}
+	got := ComputeAutonomySLOs(Scorecard{}, events, base.Add(-time.Minute), base.Add(time.Minute))
+	if got.RecoverySuccess.Success != 1 || got.RecoverySuccess.Known != 1 {
+		t.Fatalf("recovery success should only credit the genuine repair attempt: %+v", got.RecoverySuccess)
+	}
+}
+
 func TestComputeAutonomySLOsLegacyOnlyIsUnknown(t *testing.T) {
 	base := time.Now().UTC()
 	got := ComputeAutonomySLOs(Scorecard{AutonomyUnknownLandings: 3}, []audit.Event{{Timestamp: base, Type: audit.EventTaskStatusChanged, Data: map[string]any{"to": string(taskstatus.HumanRequired)}}}, base.Add(-time.Minute), base.Add(time.Minute))
