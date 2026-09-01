@@ -20,6 +20,7 @@ import (
 	"github.com/Automaat/sybra/internal/errclass"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/providerid"
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 var providerOrder = providerid.All()
@@ -132,7 +133,7 @@ func RunJSON(ctx context.Context, prompt string, opts Options) (Result, error) {
 				failures = append(failures, fmt.Sprintf("%s: %s", p, c.Reason))
 				continue
 			}
-			return Result{Provider: p}, providerError(p, err, stderrOut)
+			return Result{Provider: p}, providerError(p, err, stderrOut, string(raw))
 		}
 
 		text, cost, parseErr := parseProviderText(p, raw)
@@ -571,10 +572,46 @@ func logFallback(logger *slog.Logger, p string, sig provider.Signal, reason stri
 	logger.Warn("llmexec.provider_fallback", "from", p, "signal", sig, "reason", reason)
 }
 
-func providerError(p string, err error, stderrOut string) error {
+func providerError(p string, err error, stderrOut, stdoutOut string) error {
 	msg := strings.TrimSpace(stderrOut)
+	if msg == "" {
+		msg = providerStdoutDetail(stdoutOut)
+	}
 	if msg == "" {
 		return fmt.Errorf("%s: %w", p, err)
 	}
 	return fmt.Errorf("%s: %w: %s", p, err, msg)
 }
+
+// providerStdoutDetail salvages a reason from stdout for a CLI that reports
+// the failure there and exits with an empty stderr — codex prints the API's
+// rejection as a JSON error event, so "exit status 1" is otherwise all the
+// operator ever sees.
+func providerStdoutDetail(stdoutOut string) string {
+	for line := range strings.SplitSeq(stdoutOut, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || !strings.Contains(line, `"error"`) {
+			continue
+		}
+		var event struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+			Error   struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			continue
+		}
+		detail := firstNonEmpty(event.Error.Message, event.Message)
+		if detail == "" {
+			continue
+		}
+		return textutil.TruncateBytesTrimmed(strings.ToValidUTF8(detail, ""), providerDetailMax, "...")
+	}
+	return ""
+}
+
+// providerDetailMax bounds the salvaged stdout reason: an API rejection can
+// echo the whole schema back, and this error reaches a task status reason.
+const providerDetailMax = 400

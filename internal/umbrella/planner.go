@@ -1,6 +1,7 @@
 package umbrella
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -57,7 +58,49 @@ type PlannedChild struct {
 	// serial-default layer; resolve trims and drops blank values so a
 	// whitespace-only entry cannot count. The text itself is advisory only
 	// beyond that presence check (never further validated or enforced).
-	ParallelJustification map[string]string `json:"parallelJustification,omitempty"`
+	ParallelJustification ParallelJustification `json:"parallelJustification,omitempty"`
+}
+
+// ParallelJustification maps a sibling ref to why this child may run beside it.
+type ParallelJustification map[string]string
+
+// UnmarshalJSON accepts the object map and the array of {sibling, reason}
+// pairs the structured-output schema has to use, since that API rejects a
+// schema-valued additionalProperties (see buildPlanSchema).
+func (j *ParallelJustification) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		*j = nil
+		return nil
+	}
+	if trimmed[0] == '[' {
+		var pairs []struct {
+			Sibling string `json:"sibling"`
+			Reason  string `json:"reason"`
+		}
+		if err := json.Unmarshal(trimmed, &pairs); err != nil {
+			return err
+		}
+		out := make(ParallelJustification, len(pairs))
+		for _, p := range pairs {
+			if strings.TrimSpace(p.Sibling) == "" {
+				continue
+			}
+			out[p.Sibling] = p.Reason
+		}
+		if len(out) == 0 {
+			*j = nil
+			return nil
+		}
+		*j = out
+		return nil
+	}
+	var asMap map[string]string
+	if err := json.Unmarshal(trimmed, &asMap); err != nil {
+		return err
+	}
+	*j = ParallelJustification(asMap)
+	return nil
 }
 
 // Plan is the dependency DAG the planner extracts from an umbrella body.
@@ -406,11 +449,14 @@ func BuildPrompt(umbrellaRef, umbrellaBody string, subs []SubIssue) string {
 
 // buildPlanSchema returns a JSON Schema for Plan that constrains
 // children[].issue and children[].dependsOn to the exact canonical sub-issue
-// refs, requires string-valued parallelJustification entries to match
-// PlannedChild, and makes children a fixed tuple with one slot per sub-issue
-// ref in prompt order. This eliminates the duplicate/omitted
-// coverage-mismatch failure mode at the model layer instead of relying solely
-// on post-hoc validate+retry.
+// refs, and bounds children to one entry per sub-issue via minItems/maxItems.
+// Coverage of every ref exactly once is enforced by validate+retry (see
+// resolve and missingRefs), not by the schema: the structured-output API
+// rejects a tuple "items", so a fixed slot per sub-issue is not expressible.
+// It also rejects "uniqueItems" and a schema-valued "additionalProperties",
+// which is why parallelJustification travels as an array of
+// {sibling, reason} pairs — PlannedChild accepts that form and the legacy
+// object map (see ParallelJustification.UnmarshalJSON).
 // Delivered via llmexec.Options.Schema by a Runner (see FallbackPlannerRunner):
 // codex receives it natively (--output-schema), claude/copilot get it appended
 // as prose. additionalProperties:false and every property listed in
@@ -424,41 +470,42 @@ func buildPlanSchema(subs []SubIssue) string {
 	refEnum := map[string]any{"type": "string", "enum": refs}
 	stringArray := map[string]any{"type": "array", "items": map[string]any{"type": "string"}}
 
-	childForIssue := func(ref string) map[string]any {
-		return map[string]any{
+	justification := map[string]any{
+		"type": "array",
+		"items": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"issue":     map[string]any{"type": "string", "enum": []string{ref}},
-				"dependsOn": map[string]any{"type": "array", "items": refEnum},
-				"track":     map[string]any{"type": "string"},
-				"touches":   stringArray,
-				"produces":  stringArray,
-				"requires":  stringArray,
-				"parallelJustification": map[string]any{
-					"type":                 "object",
-					"additionalProperties": map[string]any{"type": "string"},
-				},
+				"sibling": refEnum,
+				"reason":  map[string]any{"type": "string"},
 			},
-			"required":             []string{"issue", "dependsOn", "track", "touches", "produces", "requires", "parallelJustification"},
+			"required":             []string{"sibling", "reason"},
 			"additionalProperties": false,
-		}
+		},
 	}
 
-	childItems := make([]any, len(refs))
-	for i, ref := range refs {
-		childItems[i] = childForIssue(ref)
+	child := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"issue":                 refEnum,
+			"dependsOn":             map[string]any{"type": "array", "items": refEnum},
+			"track":                 map[string]any{"type": "string"},
+			"touches":               stringArray,
+			"produces":              stringArray,
+			"requires":              stringArray,
+			"parallelJustification": justification,
+		},
+		"required":             []string{"issue", "dependsOn", "track", "touches", "produces", "requires", "parallelJustification"},
+		"additionalProperties": false,
 	}
 
 	schema := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"children": map[string]any{
-				"type":            "array",
-				"minItems":        len(subs),
-				"maxItems":        len(subs),
-				"uniqueItems":     true,
-				"items":           childItems,
-				"additionalItems": false,
+				"type":     "array",
+				"minItems": len(subs),
+				"maxItems": len(subs),
+				"items":    child,
 			},
 			"maxParallel": map[string]any{"type": "integer"},
 		},

@@ -2,6 +2,7 @@ package llmexec
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -533,5 +534,64 @@ func TestCandidatesDropsToolOnlyFallback(t *testing.T) {
 	}
 	if got := candidates(providerid.OpenCode, false); got[0] != providerid.OpenCode {
 		t.Errorf("explicit opencode preference was dropped: %v", got)
+	}
+}
+
+func TestProviderError_SalvagesTheReasonFromStdout(t *testing.T) {
+	tests := []struct {
+		name   string
+		stderr string
+		stdout string
+		want   string
+	}{
+		{
+			name:   "stderr wins when present",
+			stderr: "boom from stderr",
+			stdout: `{"type":"error","message":"{\"error\":{\"message\":\"ignored\"}}"}`,
+			want:   "boom from stderr",
+		},
+		{
+			name:   "json error event on stdout is used when stderr is empty",
+			stdout: "{\"type\":\"thread.started\"}\n{\"type\":\"error\",\"message\":\"invalid_json_schema: uniqueItems is not permitted\"}\n",
+			want:   "invalid_json_schema: uniqueItems is not permitted",
+		},
+		{
+			name:   "nested error message is used",
+			stdout: `{"type":"turn.failed","error":{"message":"400 invalid schema"}}`,
+			want:   "400 invalid schema",
+		},
+		{
+			name:   "plain stdout carries no reason",
+			stdout: "just some output\n",
+			want:   "",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := providerError("codex", errors.New("exit status 1"), tc.stderr, tc.stdout)
+			if !strings.Contains(err.Error(), "exit status 1") {
+				t.Fatalf("error lost the exit status: %v", err)
+			}
+			if tc.want == "" {
+				if err.Error() != "codex: exit status 1" {
+					t.Fatalf("error = %q, want the bare exit status", err)
+				}
+				return
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %q, want it to carry %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestProviderStdoutDetail_IsBounded(t *testing.T) {
+	long := strings.Repeat("x", providerDetailMax*3)
+	detail := providerStdoutDetail(`{"type":"error","message":"` + long + `"}`)
+	if len(detail) > providerDetailMax+len("...") {
+		t.Fatalf("detail length = %d, want at most %d", len(detail), providerDetailMax+len("..."))
+	}
+	if detail == "" {
+		t.Fatal("bounded detail was dropped entirely")
 	}
 }
