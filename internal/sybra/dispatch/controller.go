@@ -450,9 +450,8 @@ func replayIntentMatches(stored, replay agent.AttemptIntent) bool {
 	return reflect.DeepEqual(replayIdentity(stored), replayIdentity(replay))
 }
 
-// replayIdentity drops what a retry may legitimately resolve again, leaving
-// the fields that say which attempt this is: task, generation, worktree,
-// access and role.
+// replayIdentity drops what a retry may legitimately resolve again and keeps
+// every other field, so a replay still has to match on all of them.
 //
 // The provider is a dispatch decision, not identity — provider health, rate
 // limits and A/B routing all move it between one attempt and the next, and
