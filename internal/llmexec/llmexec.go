@@ -20,6 +20,7 @@ import (
 	"github.com/Automaat/sybra/internal/errclass"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/providerid"
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 var providerOrder = providerid.All()
@@ -132,7 +133,7 @@ func RunJSON(ctx context.Context, prompt string, opts Options) (Result, error) {
 				failures = append(failures, fmt.Sprintf("%s: %s", p, c.Reason))
 				continue
 			}
-			return Result{Provider: p}, providerError(p, err, stderrOut)
+			return Result{Provider: p}, providerError(p, err, stderrOut, string(raw))
 		}
 
 		text, cost, parseErr := parseProviderText(p, raw)
@@ -571,10 +572,86 @@ func logFallback(logger *slog.Logger, p string, sig provider.Signal, reason stri
 	logger.Warn("llmexec.provider_fallback", "from", p, "signal", sig, "reason", reason)
 }
 
-func providerError(p string, err error, stderrOut string) error {
+func providerError(p string, err error, stderrOut, stdoutOut string) error {
 	msg := strings.TrimSpace(stderrOut)
+	if msg == "" {
+		msg = providerStdoutDetail(stdoutOut)
+	}
 	if msg == "" {
 		return fmt.Errorf("%s: %w", p, err)
 	}
 	return fmt.Errorf("%s: %w: %s", p, err, msg)
 }
+
+// providerStdoutDetail salvages a reason from stdout for a CLI that reports
+// the failure there and exits with an empty stderr — codex prints the API's
+// rejection as a JSON error event, so "exit status 1" is otherwise all the
+// operator ever sees. Only an event that identifies itself as a failure is
+// read: this text reaches a task status reason, so an ordinary assistant
+// message that merely contains the word must never be reported as the cause.
+func providerStdoutDetail(stdoutOut string) string {
+	for line := range strings.SplitSeq(stdoutOut, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || line[0] != '{' {
+			continue
+		}
+		var event struct {
+			Type    string          `json:"type"`
+			Message string          `json:"message"`
+			IsError bool            `json:"is_error"`
+			Error   json.RawMessage `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			continue
+		}
+		detail := errorEventDetail(event.Type, event.Message, event.IsError, event.Error)
+		if detail == "" {
+			continue
+		}
+		return textutil.TruncateBytesTrimmed(strings.ToValidUTF8(detail, ""), providerDetailMax, "...")
+	}
+	return ""
+}
+
+// errorEventDetail reads a failure reason out of one decoded stream event,
+// accepting the shapes the supported CLIs emit: a string "error", an object
+// carrying "message", or a failure-typed event whose own "message" is the
+// reason. Only an event that announces a failure is read at all, so an
+// ordinary message that happens to carry an error field is never reported.
+func errorEventDetail(eventType, message string, isError bool, rawError json.RawMessage) string {
+	if !isFailureEvent(eventType, isError) {
+		return ""
+	}
+	if len(rawError) > 0 && string(rawError) != "null" {
+		var asString string
+		if err := json.Unmarshal(rawError, &asString); err == nil {
+			if detail := strings.TrimSpace(asString); detail != "" {
+				return detail
+			}
+		} else {
+			var asObject struct {
+				Message string `json:"message"`
+			}
+			if err := json.Unmarshal(rawError, &asObject); err == nil {
+				if detail := strings.TrimSpace(asObject.Message); detail != "" {
+					return detail
+				}
+			}
+		}
+	}
+	return strings.TrimSpace(message)
+}
+
+// isFailureEvent reports whether a stream event announces a failure, by its
+// own type or an explicit is_error flag — never by a substring of free text.
+func isFailureEvent(eventType string, isError bool) bool {
+	if isError {
+		return true
+	}
+	lowered := strings.ToLower(strings.TrimSpace(eventType))
+	return strings.Contains(lowered, "error") || strings.Contains(lowered, "failed")
+}
+
+// providerDetailMax bounds the salvaged stdout reason: an API rejection can
+// echo the whole schema back, and this error reaches a task status reason.
+const providerDetailMax = 400
