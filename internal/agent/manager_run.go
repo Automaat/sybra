@@ -1118,6 +1118,9 @@ func hostMiseDataDir() string {
 // install a version the operator lacks — a toolchain bump would otherwise
 // fail writing into the store it cannot touch.
 func mirrorMiseStore(dir, host string) error {
+	if err := makeMirrorDir(dir); err != nil {
+		return err
+	}
 	for _, tree := range []string{"installs", "plugins"} {
 		if err := mirrorMiseTree(filepath.Join(dir, tree), filepath.Join(host, tree), tree == "installs"); err != nil {
 			return err
@@ -1131,8 +1134,11 @@ func mirrorMiseTree(dst, src string, perVersion bool) error {
 		return err
 	}
 	entries, err := os.ReadDir(src)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
 	if err != nil {
-		return nil //nolint:nilerr // an absent tree is a host without that mise feature, not a run failure.
+		return err
 	}
 	for _, entry := range entries {
 		if !entry.IsDir() {
@@ -1161,8 +1167,11 @@ func mirrorMiseVersions(dst, src string) error {
 		return err
 	}
 	versions, err := os.ReadDir(src)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
 	if err != nil {
-		return nil //nolint:nilerr // a tool with no readable versions is skipped, not fatal.
+		return err
 	}
 	for _, version := range versions {
 		if !version.IsDir() {

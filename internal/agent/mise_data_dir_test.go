@@ -263,3 +263,50 @@ func TestInjectMiseDataDir_RefusesAPlantedMirrorLink(t *testing.T) {
 		t.Fatalf("operator data was removed through the planted link: %v", statErr)
 	}
 }
+
+func TestInjectMiseDataDir_RefusesAPlantedStoreLink(t *testing.T) {
+	// Given a link planted at the store root itself, one level above the trees
+	newAmbientMiseStore(t)
+	sandboxHome := t.TempDir()
+	victim := t.TempDir()
+	precious := filepath.Join(victim, "installs", "go", "1.26.6", "precious")
+	if err := os.MkdirAll(precious, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, filepath.Join(sandboxHome, "mise")); err != nil {
+		t.Fatal(err)
+	}
+	cfg := RunConfig{TaskID: "t1", SandboxMode: "enforce", resolvedSandboxHome: sandboxHome}
+
+	// When the mirror is built
+	err := (&Manager{logger: discardLogger()}).injectMiseDataDir(&cfg)
+
+	// Then it refuses before it creates a single entry through the link
+	if err == nil {
+		t.Fatal("mirror followed a store root planted as a symlink")
+	}
+	if _, statErr := os.Stat(precious); statErr != nil {
+		t.Fatalf("operator data was removed through the planted link: %v", statErr)
+	}
+}
+
+func TestInjectMiseDataDir_ReportsAnUnreadableHostTree(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a mode 0 directory, so the failure cannot be staged")
+	}
+	// Given a host store whose installs tree cannot be read
+	host := newAmbientMiseStore(t)
+	if err := os.Chmod(filepath.Join(host, "installs"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(host, "installs"), 0o755) })
+	cfg := RunConfig{TaskID: "t1", SandboxMode: "enforce", resolvedSandboxHome: t.TempDir()}
+
+	// When the mirror is built
+	err := (&Manager{logger: discardLogger()}).injectMiseDataDir(&cfg)
+
+	// Then the run names the store it could not read instead of mirroring it empty
+	if err == nil {
+		t.Fatal("an unreadable host tree was mirrored as an absent one")
+	}
+}
