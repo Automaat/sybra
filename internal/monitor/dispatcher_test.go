@@ -48,7 +48,8 @@ type dispatcherTasksStub struct {
 	err  error
 }
 
-func (d dispatcherTasksStub) List() ([]task.Task, error) { return nil, nil }
+func (d dispatcherTasksStub) List() ([]task.Task, error)       { return nil, nil }
+func (d dispatcherTasksStub) ListActive() ([]task.Task, error) { return nil, nil }
 func (d dispatcherTasksStub) Get(id string) (task.Task, error) {
 	if d.err != nil {
 		return task.Task{}, d.err

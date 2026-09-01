@@ -19,7 +19,7 @@ func (r *Recovery) ReconcileLostPRNumber(ctx context.Context) {
 	if r.PRs == nil {
 		return
 	}
-	tasks, err := r.Tasks.List()
+	tasks, err := r.Tasks.ListActive()
 	if err != nil {
 		return
 	}

@@ -456,7 +456,7 @@ func (lm *LifecycleManager) prune() {
 func (lm *LifecycleManager) registerMetricsObservers() {
 	a := lm.app
 	metrics.RegisterTasksByStatus(func() map[string]int64 {
-		tasks, err := a.tasks.List()
+		tasks, err := a.tasks.ListBoard()
 		if err != nil {
 			return nil
 		}

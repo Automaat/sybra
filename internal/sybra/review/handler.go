@@ -414,7 +414,7 @@ func (r *Handler) pollKnownTaskPRs(ctx context.Context) time.Duration {
 	if !r.runsSybraPRs() {
 		return r.nextInterval(false, false)
 	}
-	tasks, err := r.tasks.List()
+	tasks, err := r.tasks.ListActive()
 	if err != nil {
 		return r.nextInterval(false, false)
 	}
@@ -473,7 +473,7 @@ func (r *Handler) pollKnownTaskPRs(ctx context.Context) time.Duration {
 		r.advanceClosedTaskPRs(ctx, monitoredPRs, closedMatchers)
 	}
 
-	r.scanForReverts(ctx, tasks)
+	r.scanForReverts(ctx)
 	r.resolveAddressedCopilotThreads(ctx, tasks, monitoredPRs)
 	r.reconcilePRPhases(ctx, tasks, monitoredPRs)
 	reconciledReady := r.reconcileHumanRequiredBlockers(tasks, monitoredPRs)
@@ -519,7 +519,7 @@ func (r *Handler) mergeReconciledReady(ctx context.Context, reconciledReady, iss
 func (r *Handler) pollAndMonitorPRs(ctx context.Context) time.Duration {
 	// Load tasks up-front so stale review-task reconciliation runs even
 	// when FetchReviews fails (transient errors, rate limits, etc.).
-	tasks, err := r.tasks.List()
+	tasks, err := r.tasks.ListActive()
 	if err != nil {
 		return r.nextInterval(false, false)
 	}
@@ -668,7 +668,7 @@ func (r *Handler) processSybraPRPoll(ctx context.Context, tasks []task.Task, sum
 		r.advanceClosedTaskPRs(ctx, monitoredPRs, closedMatchers)
 	}
 
-	r.scanForReverts(ctx, tasks)
+	r.scanForReverts(ctx)
 	r.resolveAddressedCopilotThreads(ctx, tasks, monitoredPRs)
 	r.reconcilePRPhases(ctx, tasks, monitoredPRs)
 	// monitoredPRs here is the author:@me search result (r.monitoredPRs), which
@@ -1470,10 +1470,17 @@ const (
 // the default branch, flips the task outcome to "reverted", and emits
 // pr.reverted (the change-failure signal). Rate-limited and bounded: one gh call
 // per repo with eligible tasks, every revertScanInterval, with each call killed
-// after landingEnrichTimeout. Reuses the already-listed tasks (no extra read).
-func (r *Handler) scanForReverts(ctx context.Context, tasks []task.Task) {
+// after landingEnrichTimeout. The history scan uses the compact board
+// projection and only runs when the interval elapses; normal PR polls list
+// active full documents without dragging closed-task history through memory.
+func (r *Handler) scanForReverts(ctx context.Context) {
 	now := time.Now()
 	if !r.lastRevertScan.IsZero() && now.Sub(r.lastRevertScan) < revertScanInterval {
+		return
+	}
+	tasks, err := r.tasks.ListBoard()
+	if err != nil {
+		r.logger.Warn("pr-monitor.revert-list", "err", err)
 		return
 	}
 

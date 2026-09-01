@@ -342,7 +342,7 @@ func (f *IssuesFetcher) syncIssuesToTasks(issues []github.Issue) {
 
 	// Pass 2: flat tasks, with a dedup snapshot taken AFTER expansion so the
 	// children created above are visible.
-	tasks, err := f.tasks.List()
+	tasks, err := f.tasks.ListBoard()
 	if err != nil {
 		f.logger.Error("issue-sync.list-tasks", "err", err)
 		return

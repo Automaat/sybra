@@ -188,7 +188,7 @@ func (m *Mirror) reconcileMissing(ctx context.Context, node string, client *clus
 	// than resuming a stale count left over from an unrelated earlier gap.
 	m.clearMissingStreaks(node, tasks)
 
-	canonical, err := m.tasks.List()
+	canonical, err := m.tasks.ListActive()
 	if err != nil {
 		m.logger.Warn("cluster.mirror.reconcile_missing.list_failed", "node", node, "err", err)
 		return

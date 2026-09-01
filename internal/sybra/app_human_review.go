@@ -1046,7 +1046,7 @@ func (h *humanReviewHandler) recoverStrandedUnblockedTasks() {
 	if h == nil || h.tasks == nil {
 		return
 	}
-	tasks, err := h.tasks.List()
+	tasks, err := h.tasks.ListActive()
 	if err != nil {
 		h.logger.Warn("human-review.recover-stranded.list", "err", err)
 		return
@@ -1100,7 +1100,7 @@ func (h *humanReviewHandler) RespawnDroppedReviews(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
 	}
-	tasks, err := h.tasks.List()
+	tasks, err := h.tasks.ListActive()
 	if err != nil {
 		h.logger.Warn("human-review.startup-sweep.list", "err", err)
 		return
@@ -1671,7 +1671,7 @@ func (h *humanReviewHandler) findExistingLocalBugTaskOnRoute(title, routeTag str
 	if title == "" || routeTag == "" {
 		return nil
 	}
-	all, err := h.tasks.List()
+	all, err := h.tasks.ListBoard()
 	if err != nil {
 		h.logger.Warn("human-review.local-dedupe.list", "title", title, "route_tag", routeTag, "err", err)
 		return nil
@@ -1729,7 +1729,7 @@ func (h *humanReviewHandler) findExistingLocalBugTask(title string) (task.Task, 
 	if title == "" {
 		return task.Task{}, false
 	}
-	all, err := h.tasks.List()
+	all, err := h.tasks.ListBoard()
 	if err != nil {
 		h.logger.Warn("human-review.local.dedup-list", "err", err)
 		return task.Task{}, false

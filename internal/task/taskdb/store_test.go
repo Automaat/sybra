@@ -127,6 +127,37 @@ func TestSQLStore_BoardProjectionOmitsRunTextAndNodeListFiltersBeforeRead(t *tes
 	})
 }
 
+func TestSQLStore_ListActiveSkipsTerminalDocumentsBeforeParsing(t *testing.T) {
+	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
+		store, err := NewSQLStore(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		active := sqlTask("aaa11111", "active")
+		if err := store.Put(t.Context(), active, nil); err != nil {
+			t.Fatal(err)
+		}
+		for i, status := range []task.Status{task.StatusDone, task.StatusCancelled} {
+			closed := sqlTask(fmt.Sprintf("closed%02d", i), "closed")
+			closed.Status = status
+			when := time.Now().Add(-time.Hour)
+			closed.ClosedAt = &when
+			if err := store.Put(t.Context(), closed, nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		got, err := store.ListActive(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 1 || got[0].ID != active.ID {
+			t.Fatalf("ListActive = %+v, want only %s", got, active.ID)
+		}
+	})
+}
+
 func TestSQLStore_BackfillsLegacyBoardProjection(t *testing.T) {
 	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
 		t.Helper()

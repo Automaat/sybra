@@ -449,7 +449,7 @@ type existingTracker struct {
 // is propagated so the caller aborts rather than treating an unreadable store
 // as empty and creating a duplicate DAG.
 func scanExisting(tasks *task.Manager, umbrellaURL string) (refs map[string]bool, tracker existingTracker, err error) {
-	all, err := tasks.List()
+	all, err := tasks.ListBoard()
 	if err != nil {
 		return nil, existingTracker{}, err
 	}

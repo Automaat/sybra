@@ -232,7 +232,7 @@ func (r *Recovery) cleanupOrphanedSandboxes(ctx context.Context) {
 	if r.Sandboxes == nil || r.Tasks == nil {
 		return
 	}
-	tasks, err := r.Tasks.List()
+	tasks, err := r.Tasks.ListBoard()
 	if err != nil {
 		r.Logger.Warn("recovery.sandboxes.list", "err", err)
 		return

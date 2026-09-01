@@ -194,7 +194,7 @@ func (a *taskAdapter) GetTask(id string) (workflow.TaskInfo, error) {
 }
 
 func (a *taskAdapter) ListTasks() ([]workflow.TaskInfo, error) {
-	tasks, err := a.tasks.List()
+	tasks, err := a.tasks.ListActive()
 	if err != nil {
 		return nil, err
 	}

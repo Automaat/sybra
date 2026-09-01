@@ -44,6 +44,12 @@ func (p *Persistence) List() ([]task.Task, error) {
 	return p.store.List(ctx)
 }
 
+func (p *Persistence) ListActive() ([]task.Task, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), taskCallTimeout)
+	defer cancel()
+	return p.store.ListActive(ctx)
+}
+
 func (p *Persistence) ListBoard() ([]task.Task, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), taskCallTimeout)
 	defer cancel()

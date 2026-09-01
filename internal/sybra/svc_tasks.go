@@ -1658,7 +1658,7 @@ func (s *TaskService) enrichFromIssue(taskID, repo string, number int) {
 // way. Driven from the maintenance pass so recovery is continuous rather than a
 // one-shot at startup.
 func (s *TaskService) ReconcilePendingEnrichment() {
-	all, err := s.tasks.List()
+	all, err := s.tasks.ListActive()
 	if err != nil {
 		s.logger.Error("enrich-reconcile.list", "err", err)
 		return
@@ -1790,7 +1790,7 @@ func (s *TaskService) expandUmbrellaStub(taskID, repo string, issue github.Issue
 // expandUmbrellaStub, whether that failure already has a durable tracker to
 // point at (see recordExpandFailure) or whether this stub is the only record.
 func (s *TaskService) umbrellaTrackerExistsElsewhere(taskID, issueURL string) bool {
-	all, err := s.tasks.List()
+	all, err := s.tasks.ListBoard()
 	if err != nil {
 		// Unreadable store: assume a tracker exists. Claiming this stub as the
 		// only record would mint a second TaskTypeUmbrella task for the same
@@ -1903,7 +1903,7 @@ func (s *TaskService) claimIngestBranch(projectID, branch, excludeTaskID string)
 	if branch == "" {
 		return "", false
 	}
-	all, err := s.tasks.List()
+	all, err := s.tasks.ListActive()
 	if err != nil {
 		s.logger.Warn("ingest.branch-guard.list", "err", err)
 		return "", false
