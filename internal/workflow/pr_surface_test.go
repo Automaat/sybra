@@ -22,6 +22,7 @@ func TestSetPRSurfaceNamesEveryMissingMember(t *testing.T) {
 	for _, want := range []string{
 		"Linker", "ReviewRequester", "StateFetcher", "ThreadFetcher", "HeadFetcher",
 		"MetaFetcher", "Creator", "Closer", "Finder", "AnyStateFinder",
+		"ContentGenerator",
 		"ExistenceChecker", "ContentGenerator",
 	} {
 		if !strings.Contains(err.Error(), want) {
