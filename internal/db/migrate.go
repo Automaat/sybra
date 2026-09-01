@@ -87,6 +87,12 @@ func migrateSQLite(ctx context.Context, d *DB) error {
 	}
 }
 
+// isMissingVersionTable reports whether the version table is simply not there
+// yet, which is every fresh database and not a failure to surface.
+func isMissingVersionTable(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "no such table")
+}
+
 // migrationsPending reports whether this start has anything to do or to
 // refuse. WAL lets it read while another process writes, so a start that
 // finds the schema already exactly current never queues for the write lock.
@@ -101,7 +107,10 @@ func migrationsPending(ctx context.Context, d *DB) (bool, error) {
 	}
 	rows, err := d.QueryContext(ctx, `SELECT version, checksum FROM schema_migrations`)
 	if err != nil {
-		return true, nil
+		if isMissingVersionTable(err) || IsContention(Contended(err)) {
+			return true, nil
+		}
+		return false, fmt.Errorf("read schema_migrations: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 	applied := map[int]string{}
