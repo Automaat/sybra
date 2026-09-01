@@ -565,6 +565,21 @@ func TestProviderError_SalvagesTheReasonFromStdout(t *testing.T) {
 			stdout: "just some output\n",
 			want:   "",
 		},
+		{
+			name:   "string-valued error field is read",
+			stdout: `{"type":"error","error":"401 unauthorized"}`,
+			want:   "401 unauthorized",
+		},
+		{
+			name:   "failure-typed event without an error field is read",
+			stdout: `{"type":"thread.error","message":"real failure"}`,
+			want:   "real failure",
+		},
+		{
+			name:   "an ordinary assistant message is never reported as the cause",
+			stdout: `{"type":"item.completed","level":"error","message":"assistant said: umbrella acme/private#42"}`,
+			want:   "",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

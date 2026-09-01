@@ -586,30 +586,64 @@ func providerError(p string, err error, stderrOut, stdoutOut string) error {
 // providerStdoutDetail salvages a reason from stdout for a CLI that reports
 // the failure there and exits with an empty stderr — codex prints the API's
 // rejection as a JSON error event, so "exit status 1" is otherwise all the
-// operator ever sees.
+// operator ever sees. Only an event that identifies itself as a failure is
+// read: this text reaches a task status reason, so an ordinary assistant
+// message that merely contains the word must never be reported as the cause.
 func providerStdoutDetail(stdoutOut string) string {
 	for line := range strings.SplitSeq(stdoutOut, "\n") {
 		line = strings.TrimSpace(line)
-		if line == "" || !strings.Contains(line, `"error"`) {
+		if line == "" || line[0] != '{' {
 			continue
 		}
 		var event struct {
-			Type    string `json:"type"`
-			Message string `json:"message"`
-			Error   struct {
-				Message string `json:"message"`
-			} `json:"error"`
+			Type    string          `json:"type"`
+			Message string          `json:"message"`
+			Error   json.RawMessage `json:"error"`
 		}
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
 			continue
 		}
-		detail := firstNonEmpty(event.Error.Message, event.Message)
+		detail := errorEventDetail(event.Type, event.Message, event.Error)
 		if detail == "" {
 			continue
 		}
 		return textutil.TruncateBytesTrimmed(strings.ToValidUTF8(detail, ""), providerDetailMax, "...")
 	}
 	return ""
+}
+
+// errorEventDetail reads a failure reason out of one decoded stream event,
+// accepting the shapes the supported CLIs emit: a string "error", an object
+// carrying "message", or a failure-typed event whose own "message" is the
+// reason. Returns "" for any event that does not announce a failure.
+func errorEventDetail(eventType, message string, rawError json.RawMessage) string {
+	nested := ""
+	if len(rawError) > 0 && string(rawError) != "null" {
+		var asString string
+		if err := json.Unmarshal(rawError, &asString); err == nil {
+			nested = asString
+		} else {
+			var asObject struct {
+				Message string `json:"message"`
+			}
+			if err := json.Unmarshal(rawError, &asObject); err == nil {
+				nested = asObject.Message
+			}
+		}
+	}
+	if detail := strings.TrimSpace(nested); detail != "" {
+		return detail
+	}
+	if !isFailureEventType(eventType) {
+		return ""
+	}
+	return strings.TrimSpace(message)
+}
+
+// isFailureEventType reports whether a stream event's type names a failure.
+func isFailureEventType(eventType string) bool {
+	lowered := strings.ToLower(strings.TrimSpace(eventType))
+	return strings.Contains(lowered, "error") || strings.Contains(lowered, "failed")
 }
 
 // providerDetailMax bounds the salvaged stdout reason: an API rejection can
