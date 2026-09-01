@@ -43,8 +43,11 @@ func (m *Manager) RunVerificationCommand(ctx context.Context, cfg RunConfig, nam
 	if err := isolateVerifierGitCredentials(&cfg); err != nil {
 		return err
 	}
+	if err := m.injectGolangciCache(&cfg); err != nil {
+		return err
+	}
 	cfg.SandboxMode = "enforce"
-	if err := m.injectToolchainDirs(&cfg); err != nil {
+	if err := m.injectMiseDataDir(&cfg); err != nil {
 		return err
 	}
 	if err := m.injectSharedBuildCache(&cfg); err != nil {

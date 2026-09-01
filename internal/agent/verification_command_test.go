@@ -262,3 +262,28 @@ func verificationEnvValue(env []string, key string) string {
 	}
 	return value
 }
+
+func TestVerificationCommandMirrorsTheMiseStore(t *testing.T) {
+	// Given a verify command run against an operator mise store
+	newAmbientMiseStore(t)
+	runDir := t.TempDir()
+	workspace := filepath.Join(runDir, "source")
+	if err := os.Mkdir(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	m, _ := newTestManager(t)
+	var output bytes.Buffer
+
+	// When the command reads the mise store it was handed
+	err := m.RunVerificationCommand(t.Context(), RunConfig{
+		TaskID: "task-mise", Role: RoleTestRunner, Dir: workspace, ExtraEnv: os.Environ(),
+	}, "/bin/sh", []string{"-c", `case "$MISE_DATA_DIR" in
+  "$SYBRA_HOME"/mise) test -d "$MISE_DATA_DIR/installs/go/1.26.6" ;;
+  *) echo "MISE_DATA_DIR=$MISE_DATA_DIR is not the sandbox mirror" >&2; exit 1 ;;
+esac`}, &output)
+
+	// Then it is the sandbox mirror, holding the operator's installed versions
+	if err != nil {
+		t.Fatalf("verify command did not receive the mise mirror: %v (%s)", err, output.String())
+	}
+}

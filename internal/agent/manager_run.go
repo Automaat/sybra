@@ -580,7 +580,7 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 		return cfg, nil, err
 	}
 
-	if err := m.injectToolchainDirs(&cfg); err != nil {
+	if err := m.injectGolangciCache(&cfg); err != nil {
 		return cfg, nil, err
 	}
 
@@ -591,8 +591,7 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	// Independent verification is only trustworthy when project-controlled
 	// code is actually contained. Verifier roles therefore fail closed under
 	// enforce regardless of the rollout posture used for author agents.
-	cfg = enforceVerifierSandbox(cfg)
-	if err := m.injectProcessSandbox(&cfg); err != nil {
+	if err := m.enforceAndContain(&cfg); err != nil {
 		return cfg, nil, err
 	}
 
@@ -1034,15 +1033,6 @@ func isolateVerifierGitCredentials(cfg *RunConfig) error {
 	return nil
 }
 
-// injectToolchainDirs points a sandboxed run's toolchain caches at writable
-// paths inside its own sandbox.
-func (m *Manager) injectToolchainDirs(cfg *RunConfig) error {
-	if err := m.injectGolangciCache(cfg); err != nil {
-		return err
-	}
-	return m.injectMiseDataDir(cfg)
-}
-
 // dirExists reports whether path is a directory this process can stat.
 func dirExists(path string) bool {
 	info, err := os.Stat(path)
@@ -1060,6 +1050,18 @@ func dirExists(path string) bool {
 // even though every tool was already installed. Redirecting the data dir
 // keeps the mutation inside the sandbox rather than widening the write
 // allowlist to a directory that can land on an operator's PATH.
+// enforceAndContain settles the run's posture, then prepares everything that
+// depends on it. The mise mirror comes after enforceVerifierSandbox, never
+// before: a verifier run the config left at report is escalated here, and it
+// needs the mirror that the enforced posture makes necessary.
+func (m *Manager) enforceAndContain(cfg *RunConfig) error {
+	*cfg = enforceVerifierSandbox(*cfg)
+	if err := m.injectMiseDataDir(cfg); err != nil {
+		return err
+	}
+	return m.injectProcessSandbox(cfg)
+}
+
 func (m *Manager) injectMiseDataDir(cfg *RunConfig) error {
 	host := hostMiseDataDir()
 	// Stripped whatever the outcome: a caller-supplied value otherwise reaches
@@ -1122,7 +1124,7 @@ func mirrorMiseStore(dir, host string) error {
 }
 
 func mirrorMiseTree(dst, src string, perVersion bool) error {
-	if err := os.MkdirAll(dst, 0o755); err != nil {
+	if err := makeMirrorDir(dst); err != nil {
 		return err
 	}
 	entries, err := os.ReadDir(src)
@@ -1139,21 +1141,64 @@ func mirrorMiseTree(dst, src string, perVersion bool) error {
 			}
 			continue
 		}
-		toolDst := filepath.Join(dst, entry.Name())
-		if err := os.MkdirAll(toolDst, 0o755); err != nil {
+		if err := mirrorMiseVersions(filepath.Join(dst, entry.Name()), filepath.Join(src, entry.Name())); err != nil {
 			return err
 		}
-		versions, err := os.ReadDir(filepath.Join(src, entry.Name()))
+	}
+	return nil
+}
+
+// mirrorMiseVersions mirrors one tool's version directories. The version
+// directory is real and its contents are linked, never the version directory
+// itself: mise resolves a tool's bin path by walking that directory, and a
+// link yields nothing, so a tool whose binary sits in a nested archive
+// directory (golangci-lint, uv, buf, helm) becomes unexecutable.
+func mirrorMiseVersions(dst, src string) error {
+	if err := makeMirrorDir(dst); err != nil {
+		return err
+	}
+	versions, err := os.ReadDir(src)
+	if err != nil {
+		return nil //nolint:nilerr // a tool with no readable versions is skipped, not fatal.
+	}
+	for _, version := range versions {
+		if !version.IsDir() {
+			continue
+		}
+		versionDst := filepath.Join(dst, version.Name())
+		if err := makeMirrorDir(versionDst); err != nil {
+			return err
+		}
+		children, err := os.ReadDir(filepath.Join(src, version.Name()))
 		if err != nil {
 			continue
 		}
-		for _, version := range versions {
-			if err := linkMiseEntry(filepath.Join(toolDst, version.Name()), filepath.Join(src, entry.Name(), version.Name())); err != nil {
+		for _, child := range children {
+			if err := linkMiseEntry(filepath.Join(versionDst, child.Name()), filepath.Join(src, version.Name(), child.Name())); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+// makeMirrorDir creates one mirror directory, refusing to follow a link an
+// earlier run of this task left behind. The sandbox home is writable by the
+// agent and outlives the run, while this code runs unsandboxed as the
+// operator: following a planted link would delete and relink whatever it
+// names (the #1576 class, from the privileged side).
+func makeMirrorDir(dir string) error {
+	switch info, err := os.Lstat(dir); {
+	case err == nil && info.Mode()&os.ModeSymlink != 0:
+		return fmt.Errorf("mise mirror path %s is a symlink", dir)
+	case err == nil && !info.IsDir():
+		if rmErr := os.Remove(dir); rmErr != nil {
+			return rmErr
+		}
+	case err != nil && !errors.Is(err, os.ErrNotExist):
+		return err
+	}
+	return os.MkdirAll(dir, 0o755)
 }
 
 // linkMiseEntry points link at target, replacing whatever occupies it. A
@@ -1164,8 +1209,14 @@ func linkMiseEntry(link, target string) error {
 	if existing, err := os.Readlink(link); err == nil && existing == target {
 		return nil
 	}
-	if err := os.RemoveAll(link); err != nil {
-		return err
+	if info, err := os.Lstat(link); err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+		if err := os.RemoveAll(link); err != nil {
+			return err
+		}
+	} else if err == nil {
+		if err := os.Remove(link); err != nil {
+			return err
+		}
 	}
 	return os.Symlink(target, link)
 }
@@ -1971,6 +2022,10 @@ func (m *Manager) resolveSandboxReadRoots(cfg *RunConfig) []string {
 	for _, p := range hostRuntimeReadRoots() {
 		add(p)
 	}
+	// The mirror's links resolve into whatever store hostMiseDataDir names, so
+	// a host that moves it with MISE_DATA_DIR or XDG_DATA_HOME needs that path
+	// granted too — the home-relative constant below only covers the default.
+	add(hostMiseDataDir())
 	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
 		for _, sub := range toolchainReadSubdirs {
 			add(filepath.Join(home, sub))

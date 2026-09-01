@@ -26,6 +26,7 @@ func newAmbientMiseStore(t *testing.T) string {
 	store := filepath.Join(home, ".local", "share", "mise")
 	for _, dir := range []string{
 		filepath.Join(store, "installs", "go", "1.26.6", "bin"),
+		filepath.Join(store, "installs", "golangci-lint", "2.12.2", "golangci-lint-2.12.2-darwin-arm64"),
 		filepath.Join(store, "plugins", "lua"),
 	} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -53,12 +54,12 @@ func TestInjectMiseDataDir_KeepsTheShimRebuildInsideTheSandbox(t *testing.T) {
 	if dataDir != filepath.Join(cfg.resolvedSandboxHome, "mise") {
 		t.Fatalf("MISE_DATA_DIR = %q, want it under the sandbox home", dataDir)
 	}
-	linked, err := os.Readlink(filepath.Join(dataDir, "installs", "go", "1.26.6"))
+	linked, err := os.Readlink(filepath.Join(dataDir, "installs", "go", "1.26.6", "bin"))
 	if err != nil {
-		t.Fatalf("installed version is not linked: %v", err)
+		t.Fatalf("installed version contents are not linked: %v", err)
 	}
-	if linked != filepath.Join(store, "installs", "go", "1.26.6") {
-		t.Fatalf("version links to %q, want the operator store", linked)
+	if linked != filepath.Join(store, "installs", "go", "1.26.6", "bin") {
+		t.Fatalf("contents link to %q, want the operator store", linked)
 	}
 	if _, err := os.Readlink(filepath.Join(dataDir, "plugins", "lua")); err != nil {
 		t.Fatalf("plugin is not linked, so mise would re-clone it: %v", err)
@@ -95,11 +96,11 @@ func TestInjectMiseDataDir_ReplacesAStaleLink(t *testing.T) {
 	// Given a durable sandbox home carrying a link to a store that moved
 	store := newAmbientMiseStore(t)
 	sandboxHome := t.TempDir()
-	stale := filepath.Join(sandboxHome, "mise", "installs", "go")
+	stale := filepath.Join(sandboxHome, "mise", "installs", "go", "1.26.6")
 	if err := os.MkdirAll(stale, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(filepath.Join(t.TempDir(), "gone"), filepath.Join(stale, "1.26.6")); err != nil {
+	if err := os.Symlink(filepath.Join(t.TempDir(), "gone"), filepath.Join(stale, "bin")); err != nil {
 		t.Fatal(err)
 	}
 	cfg := RunConfig{TaskID: "t1", SandboxMode: "enforce", resolvedSandboxHome: sandboxHome}
@@ -110,11 +111,11 @@ func TestInjectMiseDataDir_ReplacesAStaleLink(t *testing.T) {
 	}
 
 	// Then the link names the current store instead of the vanished one
-	linked, err := os.Readlink(filepath.Join(stale, "1.26.6"))
+	linked, err := os.Readlink(filepath.Join(stale, "bin"))
 	if err != nil {
 		t.Fatalf("link missing: %v", err)
 	}
-	if linked != filepath.Join(store, "installs", "go", "1.26.6") {
+	if linked != filepath.Join(store, "installs", "go", "1.26.6", "bin") {
 		t.Fatalf("stale link survived: %q", linked)
 	}
 }
@@ -198,5 +199,67 @@ func TestPrepareRunConfig_MirrorsMiseForEveryRole(t *testing.T) {
 				t.Fatalf("MISE_DATA_DIR = %q, want %q", got, filepath.Join(sandboxDir, "mise"))
 			}
 		})
+	}
+}
+
+func TestInjectMiseDataDir_KeepsAVersionDirectoryWalkable(t *testing.T) {
+	// Given a store whose tool keeps its binary in a nested archive directory
+	store := newAmbientMiseStore(t)
+	cfg := RunConfig{TaskID: "t1", SandboxMode: "enforce", resolvedSandboxHome: t.TempDir()}
+	if err := (&Manager{logger: discardLogger()}).injectMiseDataDir(&cfg); err != nil {
+		t.Fatalf("injectMiseDataDir: %v", err)
+	}
+	dataDir := miseDataDirValue(cfg.ExtraEnv)
+
+	// When mise walks that version directory to resolve the bin path
+	version := filepath.Join(dataDir, "installs", "golangci-lint", "2.12.2")
+	info, err := os.Lstat(version)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Then it is a real directory, so the nested archive dir is visible
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("version directory is a symlink; mise resolves an empty bin path through it")
+	}
+	entries, err := os.ReadDir(version)
+	if err != nil || len(entries) == 0 {
+		t.Fatalf("version directory walks to nothing: entries=%d err=%v", len(entries), err)
+	}
+	linked, err := os.Readlink(filepath.Join(version, "golangci-lint-2.12.2-darwin-arm64"))
+	if err != nil {
+		t.Fatalf("archive directory is not linked: %v", err)
+	}
+	if linked != filepath.Join(store, "installs", "golangci-lint", "2.12.2", "golangci-lint-2.12.2-darwin-arm64") {
+		t.Fatalf("archive directory links to %q", linked)
+	}
+}
+
+func TestInjectMiseDataDir_RefusesAPlantedMirrorLink(t *testing.T) {
+	// Given an agent that left a link where the mirror goes, aimed at operator data
+	newAmbientMiseStore(t)
+	sandboxHome := t.TempDir()
+	victim := t.TempDir()
+	precious := filepath.Join(victim, "go", "1.26.6", "precious")
+	if err := os.MkdirAll(precious, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(sandboxHome, "mise"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, filepath.Join(sandboxHome, "mise", "installs")); err != nil {
+		t.Fatal(err)
+	}
+	cfg := RunConfig{TaskID: "t1", SandboxMode: "enforce", resolvedSandboxHome: sandboxHome}
+
+	// When the mirror is built for the next run of that task
+	err := (&Manager{logger: discardLogger()}).injectMiseDataDir(&cfg)
+
+	// Then it refuses rather than deleting through the link
+	if err == nil {
+		t.Fatal("mirror followed a planted symlink")
+	}
+	if _, statErr := os.Stat(precious); statErr != nil {
+		t.Fatalf("operator data was removed through the planted link: %v", statErr)
 	}
 }
