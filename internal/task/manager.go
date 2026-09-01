@@ -328,7 +328,7 @@ func (m *Manager) ListActive() ([]Task, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := tasks[:0]
+	out := make([]Task, 0, len(tasks))
 	for i := range tasks {
 		if !IsTerminalStatus(tasks[i].Status) {
 			out = append(out, tasks[i])
