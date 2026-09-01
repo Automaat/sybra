@@ -304,7 +304,7 @@ type umbrellaScanState struct {
 }
 
 func scanUmbrellaState(tasks *task.Manager, umbrellaURL string) (umbrellaScanState, error) {
-	all, err := tasks.List()
+	all, err := tasks.ListBoard()
 	if err != nil {
 		return umbrellaScanState{}, err
 	}

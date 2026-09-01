@@ -317,6 +317,26 @@ func (m *Manager) NotifyLockedMutation(t Task) {
 // List returns all tasks (lock-free).
 func (m *Manager) List() ([]Task, error) { return m.persist.List() }
 
+// ListActive returns every non-terminal task. Database persistence applies
+// the filter before reading full documents; the file backend falls back to
+// its warm list cache and filters in memory.
+func (m *Manager) ListActive() ([]Task, error) {
+	if p, ok := m.persist.(interface{ ListActive() ([]Task, error) }); ok {
+		return p.ListActive()
+	}
+	tasks, err := m.persist.List()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Task, 0, len(tasks))
+	for i := range tasks {
+		if !IsTerminalStatus(tasks[i].Status) {
+			out = append(out, tasks[i])
+		}
+	}
+	return out, nil
+}
+
 // ListBoard uses a persistence-native compact projection when available.
 // File persistence falls back to its cached list and strips the same heavy
 // transcript fields in memory.

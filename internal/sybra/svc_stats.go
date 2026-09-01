@@ -165,7 +165,7 @@ func (s *StatsService) GetStats() stats.StatsResponse {
 	resp.ByProjectType = aggregateByProjectType(resp.ByProject, s.projectTypes())
 
 	if s.tasks != nil {
-		if list, err := s.tasks.List(); err == nil {
+		if list, err := s.tasks.ListBoard(); err == nil {
 			done := doneTaskClosures(list, s.audit, now)
 			aggregateTasksDone(&resp, done, now)
 			resp.ClosedTasksDaily = closedTasksDaily(done, now)

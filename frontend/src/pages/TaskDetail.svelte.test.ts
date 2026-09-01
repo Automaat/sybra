@@ -182,6 +182,31 @@ describe('TaskDetail', () => {
     })
   })
 
+  it('shows a durable warning when task history was compacted', async () => {
+    mockGet.mockResolvedValue({
+      ...mockTask,
+      documentCompaction: {
+        lastCompactedAt: '2026-09-01T12:00:00Z',
+        largestBytesSeen: 4 * 1024 * 1024,
+        droppedAgentRuns: 3,
+        droppedRunCostUsd: 12.5,
+        trimmedRunFields: 8,
+        trimmedWorkflow: 2,
+      },
+    })
+    render(TaskDetail, {
+      props: { taskId: 'task-1', onback: vi.fn(), onviewagent: vi.fn(), ondelete: vi.fn() },
+    })
+    await vi.waitFor(() => {
+      const warning = screen.getByTestId('task-document-compaction').textContent ?? ''
+      expect(warning).toContain('4.0 MiB')
+      expect(warning).toContain('3 old runs removed')
+      expect(warning).toContain('8 prompt/result fields shortened')
+      expect(warning).toContain('2 workflow/effect history entries shortened or removed')
+      expect(warning).toContain('$12.50 of removed-run cost remains counted toward the task budget')
+    })
+  })
+
   it('shows error when loadTask fails', async () => {
     mockGet.mockRejectedValue(new Error('not found'))
     render(TaskDetail, {

@@ -45,6 +45,10 @@ func (f *fakeTasks) List() ([]task.Task, error) {
 	return out, nil
 }
 
+func (f *fakeTasks) ListActive() ([]task.Task, error) {
+	return f.List()
+}
+
 func (f *fakeTasks) Get(id string) (task.Task, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -226,7 +226,7 @@ func TestTaskFrontmatterMappingPreservesEachPersistedField(t *testing.T) {
 
 func TestPersistenceTypesHaveYAMLTags(t *testing.T) {
 	t.Parallel()
-	for _, typ := range []reflect.Type{reflect.TypeFor[taskFrontmatter](), reflect.TypeFor[agentRunRecord]()} {
+	for _, typ := range []reflect.Type{reflect.TypeFor[taskFrontmatter](), reflect.TypeFor[agentRunRecord](), reflect.TypeFor[documentCompactionRecord]()} {
 		for field := range typ.Fields() {
 			if tag := field.Tag.Get("yaml"); tag == "" {
 				t.Errorf("%s.%s is missing a yaml tag", typ.Name(), field.Name)
@@ -397,6 +397,11 @@ func setTaskFieldForPersistenceTest(t *testing.T, task *Task, name string) {
 			HeadSHA:                 "def456",
 			SubagentCallCount:       2,
 		}}
+	case "DocumentCompaction":
+		task.DocumentCompaction = &DocumentCompaction{
+			LastCompactedAt: now, LargestBytesSeen: 4 << 20, DroppedAgentRuns: 3,
+			DroppedRunCostUSD: 12.5, TrimmedRunFields: 7, TrimmedWorkflow: 2, BodyTruncated: true,
+		}
 	case "EffectLog":
 		task.EffectLog = []workflow.EffectRecord{{
 			ID: workflow.EffectID{

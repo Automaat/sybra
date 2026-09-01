@@ -82,6 +82,7 @@ type GitState struct {
 	Behind               int
 	TaskWorkReachable    bool
 	TreeEquivalentToBase bool
+	PushForbidden        bool
 }
 
 type PRState struct {

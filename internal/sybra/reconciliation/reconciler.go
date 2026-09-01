@@ -278,7 +278,7 @@ type authoritativePRHead struct {
 }
 
 func (r *Reconciler) observeGit(ctx context.Context, t *task.Task, path string, prHead authoritativePRHead) (reconcile.GitState, error) {
-	g := reconcile.GitState{Available: true, Branch: t.Branch, Healthy: project.WorktreeHealthy(ctx, path)}
+	g := reconcile.GitState{Available: true, Branch: t.Branch, PushForbidden: t.IsPRReview(), Healthy: project.WorktreeHealthy(ctx, path)}
 	if !g.Healthy {
 		return g, nil
 	}

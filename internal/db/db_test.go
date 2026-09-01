@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -34,6 +35,38 @@ func TestOpen_EmptyDSNNamesTheSetting(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "database.dsn") {
 		t.Errorf("error %q does not name database.dsn", err)
+	}
+}
+
+func TestOpen_SQLiteWALFailureNamesBackendAndRedactedDSN(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sybra.db")
+	raw, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path))
+	if err != nil {
+		t.Fatalf("open fixture: %v", err)
+	}
+	if _, err := raw.ExecContext(t.Context(), "CREATE TABLE fixture (id INTEGER PRIMARY KEY)"); err != nil {
+		_ = raw.Close()
+		t.Fatalf("create fixture: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close fixture: %v", err)
+	}
+
+	dsn := filepath.ToSlash(path) + "?mode=ro&password=hunter2&_pragma=busy_timeout(10)"
+	d, err := db.Open(t.Context(), db.Options{Backend: "sqlite", DSN: dsn})
+	if d != nil {
+		_ = d.Close()
+	}
+	if err == nil {
+		t.Fatal("open read-only rollback-journal database succeeded, want WAL configuration failure")
+	}
+	for _, want := range []string{"sqlite", filepath.Base(path), "password=redacted"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not contain %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "hunter2") {
+		t.Errorf("error leaked password: %q", err)
 	}
 }
 
@@ -151,8 +184,11 @@ func TestRedactDSN(t *testing.T) {
 		want string
 	}{
 		{"url with password", "postgres://sybra:hunter2@db:5432/sybra", "postgres://sybra:redacted@db:5432/sybra"},
+		{"sqlite file URL query password", "file:/data/sybra.db?mode=ro&password=hunter2", "file:/data/sybra.db?mode=ro&password=redacted"},
+		{"sqlite plain path query password", "/data/sybra.db?mode=ro&password=hunter2", "/data/sybra.db?mode=ro&password=redacted"},
 		{"url without password", "postgres://sybra@db:5432/sybra", "postgres://sybra@db:5432/sybra"},
 		{"keyword form", "host=db user=sybra password=hunter2 dbname=sybra", "host=db user=sybra password=redacted dbname=sybra"},
+		{"keyword password with question mark", "host=db user=sybra password='hunter?2' dbname=sybra", "host=db user=sybra password=redacted dbname=sybra"},
 		{"empty", "  ", "(empty)"},
 	}
 	for _, tt := range tests {
@@ -194,6 +230,8 @@ func TestSQLitePragmasApplyToEveryPooledConnection(t *testing.T) {
 			t.Errorf("connection %d has foreign_keys=%d, want 1", i, foreignKeys)
 		}
 		var cacheSize, mmapSize, tempStore int64
+		var journalSizeLimit int64
+		var autoCheckpointPages int64
 		if err := conn.QueryRowContext(t.Context(), "PRAGMA cache_size").Scan(&cacheSize); err != nil {
 			t.Fatalf("read cache_size on connection %d: %v", i, err)
 		}
@@ -203,8 +241,20 @@ func TestSQLitePragmasApplyToEveryPooledConnection(t *testing.T) {
 		if err := conn.QueryRowContext(t.Context(), "PRAGMA temp_store").Scan(&tempStore); err != nil {
 			t.Fatalf("read temp_store on connection %d: %v", i, err)
 		}
+		if err := conn.QueryRowContext(t.Context(), "PRAGMA journal_size_limit").Scan(&journalSizeLimit); err != nil {
+			t.Fatalf("read journal_size_limit on connection %d: %v", i, err)
+		}
+		if err := conn.QueryRowContext(t.Context(), "PRAGMA wal_autocheckpoint").Scan(&autoCheckpointPages); err != nil {
+			t.Fatalf("read wal_autocheckpoint on connection %d: %v", i, err)
+		}
 		if cacheSize != -16384 || mmapSize != 268435456 || tempStore != 2 {
 			t.Errorf("connection %d tuning = cache_size %d, mmap_size %d, temp_store %d", i, cacheSize, mmapSize, tempStore)
+		}
+		if journalSizeLimit != 16<<20 {
+			t.Errorf("connection %d journal_size_limit = %d, want %d", i, journalSizeLimit, 16<<20)
+		}
+		if autoCheckpointPages != 1000 {
+			t.Errorf("connection %d wal_autocheckpoint = %d, want 1000", i, autoCheckpointPages)
 		}
 		if err := conn.Close(); err != nil {
 			t.Errorf("close connection %d: %v", i, err)
@@ -317,6 +367,209 @@ func TestPrepareSQLiteDSN_KeepsAnOperatorsOwnPragmas(t *testing.T) {
 	if foreignKeys != 0 {
 		t.Errorf("foreign_keys = %d, want the operator's 0", foreignKeys)
 	}
+}
+
+func TestPrepareSQLiteDSN_EnforcesWALPolicyOverOperatorOverrides(t *testing.T) {
+	d, err := db.Open(t.Context(), db.Options{
+		Backend: "sqlite",
+		DSN: "file:" + filepath.Join(t.TempDir(), "sybra.db") +
+			`?_pragma=main."journal_size_limit"(-1)&_pragma=main.[wal_autocheckpoint](0)`,
+	})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	var journalSizeLimit int64
+	if err := d.QueryRowContext(t.Context(), "PRAGMA journal_size_limit").Scan(&journalSizeLimit); err != nil {
+		t.Fatalf("read journal_size_limit: %v", err)
+	}
+	if journalSizeLimit != 16<<20 {
+		t.Errorf("journal_size_limit = %d, want product bound %d", journalSizeLimit, 16<<20)
+	}
+	var autoCheckpointPages int64
+	if err := d.QueryRowContext(t.Context(), "PRAGMA wal_autocheckpoint").Scan(&autoCheckpointPages); err != nil {
+		t.Fatalf("read wal_autocheckpoint: %v", err)
+	}
+	if autoCheckpointPages != 1000 {
+		t.Errorf("wal_autocheckpoint = %d, want product threshold 1000", autoCheckpointPages)
+	}
+	var busyTimeout int64
+	if err := d.QueryRowContext(t.Context(), "PRAGMA busy_timeout").Scan(&busyTimeout); err != nil {
+		t.Fatalf("read busy_timeout: %v", err)
+	}
+	if busyTimeout != 5000 {
+		t.Errorf("busy_timeout = %d, want retry fallback 5000", busyTimeout)
+	}
+	var synchronous int64
+	if err := d.QueryRowContext(t.Context(), "PRAGMA synchronous").Scan(&synchronous); err != nil {
+		t.Fatalf("read synchronous: %v", err)
+	}
+	if synchronous != 2 {
+		t.Errorf("synchronous = %d, want SQLite's implicit FULL (2)", synchronous)
+	}
+}
+
+func TestSQLiteConcurrentOpensKeepDefaultsAfterRemovingOnlyOverrides(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sybra.db")
+	dsn := "file:" + filepath.ToSlash(path) +
+		`?_pragma=main."journal_size_limit"(-1)&_pragma=main.[wal_autocheckpoint](0)`
+	const starts = 8
+	errs := make(chan error, starts)
+	var wg sync.WaitGroup
+	for range starts {
+		wg.Go(func() {
+			d, err := db.Open(t.Context(), db.Options{Backend: "sqlite", DSN: dsn})
+			if d != nil {
+				_ = d.Close()
+			}
+			errs <- err
+		})
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Errorf("concurrent open failed after override filtering: %v", err)
+		}
+	}
+}
+
+func TestSQLiteOpenShrinksExistingOversizedWAL(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sybra.db")
+	raw, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path)+"?_pragma=journal_mode(WAL)&_pragma=wal_autocheckpoint(0)")
+	if err != nil {
+		t.Fatalf("open fixture database: %v", err)
+	}
+	raw.SetMaxOpenConns(1)
+	raw.SetMaxIdleConns(1)
+	t.Cleanup(func() { _ = raw.Close() })
+	if _, err := raw.ExecContext(t.Context(), `CREATE TABLE wal_probe (payload BLOB NOT NULL)`); err != nil {
+		t.Fatalf("create fixture table: %v", err)
+	}
+	const payloadBytes = 32 << 20
+	if _, err := raw.ExecContext(t.Context(), `INSERT INTO wal_probe (payload) VALUES (zeroblob(?))`, payloadBytes); err != nil {
+		t.Fatalf("create oversized WAL: %v", err)
+	}
+	if got := fileSize(t, path+"-wal"); got <= 16<<20 {
+		t.Fatalf("fixture WAL is only %d bytes, want more than %d", got, 16<<20)
+	}
+
+	d, err := db.Open(t.Context(), db.Options{
+		Backend: "sqlite",
+		DSN: "file:" + filepath.ToSlash(path) +
+			`?_pragma=main.[journal_size_limit](-1)&_pragma=main."wal_autocheckpoint"(0)`,
+	})
+	if err != nil {
+		t.Fatalf("open bounded database: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	if got := fileSize(t, path+"-wal"); got > 16<<20 {
+		t.Errorf("WAL after bounded open = %d bytes, want at most %d", got, 16<<20)
+	}
+	var mode string
+	if err := d.QueryRowContext(t.Context(), "PRAGMA journal_mode").Scan(&mode); err != nil {
+		t.Fatalf("read journal mode: %v", err)
+	}
+	if !strings.EqualFold(mode, "wal") {
+		t.Errorf("journal mode = %q, want WAL", mode)
+	}
+	var storedBytes int
+	if err := d.QueryRowContext(t.Context(), `SELECT length(payload) FROM wal_probe`).Scan(&storedBytes); err != nil {
+		t.Fatalf("read committed payload: %v", err)
+	}
+	if storedBytes != payloadBytes {
+		t.Errorf("stored payload = %d bytes, want %d", storedBytes, payloadBytes)
+	}
+}
+
+func TestSQLiteOpenContinuesWhenStartupCheckpointHasActiveReader(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sybra.db")
+	raw, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path)+"?_pragma=journal_mode(WAL)&_pragma=wal_autocheckpoint(0)")
+	if err != nil {
+		t.Fatalf("open fixture database: %v", err)
+	}
+	raw.SetMaxOpenConns(2)
+	raw.SetMaxIdleConns(2)
+	t.Cleanup(func() { _ = raw.Close() })
+	if _, err := raw.ExecContext(t.Context(), `CREATE TABLE reader_probe (payload BLOB NOT NULL)`); err != nil {
+		t.Fatalf("create fixture table: %v", err)
+	}
+	if _, err := raw.ExecContext(t.Context(), `INSERT INTO reader_probe (payload) VALUES (zeroblob(1))`); err != nil {
+		t.Fatalf("seed fixture table: %v", err)
+	}
+	reader, err := raw.BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatalf("begin reader: %v", err)
+	}
+	defer reader.Rollback()
+	var count int
+	if err := reader.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM reader_probe`).Scan(&count); err != nil {
+		t.Fatalf("establish reader snapshot: %v", err)
+	}
+	if _, err := raw.ExecContext(t.Context(), `INSERT INTO reader_probe (payload) VALUES (zeroblob(1048576))`); err != nil {
+		t.Fatalf("write after reader snapshot: %v", err)
+	}
+
+	// TRUNCATE cannot reset a WAL while this reader owns the older snapshot.
+	// Open must still succeed; the per-connection bound will take effect after
+	// the reader leaves and a later checkpoint resets the log.
+	d, err := db.Open(t.Context(), db.Options{
+		Backend: "sqlite",
+		DSN:     "file:" + filepath.ToSlash(path) + "?_pragma=busy_timeout(10)",
+	})
+	if err != nil {
+		t.Fatalf("open while startup checkpoint is busy: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+}
+
+func TestSQLiteWALBoundDoesNotRejectLargeTransaction(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sybra.db")
+	d, err := db.Open(t.Context(), db.Options{
+		Backend: "sqlite",
+		DSN: "file:" + filepath.ToSlash(path) +
+			`?_pragma=main.[journal_size_limit](-1)&_pragma=main."wal_autocheckpoint"(0)`,
+	})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	if _, err := d.ExecContext(t.Context(), `CREATE TABLE large_write (payload BLOB NOT NULL)`); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	const payloadBytes = 32 << 20
+	if _, err := d.ExecContext(t.Context(), `INSERT INTO large_write (payload) VALUES (zeroblob(?))`, payloadBytes); err != nil {
+		t.Fatalf("write larger than WAL bound: %v", err)
+	}
+	// The large commit crosses the enforced automatic-checkpoint threshold and
+	// resets the WAL. SQLite applies the retained-size limit on the first commit
+	// in the next WAL generation; the operator's disabling override cannot stop
+	// either step.
+	if _, err := d.ExecContext(t.Context(), `INSERT INTO large_write (payload) VALUES (zeroblob(1))`); err != nil {
+		t.Fatalf("commit after WAL reset: %v", err)
+	}
+	if got := fileSize(t, path+"-wal"); got > 16<<20 {
+		t.Errorf("reset WAL = %d bytes, want at most %d", got, 16<<20)
+	}
+	var storedBytes int
+	if err := d.QueryRowContext(t.Context(), `SELECT MAX(length(payload)) FROM large_write`).Scan(&storedBytes); err != nil {
+		t.Fatalf("read committed payload: %v", err)
+	}
+	if storedBytes != payloadBytes {
+		t.Errorf("stored payload = %d bytes, want %d", storedBytes, payloadBytes)
+	}
+}
+
+func fileSize(t *testing.T, path string) int64 {
+	t.Helper()
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0
+	}
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	return info.Size()
 }
 
 func TestMigrate_RefusesAnEditedMigration(t *testing.T) {

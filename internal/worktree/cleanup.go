@@ -112,9 +112,18 @@ func (m *Manager) CleanupOrphaned(ctx context.Context) {
 	if err != nil {
 		return
 	}
-	tasks, err := m.tasks.List()
+	tasks, err := m.tasks.ListActive()
 	if err != nil {
 		return
+	}
+	board, err := m.tasks.ListBoard()
+	if err != nil {
+		return
+	}
+	for i := range board {
+		if task.IsTerminalStatus(board[i].Status) {
+			tasks = append(tasks, board[i])
+		}
 	}
 
 	active := make(map[string]*task.Task, len(tasks))

@@ -62,7 +62,7 @@ const (
 func (a *App) releaseUnblockedChildren(ctx context.Context) {
 	a.recoverDegradedUmbrellas()
 
-	tasks, err := a.tasks.List()
+	tasks, err := a.tasks.ListBoard()
 	if err != nil {
 		return
 	}

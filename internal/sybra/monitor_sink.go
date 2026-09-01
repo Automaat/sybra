@@ -226,7 +226,7 @@ func (s *monitorRoutingSink) lookupAnyWorkContext() *WorkScrubContext {
 	if s.tasks == nil || s.workCtx == nil {
 		return nil
 	}
-	all, err := s.tasks.List()
+	all, err := s.tasks.ListBoard()
 	if err != nil {
 		s.logger.Warn("monitor.routing.work_context.list", "err", err)
 		return nil
@@ -278,7 +278,7 @@ func (s *monitorRoutingSink) findOpen(title, fp string) (task.Task, bool) {
 }
 
 func (s *monitorRoutingSink) findMatching(title, fp string, includeTerminal bool) (task.Task, bool) {
-	all, err := s.tasks.List()
+	all, err := s.tasks.ListBoard()
 	if err != nil {
 		s.logger.Warn("monitor.routing.local.list", "err", err)
 		return task.Task{}, false

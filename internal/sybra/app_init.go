@@ -2099,7 +2099,7 @@ func (a *App) newRecovery() *recovery.Recovery {
 		WorkflowEngine:     a.workflowEngine,
 		Orchestrator:       a.agentOrch,
 		Projects:           a.projects,
-		PRs:                newRecoveryPRResolver(),
+		PRs:                newRecoveryPRResolver(a.projects),
 		Reconciler:         a.postRunReconciliation(),
 		Logger:             a.logger,
 		Throttle:           a.restartStaleErr,
@@ -2340,11 +2340,12 @@ func (a *App) openTaskPersistence(ctx context.Context) task.Persistence {
 		// retry the remaining legacy rows next start instead of failing startup.
 		a.logger.Error("task.board_projection.backfill", "err", err)
 	}
-	a.trimTaskHistory(ctx, sqlStore)
+	a.maintainTaskStorage(ctx, sqlStore)
 	return taskdb.NewPersistence(sqlStore)
 }
 
-// trimTaskHistory brings a board that ran without a cap down to it.
+// maintainTaskStorage brings a board that ran without the current document
+// and history caps down to them.
 //
 // Off the startup path: the per-write trim already bounds every task from here
 // on, so this is catch-up for what accumulated before, and a board large enough
@@ -2352,8 +2353,13 @@ func (a *App) openTaskPersistence(ctx context.Context) task.Persistence {
 // tracked on the App's wait group so Shutdown cannot close the database out from
 // under it, and it runs after the board-projection backfill rather than beside
 // it, because sqlite admits one writer and the two would otherwise contend.
-func (a *App) trimTaskHistory(ctx context.Context, store *taskdb.SQLStore) {
+func (a *App) maintainTaskStorage(ctx context.Context, store *taskdb.SQLStore) {
 	a.wg.Go(func() {
+		if compacted, err := store.CompactOversizedDocuments(ctx); err != nil {
+			a.logger.Warn("task.document.compact_oversized", "compacted", compacted, "err", err)
+		} else if compacted > 0 {
+			a.logger.Info("task.document.compact_oversized", "compacted", compacted)
+		}
 		if err := store.TrimHistoryOverCap(ctx); err != nil {
 			a.logger.Warn("task.history.trim_over_cap", "err", err)
 		}
