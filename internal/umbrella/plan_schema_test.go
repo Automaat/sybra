@@ -152,6 +152,9 @@ func TestGenerate_CorrectiveRetryRecoversMismatchedCoverage(t *testing.T) {
 	if len(plan.Children) != 3 {
 		t.Fatalf("plan covers %d children, want 3", len(plan.Children))
 	}
+	if len(prompts) < 2 {
+		t.Fatalf("captured %d prompts, want the corrective re-ask", len(prompts))
+	}
 	corrective := strings.Join(prompts[1:], "\n")
 	for _, ref := range []string{"o/r#1", "o/r#3"} {
 		if !strings.Contains(corrective, ref) {

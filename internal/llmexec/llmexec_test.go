@@ -583,12 +583,12 @@ func TestProviderError_SalvagesTheReasonFromStdout(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := providerError("codex", errors.New("exit status 1"), tc.stderr, tc.stdout)
+			err := providerError(providerid.Codex, errors.New("exit status 1"), tc.stderr, tc.stdout)
 			if !strings.Contains(err.Error(), "exit status 1") {
 				t.Fatalf("error lost the exit status: %v", err)
 			}
 			if tc.want == "" {
-				if err.Error() != "codex: exit status 1" {
+				if err.Error() != providerid.Codex+": exit status 1" {
 					t.Fatalf("error = %q, want the bare exit status", err)
 				}
 				return
