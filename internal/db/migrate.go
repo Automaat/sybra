@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io/fs"
 	"maps"
+	"math/rand/v2"
 	"path"
 	"slices"
 	"strconv"
@@ -39,8 +40,93 @@ type migration struct {
 // Migrate applies every pending migration for the handle's dialect. It is idempotent, so a second start is a no-op, and it fails rather than downgrade a database stamped with a version this build does not know.
 func Migrate(ctx context.Context, d *DB) error {
 	return d.withMigrationLock(ctx, func() error {
-		return migrateLocked(ctx, d)
+		if d.dialect != SQLite {
+			return migrateLocked(ctx, d)
+		}
+		return migrateSQLite(ctx, d)
 	})
+}
+
+// MigrationContentionBudget bounds how long a start waits for another
+// process to finish migrating before it gives up and says so.
+const MigrationContentionBudget = 2 * time.Minute
+
+// migrateSQLite waits out a concurrent migration instead of failing on it.
+//
+// SQLite has no lock that queues: the write transaction is the whole
+// serialization, and its busy timeout is a fixed budget rather than a place
+// in line. Several instances sharing one board restart together after an
+// auto-update, so whoever loses that race must retry until the holder is
+// done, not abort startup with a lock code the operator cannot act on.
+func migrateSQLite(ctx context.Context, d *DB) error {
+	deadline := time.Now().Add(MigrationContentionBudget)
+	wait := 20 * time.Millisecond
+	for {
+		pending, err := migrationsPending(ctx, d)
+		if err != nil {
+			return err
+		}
+		if !pending {
+			return nil
+		}
+		err = migrateLocked(ctx, d)
+		if err == nil || !IsContention(err) {
+			return err
+		}
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("migration contended for %s: %w", MigrationContentionBudget, err)
+		}
+		select {
+		case <-ctx.Done():
+			return errors.Join(ctx.Err(), err)
+		case <-time.After(wait + time.Duration(rand.N(int64(wait)))):
+		}
+		if wait < time.Second {
+			wait *= 2
+		}
+	}
+}
+
+// migrationsPending reports whether this start has anything to do or to
+// refuse. WAL lets it read while another process writes, so a start that
+// finds the schema already exactly current never queues for the write lock.
+//
+// Anything else is pending, including a checksum that no longer matches and a
+// version this build does not know: those are the two cases migrateLocked
+// refuses, and skipping it would turn a refusal into a silent start.
+func migrationsPending(ctx context.Context, d *DB) (bool, error) {
+	available, err := loadMigrations(d.dialect)
+	if err != nil {
+		return false, err
+	}
+	rows, err := d.QueryContext(ctx, `SELECT version, checksum FROM schema_migrations`)
+	if err != nil {
+		return true, nil
+	}
+	defer func() { _ = rows.Close() }()
+	applied := map[int]string{}
+	for rows.Next() {
+		var (
+			version  int
+			checksum string
+		)
+		if err := rows.Scan(&version, &checksum); err != nil {
+			return false, fmt.Errorf("scan schema_migrations: %w", err)
+		}
+		applied[version] = checksum
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("iterate schema_migrations: %w", err)
+	}
+	if len(applied) != len(available) {
+		return true, nil
+	}
+	for _, m := range available {
+		if applied[m.version] != m.checksum {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // migrateLocked runs the whole sequence in one transaction so the version
