@@ -4,6 +4,22 @@ Operator-facing changes that alter what a running board does, in the order
 they landed. Sybra auto-deploys `main` (see `CLAUDE.md`'s Server Deployment
 section), so "release" here means "reached `main`," not a tagged version.
 
+## 2026-09-01 — SQLite write-ahead logs are bounded
+
+SQLite boards now retain at most **16 MiB** of reusable write-ahead-log space
+as the next WAL generation begins after a checkpoint reset. A transaction may
+still grow the WAL beyond that size while it is being committed; the cap
+governs the size the file returns to and does not reject large writes.
+Automatic checkpoints remain enabled at SQLite's 1,000-page threshold on every
+pooled connection; a custom DSN cannot disable them or raise the retained-size
+cap, because either override would make the bound ineffective.
+
+Every database open also requests a safe truncating checkpoint. Existing
+oversized WAL files therefore return their unused disk space on the next
+restart without an operator stopping the service or editing database files.
+The database remains in WAL mode, and committed transactions are checkpointed
+into the main database before any truncation.
+
 ## 2026-09-01 — Database task documents are bounded
 
 The database backend now caps each primary task document at **1 MiB**. Each
