@@ -598,12 +598,13 @@ func providerStdoutDetail(stdoutOut string) string {
 		var event struct {
 			Type    string          `json:"type"`
 			Message string          `json:"message"`
+			IsError bool            `json:"is_error"`
 			Error   json.RawMessage `json:"error"`
 		}
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
 			continue
 		}
-		detail := errorEventDetail(event.Type, event.Message, event.Error)
+		detail := errorEventDetail(event.Type, event.Message, event.IsError, event.Error)
 		if detail == "" {
 			continue
 		}
@@ -615,33 +616,38 @@ func providerStdoutDetail(stdoutOut string) string {
 // errorEventDetail reads a failure reason out of one decoded stream event,
 // accepting the shapes the supported CLIs emit: a string "error", an object
 // carrying "message", or a failure-typed event whose own "message" is the
-// reason. Returns "" for any event that does not announce a failure.
-func errorEventDetail(eventType, message string, rawError json.RawMessage) string {
-	nested := ""
+// reason. Only an event that announces a failure is read at all, so an
+// ordinary message that happens to carry an error field is never reported.
+func errorEventDetail(eventType, message string, isError bool, rawError json.RawMessage) string {
+	if !isFailureEvent(eventType, isError) {
+		return ""
+	}
 	if len(rawError) > 0 && string(rawError) != "null" {
 		var asString string
 		if err := json.Unmarshal(rawError, &asString); err == nil {
-			nested = asString
+			if detail := strings.TrimSpace(asString); detail != "" {
+				return detail
+			}
 		} else {
 			var asObject struct {
 				Message string `json:"message"`
 			}
 			if err := json.Unmarshal(rawError, &asObject); err == nil {
-				nested = asObject.Message
+				if detail := strings.TrimSpace(asObject.Message); detail != "" {
+					return detail
+				}
 			}
 		}
-	}
-	if detail := strings.TrimSpace(nested); detail != "" {
-		return detail
-	}
-	if !isFailureEventType(eventType) {
-		return ""
 	}
 	return strings.TrimSpace(message)
 }
 
-// isFailureEventType reports whether a stream event's type names a failure.
-func isFailureEventType(eventType string) bool {
+// isFailureEvent reports whether a stream event announces a failure, by its
+// own type or an explicit is_error flag — never by a substring of free text.
+func isFailureEvent(eventType string, isError bool) bool {
+	if isError {
+		return true
+	}
 	lowered := strings.ToLower(strings.TrimSpace(eventType))
 	return strings.Contains(lowered, "error") || strings.Contains(lowered, "failed")
 }

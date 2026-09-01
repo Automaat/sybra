@@ -580,6 +580,16 @@ func TestProviderError_SalvagesTheReasonFromStdout(t *testing.T) {
 			stdout: `{"type":"item.completed","level":"error","message":"assistant said: umbrella acme/private#42"}`,
 			want:   "",
 		},
+		{
+			name:   "an error field on a non-failure event is ignored",
+			stdout: `{"type":"item.completed","error":{"message":"assistant quoted a 400"}}`,
+			want:   "",
+		},
+		{
+			name:   "an explicit is_error flag marks the failure",
+			stdout: `{"type":"result","is_error":true,"message":"credit balance too low"}`,
+			want:   "credit balance too low",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
