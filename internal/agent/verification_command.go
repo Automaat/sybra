@@ -43,16 +43,13 @@ func (m *Manager) RunVerificationCommand(ctx context.Context, cfg RunConfig, nam
 	if err := isolateVerifierGitCredentials(&cfg); err != nil {
 		return err
 	}
-	if err := m.injectGolangciCache(&cfg); err != nil {
-		return err
-	}
-	if err := m.injectMiseDataDir(&cfg); err != nil {
+	cfg.SandboxMode = "enforce"
+	if err := m.injectToolchainDirs(&cfg); err != nil {
 		return err
 	}
 	if err := m.injectSharedBuildCache(&cfg); err != nil {
 		return err
 	}
-	cfg.SandboxMode = "enforce"
 	cfg.SandboxReadMode = "enforce"
 	if err := m.injectProcessSandbox(&cfg); err != nil { //nolint:contextcheck // sandbox Git discovery intentionally uses the manager lifecycle context, matching provider dispatch.
 		return err

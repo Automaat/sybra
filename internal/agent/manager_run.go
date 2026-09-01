@@ -1061,32 +1061,113 @@ func dirExists(path string) bool {
 // keeps the mutation inside the sandbox rather than widening the write
 // allowlist to a directory that can land on an operator's PATH.
 func (m *Manager) injectMiseDataDir(cfg *RunConfig) error {
-	if cfg.resolvedSandboxHome == "" {
+	host := hostMiseDataDir()
+	// Stripped whatever the outcome: a caller-supplied value otherwise reaches
+	// the provider process, and a follower takes this environment from a run
+	// spec. A value that was there is replaced by the host store rather than
+	// dropped, so a run that expects one still resolves an absolute path.
+	replaced := strings.TrimSpace(ambientEnvValue(cfg.ExtraEnv, "MISE_DATA_DIR", "")) != ""
+	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, "MISE_DATA_DIR")
+	if cfg.resolvedSandboxHome == "" || cfg.SandboxMode != "enforce" || host == "" {
+		if replaced && host != "" {
+			cfg.ExtraEnv = append(cfg.ExtraEnv, "MISE_DATA_DIR="+host)
+		}
 		return nil
 	}
-	ambient := ambientEnvValue(cfg.ExtraEnv, "MISE_DATA_DIR", "")
-	if ambient == "" {
-		home := ambientEnvValue(cfg.ExtraEnv, "HOME", os.Getenv("HOME"))
-		if strings.TrimSpace(home) == "" {
-			return nil
-		}
-		ambient = filepath.Join(home, ".local", "share", "mise")
-	}
-	installs := filepath.Join(ambient, "installs")
+	installs := filepath.Join(host, "installs")
 	if !dirExists(installs) {
+		m.logger.Warn("agent.mise.store-missing", "task_id", cfg.TaskID, "store", host)
+		if replaced {
+			cfg.ExtraEnv = append(cfg.ExtraEnv, "MISE_DATA_DIR="+host)
+		}
 		return nil
 	}
 	dir := filepath.Join(cfg.resolvedSandboxHome, "mise")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("agent.Run: create mise data dir for task %q: %w", cfg.TaskID, err)
+	if err := mirrorMiseStore(dir, host); err != nil {
+		return fmt.Errorf("agent.Run: mirror mise store for task %q: %w", cfg.TaskID, err)
 	}
-	link := filepath.Join(dir, "installs")
-	if err := os.Symlink(installs, link); err != nil && !errors.Is(err, os.ErrExist) {
-		return fmt.Errorf("agent.Run: link mise installs for task %q: %w", cfg.TaskID, err)
-	}
-	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, "MISE_DATA_DIR")
 	cfg.ExtraEnv = append(cfg.ExtraEnv, "MISE_DATA_DIR="+dir)
 	return nil
+}
+
+// hostMiseDataDir resolves the operator's mise store from this process's own
+// environment. It is never read from RunConfig.ExtraEnv: a caller-supplied
+// value would point the sandbox's toolchain at a tree of that caller's
+// choosing, and every binary mise exec resolves comes out of it.
+func hostMiseDataDir() string {
+	if configured := strings.TrimSpace(os.Getenv("MISE_DATA_DIR")); filepath.IsAbs(configured) {
+		return configured
+	}
+	if xdg := strings.TrimSpace(os.Getenv("XDG_DATA_HOME")); filepath.IsAbs(xdg) {
+		return filepath.Join(xdg, "mise")
+	}
+	if home := strings.TrimSpace(os.Getenv("HOME")); filepath.IsAbs(home) {
+		return filepath.Join(home, ".local", "share", "mise")
+	}
+	return ""
+}
+
+// mirrorMiseStore builds a writable mise data directory whose installed tool
+// versions and plugins link to the operator's read-only store. Each version
+// is linked individually rather than the trees wholesale, so mise can still
+// install a version the operator lacks — a toolchain bump would otherwise
+// fail writing into the store it cannot touch.
+func mirrorMiseStore(dir, host string) error {
+	for _, tree := range []string{"installs", "plugins"} {
+		if err := mirrorMiseTree(filepath.Join(dir, tree), filepath.Join(host, tree), tree == "installs"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func mirrorMiseTree(dst, src string, perVersion bool) error {
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return nil //nolint:nilerr // an absent tree is a host without that mise feature, not a run failure.
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if !perVersion {
+			if err := linkMiseEntry(filepath.Join(dst, entry.Name()), filepath.Join(src, entry.Name())); err != nil {
+				return err
+			}
+			continue
+		}
+		toolDst := filepath.Join(dst, entry.Name())
+		if err := os.MkdirAll(toolDst, 0o755); err != nil {
+			return err
+		}
+		versions, err := os.ReadDir(filepath.Join(src, entry.Name()))
+		if err != nil {
+			continue
+		}
+		for _, version := range versions {
+			if err := linkMiseEntry(filepath.Join(toolDst, version.Name()), filepath.Join(src, entry.Name(), version.Name())); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// linkMiseEntry points link at target, replacing whatever occupies it. A
+// per-task sandbox home outlives the run, so a link left by an earlier run
+// can name a store the operator has since moved, and an agent can write over
+// the path itself.
+func linkMiseEntry(link, target string) error {
+	if existing, err := os.Readlink(link); err == nil && existing == target {
+		return nil
+	}
+	if err := os.RemoveAll(link); err != nil {
+		return err
+	}
+	return os.Symlink(target, link)
 }
 
 func (m *Manager) injectGolangciCache(cfg *RunConfig) error {
