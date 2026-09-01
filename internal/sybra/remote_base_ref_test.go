@@ -137,24 +137,66 @@ func TestRemoteBaseRef_ResultPassesTheExecutionContract(t *testing.T) {
 		}
 
 		// Then the contract that gates every dispatch accepts it
-		if err := validateWorkspaceForTest(workspace); err != nil {
+		if err := specForWorkspace(workspace).Validate(); err != nil {
 			t.Fatalf("ref %q rejected by the execution contract: %v", ref, err)
 		}
 	}
 }
 
-func validateWorkspaceForTest(workspace executioncontract.Workspace) error {
-	spec := executioncontract.RunSpec{
+func specForWorkspace(workspace executioncontract.Workspace) executioncontract.RunSpec {
+	return executioncontract.RunSpec{
+		Version:        executioncontract.CurrentVersion(),
+		BuildVersion:   "test-build",
+		RunID:          "run-1",
+		EffectID:       "effect-1",
+		IdempotencyKey: "idem-1",
+		Fence: executioncontract.GenerationFence{
+			TaskID: "t1", TaskGeneration: 1, WorkflowID: "simple-task-implement", WorkflowGeneration: 1, StepID: "implement",
+		},
 		Role:      "implementation",
 		Provider:  executioncontract.ProviderIntent{Provider: providerid.Codex, Model: "gpt-5.4"},
-		Workspace: workspace,
+		Prompt:    executioncontract.Prompt{Text: "do the thing"},
 		Deadline:  time.Now().UTC().Add(time.Hour),
+		Workspace: workspace,
 	}
-	err := spec.Validate()
-	if err != nil && strings.Contains(err.Error(), "workspace") {
-		return err
+}
+
+func TestSpecForWorkspaceIsOtherwiseValid(t *testing.T) {
+	// Given the fixture the ref assertions validate through
+	_, sha := newDetachedCheckout(t)
+	workspace := executioncontract.Workspace{
+		RepositoryID: "owner/repo",
+		BaseSHA:      sha,
+		BaseRef:      "refs/heads/main",
+		Roots:        []executioncontract.LogicalRoot{executioncontract.RootWorktree},
 	}
-	return nil
+
+	// When a spec carrying a sound workspace is validated
+	err := specForWorkspace(workspace).Validate()
+
+	// Then nothing outside the workspace makes it fail, so a ref verdict is observable
+	if err != nil {
+		t.Fatalf("fixture spec is invalid for reasons unrelated to the workspace: %v", err)
+	}
+}
+
+func TestSpecForWorkspaceRejectsABadBaseRef(t *testing.T) {
+	// Given a workspace whose base ref the contract must refuse
+	_, sha := newDetachedCheckout(t)
+	workspace := executioncontract.Workspace{
+		RepositoryID: "owner/repo",
+		BaseSHA:      sha,
+		BaseRef:      "refs/heads/bad..ref",
+		Roots:        []executioncontract.LogicalRoot{executioncontract.RootWorktree},
+	}
+
+	// When the spec is validated
+	err := specForWorkspace(workspace).Validate()
+
+	// Then the ref verdict reaches the caller, so the acceptance test can fail
+	if err == nil {
+		t.Fatal("contract accepted a base ref containing '..'")
+	}
 }
 
 func TestFollowerResolvableBaseRef(t *testing.T) {
@@ -177,7 +219,7 @@ func TestFollowerResolvableBaseRef(t *testing.T) {
 			// When placement asks whether that clone can resolve it
 			got := followerResolvableBaseRef(tc.ref)
 
-			// Then only a branch ref skips shipping a base bundle
+			// Then only a plain branch ref skips shipping a base bundle
 			if got != tc.usable {
 				t.Fatalf("followerResolvableBaseRef(%q) = %v, want %v", tc.ref, got, tc.usable)
 			}
