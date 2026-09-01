@@ -1260,7 +1260,7 @@ func TestPrepareRemoteWorkspaceBaseUsesSharedAncestorForDivergedWorker(t *testin
 		t.Fatal("worker fixture unexpectedly already contains the leader-only base")
 	}
 
-	content, ref, err := prepareRemoteWorkspaceBase(t.Context(), dir, "run-diverged", base, workerAnchor)
+	content, ref, err := prepareRemoteWorkspaceBase(t.Context(), dir, "run-diverged", base, workerAnchor, "refs/heads/main")
 	if err != nil {
 		t.Fatal(err)
 	}
