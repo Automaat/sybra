@@ -1036,7 +1036,10 @@ func isolateVerifierGitCredentials(cfg *RunConfig) error {
 // dirExists reports whether path is a directory this process can stat.
 func dirExists(path string) bool {
 	info, err := os.Stat(path)
-	return err == nil && info.IsDir()
+	if err != nil || info == nil {
+		return false
+	}
+	return info.IsDir()
 }
 
 // injectMiseDataDir gives a sandboxed run its own mise data directory whose
