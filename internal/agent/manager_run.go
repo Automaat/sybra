@@ -591,8 +591,7 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	// Independent verification is only trustworthy when project-controlled
 	// code is actually contained. Verifier roles therefore fail closed under
 	// enforce regardless of the rollout posture used for author agents.
-	cfg = enforceVerifierSandbox(cfg)
-	if err := m.injectProcessSandbox(&cfg); err != nil {
+	if err := m.enforceAndContain(&cfg); err != nil {
 		return cfg, nil, err
 	}
 
@@ -1032,6 +1031,206 @@ func isolateVerifierGitCredentials(cfg *RunConfig) error {
 		cfg.ExtraEnv = append(cfg.ExtraEnv, "MISE_DATA_DIR="+ambientMiseData)
 	}
 	return nil
+}
+
+// dirExists reports whether path is a directory this process can stat.
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || info == nil {
+		return false
+	}
+	return info.IsDir()
+}
+
+// injectMiseDataDir gives a sandboxed run its own mise data directory whose
+// installs tree links the operator's, so mise finds every pinned tool already
+// present and writes its shim rebuild inside the sandbox.
+//
+// `mise install` is the first line of many projects' setup, and it rebuilds
+// global shims on every run — pruning ones other projects left behind. The
+// operator's store is read-only to an agent, so that prune fails with
+// "Operation not permitted" and takes the whole verify suite down with it,
+// even though every tool was already installed. Redirecting the data dir
+// keeps the mutation inside the sandbox rather than widening the write
+// allowlist to a directory that can land on an operator's PATH.
+// enforceAndContain settles the run's posture, then prepares everything that
+// depends on it. The mise mirror comes after enforceVerifierSandbox, never
+// before: a verifier run the config left at report is escalated here, and it
+// needs the mirror that the enforced posture makes necessary.
+func (m *Manager) enforceAndContain(cfg *RunConfig) error {
+	*cfg = enforceVerifierSandbox(*cfg)
+	if err := m.injectMiseDataDir(cfg); err != nil {
+		return err
+	}
+	return m.injectProcessSandbox(cfg)
+}
+
+func (m *Manager) injectMiseDataDir(cfg *RunConfig) error {
+	host := hostMiseDataDir()
+	// Stripped whatever the outcome: a caller-supplied value otherwise reaches
+	// the provider process, and a follower takes this environment from a run
+	// spec. A value that was there is replaced by the host store rather than
+	// dropped, so a run that expects one still resolves an absolute path.
+	replaced := strings.TrimSpace(ambientEnvValue(cfg.ExtraEnv, "MISE_DATA_DIR", "")) != ""
+	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, "MISE_DATA_DIR")
+	if cfg.resolvedSandboxHome == "" || cfg.SandboxMode != "enforce" || host == "" {
+		if replaced && host != "" {
+			cfg.ExtraEnv = append(cfg.ExtraEnv, "MISE_DATA_DIR="+host)
+		}
+		return nil
+	}
+	installs := filepath.Join(host, "installs")
+	if !dirExists(installs) {
+		m.logger.Warn("agent.mise.store-missing", "task_id", cfg.TaskID, "store", host)
+		if replaced {
+			cfg.ExtraEnv = append(cfg.ExtraEnv, "MISE_DATA_DIR="+host)
+		}
+		return nil
+	}
+	dir := filepath.Join(cfg.resolvedSandboxHome, "mise")
+	if err := mirrorMiseStore(dir, host); err != nil {
+		return fmt.Errorf("agent.Run: mirror mise store for task %q: %w", cfg.TaskID, err)
+	}
+	cfg.ExtraEnv = append(cfg.ExtraEnv, "MISE_DATA_DIR="+dir)
+	return nil
+}
+
+// hostMiseDataDir resolves the operator's mise store from this process's own
+// environment. It is never read from RunConfig.ExtraEnv: a caller-supplied
+// value would point the sandbox's toolchain at a tree of that caller's
+// choosing, and every binary mise exec resolves comes out of it.
+func hostMiseDataDir() string {
+	if configured := strings.TrimSpace(os.Getenv("MISE_DATA_DIR")); filepath.IsAbs(configured) {
+		return configured
+	}
+	if xdg := strings.TrimSpace(os.Getenv("XDG_DATA_HOME")); filepath.IsAbs(xdg) {
+		return filepath.Join(xdg, "mise")
+	}
+	if home := strings.TrimSpace(os.Getenv("HOME")); filepath.IsAbs(home) {
+		return filepath.Join(home, ".local", "share", "mise")
+	}
+	return ""
+}
+
+// mirrorMiseStore builds a writable mise data directory whose installed tool
+// versions and plugins link to the operator's read-only store. Each version
+// is linked individually rather than the trees wholesale, so mise can still
+// install a version the operator lacks — a toolchain bump would otherwise
+// fail writing into the store it cannot touch.
+func mirrorMiseStore(dir, host string) error {
+	if err := makeMirrorDir(dir); err != nil {
+		return err
+	}
+	for _, tree := range []string{"installs", "plugins"} {
+		if err := mirrorMiseTree(filepath.Join(dir, tree), filepath.Join(host, tree), tree == "installs"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func mirrorMiseTree(dst, src string, perVersion bool) error {
+	if err := makeMirrorDir(dst); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(src)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if !perVersion {
+			if err := linkMiseEntry(filepath.Join(dst, entry.Name()), filepath.Join(src, entry.Name())); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := mirrorMiseVersions(filepath.Join(dst, entry.Name()), filepath.Join(src, entry.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// mirrorMiseVersions mirrors one tool's version directories. The version
+// directory is real and its contents are linked, never the version directory
+// itself: mise resolves a tool's bin path by walking that directory, and a
+// link yields nothing, so a tool whose binary sits in a nested archive
+// directory (golangci-lint, uv, buf, helm) becomes unexecutable.
+func mirrorMiseVersions(dst, src string) error {
+	if err := makeMirrorDir(dst); err != nil {
+		return err
+	}
+	versions, err := os.ReadDir(src)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, version := range versions {
+		if !version.IsDir() {
+			continue
+		}
+		versionDst := filepath.Join(dst, version.Name())
+		if err := makeMirrorDir(versionDst); err != nil {
+			return err
+		}
+		children, err := os.ReadDir(filepath.Join(src, version.Name()))
+		if err != nil {
+			continue
+		}
+		for _, child := range children {
+			if err := linkMiseEntry(filepath.Join(versionDst, child.Name()), filepath.Join(src, version.Name(), child.Name())); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// makeMirrorDir creates one mirror directory, refusing to follow a link an
+// earlier run of this task left behind. The sandbox home is writable by the
+// agent and outlives the run, while this code runs unsandboxed as the
+// operator: following a planted link would delete and relink whatever it
+// names (the #1576 class, from the privileged side).
+func makeMirrorDir(dir string) error {
+	switch info, err := os.Lstat(dir); {
+	case err == nil && info.Mode()&os.ModeSymlink != 0:
+		return fmt.Errorf("mise mirror path %s is a symlink", dir)
+	case err == nil && !info.IsDir():
+		if rmErr := os.Remove(dir); rmErr != nil {
+			return rmErr
+		}
+	case err != nil && !errors.Is(err, os.ErrNotExist):
+		return err
+	}
+	return os.MkdirAll(dir, 0o755)
+}
+
+// linkMiseEntry points link at target, replacing whatever occupies it. A
+// per-task sandbox home outlives the run, so a link left by an earlier run
+// can name a store the operator has since moved, and an agent can write over
+// the path itself.
+func linkMiseEntry(link, target string) error {
+	if existing, err := os.Readlink(link); err == nil && existing == target {
+		return nil
+	}
+	if info, err := os.Lstat(link); err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+		if err := os.RemoveAll(link); err != nil {
+			return err
+		}
+	} else if err == nil {
+		if err := os.Remove(link); err != nil {
+			return err
+		}
+	}
+	return os.Symlink(target, link)
 }
 
 func (m *Manager) injectGolangciCache(cfg *RunConfig) error {
@@ -1835,6 +2034,10 @@ func (m *Manager) resolveSandboxReadRoots(cfg *RunConfig) []string {
 	for _, p := range hostRuntimeReadRoots() {
 		add(p)
 	}
+	// The mirror's links resolve into whatever store hostMiseDataDir names, so
+	// a host that moves it with MISE_DATA_DIR or XDG_DATA_HOME needs that path
+	// granted too — the home-relative constant below only covers the default.
+	add(hostMiseDataDir())
 	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
 		for _, sub := range toolchainReadSubdirs {
 			add(filepath.Join(home, sub))
