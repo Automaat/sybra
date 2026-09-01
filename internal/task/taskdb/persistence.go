@@ -65,10 +65,15 @@ func (p *Persistence) ListForNode(node string, closedSince time.Time) ([]task.Ta
 func (p *Persistence) PutBy(t task.Task, actor string, changed []string) (task.Task, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), taskCallTimeout)
 	defer cancel()
-	if err := p.store.WithTaskLock(ctx, t.ID, func() error { return p.store.PutBy(ctx, t, SidecarsFromTask(t), actor, changed) }); err != nil {
+	var saved task.Task
+	if err := p.store.WithTaskLock(ctx, t.ID, func() error {
+		var err error
+		saved, err = p.store.PutStoredBy(ctx, t, SidecarsFromTask(t), actor, changed)
+		return err
+	}); err != nil {
 		return task.Task{}, err
 	}
-	return t, nil
+	return saved, nil
 }
 
 func (p *Persistence) CreateBy(t task.Task, actor string) (task.Task, error) {

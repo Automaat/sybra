@@ -33,48 +33,49 @@ type taskFrontmatter struct {
 	// Blocker matches Task's value type (not a pointer): blocker.State
 	// implements IsZeroer, so yaml.v3's omitempty already skips a zero value
 	// without needing pointer indirection to distinguish "unset" from "set".
-	Blocker                blocker.State           `yaml:"blocker,omitempty"`
-	HandoffSourceProvider  string                  `yaml:"handoff_source_provider,omitempty"`
-	BlockedByIssue         string                  `yaml:"blocked_by_issue,omitempty"`
-	UmbrellaIssue          string                  `yaml:"umbrella_issue,omitempty"`
-	RefIssue               string                  `yaml:"ref_issue,omitempty"`
-	DependsOn              []string                `yaml:"depends_on,omitempty"`
-	DependsOnConditions    []DepCondition          `yaml:"depends_on_conditions,omitempty"`
-	Reviewed               bool                    `yaml:"reviewed,omitempty"`
-	CodeReviewVerdict      string                  `yaml:"code_review_verdict,omitempty"`
-	RunRole                string                  `yaml:"run_role,omitempty"`
-	SupervisorSteer        string                  `yaml:"supervisor_steer,omitempty"`
-	ReviewPhase            string                  `yaml:"review_phase,omitempty"`
-	ReviewedHeadSHA        string                  `yaml:"reviewed_head_sha,omitempty"`
-	ReviewedHeadAttempts   int                     `yaml:"reviewed_head_attempts,omitempty"`
-	ReconcileFailures      int                     `yaml:"reconcile_failures,omitempty"`
-	PRPhase                string                  `yaml:"pr_phase,omitempty"`
-	Priority               Priority                `yaml:"priority,omitempty"`
-	DueDate                *time.Time              `yaml:"due_date,omitempty"`
-	ClosedAt               *time.Time              `yaml:"closed_at,omitempty"`
-	Outcome                string                  `yaml:"outcome,omitempty"`
-	MergeCommit            string                  `yaml:"merge_commit,omitempty"`
-	MaxTurns               int                     `yaml:"max_turns,omitempty"`
-	RequirePermissions     *bool                   `yaml:"require_permissions,omitempty"`
-	HeadlessPermissionMode string                  `yaml:"headless_permission_mode,omitempty"`
-	ForkSubagent           bool                    `yaml:"fork_subagent,omitempty"`
-	Sandbox                *bool                   `yaml:"sandbox,omitempty"`
-	SandboxOffReason       string                  `yaml:"sandbox_off_reason,omitempty"`
-	ReasoningEffort        string                  `yaml:"reasoning_effort,omitempty"`
-	TestingCycleStartedAt  *time.Time              `yaml:"testing_cycle_started_at,omitempty"`
-	Attachments            []Attachment            `yaml:"attachments,omitempty"`
-	AgentRuns              []agentRunRecord        `yaml:"agent_runs,omitempty"`
-	EffectLog              []workflow.EffectRecord `yaml:"effect_log,omitempty"`
-	Workflow               *workflow.Execution     `yaml:"workflow,omitempty"`
-	CreatedAt              time.Time               `yaml:"created_at"`
-	UpdatedAt              time.Time               `yaml:"updated_at"`
-	StatusChangedAt        time.Time               `yaml:"status_changed_at,omitempty"`
-	AssignedNode           string                  `yaml:"assigned_node,omitempty"`
-	NodeOverride           string                  `yaml:"node_override,omitempty"`
-	AssignmentRev          int64                   `yaml:"assignment_rev,omitempty"`
-	Generation             int64                   `yaml:"generation,omitempty"`
-	MirrorRev              int64                   `yaml:"mirror_rev,omitempty"`
-	MirrorUpdatedAt        *time.Time              `yaml:"mirror_updated_at,omitempty"`
+	Blocker                blocker.State             `yaml:"blocker,omitempty"`
+	HandoffSourceProvider  string                    `yaml:"handoff_source_provider,omitempty"`
+	BlockedByIssue         string                    `yaml:"blocked_by_issue,omitempty"`
+	UmbrellaIssue          string                    `yaml:"umbrella_issue,omitempty"`
+	RefIssue               string                    `yaml:"ref_issue,omitempty"`
+	DependsOn              []string                  `yaml:"depends_on,omitempty"`
+	DependsOnConditions    []DepCondition            `yaml:"depends_on_conditions,omitempty"`
+	Reviewed               bool                      `yaml:"reviewed,omitempty"`
+	CodeReviewVerdict      string                    `yaml:"code_review_verdict,omitempty"`
+	RunRole                string                    `yaml:"run_role,omitempty"`
+	SupervisorSteer        string                    `yaml:"supervisor_steer,omitempty"`
+	ReviewPhase            string                    `yaml:"review_phase,omitempty"`
+	ReviewedHeadSHA        string                    `yaml:"reviewed_head_sha,omitempty"`
+	ReviewedHeadAttempts   int                       `yaml:"reviewed_head_attempts,omitempty"`
+	ReconcileFailures      int                       `yaml:"reconcile_failures,omitempty"`
+	PRPhase                string                    `yaml:"pr_phase,omitempty"`
+	Priority               Priority                  `yaml:"priority,omitempty"`
+	DueDate                *time.Time                `yaml:"due_date,omitempty"`
+	ClosedAt               *time.Time                `yaml:"closed_at,omitempty"`
+	Outcome                string                    `yaml:"outcome,omitempty"`
+	MergeCommit            string                    `yaml:"merge_commit,omitempty"`
+	MaxTurns               int                       `yaml:"max_turns,omitempty"`
+	RequirePermissions     *bool                     `yaml:"require_permissions,omitempty"`
+	HeadlessPermissionMode string                    `yaml:"headless_permission_mode,omitempty"`
+	ForkSubagent           bool                      `yaml:"fork_subagent,omitempty"`
+	Sandbox                *bool                     `yaml:"sandbox,omitempty"`
+	SandboxOffReason       string                    `yaml:"sandbox_off_reason,omitempty"`
+	ReasoningEffort        string                    `yaml:"reasoning_effort,omitempty"`
+	TestingCycleStartedAt  *time.Time                `yaml:"testing_cycle_started_at,omitempty"`
+	Attachments            []Attachment              `yaml:"attachments,omitempty"`
+	AgentRuns              []agentRunRecord          `yaml:"agent_runs,omitempty"`
+	DocumentCompaction     *documentCompactionRecord `yaml:"document_compaction,omitempty"`
+	EffectLog              []workflow.EffectRecord   `yaml:"effect_log,omitempty"`
+	Workflow               *workflow.Execution       `yaml:"workflow,omitempty"`
+	CreatedAt              time.Time                 `yaml:"created_at"`
+	UpdatedAt              time.Time                 `yaml:"updated_at"`
+	StatusChangedAt        time.Time                 `yaml:"status_changed_at,omitempty"`
+	AssignedNode           string                    `yaml:"assigned_node,omitempty"`
+	NodeOverride           string                    `yaml:"node_override,omitempty"`
+	AssignmentRev          int64                     `yaml:"assignment_rev,omitempty"`
+	Generation             int64                     `yaml:"generation,omitempty"`
+	MirrorRev              int64                     `yaml:"mirror_rev,omitempty"`
+	MirrorUpdatedAt        *time.Time                `yaml:"mirror_updated_at,omitempty"`
 }
 
 type agentRunRecord struct {
@@ -118,6 +119,16 @@ type agentRunRecord struct {
 	SubagentCallCount       int       `yaml:"subagent_call_count,omitempty"`
 	ResumeZeroOutputStall   bool      `yaml:"zero_output_stall,omitempty"`
 	TurnCount               int       `yaml:"turn_count,omitempty"`
+}
+
+type documentCompactionRecord struct {
+	LastCompactedAt   time.Time `yaml:"last_compacted_at"`
+	LargestBytesSeen  int       `yaml:"largest_bytes_seen"`
+	DroppedAgentRuns  int       `yaml:"dropped_agent_runs,omitempty"`
+	DroppedRunCostUSD float64   `yaml:"dropped_run_cost_usd,omitempty"`
+	TrimmedRunFields  int       `yaml:"trimmed_run_fields,omitempty"`
+	TrimmedWorkflow   int       `yaml:"trimmed_workflow,omitempty"`
+	BodyTruncated     bool      `yaml:"body_truncated,omitempty"`
 }
 
 // taskFromFrontmatter rebuilds the persisted task fields. Store loading
@@ -170,6 +181,7 @@ func taskFromFrontmatter(fm taskFrontmatter, body string) Task {
 		ReasoningEffort:        fm.ReasoningEffort,
 		TestingCycleStartedAt:  fm.TestingCycleStartedAt,
 		Attachments:            fm.Attachments,
+		DocumentCompaction:     documentCompactionFromRecord(fm.DocumentCompaction),
 		Workflow:               fm.Workflow,
 		EffectLog:              fm.EffectLog,
 		CreatedAt:              fm.CreatedAt,
@@ -260,6 +272,7 @@ func frontmatterFromTask(t Task) taskFrontmatter {
 		TestingCycleStartedAt:  t.TestingCycleStartedAt,
 		Attachments:            t.Attachments,
 		AgentRuns:              agentRunRecordsFromRuns(t.AgentRuns),
+		DocumentCompaction:     documentCompactionToRecord(t.DocumentCompaction),
 		EffectLog:              t.EffectLog,
 		Workflow:               t.Workflow,
 		CreatedAt:              t.CreatedAt,
@@ -294,4 +307,28 @@ func agentRunRecordsFromRuns(runs []AgentRun) []agentRunRecord {
 		records[i] = agentRunRecord(runs[i])
 	}
 	return records
+}
+
+func documentCompactionFromRecord(record *documentCompactionRecord) *DocumentCompaction {
+	if record == nil {
+		return nil
+	}
+	return &DocumentCompaction{
+		LastCompactedAt: record.LastCompactedAt, LargestBytesSeen: record.LargestBytesSeen,
+		DroppedAgentRuns: record.DroppedAgentRuns, DroppedRunCostUSD: record.DroppedRunCostUSD,
+		TrimmedRunFields: record.TrimmedRunFields,
+		TrimmedWorkflow:  record.TrimmedWorkflow, BodyTruncated: record.BodyTruncated,
+	}
+}
+
+func documentCompactionToRecord(receipt *DocumentCompaction) *documentCompactionRecord {
+	if receipt == nil {
+		return nil
+	}
+	return &documentCompactionRecord{
+		LastCompactedAt: receipt.LastCompactedAt, LargestBytesSeen: receipt.LargestBytesSeen,
+		DroppedAgentRuns: receipt.DroppedAgentRuns, DroppedRunCostUSD: receipt.DroppedRunCostUSD,
+		TrimmedRunFields: receipt.TrimmedRunFields,
+		TrimmedWorkflow:  receipt.TrimmedWorkflow, BodyTruncated: receipt.BodyTruncated,
+	}
 }

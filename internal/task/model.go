@@ -304,6 +304,20 @@ type AgentRun struct {
 	TurnCount int `json:"turnCount,omitempty"`
 }
 
+// DocumentCompaction is the durable operator-visible receipt left when Sybra
+// has to discard historical text to keep a task document within its storage
+// bound. The counters are cumulative: a later write may compact the task
+// again, but it must never make an earlier loss invisible.
+type DocumentCompaction struct {
+	LastCompactedAt   time.Time `json:"lastCompactedAt"`
+	LargestBytesSeen  int       `json:"largestBytesSeen"`
+	DroppedAgentRuns  int       `json:"droppedAgentRuns,omitempty"`
+	DroppedRunCostUSD float64   `json:"droppedRunCostUsd,omitempty"`
+	TrimmedRunFields  int       `json:"trimmedRunFields,omitempty"`
+	TrimmedWorkflow   int       `json:"trimmedWorkflow,omitempty"`
+	BodyTruncated     bool      `json:"bodyTruncated,omitempty"`
+}
+
 // Attachment re-exports the persisted task attachment metadata type.
 type Attachment = attachment.Attachment
 
@@ -501,9 +515,10 @@ type Task struct {
 	// so route_test_result can exclude test-runner runs from prior cycles when
 	// counting toward TestingMaxAttempts. Nil means no re-dispatch has occurred
 	// and all test-runner runs count (correct for first-ever cycles).
-	TestingCycleStartedAt *time.Time   `json:"testingCycleStartedAt,omitempty"`
-	Attachments           []Attachment `json:"attachments"`
-	AgentRuns             []AgentRun   `json:"agentRuns"`
+	TestingCycleStartedAt *time.Time          `json:"testingCycleStartedAt,omitempty"`
+	Attachments           []Attachment        `json:"attachments"`
+	AgentRuns             []AgentRun          `json:"agentRuns"`
+	DocumentCompaction    *DocumentCompaction `json:"documentCompaction,omitempty"`
 	// EffectLog records durable intent/completion for observer-owned task
 	// status effects (pollers, monitor, recovery) that operate outside a live
 	// workflow execution.
