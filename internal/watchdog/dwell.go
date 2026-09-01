@@ -50,7 +50,7 @@ func hasBlocker(body string) bool {
 }
 
 func (w *Watchdog) checkDwell(now time.Time) {
-	tasks, err := w.tasks.List()
+	tasks, err := w.tasks.ListActive()
 	if err != nil {
 		w.logger.Warn("watchdog.dwell.list", "err", err)
 		return

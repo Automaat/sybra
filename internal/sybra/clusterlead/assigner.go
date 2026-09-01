@@ -90,7 +90,7 @@ func (a *Assigner) Tick(ctx context.Context) {
 	if a.cfg == nil || !a.cfg.IsLeader() || a.tasks == nil || a.roster == nil {
 		return
 	}
-	tasks, err := a.tasks.List()
+	tasks, err := a.tasks.ListActive()
 	if err != nil {
 		a.logger.Warn("cluster.assign.list.failed", "err", err)
 		return

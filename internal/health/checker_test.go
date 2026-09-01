@@ -89,6 +89,38 @@ func TestCheckerIncludesDockerReclaimableFinding(t *testing.T) {
 	}
 }
 
+type boardTrackingPersistence struct {
+	task.Persistence
+	listCalls  int
+	boardCalls int
+}
+
+func (p *boardTrackingPersistence) List() ([]task.Task, error) {
+	p.listCalls++
+	return nil, nil
+}
+
+func (p *boardTrackingPersistence) ListBoard() ([]task.Task, error) {
+	p.boardCalls++
+	return []task.Task{{ID: "active", Status: task.StatusTodo}}, nil
+}
+
+func TestCheckerUsesBoardProjectionInsteadOfFullTaskDocuments(t *testing.T) {
+	store, err := task.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	persist := &boardTrackingPersistence{}
+	tasks := task.NewManagerWithPersistence(store, persist, nil)
+	c := New(auditDirReaderForTest(t.TempDir()), tasks, t.TempDir(), slog.New(slog.DiscardHandler), nil, nil)
+
+	c.check(t.Context())
+
+	if persist.listCalls != 0 || persist.boardCalls != 1 {
+		t.Fatalf("persistence calls: List=%d ListBoard=%d, want List=0 ListBoard=1", persist.listCalls, persist.boardCalls)
+	}
+}
+
 func TestCheckerSkipsSandboxCheckWhenUnwired(t *testing.T) {
 	t.Parallel()
 

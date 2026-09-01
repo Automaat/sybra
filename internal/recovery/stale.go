@@ -49,7 +49,7 @@ func (r *Recovery) RestartStaleInProgress(ctx context.Context) {
 			r.Logger.Error("recovery.attempt_reconcile.deferred", "reason", "orphan termination unconfirmed")
 		}
 	}
-	tasks, err := r.Tasks.List()
+	tasks, err := r.Tasks.ListActive()
 	if err != nil {
 		return
 	}

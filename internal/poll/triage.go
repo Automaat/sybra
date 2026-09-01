@@ -78,7 +78,7 @@ func (h *TriageHandler) Poll(ctx context.Context) time.Duration {
 		interval = 60 * time.Second
 	}
 
-	tasks, err := h.tasks.List()
+	tasks, err := h.tasks.ListActive()
 	if err != nil {
 		h.logger.Warn("triage.list", "err", err)
 		return interval

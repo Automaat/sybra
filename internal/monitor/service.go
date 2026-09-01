@@ -223,7 +223,7 @@ func (s *Service) tickAndLog(ctx context.Context) {
 // dispatch → file issues → emit. Exported via Scan for read-only callers.
 func (s *Service) tick(ctx context.Context) (Report, error) {
 	now := s.now()
-	tasks, err := s.tasks.List()
+	tasks, err := s.tasks.ListActive()
 	if err != nil {
 		return Report{}, err
 	}
@@ -231,7 +231,7 @@ func (s *Service) tick(ctx context.Context) (Report, error) {
 	if !s.observerOnly {
 		preRemediated = s.closeMergedHumanRequiredPRs(ctx, tasks)
 		if len(preRemediated) > 0 {
-			tasks, err = s.tasks.List()
+			tasks, err = s.tasks.ListActive()
 			if err != nil {
 				return Report{}, err
 			}
@@ -386,7 +386,7 @@ func (s *Service) logPRGapGraceSuppressions(tasks []task.Task, now time.Time) {
 // effects. Used by `sybra-cli monitor scan` and by tests.
 func (s *Service) Scan(_ context.Context) (Report, error) {
 	now := s.now()
-	tasks, err := s.tasks.List()
+	tasks, err := s.tasks.ListActive()
 	if err != nil {
 		return Report{}, err
 	}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/Automaat/sybra/internal/db"
@@ -366,6 +367,32 @@ func (s *SQLStore) List(ctx context.Context) ([]task.Task, error) {
 		return nil, fmt.Errorf("iterate tasks: %w", db.Contended(err))
 	}
 	return out, nil
+}
+
+// ListActive returns every non-terminal live task. The status predicate runs
+// in SQL before doc is transferred or parsed, so recurring automation scales
+// with work it can still act on instead of the complete task history.
+func (s *SQLStore) ListActive(ctx context.Context) ([]task.Task, error) {
+	query, args := activeTasksQuery(s.db.OrderText("id"))
+	return s.listDocuments(ctx, query, args...)
+}
+
+func activeTasksQuery(orderID string) (query string, args []any) {
+	statuses := task.AllStatuses()
+	args = make([]any, 0, len(statuses)-2)
+	marks := make([]string, 0, len(statuses)-2)
+	for _, status := range statuses {
+		if task.IsTerminalStatus(status) {
+			continue
+		}
+		args = append(args, string(status))
+		marks = append(marks, "?")
+	}
+	// tasks_active_idx seeks each actionable status beneath deleted_at=0,
+	// keeping the scan proportional to active work rather than task history.
+	query = `SELECT doc FROM tasks WHERE deleted_at = 0 AND status IN (` +
+		strings.Join(marks, ",") + `) ORDER BY ` + orderID
+	return query, args
 }
 
 // ListBoard returns the compact document persisted for board cards. Unlike

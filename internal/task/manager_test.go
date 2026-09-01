@@ -343,6 +343,38 @@ func TestManagerOnExternalUpdateInvalidatesJSONSidecar(t *testing.T) {
 	}
 }
 
+func TestManagerListActiveFiltersTerminalTasksOnFileBackend(t *testing.T) {
+	t.Parallel()
+	m, _ := newTestManager(t)
+
+	active, err := m.Create("active", "", AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed, err := m.Create("closed", "", AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Update(closed.ID, Update{Status: Ptr(StatusDone)}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := m.ListActive()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != active.ID {
+		t.Fatalf("ListActive = %+v, want only %s", got, active.ID)
+	}
+	all, err := m.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("List = %d tasks, want 2", len(all))
+	}
+}
+
 // TestManagerAppendBodyDoesNotDeadlockOnSelfRoutedEmit reproduces the
 // production wiring in app.go's emit closure, which routes every
 // task:updated event straight back into Manager.OnExternalUpdate on the
