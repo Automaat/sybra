@@ -79,17 +79,26 @@ func Open(ctx context.Context, opts Options) (*DB, error) {
 	}
 	applyPool(sqlDB, dialect, opts)
 
-	if err := sqlDB.PingContext(ctx); err != nil {
+	// Every step below can take the write lock: sqlite applies the DSN pragmas
+	// as a connection opens, and the WAL bounds are a write of their own. A
+	// start that loses that race to another instance waits for it rather than
+	// failing, the same way the migration step does.
+	settle := func(fn func() error) error { return fn() }
+	if dialect == SQLite {
+		settle = func(fn func() error) error { return waitOutContention(ctx, fn) }
+	}
+
+	if err := settle(func() error { return sqlDB.PingContext(ctx) }); err != nil {
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("reach %s database %s: %w", dialect, RedactDSN(opts.DSN), err)
 	}
 
 	d := &DB{sqlDB: sqlDB, dialect: dialect}
-	if err := d.ensureSQLiteWAL(ctx); err != nil {
+	if err := settle(func() error { return d.ensureSQLiteWAL(ctx) }); err != nil {
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("configure %s database %s WAL: %w", dialect, RedactDSN(opts.DSN), err)
 	}
-	if err := d.shrinkSQLiteWAL(ctx); err != nil {
+	if err := settle(func() error { return d.shrinkSQLiteWAL(ctx) }); err != nil {
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("checkpoint %s database %s WAL: %w", dialect, RedactDSN(opts.DSN), err)
 	}

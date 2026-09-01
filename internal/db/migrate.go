@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io/fs"
 	"maps"
-	"math/rand/v2"
 	"path"
 	"slices"
 	"strconv"
@@ -43,48 +42,14 @@ func Migrate(ctx context.Context, d *DB) error {
 		if d.dialect != SQLite {
 			return migrateLocked(ctx, d)
 		}
-		return migrateSQLite(ctx, d)
+		return waitOutContention(ctx, func() error {
+			pending, err := migrationsPending(ctx, d)
+			if err != nil || !pending {
+				return err
+			}
+			return migrateLocked(ctx, d)
+		})
 	})
-}
-
-// MigrationContentionBudget bounds how long a start waits for another
-// process to finish migrating before it gives up and says so.
-const MigrationContentionBudget = 2 * time.Minute
-
-// migrateSQLite waits out a concurrent migration instead of failing on it.
-//
-// SQLite has no lock that queues: the write transaction is the whole
-// serialization, and its busy timeout is a fixed budget rather than a place
-// in line. Several instances sharing one board restart together after an
-// auto-update, so whoever loses that race must retry until the holder is
-// done, not abort startup with a lock code the operator cannot act on.
-func migrateSQLite(ctx context.Context, d *DB) error {
-	deadline := time.Now().Add(MigrationContentionBudget)
-	wait := 20 * time.Millisecond
-	for {
-		pending, err := migrationsPending(ctx, d)
-		if err != nil {
-			return err
-		}
-		if !pending {
-			return nil
-		}
-		err = migrateLocked(ctx, d)
-		if err == nil || !IsContention(err) {
-			return err
-		}
-		if !time.Now().Before(deadline) {
-			return fmt.Errorf("migration contended for %s: %w", MigrationContentionBudget, err)
-		}
-		select {
-		case <-ctx.Done():
-			return errors.Join(ctx.Err(), err)
-		case <-time.After(wait + time.Duration(rand.N(int64(wait)))):
-		}
-		if wait < time.Second {
-			wait *= 2
-		}
-	}
 }
 
 // isMissingVersionTable reports whether the version table is simply not there

@@ -684,7 +684,7 @@ func TestMigrate_WaitsOutABusyTimeoutItLoses(t *testing.T) {
 	// Given many instances starting together on a board whose write lock
 	// expires long before the slowest of them gets a turn
 	dsn := "file:" + filepath.Join(t.TempDir(), "sybra.db") + "?_pragma=busy_timeout(50)"
-	const starts = 24
+	const starts = 48
 	errs := make(chan error, starts)
 	var wg sync.WaitGroup
 	for range starts {
