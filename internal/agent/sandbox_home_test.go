@@ -43,8 +43,8 @@ func TestPrepareRunConfig_SandboxHome_Injected(t *testing.T) {
 		"GOMODCACHE=" + filepath.Join(base, "go-mod"),
 		"npm_config_cache=" + filepath.Join(base, "npm"),
 	}
-	if !slices.Equal(cfg.ExtraEnv, want) {
-		t.Fatalf("ExtraEnv = %v, want %v", cfg.ExtraEnv, want)
+	if got := withoutHostToolchainEnv(cfg.ExtraEnv); !slices.Equal(got, want) {
+		t.Fatalf("ExtraEnv = %v, want %v", got, want)
 	}
 }
 
@@ -242,12 +242,12 @@ func TestPrepareRunConfig_SandboxHome_IsolatedSystemRun(t *testing.T) {
 		"GOMODCACHE=" + filepath.Join(base, "go-mod"),
 		"npm_config_cache=" + filepath.Join(base, "npm"),
 	}
-	if len(cfg.ExtraEnv) != len(want) {
-		t.Fatalf("ExtraEnv = %v, want %v", cfg.ExtraEnv, want)
+	if got := withoutHostToolchainEnv(cfg.ExtraEnv); len(got) != len(want) {
+		t.Fatalf("ExtraEnv = %v, want %v", got, want)
 	}
 	for i, v := range want {
-		if cfg.ExtraEnv[i] != v {
-			t.Fatalf("ExtraEnv[%d] = %q, want %q (full: %v)", i, cfg.ExtraEnv[i], v, cfg.ExtraEnv)
+		if got := withoutHostToolchainEnv(cfg.ExtraEnv); got[i] != v {
+			t.Fatalf("ExtraEnv[%d] = %q, want %q (full: %v)", i, got[i], v, got)
 		}
 	}
 	if cfg.resolvedSandboxHome != sandboxDir {
@@ -386,12 +386,12 @@ func TestPrepareRunConfig_SandboxHome_StripsDuplicateCallerEnv(t *testing.T) {
 		"GOMODCACHE=" + filepath.Join(base, "go-mod"),
 		"npm_config_cache=" + filepath.Join(base, "npm"),
 	}
-	if len(cfg.ExtraEnv) != len(want) {
-		t.Fatalf("ExtraEnv = %v, want %v", cfg.ExtraEnv, want)
+	if got := withoutHostToolchainEnv(cfg.ExtraEnv); len(got) != len(want) {
+		t.Fatalf("ExtraEnv = %v, want %v", got, want)
 	}
 	for i, v := range want {
-		if cfg.ExtraEnv[i] != v {
-			t.Fatalf("ExtraEnv[%d] = %q, want %q (full: %v)", i, cfg.ExtraEnv[i], v, cfg.ExtraEnv)
+		if got := withoutHostToolchainEnv(cfg.ExtraEnv); got[i] != v {
+			t.Fatalf("ExtraEnv[%d] = %q, want %q (full: %v)", i, got[i], v, got)
 		}
 	}
 }
@@ -425,8 +425,8 @@ func TestPrepareRunConfig_SandboxHome_EmptyControlHomeOmitsVar(t *testing.T) {
 		"GOMODCACHE=" + filepath.Join(base, "go-mod"),
 		"npm_config_cache=" + filepath.Join(base, "npm"),
 	}
-	if len(cfg.ExtraEnv) != len(want) || cfg.ExtraEnv[0] != want[0] || cfg.ExtraEnv[1] != want[1] {
-		t.Fatalf("ExtraEnv = %v, want %v", cfg.ExtraEnv, want)
+	if got := withoutHostToolchainEnv(cfg.ExtraEnv); len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("ExtraEnv = %v, want %v", got, want)
 	}
 }
 
@@ -835,4 +835,12 @@ func TestScratchEnvironment_AdvertisesAScratchFileDirectory(t *testing.T) {
 			t.Errorf("prompt missing %q:\n%s", want, cfg.Prompt)
 		}
 	}
+}
+
+// withoutHostToolchainEnv drops the assignments that exist only when the host
+// running the test has that toolchain installed.
+func withoutHostToolchainEnv(env []string) []string {
+	return slices.DeleteFunc(slices.Clone(env), func(assignment string) bool {
+		return strings.HasPrefix(assignment, "MISE_DATA_DIR=")
+	})
 }

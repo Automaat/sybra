@@ -580,7 +580,7 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 		return cfg, nil, err
 	}
 
-	if err := m.injectGolangciCache(&cfg); err != nil {
+	if err := m.injectToolchainDirs(&cfg); err != nil {
 		return cfg, nil, err
 	}
 
@@ -1031,6 +1031,61 @@ func isolateVerifierGitCredentials(cfg *RunConfig) error {
 	if ambientMiseData != "" {
 		cfg.ExtraEnv = append(cfg.ExtraEnv, "MISE_DATA_DIR="+ambientMiseData)
 	}
+	return nil
+}
+
+// injectToolchainDirs points a sandboxed run's toolchain caches at writable
+// paths inside its own sandbox.
+func (m *Manager) injectToolchainDirs(cfg *RunConfig) error {
+	if err := m.injectGolangciCache(cfg); err != nil {
+		return err
+	}
+	return m.injectMiseDataDir(cfg)
+}
+
+// dirExists reports whether path is a directory this process can stat.
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
+// injectMiseDataDir gives a sandboxed run its own mise data directory whose
+// installs tree links the operator's, so mise finds every pinned tool already
+// present and writes its shim rebuild inside the sandbox.
+//
+// `mise install` is the first line of many projects' setup, and it rebuilds
+// global shims on every run — pruning ones other projects left behind. The
+// operator's store is read-only to an agent, so that prune fails with
+// "Operation not permitted" and takes the whole verify suite down with it,
+// even though every tool was already installed. Redirecting the data dir
+// keeps the mutation inside the sandbox rather than widening the write
+// allowlist to a directory that can land on an operator's PATH.
+func (m *Manager) injectMiseDataDir(cfg *RunConfig) error {
+	if cfg.resolvedSandboxHome == "" {
+		return nil
+	}
+	ambient := ambientEnvValue(cfg.ExtraEnv, "MISE_DATA_DIR", "")
+	if ambient == "" {
+		home := ambientEnvValue(cfg.ExtraEnv, "HOME", os.Getenv("HOME"))
+		if strings.TrimSpace(home) == "" {
+			return nil
+		}
+		ambient = filepath.Join(home, ".local", "share", "mise")
+	}
+	installs := filepath.Join(ambient, "installs")
+	if !dirExists(installs) {
+		return nil
+	}
+	dir := filepath.Join(cfg.resolvedSandboxHome, "mise")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("agent.Run: create mise data dir for task %q: %w", cfg.TaskID, err)
+	}
+	link := filepath.Join(dir, "installs")
+	if err := os.Symlink(installs, link); err != nil && !errors.Is(err, os.ErrExist) {
+		return fmt.Errorf("agent.Run: link mise installs for task %q: %w", cfg.TaskID, err)
+	}
+	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, "MISE_DATA_DIR")
+	cfg.ExtraEnv = append(cfg.ExtraEnv, "MISE_DATA_DIR="+dir)
 	return nil
 }
 
