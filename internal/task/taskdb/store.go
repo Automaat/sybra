@@ -377,9 +377,9 @@ func (s *SQLStore) ListActive(ctx context.Context) ([]task.Task, error) {
 	return s.listDocuments(ctx, query, args...)
 }
 
-func activeTasksQuery(orderID string) (string, []any) {
+func activeTasksQuery(orderID string) (query string, args []any) {
 	statuses := task.AllStatuses()
-	args := make([]any, 0, len(statuses)-2)
+	args = make([]any, 0, len(statuses)-2)
 	marks := make([]string, 0, len(statuses)-2)
 	for _, status := range statuses {
 		if task.IsTerminalStatus(status) {
@@ -390,7 +390,7 @@ func activeTasksQuery(orderID string) (string, []any) {
 	}
 	// tasks_active_idx seeks each actionable status beneath deleted_at=0,
 	// keeping the scan proportional to active work rather than task history.
-	query := `SELECT doc FROM tasks WHERE deleted_at = 0 AND status IN (` +
+	query = `SELECT doc FROM tasks WHERE deleted_at = 0 AND status IN (` +
 		strings.Join(marks, ",") + `) ORDER BY ` + orderID
 	return query, args
 }
