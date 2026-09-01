@@ -151,7 +151,9 @@ func (c *Checker) check(ctx context.Context) {
 		weekEvents = nil
 	}
 
-	tasks, err := c.tasks.List()
+	// Health checks need board fields and degraded file entries, but never the
+	// lifetime prompt/result transcripts carried by full task documents.
+	tasks, err := c.tasks.ListBoard()
 	if err != nil {
 		c.logger.Warn("health.check.task_list", "err", err)
 		tasks = nil

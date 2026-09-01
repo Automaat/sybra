@@ -158,6 +158,32 @@ func TestSQLStore_ListActiveSkipsTerminalDocumentsBeforeParsing(t *testing.T) {
 	})
 }
 
+func TestSQLStore_ListActiveUsesCompositeIndex(t *testing.T) {
+	d := dbtest.SQLite(t)
+	query, args := activeTasksQuery("id")
+	rows, err := d.QueryContext(t.Context(), `EXPLAIN QUERY PLAN `+query, args...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	var plan strings.Builder
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan.WriteString(detail)
+		plan.WriteByte('\n')
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(plan.String(), "tasks_active_idx") {
+		t.Fatalf("ListActive query plan does not use tasks_active_idx:\n%s", plan.String())
+	}
+}
+
 func TestSQLStore_BackfillsLegacyBoardProjection(t *testing.T) {
 	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
 		t.Helper()

@@ -373,6 +373,11 @@ func (s *SQLStore) List(ctx context.Context) ([]task.Task, error) {
 // in SQL before doc is transferred or parsed, so recurring automation scales
 // with work it can still act on instead of the complete task history.
 func (s *SQLStore) ListActive(ctx context.Context) ([]task.Task, error) {
+	query, args := activeTasksQuery(s.db.OrderText("id"))
+	return s.listDocuments(ctx, query, args...)
+}
+
+func activeTasksQuery(orderID string) (string, []any) {
 	statuses := task.AllStatuses()
 	args := make([]any, 0, len(statuses)-2)
 	marks := make([]string, 0, len(statuses)-2)
@@ -383,11 +388,11 @@ func (s *SQLStore) ListActive(ctx context.Context) ([]task.Task, error) {
 		args = append(args, string(status))
 		marks = append(marks, "?")
 	}
-	// IN, rather than NOT IN(done, cancelled), lets tasks_status_idx locate
-	// the small active set without scanning table rows that contain large docs.
+	// tasks_active_idx seeks each actionable status beneath deleted_at=0,
+	// keeping the scan proportional to active work rather than task history.
 	query := `SELECT doc FROM tasks WHERE deleted_at = 0 AND status IN (` +
-		strings.Join(marks, ",") + `) ORDER BY ` + s.db.OrderText("id")
-	return s.listDocuments(ctx, query, args...)
+		strings.Join(marks, ",") + `) ORDER BY ` + orderID
+	return query, args
 }
 
 // ListBoard returns the compact document persisted for board cards. Unlike
