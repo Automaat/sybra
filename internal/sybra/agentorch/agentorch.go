@@ -1043,6 +1043,14 @@ func taskCumulativeCostUSD(runs []task.AgentRun) float64 {
 	return total
 }
 
+func taskRecordedCumulativeCostUSD(t task.Task) float64 {
+	total := taskCumulativeCostUSD(t.AgentRuns)
+	if t.DocumentCompaction != nil {
+		total += t.DocumentCompaction.DroppedRunCostUSD
+	}
+	return total
+}
+
 // CheckTaskCostBudget re-exports the cumulative task cost-budget check
 // (agent.max_task_cost_usd) for dispatch paths that bypass
 // StartAgentWithAssignment — e.g. workflow.execBestOfN, whose attempts and
@@ -1061,12 +1069,16 @@ func (o *Orchestrator) enforceTaskCostBudget(t task.Task) error {
 	if o.cfg == nil || o.cfg.Agent.MaxTaskCostUSD <= 0 {
 		return nil
 	}
-	spent := taskCumulativeCostUSD(t.AgentRuns)
+	spent := taskRecordedCumulativeCostUSD(t)
 	if spent < o.cfg.Agent.MaxTaskCostUSD {
 		return nil
 	}
+	runs := len(t.AgentRuns)
+	if t.DocumentCompaction != nil {
+		runs += t.DocumentCompaction.DroppedAgentRuns
+	}
 	return fmt.Errorf("%w: $%.2f spent across %d run(s), limit $%.2f",
-		workflow.ErrTaskCostExceeded, spent, len(t.AgentRuns), o.cfg.Agent.MaxTaskCostUSD)
+		workflow.ErrTaskCostExceeded, spent, runs, o.cfg.Agent.MaxTaskCostUSD)
 }
 func (o *Orchestrator) handleProviderGateStartError(taskID string, err error) {
 	switch {

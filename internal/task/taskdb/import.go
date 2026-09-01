@@ -57,12 +57,13 @@ func Import(ctx context.Context, database *db.DB, dir, scope string, logger *slo
 					"reason", "this task is left on disk and not imported; every other task still imports")
 				continue
 			}
-			doc, boardDoc, err := marshalTaskDocuments(t)
+			stored, doc, boardDoc, err := marshalTaskDocuments(t)
 			if err != nil {
 				skipped++
 				logger.Warn("task.import.unencodable", "task_id", t.ID, "err", err)
 				continue
 			}
+			t = stored
 			if _, err := tx.ExecContext(ctx, database.Rebind(upsertTask),
 				t.ID, string(t.Status), t.ProjectID, t.Title,
 				db.TimeValue(t.CreatedAt), db.TimeValue(t.UpdatedAt), int64(0), string(doc), string(boardDoc), t.AssignedNode, taskClosedAtValue(t)); err != nil {

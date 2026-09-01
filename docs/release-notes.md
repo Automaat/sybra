@@ -4,6 +4,21 @@ Operator-facing changes that alter what a running board does, in the order
 they landed. Sybra auto-deploys `main` (see `CLAUDE.md`'s Server Deployment
 section), so "release" here means "reached `main`," not a tagged version.
 
+## 2026-09-01 — Database task documents are bounded
+
+The database backend now caps each primary task document at **1 MiB**. Each
+agent run keeps at most 2,000 bytes of prompt and 2,000 bytes of result, and a
+task keeps its newest 100 run records. Full provider output remains in the
+run's log file when that file is still available.
+
+On startup, Sybra compacts existing oversized rows in the background, one row
+per transaction, so the board can begin serving without first loading or
+rewriting the whole task corpus. Historical run and workflow records are
+discarded oldest-first; the task description is shortened only as a last
+resort. Any affected task carries a durable compaction receipt and shows a
+warning in task detail with the observed size and what was removed. Tasks
+already within the limits are serialized exactly as before.
+
 ## 2026-08-09 — Storage backend defaults to a database
 
 An install that has never set `database.backend` in `config.yaml` now lands

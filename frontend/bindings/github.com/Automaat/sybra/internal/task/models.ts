@@ -286,6 +286,42 @@ export class DepCondition {
 }
 
 /**
+ * DocumentCompaction is the durable operator-visible receipt left when Sybra
+ * has to discard historical text to keep a task document within its storage
+ * bound. The counters are cumulative: a later write may compact the task
+ * again, but it must never make an earlier loss invisible.
+ */
+export class DocumentCompaction {
+    "lastCompactedAt": string;
+    "largestBytesSeen": number;
+    "droppedAgentRuns"?: number;
+    "droppedRunCostUsd"?: number;
+    "trimmedRunFields"?: number;
+    "trimmedWorkflow"?: number;
+    "bodyTruncated"?: boolean;
+
+    /** Creates a new DocumentCompaction instance. */
+    constructor($$source: Partial<DocumentCompaction> = {}) {
+        if (!("lastCompactedAt" in $$source)) {
+            this["lastCompactedAt"] = "0001-01-01T00:00:00.000Z";
+        }
+        if (!("largestBytesSeen" in $$source)) {
+            this["largestBytesSeen"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new DocumentCompaction instance from a string or object.
+     */
+    static createFrom($$source: any = {}): DocumentCompaction {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new DocumentCompaction($$parsedSource as Partial<DocumentCompaction>);
+    }
+}
+
+/**
  * PlanDraftEntry names the one plan draft PlanDraftWrite sets. Unlike every
  * other sidecar field, PlanDrafts is a map (one entry per parallel planner),
  * so a single Update can only ever add or replace one named entry, never
@@ -624,6 +660,7 @@ export class Task {
     "testingCycleStartedAt"?: string | null;
     "attachments": Attachment[];
     "agentRuns": AgentRun[];
+    "documentCompaction"?: DocumentCompaction | null;
 
     /**
      * EffectLog records durable intent/completion for observer-owned task
@@ -795,7 +832,8 @@ export class Task {
         const $$createField45_0 = $$createType8;
         const $$createField46_0 = $$createType10;
         const $$createField47_0 = $$createType12;
-        const $$createField69_0 = $$createType13;
+        const $$createField48_0 = $$createType14;
+        const $$createField70_0 = $$createType15;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("allowedTools" in $$parsedSource) {
             $$parsedSource["allowedTools"] = $$createField6_0($$parsedSource["allowedTools"]);
@@ -821,14 +859,17 @@ export class Task {
         if ("agentRuns" in $$parsedSource) {
             $$parsedSource["agentRuns"] = $$createField45_0($$parsedSource["agentRuns"]);
         }
+        if ("documentCompaction" in $$parsedSource) {
+            $$parsedSource["documentCompaction"] = $$createField46_0($$parsedSource["documentCompaction"]);
+        }
         if ("effectLog" in $$parsedSource) {
-            $$parsedSource["effectLog"] = $$createField46_0($$parsedSource["effectLog"]);
+            $$parsedSource["effectLog"] = $$createField47_0($$parsedSource["effectLog"]);
         }
         if ("workflow" in $$parsedSource) {
-            $$parsedSource["workflow"] = $$createField47_0($$parsedSource["workflow"]);
+            $$parsedSource["workflow"] = $$createField48_0($$parsedSource["workflow"]);
         }
         if ("planDrafts" in $$parsedSource) {
-            $$parsedSource["planDrafts"] = $$createField69_0($$parsedSource["planDrafts"]);
+            $$parsedSource["planDrafts"] = $$createField70_0($$parsedSource["planDrafts"]);
         }
         return new Task($$parsedSource as Partial<Task>);
     }
@@ -952,7 +993,7 @@ export class TransitionIntent {
      * Creates a new TransitionIntent instance from a string or object.
      */
     static createFrom($$source: any = {}): TransitionIntent {
-        const $$createField3_0 = $$createType14;
+        const $$createField3_0 = $$createType16;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("Extra" in $$parsedSource) {
             $$parsedSource["Extra"] = $$createField3_0($$parsedSource["Extra"]);
@@ -995,7 +1036,7 @@ export class TransitionResult {
      * Creates a new TransitionResult instance from a string or object.
      */
     static createFrom($$source: any = {}): TransitionResult {
-        const $$createField0_0 = $$createType15;
+        const $$createField0_0 = $$createType17;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("Task" in $$parsedSource) {
             $$parsedSource["Task"] = $$createField0_0($$parsedSource["Task"]);
@@ -1298,15 +1339,15 @@ export class Update {
      * Creates a new Update instance from a string or object.
      */
     static createFrom($$source: any = {}): Update {
-        const $$createField5_0 = $$createType16;
-        const $$createField7_0 = $$createType17;
-        const $$createField12_0 = $$createType18;
-        const $$createField13_0 = $$createType19;
-        const $$createField17_0 = $$createType18;
-        const $$createField35_0 = $$createType20;
-        const $$createField46_0 = $$createType22;
-        const $$createField56_0 = $$createType23;
-        const $$createField57_0 = $$createType24;
+        const $$createField5_0 = $$createType18;
+        const $$createField7_0 = $$createType19;
+        const $$createField12_0 = $$createType20;
+        const $$createField13_0 = $$createType21;
+        const $$createField17_0 = $$createType20;
+        const $$createField35_0 = $$createType22;
+        const $$createField46_0 = $$createType24;
+        const $$createField56_0 = $$createType25;
+        const $$createField57_0 = $$createType26;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("Escalation" in $$parsedSource) {
             $$parsedSource["Escalation"] = $$createField5_0($$parsedSource["Escalation"]);
@@ -1349,19 +1390,21 @@ const $$createType5 = attachment$0.Attachment.createFrom;
 const $$createType6 = $Create.Array($$createType5);
 const $$createType7 = AgentRun.createFrom;
 const $$createType8 = $Create.Array($$createType7);
-const $$createType9 = workflow$0.EffectRecord.createFrom;
-const $$createType10 = $Create.Array($$createType9);
-const $$createType11 = workflow$0.Execution.createFrom;
-const $$createType12 = $Create.Nullable($$createType11);
-const $$createType13 = $Create.Map($Create.Any, $Create.Any);
-const $$createType14 = Update.createFrom;
-const $$createType15 = Task.createFrom;
-const $$createType16 = $Create.Nullable($$createType1);
-const $$createType17 = $Create.Nullable($$createType2);
-const $$createType18 = $Create.Nullable($$createType0);
-const $$createType19 = $Create.Nullable($$createType4);
-const $$createType20 = $Create.Nullable($$createType12);
-const $$createType21 = PlanDraftEntry.createFrom;
-const $$createType22 = $Create.Nullable($$createType21);
-const $$createType23 = $Create.Nullable($$createType6);
-const $$createType24 = $Create.Nullable($$createType10);
+const $$createType9 = DocumentCompaction.createFrom;
+const $$createType10 = $Create.Nullable($$createType9);
+const $$createType11 = workflow$0.EffectRecord.createFrom;
+const $$createType12 = $Create.Array($$createType11);
+const $$createType13 = workflow$0.Execution.createFrom;
+const $$createType14 = $Create.Nullable($$createType13);
+const $$createType15 = $Create.Map($Create.Any, $Create.Any);
+const $$createType16 = Update.createFrom;
+const $$createType17 = Task.createFrom;
+const $$createType18 = $Create.Nullable($$createType1);
+const $$createType19 = $Create.Nullable($$createType2);
+const $$createType20 = $Create.Nullable($$createType0);
+const $$createType21 = $Create.Nullable($$createType4);
+const $$createType22 = $Create.Nullable($$createType14);
+const $$createType23 = PlanDraftEntry.createFrom;
+const $$createType24 = $Create.Nullable($$createType23);
+const $$createType25 = $Create.Nullable($$createType6);
+const $$createType26 = $Create.Nullable($$createType12);
