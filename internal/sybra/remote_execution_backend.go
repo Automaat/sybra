@@ -18,6 +18,7 @@ import (
 	"github.com/Automaat/sybra/internal/agentworkspace"
 	"github.com/Automaat/sybra/internal/executioncontract"
 	"github.com/Automaat/sybra/internal/gitexec"
+	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/version"
 	"github.com/Automaat/sybra/internal/workercontrol"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -180,6 +181,30 @@ func (b *leaderExecutionBackend) remoteAdmission() (admitted bool, reason string
 	return b.admitRemote()
 }
 
+// remoteBaseRef names the ref a remote workspace's base commit came from. The
+// worker only compares it for manifest consistency, so it has to be a valid
+// full ref that describes the checkout rather than one the worker resolves.
+//
+// A review worktree is a detached checkout of refs/pull/<N>/head and carries
+// no branch, so symbolic-ref cannot name it. Falling straight through to that
+// call blocked every review task remote execution touched: the git failure
+// burned a dispatch attempt, and the provider failover between retries then
+// made the replayed intent stop matching its claimed effect (#3458).
+func remoteBaseRef(ctx context.Context, t task.Task, dir string) (string, error) {
+	if branch := strings.TrimSpace(t.Branch); branch != "" {
+		return "refs/heads/" + branch, nil
+	}
+	if out, err := gitexec.Output(ctx, gitexec.Options{Dir: dir}, "symbolic-ref", "--short", "HEAD"); err == nil {
+		if branch := strings.TrimSpace(out); branch != "" {
+			return "refs/heads/" + branch, nil
+		}
+	}
+	if t.PRNumber > 0 {
+		return fmt.Sprintf("refs/pull/%d/head", t.PRNumber), nil
+	}
+	return "", fmt.Errorf("detached worktree %s has no branch or pull request to name its base", dir)
+}
+
 func (b *leaderExecutionBackend) placementRequest(ctx context.Context, start agent.ExecutionStart) (workercontrol.PlacementRequest, error) {
 	t, err := b.app.tasks.Get(start.Spec.TaskID)
 	if err != nil {
@@ -198,18 +223,15 @@ func (b *leaderExecutionBackend) placementRequest(ctx context.Context, start age
 	if clean.Config.SidecarDir != "" {
 		clean.Config.Prompt = strings.ReplaceAll(clean.Config.Prompt, clean.Config.SidecarDir, agent.RemoteSidecarPathToken)
 	}
-	baseRef := t.Branch
-	if baseRef == "" {
-		baseRef, err = gitexec.Output(ctx, gitexec.Options{Dir: start.Config.Dir}, "symbolic-ref", "--short", "HEAD")
-		if err != nil {
-			return workercontrol.PlacementRequest{}, fmt.Errorf("remote execution base ref: %w", err)
-		}
+	baseRef, err := remoteBaseRef(ctx, t, start.Config.Dir)
+	if err != nil {
+		return workercontrol.PlacementRequest{}, fmt.Errorf("remote execution base ref: %w", err)
 	}
 	metadata := agent.RemoteRunMetadata{
 		BuildVersion: version.Version, RunID: start.Spec.ID, EffectID: start.Config.IntentID,
 		WorkflowID: t.Workflow.WorkflowID, WorkflowGeneration: t.Generation, WorkflowStepID: t.Workflow.CurrentStep,
 		Deadline: time.Now().UTC().Add(24 * time.Hour), WorkspaceRepositoryID: t.ProjectID,
-		WorkspaceBaseSHA: baseSHA, WorkspaceBaseRef: "refs/heads/" + baseRef,
+		WorkspaceBaseSHA: baseSHA, WorkspaceBaseRef: baseRef,
 		WorkspaceRoots:  []executioncontract.LogicalRoot{executioncontract.RootWorktree, executioncontract.RootSidecar, executioncontract.RootArtifact},
 		ExpectedOutputs: append([]executioncontract.ExpectedOutput(nil), start.Config.RemoteExpectedOutputs...),
 	}
