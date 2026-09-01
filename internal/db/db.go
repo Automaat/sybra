@@ -15,6 +15,7 @@ import (
 	"hash/fnv"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -53,6 +54,12 @@ const (
 	// serializes write transactions safely.
 	defaultSQLiteMaxOpenConns   = 4
 	defaultPostgresMaxOpenConns = 16
+
+	// SQLite normally recycles a checkpointed WAL at its high-water size.
+	// Retaining 16 MiB gives ordinary bursts reusable space while preventing a
+	// one-off large transaction from leaving a permanent hundred-megabyte file.
+	defaultSQLiteJournalSizeLimitBytes = 16 << 20
+	defaultSQLiteAutoCheckpointPages   = 1000
 )
 
 // Open connects to the configured backend, verifies it is reachable, and applies any pending schema migrations. Every failure names the backend and the redacted DSN so an operator can tell a wrong setting from an unreachable server.
@@ -80,7 +87,11 @@ func Open(ctx context.Context, opts Options) (*DB, error) {
 	d := &DB{sqlDB: sqlDB, dialect: dialect}
 	if err := d.ensureSQLiteWAL(ctx); err != nil {
 		_ = sqlDB.Close()
-		return nil, err
+		return nil, fmt.Errorf("configure %s database %s WAL: %w", dialect, RedactDSN(opts.DSN), err)
+	}
+	if err := d.shrinkSQLiteWAL(ctx); err != nil {
+		_ = sqlDB.Close()
+		return nil, fmt.Errorf("checkpoint %s database %s WAL: %w", dialect, RedactDSN(opts.DSN), err)
 	}
 	if err := Migrate(ctx, d); err != nil {
 		_ = sqlDB.Close()
@@ -272,7 +283,9 @@ func resolveDriver(backend string) (Dialect, string, error) {
 // every connection the pool ever creates gets them. foreign_keys and
 // synchronous are per-connection settings, so a post-Open PRAGMA would apply
 // to whichever connection happened to serve it and silently miss the rest of
-// a pool sized above one.
+// a pool sized above one. The WAL bounds are appended separately by
+// prepareSQLiteDSN because they are storage invariants even when an operator
+// supplies their own otherwise-authoritative pragma set.
 var sqlitePragmas = []string{
 	"busy_timeout(5000)",
 	"foreign_keys(1)",
@@ -305,7 +318,8 @@ func prepareDSN(dialect Dialect, dsn string) (string, error) {
 // _txlock=immediate is what makes a read-modify-write inside InTx safe: a
 // deferred transaction takes its read lock first and then fails the upgrade
 // with SQLITE_BUSY_SNAPSHOT, which busy_timeout does not retry. An operator
-// who spelled their own _pragma or _txlock keeps full control of that set.
+// who spelled their own _pragma keeps that set except for the mandatory WAL
+// size/autocheckpoint policy; an explicit _txlock remains authoritative.
 func prepareSQLiteDSN(dsn string) (string, error) {
 	if !strings.HasPrefix(dsn, "file:") {
 		dsn = "file:" + filepath.ToSlash(dsn)
@@ -315,19 +329,72 @@ func prepareSQLiteDSN(dsn string) (string, error) {
 		return "", fmt.Errorf("parse sqlite dsn %s: %w", RedactDSN(dsn), err)
 	}
 	query := u.Query()
-	changed := false
-	if len(query["_pragma"]) == 0 {
+	pragmas := query["_pragma"]
+	if len(pragmas) == 0 {
 		query["_pragma"] = sqlitePragmas
-		changed = true
+		pragmas = query["_pragma"]
 	}
+	// Every pooled connection can perform the commit that grows or resets a WAL,
+	// so both halves of the bound must be installed on every one. Remove
+	// operator-supplied values first: an unlimited journal or disabled automatic
+	// checkpoints defeats the database's disk-space safety invariant.
+	pragmas = slices.DeleteFunc(slices.Clone(pragmas), func(pragma string) bool {
+		switch sqlitePragmaName(pragma) {
+		case "journal_size_limit", "wal_autocheckpoint":
+			return true
+		default:
+			return false
+		}
+	})
+	// A DSN that supplied only forbidden WAL overrides would otherwise lose the
+	// normal busy handler when those overrides are removed. Restore only the
+	// retry setting needed for concurrent fresh opens: the operator's explicit
+	// pragma set remains authoritative for every unrelated SQLite behavior.
+	if len(pragmas) == 0 {
+		pragmas = []string{"busy_timeout(5000)"}
+	}
+	query["_pragma"] = append(pragmas,
+		fmt.Sprintf("journal_size_limit(%d)", defaultSQLiteJournalSizeLimitBytes),
+		fmt.Sprintf("wal_autocheckpoint(%d)", defaultSQLiteAutoCheckpointPages),
+	)
 	if !query.Has("_txlock") {
 		query.Set("_txlock", "immediate")
-		changed = true
 	}
-	if changed {
-		u.RawQuery = query.Encode()
-	}
+	u.RawQuery = query.Encode()
 	return u.String(), nil
+}
+
+func sqlitePragmaName(pragma string) string {
+	pragma = strings.ToLower(strings.TrimSpace(pragma))
+	if before, _, ok := strings.Cut(pragma, "("); ok {
+		pragma = before
+	}
+	if before, _, ok := strings.Cut(pragma, "="); ok {
+		pragma = before
+	}
+	pragma = strings.Join(strings.Fields(pragma), "")
+	for _, prefix := range []string{"main.", `"main".`, "'main'.", "`main`.", "[main]."} {
+		if name, ok := strings.CutPrefix(pragma, prefix); ok {
+			pragma = name
+			break
+		}
+	}
+	return sqliteUnquoteIdentifier(pragma)
+}
+
+func sqliteUnquoteIdentifier(name string) string {
+	if len(name) < 2 {
+		return name
+	}
+	switch {
+	case name[0] == '[' && name[len(name)-1] == ']':
+		return strings.TrimSuffix(strings.TrimPrefix(name, "["), "]")
+	case (name[0] == '"' || name[0] == '\'' || name[0] == '`') && name[len(name)-1] == name[0]:
+		delimiter := string(name[0])
+		return strings.TrimSuffix(strings.TrimPrefix(name, delimiter), delimiter)
+	default:
+		return name
+	}
 }
 
 // walSetupBudget bounds the retry on enabling the write-ahead log. Two
@@ -370,6 +437,25 @@ func (d *DB) ensureSQLiteWAL(ctx context.Context) error {
 		case <-time.After(20 * time.Millisecond):
 		}
 	}
+}
+
+// shrinkSQLiteWAL returns disk space retained by a pre-bound database. The
+// per-connection journal_size_limit in the DSN keeps later WAL resets bounded;
+// this startup checkpoint handles an already-oversized file immediately.
+//
+// A concurrent process may hold a reader that prevents TRUNCATE from
+// completing. SQLite reports that as a busy result row rather than an error.
+// Starting remains safe in that case: the installed size limit takes effect
+// when the reader releases the WAL and a later checkpoint resets it.
+func (d *DB) shrinkSQLiteWAL(ctx context.Context) error {
+	if d.dialect != SQLite {
+		return nil
+	}
+	var busy, logFrames, checkpointedFrames int
+	if err := d.sqlDB.QueryRowContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &logFrames, &checkpointedFrames); err != nil {
+		return fmt.Errorf("shrink sqlite write-ahead log: %w", err)
+	}
+	return nil
 }
 
 func applyPool(sqlDB *sql.DB, dialect Dialect, opts Options) {
@@ -422,10 +508,21 @@ func RedactDSN(dsn string) string {
 	if dsn == "" {
 		return "(empty)"
 	}
-	if strings.Contains(dsn, "://") {
+	if strings.Contains(dsn, "://") || strings.HasPrefix(strings.ToLower(dsn), "file:") {
 		return redactURLDSN(dsn)
 	}
-	return redactKeywordDSN(dsn)
+	// A libpq keyword password may itself contain '?'. Give the keyword grammar
+	// first refusal before interpreting that byte as SQLite's query delimiter.
+	if redacted := redactKeywordDSN(dsn); redacted != dsn {
+		return redacted
+	}
+	// SQLite accepts plain paths with URI query parameters; prepareSQLiteDSN
+	// adds the file: prefix later. Redact that original spelling too because
+	// Open's errors deliberately report the operator-provided DSN.
+	if strings.Contains(dsn, "?") {
+		return strings.TrimPrefix(redactURLDSN("file:"+dsn), "file:")
+	}
+	return dsn
 }
 
 const redactedValue = "redacted"
