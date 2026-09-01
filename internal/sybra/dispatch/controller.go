@@ -444,22 +444,33 @@ func normalizeIntent(intent agent.AttemptIntent) (agent.AttemptIntent, error) {
 	return intent, nil
 }
 
-// replayIntentMatches accepts the one legacy verifier shape written before
-// verifier admission was keyed to the canonical worktree. Those records used
-// the disposable clone as Worktree, so a restart replays the same workflow
-// effect with a different path. Verifiers are observe-only and every other
-// identity field must still match; mutating attempts remain exact.
+// replayIntentMatches reports whether a replay names the attempt a claimed
+// effect already covers.
 func replayIntentMatches(stored, replay agent.AttemptIntent) bool {
-	if reflect.DeepEqual(stored, replay) {
-		return true
+	return reflect.DeepEqual(replayIdentity(stored), replayIdentity(replay))
+}
+
+// replayIdentity drops what a retry may legitimately resolve again and keeps
+// every other field, so a replay still has to match on all of them.
+//
+// The provider is a dispatch decision, not identity — provider health, rate
+// limits and A/B routing all move it between one attempt and the next, and
+// comparing it made every retry that failed over refuse its own claimed
+// effect and spend the retry budget on the guard instead of on the error that
+// opened it. The stored record keeps the provider it was claimed for: the
+// process that owns a live lease is still running under that provider, and
+// admission counts it there.
+//
+// A disposable verifier reads its own clone, so its worktree path changes per
+// attempt while the attempt stays the same. That exemption predates this and
+// covers records written before verifier admission was keyed to the canonical
+// worktree; verifiers are observe-only, and a mutating attempt stays exact.
+func replayIdentity(intent agent.AttemptIntent) agent.AttemptIntent {
+	intent.Provider = ""
+	if intent.Access == agent.AttemptAccessObserve && intent.Role.IsVerifier() {
+		intent.Worktree = ""
 	}
-	if stored.Access != agent.AttemptAccessObserve || replay.Access != agent.AttemptAccessObserve ||
-		!stored.Role.IsVerifier() || !replay.Role.IsVerifier() {
-		return false
-	}
-	stored.Worktree = ""
-	replay.Worktree = ""
-	return reflect.DeepEqual(stored, replay)
+	return intent
 }
 
 func expireLeases(s *diskState, now time.Time) bool {
