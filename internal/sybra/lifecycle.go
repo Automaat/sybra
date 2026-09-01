@@ -71,27 +71,7 @@ func (lm *LifecycleManager) StartManagers(ctx context.Context, emit func(string,
 	}
 
 	hcheck := health.New(a.audit, a.tasks, config.HomeDir(), a.logger, emit, func() health.OwnedProcesses {
-		owned := health.OwnedProcesses{
-			PIDs:          map[int]bool{},
-			ProcessGroups: map[int]bool{},
-		}
-		if pid := os.Getpid(); pid > 0 {
-			owned.PIDs[pid] = true
-		}
-		for _, ag := range a.agents.ListAgents() {
-			if ag == nil {
-				continue
-			}
-			pid := ag.GetPID()
-			if pid <= 0 {
-				continue
-			}
-			owned.PIDs[pid] = true
-			if pgid, err := syscall.Getpgid(pid); err == nil && pgid == pid {
-				owned.ProcessGroups[pgid] = true
-			}
-		}
-		return owned
+		return snapshotOwnedProcesses(os.Getpid(), a.agents.ListAgents(), syscall.Getpgid)
 	})
 	if a.sandboxes != nil {
 		hcheck.SetSandboxQuarantine(a.sandboxes.QuarantinedEntries)
@@ -125,6 +105,39 @@ func (lm *LifecycleManager) StartManagers(ctx context.Context, emit func(string,
 	lm.startTrashPruneLoop(ctx)
 	lm.startTaskSnapshotLoop(ctx)
 	lm.registerMetricsObservers()
+}
+
+func snapshotOwnedProcesses(
+	serverPID int,
+	agents []*agent.Agent,
+	getpgid func(int) (int, error),
+) health.OwnedProcesses {
+	owned := health.OwnedProcesses{
+		PIDs:          map[int]bool{},
+		ProcessGroups: map[int]bool{},
+	}
+	markOwnedProcess := func(pid int) {
+		if pid <= 0 {
+			return
+		}
+		owned.PIDs[pid] = true
+		if getpgid == nil {
+			return
+		}
+		if pgid, err := getpgid(pid); err == nil && pgid > 0 {
+			owned.ProcessGroups[pgid] = true
+		}
+	}
+
+	markOwnedProcess(serverPID)
+	for _, ag := range agents {
+		if ag == nil {
+			continue
+		}
+		markOwnedProcess(ag.GetPID())
+	}
+
+	return owned
 }
 
 // StartPollers launches task-source pollers and the orchestrator recovery loop.
