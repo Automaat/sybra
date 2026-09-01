@@ -16,7 +16,7 @@ func mutateIntent() agent.AttemptIntent {
 		TaskID:   "t1", TaskGeneration: 7,
 		Worktree: "/wt/t1", WorktreeGeneration: 7,
 		Access: agent.AttemptAccessMutate, Role: agent.RoleImplementation,
-		Provider: "claude", CapabilityCertified: true,
+		Provider: providerid.Claude, CapabilityCertified: true,
 	}
 }
 
@@ -25,8 +25,8 @@ func TestReplayIntentMatches_ToleratesADispatchDecision(t *testing.T) {
 		name   string
 		change func(*agent.AttemptIntent)
 	}{
-		{"failed over to another provider", func(i *agent.AttemptIntent) { i.Provider = "codex" }},
-		{"failed over again", func(i *agent.AttemptIntent) { i.Provider = "copilot" }},
+		{"failed over to another provider", func(i *agent.AttemptIntent) { i.Provider = providerid.Codex }},
+		{"failed over again", func(i *agent.AttemptIntent) { i.Provider = providerid.Copilot }},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
