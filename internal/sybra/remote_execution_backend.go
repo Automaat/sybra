@@ -182,8 +182,10 @@ func (b *leaderExecutionBackend) remoteAdmission() (admitted bool, reason string
 }
 
 // remoteBaseRef names the ref a remote workspace's base commit came from. The
-// worker only compares it for manifest consistency, so it has to be a valid
-// full ref that describes the checkout rather than one the worker resolves.
+// follower resolves this ref and requires the base SHA to be an ancestor of
+// it (agentworkspace.PrepareWithBaseBundle), unless a base bundle replaces it
+// first — see followerResolvableBaseRef, which keeps a non-branch ref from
+// ever reaching that gate unbundled.
 //
 // A review worktree is a detached checkout of refs/pull/<N>/head and carries
 // no branch, so symbolic-ref cannot name it. Falling straight through to that
@@ -241,7 +243,7 @@ func (b *leaderExecutionBackend) placementRequest(ctx context.Context, start age
 	}
 	baseBundles := make([]workercontrol.WorkspaceBaseBundleInput, 0, len(anchors))
 	for _, anchor := range anchors {
-		baseBundle, baseBundleRef, bundleErr := prepareRemoteWorkspaceBase(ctx, start.Config.Dir, start.Spec.ID, baseSHA, anchor)
+		baseBundle, baseBundleRef, bundleErr := prepareRemoteWorkspaceBase(ctx, start.Config.Dir, start.Spec.ID, baseSHA, anchor, baseRef)
 		if bundleErr != nil {
 			return workercontrol.PlacementRequest{}, bundleErr
 		}
@@ -280,16 +282,32 @@ func (b *leaderExecutionBackend) placementRequest(ctx context.Context, start age
 	}, nil
 }
 
-func prepareRemoteWorkspaceBase(ctx context.Context, dir, runID, baseSHA, workerAnchor string) ([]byte, *executioncontract.ContentReference, error) {
+// followerResolvableBaseRef reports whether a follower's own run clone can
+// resolve this base ref. That clone carries refs/heads/* as remote-tracking
+// refs and nothing else, so only a branch ref survives the ancestry gate in
+// agentworkspace.PrepareWithBaseBundle. Any other ref — a detached review
+// checkout's refs/pull/<N>/head — must ship a base bundle, which replaces the
+// ref with the imported one before that gate runs.
+func followerResolvableBaseRef(baseRef string) bool {
+	branch, ok := strings.CutPrefix(baseRef, "refs/heads/")
+	return ok && branch != "" && !strings.HasPrefix(branch, "refs/")
+}
+
+func prepareRemoteWorkspaceBase(ctx context.Context, dir, runID, baseSHA, workerAnchor, baseRef string) ([]byte, *executioncontract.ContentReference, error) {
 	// Thin bundles are safe only against the exact object advertised by the
 	// candidate daemon. A leader-side remote-tracking ref says nothing about a
 	// stale daemon clone and must never be used as the prerequisite.
 	anchor := strings.TrimSpace(workerAnchor)
-	if anchor != "" && gitexec.Run(ctx, gitexec.Options{Dir: dir}, "merge-base", "--is-ancestor", baseSHA, anchor) == nil {
+	if anchor != "" && followerResolvableBaseRef(baseRef) &&
+		gitexec.Run(ctx, gitexec.Options{Dir: dir}, "merge-base", "--is-ancestor", baseSHA, anchor) == nil {
 		return nil, nil, nil
 	}
 	prerequisite := ""
-	if anchor != "" {
+	// A non-branch base ref ships a bundle precisely so the imported ref can
+	// replace it, and a thin bundle against an anchor that already contains
+	// the base is empty — git refuses to write one. Only a follower-resolvable
+	// ref may narrow the bundle against the anchor.
+	if anchor != "" && followerResolvableBaseRef(baseRef) {
 		// Diverged histories can still use a thin bundle. The merge base is
 		// necessarily present when the daemon has the exact advertised anchor,
 		// while excluding the anchor itself would incorrectly omit the leader's

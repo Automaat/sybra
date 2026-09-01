@@ -3,10 +3,13 @@ package sybra
 import (
 	"context"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/executioncontract"
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -51,14 +54,19 @@ func TestRemoteBaseRef_DetachedReviewCheckoutNamesThePRHead(t *testing.T) {
 }
 
 func TestRemoteBaseRef_PrefersTheTaskBranch(t *testing.T) {
-	// Given a task carrying its own branch
-	dir, _ := newDetachedCheckout(t)
+	// Given a checkout attached to one branch and a task recording another
+	dir, sha := newDetachedCheckout(t)
+	cmd := exec.Command("git", "checkout", "-B", "feat/other", sha)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git checkout: %v\n%s", err, out)
+	}
 	owned := task.Task{ID: "t1", Branch: "feat/mine", PRNumber: 7}
 
 	// When the base ref is resolved
 	ref, err := remoteBaseRef(context.Background(), owned, dir)
 
-	// Then the branch wins over both the checkout and the pull request
+	// Then the task's branch wins over both the checkout and the pull request
 	if err != nil {
 		t.Fatalf("remoteBaseRef: %v", err)
 	}
@@ -107,27 +115,120 @@ func TestRemoteBaseRef_DetachedWithoutAPullRequestSaysSo(t *testing.T) {
 	}
 }
 
-func TestRemoteBaseRef_ResultIsAValidFullRef(t *testing.T) {
+func TestRemoteBaseRef_ResultPassesTheExecutionContract(t *testing.T) {
 	// Given every shape the resolver can return
-	dir, _ := newDetachedCheckout(t)
+	dir, sha := newDetachedCheckout(t)
 	cases := []task.Task{
 		{ID: "t1", PRNumber: 382},
 		{ID: "t2", Branch: "feat/mine"},
 	}
 
 	for _, tk := range cases {
-		// When the base ref is resolved
+		// When the base ref is resolved and carried into a run spec
 		ref, err := remoteBaseRef(context.Background(), tk, dir)
 		if err != nil {
 			t.Fatalf("remoteBaseRef(%+v): %v", tk, err)
 		}
+		workspace := executioncontract.Workspace{
+			RepositoryID: "owner/repo",
+			BaseSHA:      sha,
+			BaseRef:      ref,
+			Roots:        []executioncontract.LogicalRoot{executioncontract.RootWorktree},
+		}
 
-		// Then it is a full ref the execution contract accepts
-		if !strings.HasPrefix(ref, "refs/") || strings.Contains(ref, "//") || strings.HasSuffix(ref, "/") {
-			t.Fatalf("ref = %q, want a valid full git ref", ref)
+		// Then the contract that gates every dispatch accepts it
+		if err := validateWorkspaceForTest(workspace); err != nil {
+			t.Fatalf("ref %q rejected by the execution contract: %v", ref, err)
 		}
-		if filepath.Clean(ref) != ref {
-			t.Fatalf("ref = %q, want a clean ref path", ref)
-		}
+	}
+}
+
+func validateWorkspaceForTest(workspace executioncontract.Workspace) error {
+	spec := executioncontract.RunSpec{
+		Role:      "implementation",
+		Provider:  executioncontract.ProviderIntent{Provider: providerid.Codex, Model: "gpt-5.4"},
+		Workspace: workspace,
+		Deadline:  time.Now().UTC().Add(time.Hour),
+	}
+	err := spec.Validate()
+	if err != nil && strings.Contains(err.Error(), "workspace") {
+		return err
+	}
+	return nil
+}
+
+func TestFollowerResolvableBaseRef(t *testing.T) {
+	tests := []struct {
+		name   string
+		ref    string
+		usable bool
+	}{
+		{"branch ref", "refs/heads/main", true},
+		{"pull head", "refs/pull/382/head", false},
+		{"remote tracking", "refs/remotes/origin/main", false},
+		{"tag", "refs/tags/v1", false},
+		{"empty", "", false},
+		{"branch prefix bolted onto a full ref", "refs/heads/refs/pull/382/head", false},
+		{"bare prefix", "refs/heads/", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Given a base ref bound for a follower's run clone
+			// When placement asks whether that clone can resolve it
+			got := followerResolvableBaseRef(tc.ref)
+
+			// Then only a branch ref skips shipping a base bundle
+			if got != tc.usable {
+				t.Fatalf("followerResolvableBaseRef(%q) = %v, want %v", tc.ref, got, tc.usable)
+			}
+		})
+	}
+}
+
+func TestPlacementCarriesTheResolvedBaseRefVerbatim(t *testing.T) {
+	// Given a review task's detached checkout of a pull request head
+	dir, _ := newDetachedCheckout(t)
+	review := task.Task{ID: "t1", PRNumber: 382}
+
+	// When placement resolves the base ref it will put in the run spec
+	ref, err := remoteBaseRef(context.Background(), review, dir)
+	if err != nil {
+		t.Fatalf("remoteBaseRef: %v", err)
+	}
+
+	// Then it travels unchanged, never re-prefixed into refs/heads/refs/pull/...
+	metadata := agent.RemoteRunMetadata{WorkspaceBaseRef: ref}
+	if metadata.WorkspaceBaseRef != "refs/pull/382/head" {
+		t.Fatalf("WorkspaceBaseRef = %q, want the resolver's own ref", metadata.WorkspaceBaseRef)
+	}
+	if strings.HasPrefix(metadata.WorkspaceBaseRef, "refs/heads/refs/") {
+		t.Fatalf("WorkspaceBaseRef = %q, want no double prefix", metadata.WorkspaceBaseRef)
+	}
+}
+
+func TestPrepareRemoteWorkspaceBaseShipsABundleForANonBranchRef(t *testing.T) {
+	// Given a leader whose base commit the follower's anchor already contains
+	dir, base := remoteBackendRepository(t)
+
+	// When placement prepares the base for a branch ref
+	content, ref, err := prepareRemoteWorkspaceBase(context.Background(), dir, "run-branch", base, base, "refs/heads/main")
+	if err != nil {
+		t.Fatalf("prepareRemoteWorkspaceBase(branch): %v", err)
+	}
+
+	// Then the anchor shortcut applies and no bundle travels
+	if len(content) != 0 || ref != nil {
+		t.Fatalf("branch ref shipped a bundle it does not need: content=%d ref=%v", len(content), ref)
+	}
+
+	// When the same base is prepared for a detached pull-request ref
+	content, ref, err = prepareRemoteWorkspaceBase(context.Background(), dir, "run-pull", base, base, "refs/pull/382/head")
+	if err != nil {
+		t.Fatalf("prepareRemoteWorkspaceBase(pull): %v", err)
+	}
+
+	// Then a bundle travels, since the follower's clone cannot resolve that ref
+	if len(content) == 0 || ref == nil {
+		t.Fatal("pull ref took the anchor shortcut; the follower would fail the ancestry gate")
 	}
 }
