@@ -679,3 +679,32 @@ func TestRebind_LeavesLiteralsAndEscapesAlone(t *testing.T) {
 		})
 	}
 }
+
+func TestMigrate_WaitsOutABusyTimeoutItLoses(t *testing.T) {
+	// Given many instances starting together on a board whose write lock
+	// expires long before the slowest of them gets a turn
+	dsn := "file:" + filepath.Join(t.TempDir(), "sybra.db") + "?_pragma=busy_timeout(50)"
+	const starts = 48
+	errs := make(chan error, starts)
+	var wg sync.WaitGroup
+	for range starts {
+		wg.Go(func() {
+			handle, err := db.Open(t.Context(), db.Options{Backend: "sqlite", DSN: dsn})
+			if handle != nil {
+				t.Cleanup(func() { _ = handle.Close() })
+			}
+			errs <- err
+		})
+	}
+
+	// When each of them migrates the one database
+	wg.Wait()
+	close(errs)
+
+	// Then losing the lock costs a wait, not a start
+	for err := range errs {
+		if err != nil {
+			t.Errorf("concurrent start failed: %v", err)
+		}
+	}
+}
