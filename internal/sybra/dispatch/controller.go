@@ -274,7 +274,8 @@ func (c *Controller) Adopt(ctx context.Context, intent agent.AttemptIntent, leas
 			return changed, staleVersion(rec, lease)
 		}
 		if !replayIntentMatches(rec.Intent, intent) {
-			return changed, fmt.Errorf("%w: %s", ErrIntentReplayMismatch, intent.IntentID)
+			return changed, fmt.Errorf("%w: %s (%s)", ErrIntentReplayMismatch, intent.IntentID,
+				replayMismatchDetail(rec.Intent, intent))
 		}
 		if rec.Status == StatusCompleted {
 			return changed, fmt.Errorf("%w: lease %s is complete", ErrStaleLease, lease.ID)

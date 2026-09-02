@@ -167,3 +167,27 @@ func TestAcquireReplayMismatchNamesTheField(t *testing.T) {
 		t.Fatalf("err = %v, want it to name the worktree", err)
 	}
 }
+
+func TestAdoptReplayMismatchNamesTheField(t *testing.T) {
+	// Given a claimed attempt a restart is reconciling
+	clock := &fakeClock{t: time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)}
+	c := newTestController(t, clock, "epoch-1", Limits{})
+	claimed := intent("intent-1", "task-1", filepath.Join(t.TempDir(), "a"), providerid.Claude, agent.AttemptAccessMutate)
+	lease, err := c.Acquire(t.Context(), claimed)
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+
+	// When adoption presents an intent that disagrees on the worktree
+	diverged := intent("intent-1", "task-1", filepath.Join(t.TempDir(), "b"), providerid.Claude, agent.AttemptAccessMutate)
+	_, err = c.Adopt(t.Context(), diverged, lease, agent.AttemptBinding{AgentID: "a1", PID: 4242})
+
+	// Then reconciliation after a restart names the field too, not only the
+	// dispatch path
+	if !errors.Is(err, ErrIntentReplayMismatch) {
+		t.Fatalf("err = %v, want ErrIntentReplayMismatch", err)
+	}
+	if !strings.Contains(err.Error(), "worktree") {
+		t.Fatalf("err = %v, want it to name the worktree", err)
+	}
+}
