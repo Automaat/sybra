@@ -344,7 +344,7 @@ func (tx *WriteTx) Commit() error {
 	if tx == nil || tx.Tx == nil {
 		return sql.ErrTxDone
 	}
-	err := tx.Tx.Commit()
+	err := Contended(tx.Tx.Commit())
 	tx.finish(err)
 	return err
 }
@@ -354,7 +354,7 @@ func (tx *WriteTx) Rollback() error {
 	if tx == nil || tx.Tx == nil {
 		return sql.ErrTxDone
 	}
-	err := tx.Tx.Rollback()
+	err := Contended(tx.Tx.Rollback())
 	tx.finish(err)
 	return err
 }
