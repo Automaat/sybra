@@ -54,14 +54,20 @@ const (
 
 	deleteHistoryBefore = `DELETE FROM task_history WHERE changed_at < ?`
 
+	// COALESCE keeps the newest entry when it alone exceeds the budget:
+	// without it the inner query matches no row, min(id) is NULL, and
+	// "id < NULL" deletes nothing — so the one task the budget exists to
+	// bound would be the one task it never trims.
 	deleteHistoryOverBytes = `DELETE FROM task_history WHERE task_id = ? AND id < (
-		SELECT min(id) FROM (
-			SELECT id, SUM(length(snapshot)) OVER (
-				PARTITION BY task_id ORDER BY id DESC
-				ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-			) AS running
-			FROM task_history WHERE task_id = ?
-		) AS sized WHERE running <= ?)`
+		SELECT COALESCE(
+			(SELECT min(id) FROM (
+				SELECT id, SUM(length(snapshot)) OVER (
+					PARTITION BY task_id ORDER BY id DESC
+					ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+				) AS running
+				FROM task_history WHERE task_id = ?
+			) AS sized WHERE running <= ?),
+			(SELECT max(id) FROM task_history WHERE task_id = ?)))`
 
 	deleteHistoryOverCap = `DELETE FROM task_history WHERE task_id = ? AND id < (
 		SELECT min(id) FROM (
@@ -145,16 +151,17 @@ func (s *SQLStore) appendHistoryTx(ctx context.Context, tx *sql.Tx, entry Histor
 	return s.trimTaskHistoryTx(ctx, tx, entry.TaskID)
 }
 
+// trimTaskHistoryTx applies both bounds. They are independent: disabling the
+// row cap must not also disable the size budget, since the budget is the one
+// that actually bounds the table.
 func (s *SQLStore) trimTaskHistoryTx(ctx context.Context, tx *sql.Tx, taskID string) error {
-	limit := s.maxHistoryPerTask
-	if limit < 0 {
-		return nil
-	}
-	if limit == 0 {
-		limit = DefaultMaxHistoryPerTask
-	}
-	if _, err := tx.ExecContext(ctx, s.db.Rebind(deleteHistoryOverCap), taskID, taskID, limit); err != nil {
-		return fmt.Errorf("trim task history: %w", err)
+	if limit := s.maxHistoryPerTask; limit >= 0 {
+		if limit == 0 {
+			limit = DefaultMaxHistoryPerTask
+		}
+		if _, err := tx.ExecContext(ctx, s.db.Rebind(deleteHistoryOverCap), taskID, taskID, limit); err != nil {
+			return fmt.Errorf("trim task history: %w", err)
+		}
 	}
 	budget := s.maxHistoryBytesPerTask
 	if budget < 0 {
@@ -163,7 +170,7 @@ func (s *SQLStore) trimTaskHistoryTx(ctx context.Context, tx *sql.Tx, taskID str
 	if budget == 0 {
 		budget = DefaultMaxHistoryBytesPerTask
 	}
-	if _, err := tx.ExecContext(ctx, s.db.Rebind(deleteHistoryOverBytes), taskID, taskID, budget); err != nil {
+	if _, err := tx.ExecContext(ctx, s.db.Rebind(deleteHistoryOverBytes), taskID, taskID, budget, taskID); err != nil {
 		return fmt.Errorf("trim task history by size: %w", err)
 	}
 	return nil

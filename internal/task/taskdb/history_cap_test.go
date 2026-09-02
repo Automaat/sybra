@@ -297,3 +297,73 @@ func TestHistory_CapsBytesPerTask(t *testing.T) {
 		}
 	})
 }
+
+func TestHistory_TrimsWhenTheNewestEntryAloneExceedsTheBudget(t *testing.T) {
+	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
+		store, err := NewSQLStore(d)
+		if err != nil {
+			t.Fatalf("NewSQLStore: %v", err)
+		}
+		store.SetMaxHistoryPerTask(500)
+		store.SetMaxHistoryBytesPerTask(1 << 10)
+
+		// Given a task whose every single entry is larger than the whole budget
+		record := sqlTask("huge1234", "first")
+		record.Body = strings.Repeat("x", 8<<10)
+		for i := range 12 {
+			record.Title = fmt.Sprintf("title-%d", i)
+			if err := store.PutBy(t.Context(), record, nil, "engine", []string{"title"}); err != nil {
+				t.Fatalf("PutBy %d: %v", i, err)
+			}
+		}
+
+		// When its history is read
+		entries, err := store.History(t.Context(), HistoryQuery{TaskID: "huge1234"})
+		if err != nil {
+			t.Fatalf("History: %v", err)
+		}
+
+		// Then the newest entry is kept and the rest are trimmed — the task the
+		// budget exists to bound must not be the one it never touches
+		if len(entries) != 1 {
+			t.Fatalf("kept %d entries, want only the newest", len(entries))
+		}
+		if entries[0].Snapshot == "" {
+			t.Fatal("the surviving entry lost its snapshot")
+		}
+	})
+}
+
+func TestHistory_SizeBudgetAppliesWithTheRowCapDisabled(t *testing.T) {
+	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
+		store, err := NewSQLStore(d)
+		if err != nil {
+			t.Fatalf("NewSQLStore: %v", err)
+		}
+		// Given an operator who turned the row cap off but not the size budget
+		store.SetMaxHistoryPerTask(-1)
+		store.SetMaxHistoryBytesPerTask(64 << 10)
+
+		record := sqlTask("nocap123", "first")
+		record.Body = strings.Repeat("x", 16<<10)
+		for i := range 40 {
+			record.Title = fmt.Sprintf("title-%d", i)
+			if err := store.PutBy(t.Context(), record, nil, "engine", []string{"title"}); err != nil {
+				t.Fatalf("PutBy %d: %v", i, err)
+			}
+		}
+
+		// When its history is read
+		entries, err := store.History(t.Context(), HistoryQuery{TaskID: "nocap123"})
+		if err != nil {
+			t.Fatalf("History: %v", err)
+		}
+
+		// Then the budget still bounds it: the two limits are independent
+		if len(entries) >= 40 {
+			t.Fatalf("kept %d entries; disabling the row cap disabled the size budget too", len(entries))
+		}
+	})
+}

@@ -474,6 +474,18 @@ func (d *DB) ensureSQLiteAutoVacuum(ctx context.Context) error {
 	if mode == sqliteAutoVacuumIncremental {
 		return nil
 	}
+	// Only a database with no tables can adopt the mode. SQLite would ignore
+	// the pragma on a populated one anyway, but asking first is what makes
+	// "an existing file is left as it is" true of the code and not just of
+	// the engine's behaviour.
+	var tables int
+	if err := d.sqlDB.QueryRowContext(ctx,
+		`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`).Scan(&tables); err != nil {
+		return fmt.Errorf("read sqlite table count: %w", err)
+	}
+	if tables > 0 {
+		return nil
+	}
 	if _, err := d.sqlDB.ExecContext(ctx, "PRAGMA auto_vacuum=incremental"); err != nil {
 		return fmt.Errorf("set sqlite auto-vacuum mode: %w", err)
 	}
