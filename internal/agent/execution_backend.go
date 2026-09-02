@@ -43,6 +43,11 @@ type ExecutionEvent struct {
 	BackendOwnsCompletion bool
 	PermanentFailure      bool
 	Approval              *ApprovalRequest
+	// OutputParsed marks Output as this package's own StreamEvent rather than
+	// the provider's wire format. A backend that runs the agent on another
+	// machine forwards already-parsed events, and re-parsing them as provider
+	// output drops the terminal result's cost, tokens and session.
+	OutputParsed bool
 }
 
 // ExecutionEventSink receives process observations. It deliberately exposes

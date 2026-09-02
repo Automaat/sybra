@@ -234,7 +234,8 @@ type Agent struct {
 	// goroutines reaching their terminal sites for the same agent (e.g.
 	// runner_convo and runner_convo_survive both firing when the process exits
 	// while a reattach tail is still live) only advance the workflow once.
-	completedOnce sync.Once
+	completedOnce    sync.Once
+	remotelyExecuted bool
 	// costSessionID and costBaseUSD back AddResultStats' per-session cost
 	// bookkeeping. Providers report CostUSD as a cumulative total for the
 	// current session (not a per-turn delta), so a repeated session id must
@@ -819,6 +820,23 @@ func (a *Agent) SetSessionID(id string) {
 }
 
 // GetSessionID returns the current provider session ID.
+// SetRemotelyExecuted marks a run whose provider process lives on another
+// host, so effects describing this host's provider state are not taken from
+// it.
+func (a *Agent) SetRemotelyExecuted() {
+	a.mu.Lock()
+	a.remotelyExecuted = true
+	a.mu.Unlock()
+}
+
+// RemotelyExecuted reports whether this run's provider process ran on another
+// host.
+func (a *Agent) RemotelyExecuted() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.remotelyExecuted
+}
+
 func (a *Agent) GetSessionID() string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()

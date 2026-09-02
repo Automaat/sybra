@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -180,6 +181,15 @@ func (m *Manager) emitExecutionEvent(ctx context.Context, _ ExecutionHandle, eve
 		providerName := event.Provider
 		if providerName == "" {
 			providerName = a.Provider
+		}
+		if event.OutputParsed {
+			a.SetRemotelyExecuted()
+			var parsed StreamEvent
+			if err := json.Unmarshal(event.Output, &parsed); err != nil {
+				m.logger.Warn("agent.execution.parsed-output", "id", a.ID, "err", err)
+				return false
+			}
+			return m.applyHeadlessEvent(ctx, a, parsed, lastEmit, providerByName(providerName), false)
 		}
 		return m.processHeadlessLine(ctx, a, event.Output, lastEmit, providerByName(providerName))
 	case ExecutionApproval:
