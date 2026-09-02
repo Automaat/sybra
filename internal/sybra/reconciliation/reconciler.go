@@ -328,7 +328,7 @@ func (r *Reconciler) observeGit(ctx context.Context, t *task.Task, path string, 
 	return g, nil
 }
 
-func authoritativeRemoteSHA(ctx context.Context, path string, t *task.Task, prHead authoritativePRHead) (string, bool, error) {
+func authoritativeRemoteSHA(ctx context.Context, path string, t *task.Task, prHead authoritativePRHead) (sha string, ok bool, err error) {
 	if remote, branch, ok := authoritativePRTrackingRef(ctx, path, t, prHead); ok {
 		return refreshedRemoteTrackingSHA(ctx, path, remote, branch)
 	}
