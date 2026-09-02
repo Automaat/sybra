@@ -278,6 +278,12 @@ func detectPerTask(in DetectInput) []Anomaly {
 // bouncing the task between in-progress and human-required forever.
 const monitorAutoRetriedTag = "monitor:auto-retried"
 
+// minimumResolvedRunsForFailureSpike suppresses low-sample-size noise. A
+// single failed code-author run in an otherwise quiet hour is not a "spike";
+// treating 1/1 or 2/2 as a board-wide execution incident pages the monitor on
+// ordinary task churn rather than a fleet-wide degradation.
+const minimumResolvedRunsForFailureSpike = 5
+
 // lostAgentInvestigationTag is the tag monitorRoutingSink stamps on a local
 // task it files for a KindLostAgent anomaly (see internal/sybra/monitor_sink.go).
 const lostAgentInvestigationTag = "monitor:" + string(KindLostAgent)
@@ -620,12 +626,13 @@ func recentRunningRun(runs []task.AgentRun, now time.Time, d time.Duration) bool
 
 func detectFromAudit(in DetectInput) []Anomaly {
 	var out []Anomaly
-	if in.HourSummary.FailureRate > in.Cfg.FailureRateThreshold && in.HourSummary.AgentRuns > 0 {
+	if in.HourSummary.FailureRate > in.Cfg.FailureRateThreshold && in.HourSummary.ResolvedRuns >= minimumResolvedRunsForFailureSpike {
 		ev := map[string]any{
-			"failure_rate": in.HourSummary.FailureRate,
-			"agent_runs":   in.HourSummary.AgentRuns,
-			"threshold":    in.Cfg.FailureRateThreshold,
-			"period":       in.HourSummary.Period,
+			"failure_rate":  in.HourSummary.FailureRate,
+			"agent_runs":    in.HourSummary.AgentRuns,
+			"resolved_runs": in.HourSummary.ResolvedRuns,
+			"threshold":     in.Cfg.FailureRateThreshold,
+			"period":        in.HourSummary.Period,
 		}
 		out = append(out, Anomaly{
 			Kind:        KindFailureSpike,

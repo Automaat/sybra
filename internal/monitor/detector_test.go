@@ -433,9 +433,10 @@ func TestDetect(t *testing.T) {
 			in: DetectInput{
 				Now: now,
 				HourSummary: audit.Summary{
-					FailureRate: 0.45,
-					AgentRuns:   10,
-					Period:      "test",
+					FailureRate:  0.45,
+					AgentRuns:    10,
+					ResolvedRuns: 10,
+					Period:       "test",
 				},
 				Cfg: cfg,
 			},
@@ -446,8 +447,23 @@ func TestDetect(t *testing.T) {
 			in: DetectInput{
 				Now: now,
 				HourSummary: audit.Summary{
-					FailureRate: 0.1,
-					AgentRuns:   10,
+					FailureRate:  0.1,
+					AgentRuns:    10,
+					ResolvedRuns: 10,
+				},
+				Cfg: cfg,
+			},
+			want: nil,
+		},
+		{
+			name: "failure_spike suppressed below minimum resolved runs",
+			in: DetectInput{
+				Now: now,
+				HourSummary: audit.Summary{
+					FailureRate:  1.0,
+					AgentRuns:    1,
+					ResolvedRuns: 1,
+					Period:       "test",
 				},
 				Cfg: cfg,
 			},
@@ -471,8 +487,9 @@ func TestDetect(t *testing.T) {
 				Tasks:      []task.Task{mkTaskAt(now, "a", task.StatusInProgress)},
 				LiveAgents: []liveAgent{},
 				HourSummary: audit.Summary{
-					FailureRate: 0.5,
-					AgentRuns:   4,
+					FailureRate:  0.5,
+					AgentRuns:    4,
+					ResolvedRuns: 6,
 				},
 				Cfg: cfg,
 			},
