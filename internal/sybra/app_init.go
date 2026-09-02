@@ -2331,6 +2331,7 @@ func (a *App) openTaskPersistence(ctx context.Context) task.Persistence {
 		return nil
 	}
 	sqlStore.SetMaxHistoryPerTask(a.cfg.Database.MaxTaskHistoryPerTask)
+	sqlStore.SetMaxHistoryBytesPerTask(a.cfg.Database.MaxTaskHistoryBytesPerTask)
 	projectionCtx, projectionCancel := context.WithTimeout(ctx, importTimeout)
 	defer projectionCancel()
 	if err := sqlStore.BackfillBoardProjections(projectionCtx); err != nil {

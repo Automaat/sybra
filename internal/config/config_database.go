@@ -30,6 +30,9 @@ type DatabaseConfig struct {
 	ConnMaxLifetimeSeconds int `yaml:"conn_max_lifetime_seconds,omitempty" json:"connMaxLifetimeSeconds"`
 	// MaxTaskHistoryPerTask caps how many task_history entries one task keeps, trimmed as each new entry lands; 0 uses taskdb.DefaultMaxHistoryPerTask (200), and a negative value disables the cap. Each entry holds a whole task document, so without a cap this is by far the largest table on a busy board.
 	MaxTaskHistoryPerTask int `yaml:"max_task_history_per_task,omitempty" json:"maxTaskHistoryPerTask"`
+
+	// MaxTaskHistoryBytesPerTask bounds one task's history by size as well as by count, trimmed as each new entry lands; 0 uses taskdb.DefaultMaxHistoryBytesPerTask (2 MiB), and a negative value disables the budget. The row cap alone does not bound the table, because one entry is a whole task document and a document carrying plans, reviews and a long ledger runs to tens of kilobytes.
+	MaxTaskHistoryBytesPerTask int `yaml:"max_task_history_bytes_per_task,omitempty" json:"maxTaskHistoryBytesPerTask"`
 }
 
 // NormalizeDBBackend canonicalizes a database.backend value. Casing and surrounding space are tolerated so a formatting slip never changes which engine the board lands on; unknown values are rejected.

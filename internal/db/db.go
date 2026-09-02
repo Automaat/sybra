@@ -94,6 +94,10 @@ func Open(ctx context.Context, opts Options) (*DB, error) {
 	}
 
 	d := &DB{sqlDB: sqlDB, dialect: dialect}
+	if err := settle(func() error { return d.ensureSQLiteAutoVacuum(ctx) }); err != nil {
+		_ = sqlDB.Close()
+		return nil, fmt.Errorf("configure %s database %s auto-vacuum: %w", dialect, RedactDSN(opts.DSN), err)
+	}
 	if err := settle(func() error { return d.ensureSQLiteWAL(ctx) }); err != nil {
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("configure %s database %s WAL: %w", dialect, RedactDSN(opts.DSN), err)
@@ -101,6 +105,10 @@ func Open(ctx context.Context, opts Options) (*DB, error) {
 	if err := settle(func() error { return d.shrinkSQLiteWAL(ctx) }); err != nil {
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("checkpoint %s database %s WAL: %w", dialect, RedactDSN(opts.DSN), err)
+	}
+	if err := settle(func() error { return d.reclaimSQLiteFreePages(ctx) }); err != nil {
+		_ = sqlDB.Close()
+		return nil, fmt.Errorf("reclaim %s database %s free pages: %w", dialect, RedactDSN(opts.DSN), err)
 	}
 	if err := Migrate(ctx, d); err != nil {
 		_ = sqlDB.Close()
@@ -319,6 +327,11 @@ func resolveDriver(backend string) (Dialect, string, error) {
 // a pool sized above one. The WAL bounds are appended separately by
 // prepareSQLiteDSN because they are storage invariants even when an operator
 // supplies their own otherwise-authoritative pragma set.
+// sqliteAutoVacuumIncremental is PRAGMA auto_vacuum's "incremental" mode: the
+// database tracks free pages so they can be handed back to the filesystem,
+// without the full-file rewrite a VACUUM performs.
+const sqliteAutoVacuumIncremental = 2
+
 var sqlitePragmas = []string{
 	"busy_timeout(5000)",
 	"foreign_keys(1)",
@@ -444,6 +457,41 @@ const walSetupBudget = 5 * time.Second
 // DSN pragmas: applied per-connection it fails with SQLITE_BUSY whenever
 // another connection holds the file, which turns a concurrent open into a
 // startup abort.
+// ensureSQLiteAutoVacuum puts a NEW database into incremental auto-vacuum.
+//
+// The mode is fixed when the first table is created and cannot be changed
+// afterwards without a full VACUUM, so this runs before migrations and is a
+// no-op on a database that already has tables. That is deliberate: adopting it
+// for an existing file would mean rewriting gigabytes during startup.
+func (d *DB) ensureSQLiteAutoVacuum(ctx context.Context) error {
+	if d.dialect != SQLite {
+		return nil
+	}
+	var mode int
+	if err := d.sqlDB.QueryRowContext(ctx, "PRAGMA auto_vacuum").Scan(&mode); err != nil {
+		return fmt.Errorf("read sqlite auto-vacuum mode: %w", err)
+	}
+	if mode == sqliteAutoVacuumIncremental {
+		return nil
+	}
+	// Only a database with no tables can adopt the mode. SQLite would ignore
+	// the pragma on a populated one anyway, but asking first is what makes
+	// "an existing file is left as it is" true of the code and not just of
+	// the engine's behaviour.
+	var tables int
+	if err := d.sqlDB.QueryRowContext(ctx,
+		`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`).Scan(&tables); err != nil {
+		return fmt.Errorf("read sqlite table count: %w", err)
+	}
+	if tables > 0 {
+		return nil
+	}
+	if _, err := d.sqlDB.ExecContext(ctx, "PRAGMA auto_vacuum=incremental"); err != nil {
+		return fmt.Errorf("set sqlite auto-vacuum mode: %w", err)
+	}
+	return nil
+}
+
 func (d *DB) ensureSQLiteWAL(ctx context.Context) error {
 	if d.dialect != SQLite {
 		return nil
@@ -480,6 +528,35 @@ func (d *DB) ensureSQLiteWAL(ctx context.Context) error {
 // completing. SQLite reports that as a busy result row rather than an error.
 // Starting remains safe in that case: the installed size limit takes effect
 // when the reader releases the WAL and a later checkpoint resets it.
+// reclaimSQLiteFreePages returns space that deleted rows left behind.
+//
+// SQLite never shrinks its file on its own: pages freed by a delete stay in
+// the file's freelist and are only reused. A board that prunes history
+// continuously therefore grows without bound — one reached 4.9 GB holding
+// 1.4 GB of data, and reads slowed enough that the sweeps which release
+// umbrella children and re-dispatch stalled tasks began timing out.
+//
+// Incremental mode is what makes this possible, and a database can only adopt
+// it before its first table exists, so an existing file keeps whatever mode it
+// was created with and reclaims nothing here — that one needs a VACUUM, which
+// rewrites the whole file and is an operator's call, not a startup's.
+func (d *DB) reclaimSQLiteFreePages(ctx context.Context) error {
+	if d.dialect != SQLite {
+		return nil
+	}
+	var mode int
+	if err := d.sqlDB.QueryRowContext(ctx, "PRAGMA auto_vacuum").Scan(&mode); err != nil {
+		return fmt.Errorf("read sqlite auto-vacuum mode: %w", err)
+	}
+	if mode != sqliteAutoVacuumIncremental {
+		return nil
+	}
+	if _, err := d.sqlDB.ExecContext(ctx, "PRAGMA incremental_vacuum"); err != nil {
+		return fmt.Errorf("reclaim sqlite free pages: %w", err)
+	}
+	return nil
+}
+
 func (d *DB) shrinkSQLiteWAL(ctx context.Context) error {
 	if d.dialect != SQLite {
 		return nil

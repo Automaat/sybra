@@ -774,3 +774,61 @@ func TestInTx_WaitsOutAContendedWriter(t *testing.T) {
 		t.Fatalf("rows = %d, want both writers committed", rows)
 	}
 }
+
+func TestOpen_NewDatabaseReclaimsFreePages(t *testing.T) {
+	// Given a fresh board
+	path := filepath.Join(t.TempDir(), "sybra.db")
+	handle, err := db.Open(t.Context(), db.Options{Backend: "sqlite", DSN: path})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	// When it is created
+	var mode int
+	if err := handle.QueryRowContext(t.Context(), `PRAGMA auto_vacuum`).Scan(&mode); err != nil {
+		t.Fatalf("read auto_vacuum: %v", err)
+	}
+
+	// Then it tracks free pages, so deleted rows can be handed back to the
+	// filesystem instead of growing the file forever
+	if mode != 2 {
+		t.Fatalf("auto_vacuum = %d, want 2 (incremental)", mode)
+	}
+
+	if _, err := handle.ExecContext(t.Context(), `CREATE TABLE bulk (id INTEGER PRIMARY KEY, blob TEXT)`); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	pad := strings.Repeat("x", 4096)
+	for i := range 2000 {
+		if _, err := handle.ExecContext(t.Context(), `INSERT INTO bulk (id, blob) VALUES (?, ?)`, i, pad); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+	if _, err := handle.ExecContext(t.Context(), `DELETE FROM bulk`); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	var freed int
+	if err := handle.QueryRowContext(t.Context(), `PRAGMA freelist_count`).Scan(&freed); err != nil {
+		t.Fatalf("read freelist: %v", err)
+	}
+	if freed == 0 {
+		t.Fatal("deleting every row freed no pages, so the reclaim assertion proves nothing")
+	}
+	if err := handle.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	// And a later start hands those pages back
+	reopened, err := db.Open(t.Context(), db.Options{Backend: "sqlite", DSN: path})
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	var remaining int
+	if err := reopened.QueryRowContext(t.Context(), `PRAGMA freelist_count`).Scan(&remaining); err != nil {
+		t.Fatalf("read freelist after reopen: %v", err)
+	}
+	if remaining >= freed {
+		t.Fatalf("freelist = %d pages after restart, want fewer than the %d that were freed", remaining, freed)
+	}
+}
