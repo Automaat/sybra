@@ -70,7 +70,10 @@ var (
 	agentClassRejected metric.Int64Counter
 	agentClassBorrowed metric.Int64Counter
 
-	autoMergeAttempts metric.Int64Counter
+	autoMergeAttempts    metric.Int64Counter
+	databaseTransactions metric.Int64Counter
+	databaseTxDuration   metric.Float64Histogram
+	databaseWriterWait   metric.Float64Histogram
 
 	// Observable gauge providers, mutated at wiring time and read from the
 	// meter's registered callback. Guarded by obsMu.
@@ -91,6 +94,7 @@ var (
 	ghIssueOutboxAgeFn     func() map[string]int64
 	cleanupFindingsFn      func() map[string]int64
 	cleanupBlockedBytesFn  func() map[string]int64
+	databasePoolStatsFn    func() DatabasePoolStats
 	tasksByStatusGauge     metric.Int64ObservableGauge
 	agentsActiveGauge      metric.Int64ObservableGauge
 	renovatePRsGauge       metric.Int64ObservableGauge
@@ -107,7 +111,22 @@ var (
 	ghOutboxAgeGauge       metric.Int64ObservableGauge
 	cleanupFindingsGauge   metric.Int64ObservableGauge
 	cleanupBlockedGauge    metric.Int64ObservableGauge
+	databasePoolConnsGauge metric.Int64ObservableGauge
+	databasePoolWaitsGauge metric.Int64ObservableGauge
+	databasePoolWaitGauge  metric.Float64ObservableGauge
 )
+
+// DatabasePoolStats is the database/sql pool snapshot exposed on each scrape.
+// Durations are converted at the registration seam so this package stays
+// independent of a concrete database handle.
+type DatabasePoolStats struct {
+	MaxOpenConnections  int64
+	OpenConnections     int64
+	InUse               int64
+	Idle                int64
+	WaitCount           int64
+	WaitDurationSeconds float64
+}
 
 // Enabled reports whether the metrics pipeline was initialized and is active.
 func Enabled() bool { return enabled }
@@ -192,6 +211,9 @@ func createInstruments() error {
 		return err
 	}
 	if err := createAutoMergeInstruments(); err != nil {
+		return err
+	}
+	if err := createDatabaseInstruments(); err != nil {
 		return err
 	}
 	return createObservableGauges()
@@ -390,6 +412,33 @@ func createAutoMergeInstruments() error {
 	return err
 }
 
+func createDatabaseInstruments() error {
+	m := meter
+	if m == nil {
+		return nil
+	}
+	var err error
+	if databaseTransactions, err = m.Int64Counter(
+		"sybra_database_transactions_total",
+		metric.WithDescription("Database transactions completed, by backend and result."),
+	); err != nil {
+		return err
+	}
+	if databaseTxDuration, err = m.Float64Histogram(
+		"sybra_database_transaction_duration_seconds",
+		metric.WithDescription("Complete database transaction latency including SQLite writer admission."),
+		metric.WithUnit("s"),
+	); err != nil {
+		return err
+	}
+	databaseWriterWait, err = m.Float64Histogram(
+		"sybra_database_writer_admission_wait_seconds",
+		metric.WithDescription("Time a SQLite transaction waited in the process-local writer queue before taking a pooled connection."),
+		metric.WithUnit("s"),
+	)
+	return err
+}
+
 func createObservableGauges() error {
 	m := meter
 	if m == nil {
@@ -480,15 +529,45 @@ func createObservableGauges() error {
 	); err != nil {
 		return err
 	}
+	return registerObservableCallback(m)
+}
+
+func registerObservableCallback(m metric.Meter) error {
 	if err := createCleanupGauges(m); err != nil {
 		return err
 	}
-	_, err = m.RegisterCallback(
+	if err := createDatabaseGauges(m); err != nil {
+		return err
+	}
+	_, err := m.RegisterCallback(
 		observe,
 		tasksByStatusGauge, agentsActiveGauge, renovatePRsGauge, providerHealthyG, providerRawHealthyG, pollerAuthHealthyG, agentsInFlightGauge,
 		agentsByClassGauge,
 		ghAuthStateGauge, ghAuthTransitionsGauge, ghAuthSuppressedGauge, ghOutboxPendingGauge, ghOutboxReplayedGauge, ghOutboxAgeGauge,
 		cleanupFindingsGauge, cleanupBlockedGauge,
+		databasePoolConnsGauge, databasePoolWaitsGauge, databasePoolWaitGauge,
+	)
+	return err
+}
+
+func createDatabaseGauges(m metric.Meter) error {
+	var err error
+	if databasePoolConnsGauge, err = m.Int64ObservableGauge(
+		"sybra_database_pool_connections",
+		metric.WithDescription("database/sql pool connections by state (max_open/open/in_use/idle)."),
+	); err != nil {
+		return err
+	}
+	if databasePoolWaitsGauge, err = m.Int64ObservableGauge(
+		"sybra_database_pool_waits_total",
+		metric.WithDescription("Cumulative database/sql waits for a pooled connection."),
+	); err != nil {
+		return err
+	}
+	databasePoolWaitGauge, err = m.Float64ObservableGauge(
+		"sybra_database_pool_wait_duration_seconds_total",
+		metric.WithDescription("Cumulative time spent waiting for a database/sql pooled connection."),
+		metric.WithUnit("s"),
 	)
 	return err
 }
@@ -528,6 +607,7 @@ func observe(_ context.Context, obs metric.Observer) error {
 	ghOutboxAge := ghIssueOutboxAgeFn
 	cleanupFindings := cleanupFindingsFn
 	cleanupBlockedBytes := cleanupBlockedBytesFn
+	databasePoolStats := databasePoolStatsFn
 	obsMu.RUnlock()
 
 	if byStatus != nil {
@@ -606,7 +686,26 @@ func observe(_ context.Context, obs metric.Observer) error {
 		}
 	}
 	observeCleanupGauges(obs, cleanupFindings, cleanupBlockedBytes)
+	observeDatabaseGauges(obs, databasePoolStats)
 	return nil
+}
+
+func observeDatabaseGauges(obs metric.Observer, statsFn func() DatabasePoolStats) {
+	if statsFn == nil {
+		return
+	}
+	stats := statsFn()
+	for state, n := range map[string]int64{
+		"max_open": stats.MaxOpenConnections,
+		"open":     stats.OpenConnections,
+		"in_use":   stats.InUse,
+		"idle":     stats.Idle,
+	} {
+		obs.ObserveInt64(databasePoolConnsGauge, n,
+			metric.WithAttributes(attribute.String("state", state)))
+	}
+	obs.ObserveInt64(databasePoolWaitsGauge, stats.WaitCount)
+	obs.ObserveFloat64(databasePoolWaitGauge, stats.WaitDurationSeconds)
 }
 
 func observeCleanupGauges(obs metric.Observer, findingsFn, blockedBytesFn func() map[string]int64) {
@@ -752,7 +851,31 @@ func RegisterCleanupProtectedBytes(fn func() map[string]int64) {
 	obsMu.Unlock()
 }
 
+// RegisterDatabasePoolStats wires a database/sql pool snapshot provider.
+func RegisterDatabasePoolStats(fn func() DatabasePoolStats) {
+	obsMu.Lock()
+	databasePoolStatsFn = fn
+	obsMu.Unlock()
+}
+
 // --- Record helpers. Each is a cheap nil guard when metrics are disabled. ---
+
+// DatabaseTransaction records one completed DB.InTx call.
+func DatabaseTransaction(ctx context.Context, backend, result string, duration, writerWait time.Duration) {
+	attrs := metric.WithAttributes(
+		attribute.String("backend", backend),
+		attribute.String("result", result),
+	)
+	if databaseTransactions != nil {
+		databaseTransactions.Add(ctx, 1, attrs)
+	}
+	if databaseTxDuration != nil {
+		databaseTxDuration.Record(ctx, duration.Seconds(), attrs)
+	}
+	if databaseWriterWait != nil && backend == "sqlite" {
+		databaseWriterWait.Record(ctx, writerWait.Seconds(), attrs)
+	}
+}
 
 func AgentStarted(provider, mode string) {
 	if agentsStarted == nil {

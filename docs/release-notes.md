@@ -4,6 +4,37 @@ Operator-facing changes that alter what a running board does, in the order
 they landed. Sybra auto-deploys `main` (see `CLAUDE.md`'s Server Deployment
 section), so "release" here means "reached `main`," not a tagged version.
 
+## 2026-09-02 — SQLite writers queue without starving readers
+
+SQLite now admits one process-local writer at a time before that writer takes
+a pooled connection. Concurrent task, workflow, audit, and tool-ledger writes
+therefore wait in a context-cancellable lane while the remaining WAL
+connections continue serving board reads. The pool default stays at four;
+raising it does not increase SQLite write throughput.
+
+Task-history trimming now uses a `(task_id, id)` index and the background
+startup sweep enforces both the row cap and the **2 MiB byte cap** across quiet
+tasks, not only tasks written again after an upgrade. The sweep is batched and
+counts UTF-8 bytes consistently on SQLite and Postgres. Databases created with
+incremental auto-vacuum return the pages freed by that sweep immediately.
+
+The Prometheus endpoint now exports database pool occupancy/wait totals,
+transaction latency/result, and SQLite writer-admission wait time. These
+separate slow SQL from time spent waiting to begin it.
+
+An older SQLite file created without incremental auto-vacuum cannot be
+converted safely while Sybra is serving it. To reclaim its existing freelist,
+stop Sybra, make a backup of `sybra.db` together with any `-wal`/`-shm` files,
+then run this explicit maintenance operation against the stopped database:
+
+```bash
+sqlite3 /absolute/path/to/sybra.db \
+  'PRAGMA auto_vacuum=INCREMENTAL; VACUUM;'
+```
+
+`VACUUM` rewrites the whole database and needs temporary free space near the
+database's current size. It is intentionally never run automatically.
+
 ## 2026-09-01 — SQLite write-ahead logs are bounded
 
 SQLite boards now retain at most **16 MiB** of reusable write-ahead-log space

@@ -479,6 +479,19 @@ func loadProtectedEvidenceTasks(findings []cleanup.Finding, get func(string) (ta
 // subsystem state. No-op when metrics are disabled.
 func (lm *LifecycleManager) registerMetricsObservers() {
 	a := lm.app
+	if a.database != nil {
+		metrics.RegisterDatabasePoolStats(func() metrics.DatabasePoolStats {
+			stats := a.database.SQL().Stats()
+			return metrics.DatabasePoolStats{
+				MaxOpenConnections:  int64(stats.MaxOpenConnections),
+				OpenConnections:     int64(stats.OpenConnections),
+				InUse:               int64(stats.InUse),
+				Idle:                int64(stats.Idle),
+				WaitCount:           stats.WaitCount,
+				WaitDurationSeconds: stats.WaitDuration.Seconds(),
+			}
+		})
+	}
 	metrics.RegisterTasksByStatus(func() map[string]int64 {
 		tasks, err := a.tasks.ListBoard()
 		if err != nil {

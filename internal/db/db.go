@@ -11,6 +11,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"net/url"
@@ -18,6 +19,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver "pgx" for the postgres backend
@@ -43,8 +45,36 @@ type Options struct {
 
 // DB is an open, migrated backend handle shared by every SQL-backed store.
 type DB struct {
-	sqlDB   *sql.DB
-	dialect Dialect
+	sqlDB      *sql.DB
+	dialect    Dialect
+	writerGate chan struct{}
+	observerMu sync.RWMutex
+	observer   func(TransactionObservation)
+}
+
+// TransactionObservation describes one explicit transaction. AdmissionWait is
+// the time a SQLite writer spent in the process-local queue before it was
+// allowed to take a pooled connection; Duration includes that wait.
+type TransactionObservation struct {
+	Dialect       Dialect
+	Duration      time.Duration
+	AdmissionWait time.Duration
+	Result        string
+}
+
+// WriteTx is a transaction whose lifetime owns SQLite's process-local writer
+// admission. Commit or Rollback releases the next writer; expiry of the context
+// passed to BeginWriteTx does the same as a failure-safe. It exists for the few
+// lock-shaped stores whose transaction spans several method calls and therefore
+// cannot use InTx's callback form.
+type WriteTx struct {
+	*sql.Tx
+	db            *DB
+	started       time.Time
+	admissionWait time.Duration
+	release       func()
+	finishOnce    sync.Once
+	done          chan struct{}
 }
 
 const (
@@ -93,7 +123,7 @@ func Open(ctx context.Context, opts Options) (*DB, error) {
 		return nil, fmt.Errorf("reach %s database %s: %w", dialect, RedactDSN(opts.DSN), err)
 	}
 
-	d := &DB{sqlDB: sqlDB, dialect: dialect}
+	d := newDB(sqlDB, dialect)
 	if err := settle(func() error { return d.ensureSQLiteAutoVacuum(ctx) }); err != nil {
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("configure %s database %s auto-vacuum: %w", dialect, RedactDSN(opts.DSN), err)
@@ -119,7 +149,16 @@ func Open(ctx context.Context, opts Options) (*DB, error) {
 
 // New wraps an already-open *sql.DB. Tests use it to share one server across cases; production code goes through Open.
 func New(sqlDB *sql.DB, dialect Dialect) *DB {
-	return &DB{sqlDB: sqlDB, dialect: dialect}
+	return newDB(sqlDB, dialect)
+}
+
+func newDB(sqlDB *sql.DB, dialect Dialect) *DB {
+	d := &DB{sqlDB: sqlDB, dialect: dialect}
+	if dialect == SQLite {
+		d.writerGate = make(chan struct{}, 1)
+		d.writerGate <- struct{}{}
+	}
+	return d
 }
 
 // SQL exposes the underlying handle for stores that need transactions or driver-specific calls.
@@ -127,6 +166,17 @@ func (d *DB) SQL() *sql.DB { return d.sqlDB }
 
 // Dialect reports which SQL flavor this handle speaks.
 func (d *DB) Dialect() Dialect { return d.dialect }
+
+// SetTransactionObserver installs a cheap per-handle callback used by the
+// metrics layer. Replacing it is safe while transactions are running.
+func (d *DB) SetTransactionObserver(fn func(TransactionObservation)) {
+	if d == nil {
+		return
+	}
+	d.observerMu.Lock()
+	d.observer = fn
+	d.observerMu.Unlock()
+}
 
 // Close releases the connection pool.
 func (d *DB) Close() error {
@@ -191,6 +241,11 @@ func (d *DB) writePlaceholder(b *strings.Builder, n int) {
 
 // ExecContext runs a '?'-placeholder statement against the backend.
 func (d *DB) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	release, _, err := d.admitSQLiteWriter(ctx)
+	if err != nil {
+		return nil, Contended(err)
+	}
+	defer release()
 	res, err := d.sqlDB.ExecContext(ctx, d.Rebind(query), args...)
 	return res, Contended(err)
 }
@@ -233,6 +288,85 @@ func (d *DB) InTxLocked(ctx context.Context, key LockKey, fn func(*sql.Tx) error
 	})
 }
 
+// BeginWriteTx begins a transaction that may outlive one call frame. Prefer
+// InTx everywhere a callback is possible; this form relies on the caller to
+// Commit or Rollback and is reserved for explicit Lock/release APIs.
+func (d *DB) BeginWriteTx(ctx context.Context) (*WriteTx, error) {
+	started := time.Now()
+	release, admissionWait, err := d.admitSQLiteWriter(ctx)
+	if err != nil {
+		d.observeTransaction(started, admissionWait, err)
+		return nil, Contended(err)
+	}
+	var tx *sql.Tx
+	begin := func() error {
+		var beginErr error
+		tx, beginErr = d.sqlDB.BeginTx(ctx, nil)
+		return Contended(beginErr)
+	}
+	if d.dialect == SQLite {
+		err = waitOutContentionWithin(ctx, TxContentionBudget, begin)
+	} else {
+		err = begin()
+	}
+	if err != nil {
+		release()
+		d.observeTransaction(started, admissionWait, err)
+		return nil, fmt.Errorf("begin transaction: %w", err)
+	}
+	writeTx := &WriteTx{
+		Tx:            tx,
+		db:            d,
+		started:       started,
+		admissionWait: admissionWait,
+		release:       release,
+		done:          make(chan struct{}),
+	}
+	if ctx.Done() != nil {
+		go func() {
+			select {
+			case <-ctx.Done():
+				// database/sql also rolls this transaction back when the
+				// context expires. Finish explicitly even if that won the
+				// race and Rollback reports ErrTxDone, so admission cannot
+				// remain held behind a timed-out lock-shaped caller.
+				_ = writeTx.Tx.Rollback()
+				writeTx.finish(ctx.Err())
+			case <-writeTx.done:
+			}
+		}()
+	}
+	return writeTx, nil
+}
+
+// Commit commits the transaction and releases writer admission.
+func (tx *WriteTx) Commit() error {
+	if tx == nil || tx.Tx == nil {
+		return sql.ErrTxDone
+	}
+	err := Contended(tx.Tx.Commit())
+	tx.finish(err)
+	return err
+}
+
+// Rollback rolls the transaction back and releases writer admission.
+func (tx *WriteTx) Rollback() error {
+	if tx == nil || tx.Tx == nil {
+		return sql.ErrTxDone
+	}
+	err := Contended(tx.Tx.Rollback())
+	tx.finish(err)
+	return err
+}
+
+func (tx *WriteTx) finish(err error) {
+	tx.finishOnce.Do(func() {
+		tx.release()
+		tx.db.observeTransaction(tx.started, tx.admissionWait, err)
+		close(tx.done)
+	})
+}
+
 // NamedLockKey deterministically maps a namespace and identifier onto the
 // signed advisory-lock keyspace.
 func NamedLockKey(namespace, id string) LockKey {
@@ -265,8 +399,23 @@ func (d *DB) WithAdvisoryLock(ctx context.Context, key LockKey, fn func() error)
 
 // InTx runs fn inside a transaction, rolling back on error or panic. Stores use it for any write that must land whole.
 func (d *DB) InTx(ctx context.Context, fn func(*sql.Tx) error) error {
+	started := time.Now()
+	release, admissionWait, err := d.admitSQLiteWriter(ctx)
+	if err != nil {
+		d.observeTransaction(started, admissionWait, err)
+		return Contended(err)
+	}
+	defer release()
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			d.observeTransaction(started, admissionWait, fmt.Errorf("panic: %v", recovered))
+			panic(recovered)
+		}
+	}()
 	if d.dialect != SQLite {
-		return d.inTxOnce(ctx, fn)
+		err = d.inTxOnce(ctx, fn)
+		d.observeTransaction(started, admissionWait, err)
+		return err
 	}
 	// SQLite admits one writer, and its busy timeout is a fixed budget rather
 	// than a place in line, so under load a transaction loses the race and
@@ -283,8 +432,48 @@ func (d *DB) InTx(ctx context.Context, fn func(*sql.Tx) error) error {
 	// the transaction — writing a file, sending on a channel, appending to a
 	// caller's slice, incrementing a counter — happens again on every attempt.
 	// Keep such work in the caller, after InTx returns.
-	return waitOutContentionWithin(ctx, TxContentionBudget, func() error {
+	err = waitOutContentionWithin(ctx, TxContentionBudget, func() error {
 		return d.inTxOnce(ctx, fn)
+	})
+	d.observeTransaction(started, admissionWait, err)
+	return err
+}
+
+func (d *DB) admitSQLiteWriter(ctx context.Context) (func(), time.Duration, error) {
+	if d == nil || d.dialect != SQLite || d.writerGate == nil {
+		return func() {}, 0, nil
+	}
+	started := time.Now()
+	select {
+	case <-ctx.Done():
+		return func() {}, time.Since(started), ctx.Err()
+	case <-d.writerGate:
+		return func() { d.writerGate <- struct{}{} }, time.Since(started), nil
+	}
+}
+
+func (d *DB) observeTransaction(started time.Time, admissionWait time.Duration, err error) {
+	d.observerMu.RLock()
+	observer := d.observer
+	d.observerMu.RUnlock()
+	if observer == nil {
+		return
+	}
+	result := "ok"
+	switch {
+	case err == nil:
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		result = "canceled"
+	case IsContention(err):
+		result = "contended"
+	default:
+		result = "error"
+	}
+	observer(TransactionObservation{
+		Dialect:       d.dialect,
+		Duration:      time.Since(started),
+		AdmissionWait: admissionWait,
+		Result:        result,
 	})
 }
 
@@ -555,6 +744,25 @@ func (d *DB) reclaimSQLiteFreePages(ctx context.Context) error {
 		return fmt.Errorf("reclaim sqlite free pages: %w", err)
 	}
 	return nil
+}
+
+// ReclaimFreePages returns SQLite freelist pages to the filesystem when the
+// database was created in incremental auto-vacuum mode. Older databases keep
+// their existing mode and make this a no-op: converting one requires a full
+// VACUUM, which rewrites the database and must remain an explicit operator
+// maintenance action rather than surprise a running board.
+func (d *DB) ReclaimFreePages(ctx context.Context) error {
+	if d == nil || d.dialect != SQLite {
+		return nil
+	}
+	release, _, err := d.admitSQLiteWriter(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return waitOutContentionWithin(ctx, TxContentionBudget, func() error {
+		return d.reclaimSQLiteFreePages(ctx)
+	})
 }
 
 func (d *DB) shrinkSQLiteWAL(ctx context.Context) error {

@@ -61,7 +61,7 @@ const (
 	deleteHistoryOverBytes = `DELETE FROM task_history WHERE task_id = ? AND id < (
 		SELECT COALESCE(
 			(SELECT min(id) FROM (
-				SELECT id, SUM(length(snapshot)) OVER (
+				SELECT id, SUM(%s) OVER (
 					PARTITION BY task_id ORDER BY id DESC
 					ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
 				) AS running
@@ -79,6 +79,17 @@ const (
 			SELECT id, row_number() OVER (PARTITION BY task_id ORDER BY id DESC) AS rn
 			FROM task_history
 		) AS ranked WHERE rn > ? LIMIT ?)`
+
+	deleteHistoryOverBytesAllTasks = `DELETE FROM task_history WHERE id IN (
+		SELECT id FROM (
+			SELECT id,
+				row_number() OVER (PARTITION BY task_id ORDER BY id DESC) AS rn,
+				SUM(%s) OVER (
+					PARTITION BY task_id ORDER BY id DESC
+					ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+				) AS running
+			FROM task_history
+		) AS sized WHERE rn > 1 AND running > ? LIMIT ?)`
 )
 
 // historySweepBatch bounds one statement of the startup sweep.
@@ -170,10 +181,18 @@ func (s *SQLStore) trimTaskHistoryTx(ctx context.Context, tx *sql.Tx, taskID str
 	if budget == 0 {
 		budget = DefaultMaxHistoryBytesPerTask
 	}
-	if _, err := tx.ExecContext(ctx, s.db.Rebind(deleteHistoryOverBytes), taskID, taskID, budget, taskID); err != nil {
+	stmt := fmt.Sprintf(deleteHistoryOverBytes, historySnapshotByteLength(s.db))
+	if _, err := tx.ExecContext(ctx, s.db.Rebind(stmt), taskID, taskID, budget, taskID); err != nil {
 		return fmt.Errorf("trim task history by size: %w", err)
 	}
 	return nil
+}
+
+func historySnapshotByteLength(database *db.DB) string {
+	if database.Dialect() == db.Postgres {
+		return "octet_length(snapshot)"
+	}
+	return "length(CAST(snapshot AS BLOB))"
 }
 
 // History returns recorded changes matching q, oldest first.
@@ -297,6 +316,45 @@ func (s *SQLStore) TrimHistoryOverCap(ctx context.Context) error {
 		removed, err := res.RowsAffected()
 		if err != nil {
 			return fmt.Errorf("count trimmed history: %w", err)
+		}
+		if removed == 0 {
+			return nil
+		}
+	}
+}
+
+// TrimHistoryOverBytes enforces the per-task byte budget across every task.
+//
+// The per-write trim only reaches tasks changed after the budget shipped. This
+// batched sweep catches up existing quiet tasks without producing one enormous
+// WAL transaction. The newest entry is always retained even when it alone is
+// larger than the budget.
+func (s *SQLStore) TrimHistoryOverBytes(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
+	budget := s.maxHistoryBytesPerTask
+	if budget < 0 {
+		return nil
+	}
+	if budget == 0 {
+		budget = DefaultMaxHistoryBytesPerTask
+	}
+	ctx, cancel := context.WithTimeout(ctx, historySweepTimeout)
+	defer cancel()
+	batch := s.historySweepBatch
+	if batch <= 0 {
+		batch = historySweepBatch
+	}
+	stmt := fmt.Sprintf(deleteHistoryOverBytesAllTasks, historySnapshotByteLength(s.db))
+	for {
+		res, err := s.db.ExecContext(ctx, stmt, budget, batch)
+		if err != nil {
+			return fmt.Errorf("trim history over byte budget: %w", err)
+		}
+		removed, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("count byte-trimmed history: %w", err)
 		}
 		if removed == 0 {
 			return nil
