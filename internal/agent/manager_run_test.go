@@ -368,6 +368,14 @@ func TestJitterDispatch_SleepsWithinBound(t *testing.T) {
 // TestJitterDispatch_AbortsOnContextCancel verifies a manager shutdown mid-
 // jitter aborts the dispatch promptly instead of blocking for the full window.
 func TestJitterDispatch_AbortsOnContextCancel(t *testing.T) {
+	// cancelAfter is the only timing this test may reason about. The window
+	// itself is drawn from [0, ms), so a draw shorter than it finishes on its
+	// own and returns nil with nothing to interrupt — legitimately. slack
+	// covers the scheduler gap between the window elapsing and the cancel
+	// goroutine actually running, inside which either outcome is correct.
+	const cancelAfter = 20 * time.Millisecond
+	const slack = 100 * time.Millisecond
+
 	ctx, cancel := context.WithCancel(context.Background())
 	m := mustNewManager(t, ctx, func(string, any) {}, discardLogger(), t.TempDir())
 	m.mu.Lock()
@@ -375,7 +383,7 @@ func TestJitterDispatch_AbortsOnContextCancel(t *testing.T) {
 	m.mu.Unlock()
 
 	go func() {
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(cancelAfter)
 		cancel()
 	}()
 
@@ -385,13 +393,14 @@ func TestJitterDispatch_AbortsOnContextCancel(t *testing.T) {
 	if elapsed > 500*time.Millisecond {
 		t.Fatalf("jitterDispatch did not abort promptly on ctx cancel: %s", elapsed)
 	}
-	// The window is drawn from [0, ms), so one run in ms draws zero and
-	// returns before the select the cancel would have raced — legitimately,
-	// since there was no jitter to interrupt. Demanding an error regardless
-	// of the draw is what made this fail roughly once in ten thousand runs.
-	// The contract that does not depend on the draw is the one below.
-	if err == nil && elapsed > 5*time.Millisecond {
-		t.Fatal("expected context error when the manager shuts down mid-jitter")
+	if err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	// Only a call that outlived the cancel by a clear margin and still
+	// reported success is a defect. Thresholding on anything shorter than the
+	// cancel delay fails whenever the draw legitimately beat it.
+	if err == nil && elapsed > cancelAfter+slack {
+		t.Fatalf("jitter ran %s, outlasting the cancel, and still returned nil", elapsed)
 	}
 }
 
