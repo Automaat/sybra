@@ -137,7 +137,10 @@ func TestUpdateTask_HaltedUnblockToTodoSaysWhatWillDispatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	halted := &workflow.Execution{WorkflowID: "testing-task", CurrentStep: "run_test", State: workflow.ExecFailed}
+	halted := &workflow.Execution{
+		WorkflowID: "testing-task", CurrentStep: "run_test", State: workflow.ExecFailed,
+		Variables: map[string]string{"circuit_breaker.failures.run_test": "3"},
+	}
 	if _, err := a.tasks.Update(tk.ID, task.Update{Workflow: &halted}); err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +160,7 @@ func TestUpdateTask_HaltedUnblockToTodoSaysWhatWillDispatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(got.StatusReason, "testing") {
+	if !strings.Contains(got.StatusReason, string(task.StatusTesting)) {
 		t.Fatalf("status reason = %q, want it to name the testing stage", got.StatusReason)
 	}
 	if !strings.Contains(got.StatusReason, "does not dispatch") {
@@ -172,7 +175,10 @@ func TestUpdateTask_HaltedUnblockToTheRightStageIsQuiet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	halted := &workflow.Execution{WorkflowID: "testing-task", CurrentStep: "run_test", State: workflow.ExecFailed}
+	halted := &workflow.Execution{
+		WorkflowID: "testing-task", CurrentStep: "run_test", State: workflow.ExecFailed,
+		Variables: map[string]string{"circuit_breaker.failures.run_test": "3"},
+	}
 	if _, err := a.tasks.Update(tk.ID, task.Update{Workflow: &halted}); err != nil {
 		t.Fatal(err)
 	}

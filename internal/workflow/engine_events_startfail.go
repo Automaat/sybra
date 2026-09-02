@@ -297,7 +297,7 @@ func (e *Engine) clearCircuitBreakerOnSuccess(taskID string, wf *Execution, step
 // the operator has no way to know.
 func (e *Engine) HaltedResumeStatus(taskID string) string {
 	t, err := e.tasks.GetTask(taskID)
-	if err != nil || t.Workflow == nil || t.Workflow.State != ExecFailed {
+	if err != nil || !circuitBreakerHalted(t.Workflow) {
 		return ""
 	}
 	def, err := e.store.Get(t.Workflow.WorkflowID)
@@ -305,6 +305,23 @@ func (e *Engine) HaltedResumeStatus(taskID string) string {
 		return ""
 	}
 	return triggerStatus(def.Trigger)
+}
+
+// circuitBreakerHalted reports whether an execution was stopped by the
+// circuit breaker specifically.
+//
+// ExecFailed alone is not that: it also marks a genuinely terminal failure —
+// a step the definition no longer declares, an exhausted watchdog budget —
+// which no status change recovers. A breaker trip is the one that leaves the
+// halted step's own failure counter behind, so telling those two apart is
+// what keeps the guidance from naming a status for a task that cannot come
+// back.
+func circuitBreakerHalted(wf *Execution) bool {
+	if wf == nil || wf.State != ExecFailed || wf.CompletedAt != nil || wf.CurrentStep == "" {
+		return false
+	}
+	_, tripped := wf.Variables[circuitBreakerFailureKey(wf.CurrentStep)]
+	return tripped
 }
 
 // triggerStatus reports the task status a definition activates on, or "" when
