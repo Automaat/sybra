@@ -534,6 +534,30 @@ There is no Vite-backed hot reload — the frontend is built once per `mise run 
 
 ## Quality Gates
 
+### Linter Pairs That Fight Each Other
+
+Several enabled linters reject each other's preferred shape, so fixing one
+report by the first form that occurs to you produces a different report on the
+next run. Two agents have burned a full retry budget each ping-ponging between
+these. When a linter rejects a construct, **grep the repo for the shape that
+already satisfies both** before inventing one:
+
+- **A backward loop over a slice.** The manual `for i := len(x) - 1; i >= 0; i--`
+  trips `modernize`'s `slicesbackward`; ranging the *values* of
+  `slices.Backward(x)` then trips `gocritic`'s `rangeValCopy` on any struct of
+  real size (`AgentRunInfo` is 264 bytes). The shape that passes both is
+  `for i := range slices.Backward(x)` with `run := &x[i]` — see
+  `internal/recovery/stale.go` and five other call sites.
+- **`TestMain` with cleanup.** `defer cleanup(); os.Exit(m.Run())` trips
+  `gocritic`'s `exitAfterDefer`, and the deferred call genuinely never runs.
+  Write `code := m.Run(); cleanup(); os.Exit(code)` — see
+  `internal/worktree/testmain_test.go`.
+- **A multi-value return.** `gocritic`'s `unnamedResult` wants names once a
+  function returns three or more values, or two of the same type.
+
+Never reach for a `//nolint` directive to settle one of these; there is a shape
+that satisfies every linter, and the repo already contains it.
+
 **`mise run verify` is the pre-commit gate — it runs every deterministic, CI-aligned gate in `.github/workflows/ci.yml`** (frontend build:desktop + build:web, `go build ./...`, `go mod verify`, `go mod tidy` drift check, `go test -race ./...`, `go test -race -tags e2e ./internal/sybra/...`, golangci-lint, frontend check + test:coverage + oxlint + pin-strategy, api-shim sync, no-home-fallback gate, Wails bindings drift check, hadolint). "Deterministic" means the outcome depends only on repo state, not ambient CI infra — some steps (`npm ci`, Go module resolution) still need network access. It intentionally excludes the CI jobs that need external advisory DBs, a browser, or a container runtime and so can't run as a reliable pre-commit loop — `lint-nilaway`, `security` (govulncheck + npm audit), the Playwright `e2e` job, and `test-go-db` (run `mise run test:db` by hand before touching SQL); CI stays the source of truth for those four. Running only `go test ./...` skips the e2e suite entirely (it's gated behind `//go:build e2e`) and will ship green-local / red-CI.
 
 ```bash

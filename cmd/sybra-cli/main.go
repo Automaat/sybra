@@ -1962,6 +1962,15 @@ func isRetryableCLIError(err error) bool {
 	if errors.Is(err, fsutil.ErrLockTimeout) {
 		return true
 	}
+	// A board too contended to answer inside the call deadline is the same
+	// condition as the 503 below — the record is busy, not broken — but it
+	// surfaces as the client's own deadline instead of a status code. Exiting
+	// 1 for it told every agent to abandon work it only had to repeat, and
+	// under real contention the request often committed server-side anyway,
+	// so the plain failure was not even accurate.
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded) {
+		return true
+	}
 	var ae *apiError
 	if errors.As(err, &ae) {
 		return ae.Status == http.StatusServiceUnavailable
