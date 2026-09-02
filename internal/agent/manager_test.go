@@ -38,6 +38,34 @@ func (r *eventRecorder) add(event string) {
 	r.mu.Unlock()
 }
 
+// settle waits until the recorder stops growing and returns the count it
+// settled at.
+//
+// A started agent owns a runner goroutine that emits on its own — a state
+// change or a completion can land at any point after setup. Snapshotting the
+// count straight away makes a test that means "these calls emit nothing" fail
+// whenever an unrelated emission happens to fall inside its window, which is
+// what a loaded CI runner does and a local run almost never does.
+func (r *eventRecorder) settle(t *testing.T) int {
+	t.Helper()
+	const quiet = 100 * time.Millisecond
+	deadline := time.Now().Add(5 * time.Second)
+	last := r.Len()
+	stableSince := time.Now()
+	for time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+		if now := r.Len(); now != last {
+			last, stableSince = now, time.Now()
+			continue
+		}
+		if time.Since(stableSince) >= quiet {
+			return last
+		}
+	}
+	t.Fatalf("agent events never settled; last count %d", last)
+	return last
+}
+
 // Len returns the current number of recorded events.
 func (r *eventRecorder) Len() int {
 	r.mu.Lock()
@@ -363,7 +391,7 @@ func TestStopAgent_IdempotentAcrossTerminalPaths(t *testing.T) {
 			}
 
 			tt.setup(t, m, a)
-			before := emitted.Len()
+			before := emitted.settle(t)
 
 			for i := range 3 {
 				if err := m.StopAgent(a.ID); err != nil {
