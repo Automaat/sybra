@@ -2968,7 +2968,7 @@ func TestRouteTestResult_RejectedPassReasksAboutEvidenceNotDefects(t *testing.T)
 	if _, ti, err = routeWithOutcome(t, e, tasks, "t-pass-evidence-cap", testOutcomeMissingEvidence, capVars); err != nil {
 		t.Fatal(err)
 	}
-	if ti.Status != "human-required" {
+	if ti.Status != taskstatus.HumanRequired {
 		t.Errorf("status = %q, want human-required", ti.Status)
 	}
 	if got := tasks.Reason("t-pass-evidence-cap"); !strings.Contains(got, "PASS report") {
