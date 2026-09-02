@@ -3254,12 +3254,19 @@ func TestBuildCapacityReport_EmptyHealthIsUnknown(t *testing.T) {
 }
 
 // TestIsRetryableCLIError_CoversACallDeadline pins that a board too contended
-// to answer inside the call deadline exits 75 like the 503 it is, not 1.
+// to answer inside the call deadline is retryable like the 503 it is.
 //
 // Exit 1 tells an agent the work failed; exit 75 tells it to try again. Under
 // real board contention this path fired dozens of times in a row, and the
 // requests frequently committed server-side anyway — so the plain failure sent
 // agents to abandon work that had already partly happened.
+//
+// It asserts the predicate only, never fatal(). fatal writes the message to
+// the process-wide os.Stderr, which races captureStderr in whichever parallel
+// test happens to be running beside it — the race detector caught exactly that
+// pairing with TestUmbrella_JSONStdoutStaysClean. That fatal maps a retryable
+// error to 75 is pinned end-to-end, through a captured stderr, by the
+// lock-timeout case above.
 func TestIsRetryableCLIError_CoversACallDeadline(t *testing.T) {
 	t.Parallel()
 
@@ -3282,12 +3289,6 @@ func TestIsRetryableCLIError_CoversACallDeadline(t *testing.T) {
 			t.Parallel()
 			if got := isRetryableCLIError(tc.err); got != tc.want {
 				t.Errorf("isRetryableCLIError(%v) = %v, want %v", tc.err, got, tc.want)
-			}
-			if !tc.want || tc.err == nil {
-				return
-			}
-			if code := fatal(true, "%v", tc.err); code != 75 {
-				t.Errorf("fatal exit = %d, want 75 for a retryable error", code)
 			}
 		})
 	}
