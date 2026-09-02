@@ -381,11 +381,37 @@ func TestJitterDispatch_AbortsOnContextCancel(t *testing.T) {
 
 	start := time.Now()
 	err := m.jitterDispatch()
-	if err == nil {
+	elapsed := time.Since(start)
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("jitterDispatch did not abort promptly on ctx cancel: %s", elapsed)
+	}
+	// The window is drawn from [0, ms), so one run in ms draws zero and
+	// returns before the select the cancel would have raced — legitimately,
+	// since there was no jitter to interrupt. Demanding an error regardless
+	// of the draw is what made this fail roughly once in ten thousand runs.
+	// The contract that does not depend on the draw is the one below.
+	if err == nil && elapsed > 5*time.Millisecond {
 		t.Fatal("expected context error when the manager shuts down mid-jitter")
 	}
-	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
-		t.Fatalf("jitterDispatch did not abort promptly on ctx cancel: %s", elapsed)
+}
+
+// TestJitterDispatch_RefusesADeadContext pins the half of the contract that
+// holds for every draw: a manager already shut down does not dispatch, whether
+// or not it drew a window to sleep through.
+func TestJitterDispatch_RefusesADeadContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	m := mustNewManager(t, ctx, func(string, any) {}, discardLogger(), t.TempDir())
+	// A jitter of 1 makes the window rand.N(1), which is always zero, so this
+	// takes the zero-draw early return every time — the one path that skipped
+	// the select and so ignored a cancelled context. A larger window would
+	// hide the defect behind the select in all but one run per ms.
+	m.mu.Lock()
+	m.dispatchJitterMs = 1
+	m.mu.Unlock()
+	cancel()
+
+	if err := m.jitterDispatch(); err == nil {
+		t.Fatal("jitterDispatch proceeded on a cancelled context")
 	}
 }
 
