@@ -256,14 +256,14 @@ func TestLeaderExecutionBackendReclaimsExistingEffectAfterRestart(t *testing.T) 
 	database := dbtest.SQLite(t)
 	control := workercontrol.New(database)
 	session, err := control.Register(t.Context(), workercontrol.RegisterRequest{
-		WorkerID: "daemon-a", Capabilities: syntheticDaemonCapabilities(base),
+		WorkerID: "daemon-a", Capabilities: syntheticDaemonCapabilities(base, "verifier_auth=true"),
 		Negotiation: executioncontract.Negotiation{ProtocolMin: executioncontract.CurrentVersion(), ProtocolMax: executioncontract.CurrentVersion(), BuildVersion: "worker-test"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := control.Register(t.Context(), workercontrol.RegisterRequest{
-		WorkerID: "daemon-b", Capabilities: syntheticDaemonCapabilities(base),
+		WorkerID: "daemon-b", Capabilities: syntheticDaemonCapabilities(base, "verifier_auth=true"),
 		Negotiation: executioncontract.Negotiation{ProtocolMin: executioncontract.CurrentVersion(), ProtocolMax: executioncontract.CurrentVersion(), BuildVersion: "worker-test"},
 	}); err != nil {
 		t.Fatal(err)
@@ -639,6 +639,82 @@ func TestLeaderExecutionBackendUsesSingleAdmissionBeforeClaimingLocalFallback(t 
 	}
 	if admissions != 1 {
 		t.Fatalf("local admission calls = %d, want one before durable placement", admissions)
+	}
+}
+
+func TestLeaderExecutionBackendKeepsReviewLocalWithoutVerifierWorker(t *testing.T) {
+	database := dbtest.SQLite(t)
+	control := workercontrol.New(database)
+	dir, base := remoteBackendRepository(t)
+	if _, err := control.Register(t.Context(), workercontrol.RegisterRequest{
+		WorkerID:     "ordinary-daemon",
+		Capabilities: syntheticDaemonCapabilities(base, "sandbox=enforce"),
+		Negotiation: executioncontract.Negotiation{
+			ProtocolMin:  executioncontract.CurrentVersion(),
+			ProtocolMax:  executioncontract.CurrentVersion(),
+			BuildVersion: "worker-test",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	canonical := task.Task{
+		ID: "task-review-fallback", Title: "review", ProjectID: "repo", Branch: "main", Status: task.StatusReadyReview,
+		CreatedAt: now, UpdatedAt: now, Generation: 4,
+		Workflow: &workflow.Execution{WorkflowID: "review", CurrentStep: "code_review", State: workflow.ExecWaiting},
+	}
+	if _, err := store.Put(canonical); err != nil {
+		t.Fatal(err)
+	}
+	backend := &leaderExecutionBackend{
+		app:         &App{tasks: task.NewManager(store, nil), workerControl: control},
+		local:       acceptingLocalBackend{},
+		runs:        make(map[agent.ExecutionHandle]*remoteExecution),
+		admitLocal:  func() (bool, string) { return true, "" },
+		admitRemote: func() (bool, string) { return true, "" },
+	}
+	start := agent.ExecutionStart{
+		Spec: agent.ExecutionSpec{ID: "agent-review-fallback", TaskID: canonical.ID, Provider: providerid.Claude, Model: "sonnet"},
+		Config: agent.RunConfig{
+			TaskID: canonical.ID, Role: agent.RoleReview, Mode: "headless", Prompt: "review", Dir: dir,
+			IntentID: canonical.ID + ":review:4:1:code_review:0", TaskGeneration: 4,
+			Provider: providerid.Claude, Model: "sonnet", SandboxMode: "enforce",
+		},
+		Sink: &recordingExecutionSink{ready: make(chan struct{})},
+	}
+	if handle, err := backend.Start(t.Context(), start); err != nil || handle != "local:accepted" {
+		t.Fatalf("Start() = (%q, %v), want local verifier fallback", handle, err)
+	}
+	if _, err := control.RemoteRunForEffect(t.Context(), start.Config.IntentID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("RemoteRunForEffect() error = %v, want no remote verifier reservation", err)
+	}
+}
+
+func TestPrepareRemoteWorkspaceBaseMarksOversizeAnchor(t *testing.T) {
+	dir, base := remoteBackendRepository(t)
+	_, _, err := prepareRemoteWorkspaceBaseLimited(
+		t.Context(), dir, "run-oversize", base, "", "refs/heads/main", 1,
+	)
+	if !errors.Is(err, errRemoteWorkspaceBaseTooLarge) {
+		t.Fatalf("prepareRemoteWorkspaceBaseLimited() error = %v, want oversized-bundle signal", err)
+	}
+}
+
+func TestPrepareRemoteWorkspaceBasesSkipsOnlyOversizeAnchor(t *testing.T) {
+	dir, base := remoteBackendRepository(t)
+	stale := strings.Repeat("f", 40)
+	bundles, err := prepareRemoteWorkspaceBases(
+		t.Context(), dir, "run-mixed-anchors", base, "refs/heads/main", []string{stale, base}, 1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bundles) != 1 || bundles[0].RepositoryAnchor != base || bundles[0].Reference != nil || len(bundles[0].Content) != 0 {
+		t.Fatalf("prepared bundles = %+v, want only the already-resolved anchor", bundles)
 	}
 }
 
@@ -1095,7 +1171,7 @@ func TestLeaderExecutionBackendVirtualizesSidecarPathAndFollowsResumedSession(t 
 	database := dbtest.SQLite(t)
 	control := workercontrol.New(database)
 	session, err := control.Register(t.Context(), workercontrol.RegisterRequest{
-		WorkerID: "daemon-resume", Capabilities: syntheticDaemonCapabilities(base),
+		WorkerID: "daemon-resume", Capabilities: syntheticDaemonCapabilities(base, "verifier_auth=true"),
 		Negotiation: executioncontract.Negotiation{ProtocolMin: executioncontract.CurrentVersion(), ProtocolMax: executioncontract.CurrentVersion(), BuildVersion: "worker-test"},
 	})
 	if err != nil {
@@ -1134,7 +1210,7 @@ func TestLeaderExecutionBackendVirtualizesSidecarPathAndFollowsResumedSession(t 
 	}
 	replacement, err := control.Register(t.Context(), workercontrol.RegisterRequest{
 		WorkerID: "daemon-resume", ResumeSessionID: session.SessionID,
-		Capabilities: syntheticDaemonCapabilities(base),
+		Capabilities: syntheticDaemonCapabilities(base, "verifier_auth=true"),
 		Negotiation:  executioncontract.Negotiation{ProtocolMin: executioncontract.CurrentVersion(), ProtocolMax: executioncontract.CurrentVersion(), BuildVersion: "worker-test"},
 	})
 	if err != nil {
