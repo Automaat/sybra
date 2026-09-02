@@ -2,6 +2,7 @@ package taskdb
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/db"
@@ -245,6 +246,54 @@ func TestHistory_ShippedDefaultCapIsEnforced(t *testing.T) {
 		// Then the default bounded it rather than letting it grow
 		if len(entries) != DefaultMaxHistoryPerTask {
 			t.Fatalf("kept %d entries, want the default %d", len(entries), DefaultMaxHistoryPerTask)
+		}
+	})
+}
+
+func TestHistory_CapsBytesPerTask(t *testing.T) {
+	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
+		store, err := NewSQLStore(d)
+		if err != nil {
+			t.Fatalf("NewSQLStore: %v", err)
+		}
+		store.SetMaxHistoryPerTask(500)
+		store.SetMaxHistoryBytesPerTask(64 << 10)
+
+		// Given a task whose document is large enough that the row cap alone
+		// would let its history reach several megabytes
+		record := sqlTask("bytes123", "first")
+		record.Body = strings.Repeat("x", 16<<10)
+		for i := range 40 {
+			record.Title = fmt.Sprintf("title-%d", i)
+			if err := store.PutBy(t.Context(), record, nil, "engine", []string{"title"}); err != nil {
+				t.Fatalf("PutBy %d: %v", i, err)
+			}
+		}
+
+		// When its history is read
+		entries, err := store.History(t.Context(), HistoryQuery{TaskID: "bytes123"})
+		if err != nil {
+			t.Fatalf("History: %v", err)
+		}
+
+		// Then the size budget bounds it well below the row cap, and the
+		// newest change is still recorded
+		if len(entries) == 0 {
+			t.Fatal("size trim removed every entry")
+		}
+		if len(entries) >= 40 {
+			t.Fatalf("kept %d entries; the size budget bounded nothing", len(entries))
+		}
+		var total int
+		for _, e := range entries {
+			total += len(e.Snapshot)
+		}
+		if total > 2*(64<<10) {
+			t.Fatalf("history holds %d bytes, want it bounded near the 64KiB budget", total)
+		}
+		if entries[len(entries)-1].Snapshot == "" {
+			t.Fatal("newest entry lost its snapshot")
 		}
 	})
 }
