@@ -708,3 +708,53 @@ func TestMigrate_WaitsOutABusyTimeoutItLoses(t *testing.T) {
 		}
 	}
 }
+
+func TestInTx_WaitsOutAContendedWriter(t *testing.T) {
+	// Given a board whose write lock is held past the busy timeout, the way a
+	// long-running write holds it under load
+	dsn := "file:" + filepath.Join(t.TempDir(), "sybra.db") + "?_pragma=busy_timeout(50)"
+	handle, err := db.Open(t.Context(), db.Options{Backend: "sqlite", DSN: dsn})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = handle.Close() })
+	if _, err := handle.ExecContext(t.Context(),
+		`CREATE TABLE dispatch (id TEXT PRIMARY KEY)`); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+
+	holding := make(chan struct{})
+	released := make(chan struct{})
+	go func() {
+		_ = handle.InTx(t.Context(), func(tx *sql.Tx) error {
+			if _, err := tx.ExecContext(t.Context(), `INSERT INTO dispatch (id) VALUES ('holder')`); err != nil {
+				return err
+			}
+			close(holding)
+			time.Sleep(400 * time.Millisecond)
+			return nil
+		})
+		close(released)
+	}()
+	<-holding
+
+	// When another transaction runs while that lock is held
+	err = handle.InTx(t.Context(), func(tx *sql.Tx) error {
+		_, execErr := tx.ExecContext(t.Context(), `INSERT INTO dispatch (id) VALUES ('waiter')`)
+		return execErr
+	})
+
+	// Then it waits its turn and commits, rather than handing its caller a
+	// failure that nothing retries
+	if err != nil {
+		t.Fatalf("contended transaction failed instead of waiting: %v", err)
+	}
+	<-released
+	var rows int
+	if err := handle.QueryRowContext(t.Context(), `SELECT count(*) FROM dispatch`).Scan(&rows); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if rows != 2 {
+		t.Fatalf("rows = %d, want both writers committed", rows)
+	}
+}
