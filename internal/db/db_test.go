@@ -724,9 +724,9 @@ func TestInTx_WaitsOutAContendedWriter(t *testing.T) {
 	}
 
 	holding := make(chan struct{})
-	released := make(chan struct{})
+	released := make(chan error, 1)
 	go func() {
-		_ = handle.InTx(t.Context(), func(tx *sql.Tx) error {
+		released <- handle.InTx(t.Context(), func(tx *sql.Tx) error {
 			if _, err := tx.ExecContext(t.Context(), `INSERT INTO dispatch (id) VALUES ('holder')`); err != nil {
 				return err
 			}
@@ -734,9 +734,26 @@ func TestInTx_WaitsOutAContendedWriter(t *testing.T) {
 			time.Sleep(400 * time.Millisecond)
 			return nil
 		})
-		close(released)
 	}()
-	<-holding
+	// Waiting on the holder's own result too, so a holder that fails before it
+	// takes the lock reports that instead of hanging this test forever.
+	t.Cleanup(func() {
+		select {
+		case err := <-released:
+			if err != nil {
+				t.Errorf("holder transaction: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("holder transaction never returned")
+		}
+	})
+	select {
+	case <-holding:
+	case err := <-released:
+		t.Fatalf("holder released the lock without taking it: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("holder never took the write lock")
+	}
 
 	// When another transaction runs while that lock is held
 	err = handle.InTx(t.Context(), func(tx *sql.Tx) error {
@@ -749,7 +766,6 @@ func TestInTx_WaitsOutAContendedWriter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("contended transaction failed instead of waiting: %v", err)
 	}
-	<-released
 	var rows int
 	if err := handle.QueryRowContext(t.Context(), `SELECT count(*) FROM dispatch`).Scan(&rows); err != nil {
 		t.Fatalf("count: %v", err)

@@ -269,6 +269,12 @@ func (d *DB) InTx(ctx context.Context, fn func(*sql.Tx) error) error {
 	// The transaction has rolled back by the time this sees the error, so
 	// nothing partial survives a retry — the closure runs again against the
 	// state it would have seen had it waited its turn.
+	//
+	// fn must therefore be safe to run more than once: its database work is
+	// discarded with the rolled-back transaction, but anything it does OUTSIDE
+	// the transaction — writing a file, sending on a channel, appending to a
+	// caller's slice, incrementing a counter — happens again on every attempt.
+	// Keep such work in the caller, after InTx returns.
 	return waitOutContentionWithin(ctx, TxContentionBudget, func() error {
 		return d.inTxOnce(ctx, fn)
 	})
