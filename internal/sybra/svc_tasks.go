@@ -1671,11 +1671,23 @@ func (s *TaskService) ReconcilePendingEnrichment() {
 		s.logger.Error("enrich-reconcile.list", "err", err)
 		return
 	}
+	pending, retried := 0, 0
+	defer func() {
+		// A stub can only leave this state through here, so a set that never
+		// shrinks is the one symptom worth seeing. It stayed invisible for a
+		// day when this pass could not even list: the marker holds a task out
+		// of dispatch by design, so nothing downstream complains and the board
+		// simply looks idle.
+		if pending > 0 {
+			s.logger.Info("enrich-reconcile.pending", "tasks", pending, "retried", retried)
+		}
+	}()
 	for i := range all {
 		t := all[i]
 		if !slices.Contains(t.Tags, enrichPendingTag) {
 			continue
 		}
+		pending++
 		// The user took the task out of the queue (e.g. cancelled/done); don't
 		// spend a GitHub fetch reviving it.
 		if task.IsTerminalStatus(t.Status) {
@@ -1712,6 +1724,7 @@ func (s *TaskService) ReconcilePendingEnrichment() {
 		}
 		id := t.ID
 		s.enrichRetryCooldown.Store(id, time.Now().Add(enrichPendingRetryCooldown))
+		retried++
 		s.logger.Info("enrich-reconcile.retry", "task_id", id, "title", t.Title)
 		if prRepo != "" {
 			repo, number := prRepo, prNumber

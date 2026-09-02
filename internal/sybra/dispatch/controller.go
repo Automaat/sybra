@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -165,7 +166,8 @@ func (c *Controller) Acquire(ctx context.Context, intent agent.AttemptIntent) (a
 		changed := expireLeases(s, now)
 		if rec := findIntent(s, intent.IntentID); rec != nil {
 			if !replayIntentMatches(rec.Intent, intent) {
-				return changed, fmt.Errorf("%w: %s", ErrIntentReplayMismatch, intent.IntentID)
+				return changed, fmt.Errorf("%w: %s (%s)", ErrIntentReplayMismatch, intent.IntentID,
+					replayMismatchDetail(rec.Intent, intent))
 			}
 			switch rec.Status {
 			case StatusAcquired, StatusBound:
@@ -272,7 +274,8 @@ func (c *Controller) Adopt(ctx context.Context, intent agent.AttemptIntent, leas
 			return changed, staleVersion(rec, lease)
 		}
 		if !replayIntentMatches(rec.Intent, intent) {
-			return changed, fmt.Errorf("%w: %s", ErrIntentReplayMismatch, intent.IntentID)
+			return changed, fmt.Errorf("%w: %s (%s)", ErrIntentReplayMismatch, intent.IntentID,
+				replayMismatchDetail(rec.Intent, intent))
 		}
 		if rec.Status == StatusCompleted {
 			return changed, fmt.Errorf("%w: lease %s is complete", ErrStaleLease, lease.ID)
@@ -465,6 +468,33 @@ func replayIntentMatches(stored, replay agent.AttemptIntent) bool {
 // attempt while the attempt stays the same. That exemption predates this and
 // covers records written before verifier admission was keyed to the canonical
 // worktree; verifiers are observe-only, and a mutating attempt stays exact.
+// replayMismatchDetail names the fields a replay disagrees on.
+//
+// Without it the refusal says only that two intents differ, and finding out
+// which field cost two separate investigations: the guard is the last thing
+// standing between a task and its next attempt, so the one fact needed to fix
+// it is the one the message left out.
+func replayMismatchDetail(stored, replay agent.AttemptIntent) string {
+	a, b := replayIdentity(stored), replayIdentity(replay)
+	var diffs []string
+	add := func(field, was, now string) {
+		if was != now {
+			diffs = append(diffs, fmt.Sprintf("%s %q != %q", field, was, now))
+		}
+	}
+	add("task", a.TaskID, b.TaskID)
+	add("worktree", a.Worktree, b.Worktree)
+	add("access", string(a.Access), string(b.Access))
+	add("role", string(a.Role), string(b.Role))
+	add("task_generation", strconv.FormatUint(a.TaskGeneration, 10), strconv.FormatUint(b.TaskGeneration, 10))
+	add("worktree_generation", strconv.FormatUint(a.WorktreeGeneration, 10), strconv.FormatUint(b.WorktreeGeneration, 10))
+	add("capability_certified", strconv.FormatBool(a.CapabilityCertified), strconv.FormatBool(b.CapabilityCertified))
+	if len(diffs) == 0 {
+		return "no field differs; the comparison itself changed"
+	}
+	return strings.Join(diffs, ", ")
+}
+
 func replayIdentity(intent agent.AttemptIntent) agent.AttemptIntent {
 	intent.Provider = ""
 	if intent.Access == agent.AttemptAccessObserve && intent.Role.IsVerifier() {

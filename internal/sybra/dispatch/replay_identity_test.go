@@ -3,6 +3,7 @@ package dispatch
 import (
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -141,5 +142,52 @@ func TestAcquireReplayStillRefusesADifferentAttempt(t *testing.T) {
 	// Then the claim is refused, since it covers a different action
 	if !errors.Is(err, ErrIntentReplayMismatch) {
 		t.Fatalf("err = %v, want ErrIntentReplayMismatch", err)
+	}
+}
+
+func TestAcquireReplayMismatchNamesTheField(t *testing.T) {
+	// Given a live claim whose replay disagrees on the worktree
+	clock := &fakeClock{t: time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)}
+	c := newTestController(t, clock, "epoch-1", Limits{})
+	claimed := intent("intent-1", "task-1", filepath.Join(t.TempDir(), "a"), providerid.Claude, agent.AttemptAccessMutate)
+	if _, err := c.Acquire(t.Context(), claimed); err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	replay := intent("intent-1", "task-1", filepath.Join(t.TempDir(), "b"), providerid.Claude, agent.AttemptAccessMutate)
+
+	// When the replay is refused
+	_, err := c.Acquire(t.Context(), replay)
+
+	// Then the refusal names the field that differs, so the next reader does
+	// not have to reconstruct it from two intents it cannot see
+	if !errors.Is(err, ErrIntentReplayMismatch) {
+		t.Fatalf("err = %v, want ErrIntentReplayMismatch", err)
+	}
+	if !strings.Contains(err.Error(), "worktree") {
+		t.Fatalf("err = %v, want it to name the worktree", err)
+	}
+}
+
+func TestAdoptReplayMismatchNamesTheField(t *testing.T) {
+	// Given a claimed attempt a restart is reconciling
+	clock := &fakeClock{t: time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)}
+	c := newTestController(t, clock, "epoch-1", Limits{})
+	claimed := intent("intent-1", "task-1", filepath.Join(t.TempDir(), "a"), providerid.Claude, agent.AttemptAccessMutate)
+	lease, err := c.Acquire(t.Context(), claimed)
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+
+	// When adoption presents an intent that disagrees on the worktree
+	diverged := intent("intent-1", "task-1", filepath.Join(t.TempDir(), "b"), providerid.Claude, agent.AttemptAccessMutate)
+	_, err = c.Adopt(t.Context(), diverged, lease, agent.AttemptBinding{AgentID: "a1", PID: 4242})
+
+	// Then reconciliation after a restart names the field too, not only the
+	// dispatch path
+	if !errors.Is(err, ErrIntentReplayMismatch) {
+		t.Fatalf("err = %v, want ErrIntentReplayMismatch", err)
+	}
+	if !strings.Contains(err.Error(), "worktree") {
+		t.Fatalf("err = %v, want it to name the worktree", err)
 	}
 }
