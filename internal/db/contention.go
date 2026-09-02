@@ -72,7 +72,18 @@ const SQLiteContentionBudget = 2 * time.Minute
 // holder rather than abort startup with a lock code the operator cannot act
 // on.
 func waitOutContention(ctx context.Context, fn func() error) error {
-	deadline := time.Now().Add(SQLiteContentionBudget)
+	return waitOutContentionWithin(ctx, SQLiteContentionBudget, fn)
+}
+
+// TxContentionBudget bounds how long one transaction waits out contention.
+//
+// Far shorter than a start's budget: a start has nothing else to do until the
+// database is usable, while a transaction is usually serving a caller that is
+// waiting on it.
+const TxContentionBudget = 10 * time.Second
+
+func waitOutContentionWithin(ctx context.Context, budget time.Duration, fn func() error) error {
+	deadline := time.Now().Add(budget)
 	wait := 20 * time.Millisecond
 	for {
 		err := fn()
@@ -80,7 +91,7 @@ func waitOutContention(ctx context.Context, fn func() error) error {
 			return err
 		}
 		if !time.Now().Before(deadline) {
-			return fmt.Errorf("contended for %s: %w", SQLiteContentionBudget, err)
+			return fmt.Errorf("contended for %s: %w", budget, err)
 		}
 		select {
 		case <-ctx.Done():

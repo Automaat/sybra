@@ -257,6 +257,30 @@ func (d *DB) WithAdvisoryLock(ctx context.Context, key LockKey, fn func() error)
 
 // InTx runs fn inside a transaction, rolling back on error or panic. Stores use it for any write that must land whole.
 func (d *DB) InTx(ctx context.Context, fn func(*sql.Tx) error) error {
+	if d.dialect != SQLite {
+		return d.inTxOnce(ctx, fn)
+	}
+	// SQLite admits one writer, and its busy timeout is a fixed budget rather
+	// than a place in line, so under load a transaction loses the race and
+	// returns SQLITE_BUSY to a caller that treats it as a hard failure. That is
+	// what stalls a board: the dispatcher's own writes fail, the task stays
+	// waiting, and nothing retries it.
+	//
+	// The transaction has rolled back by the time this sees the error, so
+	// nothing partial survives a retry — the closure runs again against the
+	// state it would have seen had it waited its turn.
+	//
+	// fn must therefore be safe to run more than once: its database work is
+	// discarded with the rolled-back transaction, but anything it does OUTSIDE
+	// the transaction — writing a file, sending on a channel, appending to a
+	// caller's slice, incrementing a counter — happens again on every attempt.
+	// Keep such work in the caller, after InTx returns.
+	return waitOutContentionWithin(ctx, TxContentionBudget, func() error {
+		return d.inTxOnce(ctx, fn)
+	})
+}
+
+func (d *DB) inTxOnce(ctx context.Context, fn func(*sql.Tx) error) error {
 	tx, err := d.sqlDB.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", Contended(err))
