@@ -628,15 +628,80 @@ func TestEmitExecutionEvent_RemoteOutputLeavesThisHostAlone(t *testing.T) {
 		Output: forwarded, OutputParsed: true,
 	}, a, 0, &lastEmit)
 
-	// Then it does not stop a process it cannot reach, and does not record
-	// another host's quota against this host's dispatch gate
-	if a.WasStopped() {
-		t.Fatal("marked a remote run stopped while its process keeps spending")
-	}
-	if got := a.GetEscalationReason(); got != "" {
-		t.Fatalf("escalation = %q, want none", got)
-	}
+	// Then it does not record another host's quota against this host's
+	// dispatch gate
 	if snapshots != 0 {
 		t.Fatalf("recorded %d follower quota snapshots against this host", snapshots)
 	}
+}
+
+func TestEmitExecutionEvent_StopsARemoteRunAtItsCostCeiling(t *testing.T) {
+	// Given a run whose process lives on a worker, streaming past this run's
+	// cost ceiling
+	m, _ := newTestManager(t)
+	m.SetGuardrails(Guardrails{MaxCostUSD: 0.01})
+	backend := &stopRecordingBackend{}
+	m.SetExecutionBackend(backend)
+	a := &Agent{ID: "a1", Provider: providerid.Claude, Model: "sonnet"}
+	m.mu.Lock()
+	m.agents[a.ID] = a
+	m.executionAgents[ExecutionHandle("h1")] = a.ID
+	m.activeExecutions[a.ID] = activeExecution{lastEmit: new(time.Time)}
+	m.mu.Unlock()
+	forwarded, err := json.Marshal(StreamEvent{
+		Type: "assistant", Content: "work", InputTokens: 2_000_000, OutputTokens: 2_000_000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// When the leader applies the event that breaches it
+	m.EmitExecutionEvent(t.Context(), ExecutionHandle("h1"), ExecutionEvent{
+		Kind: ExecutionOutput, Provider: providerid.Claude,
+		Output: forwarded, OutputParsed: true,
+	})
+
+	// Then the worker is told to stop, rather than the leader alone believing
+	// a process it cannot reach has halted
+	if got := backend.stopped(); got != 1 {
+		t.Fatalf("backend stops = %d, want 1", got)
+	}
+	if !a.WasStopped() || a.GetEscalationReason() != EscalationReasonCost {
+		t.Fatalf("agent stopped=%v reason=%q, want a cost stop", a.WasStopped(), a.GetEscalationReason())
+	}
+}
+
+type stopRecordingBackend struct {
+	mu    sync.Mutex
+	stops int
+}
+
+func (b *stopRecordingBackend) Start(context.Context, ExecutionStart) (ExecutionHandle, error) {
+	return "", nil
+}
+
+func (b *stopRecordingBackend) Stop(context.Context, ExecutionHandle) error {
+	b.mu.Lock()
+	b.stops++
+	b.mu.Unlock()
+	return nil
+}
+
+func (b *stopRecordingBackend) stopped() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.stops
+}
+
+func (b *stopRecordingBackend) Steer(context.Context, ExecutionHandle, string) error { return nil }
+func (b *stopRecordingBackend) RespondApproval(context.Context, ExecutionHandle, string, bool) error {
+	return nil
+}
+
+func (b *stopRecordingBackend) Inspect(context.Context, ExecutionHandle) (ExecutionInspection, error) {
+	return ExecutionInspection{}, nil
+}
+
+func (b *stopRecordingBackend) Recover(context.Context, ExecutionHandle, ExecutionEventSink) error {
+	return ErrExecutionControlUnsupported
 }
