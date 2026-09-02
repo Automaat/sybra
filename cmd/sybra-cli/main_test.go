@@ -3252,3 +3252,43 @@ func TestBuildCapacityReport_EmptyHealthIsUnknown(t *testing.T) {
 		t.Errorf("disabled health checking raised an outage error: %+v", findings)
 	}
 }
+
+// TestIsRetryableCLIError_CoversACallDeadline pins that a board too contended
+// to answer inside the call deadline exits 75 like the 503 it is, not 1.
+//
+// Exit 1 tells an agent the work failed; exit 75 tells it to try again. Under
+// real board contention this path fired dozens of times in a row, and the
+// requests frequently committed server-side anyway — so the plain failure sent
+// agents to abandon work that had already partly happened.
+func TestIsRetryableCLIError_CoversACallDeadline(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "call deadline", err: context.DeadlineExceeded, want: true},
+		{name: "wrapped call deadline", err: fmt.Errorf("post update: %w", context.DeadlineExceeded), want: true},
+		{name: "socket deadline", err: os.ErrDeadlineExceeded, want: true},
+		{name: "board busy", err: &apiError{Status: http.StatusServiceUnavailable}, want: true},
+		{name: "cancelled by the caller", err: context.Canceled, want: false},
+		{name: "ordinary failure", err: fmt.Errorf("task not found"), want: false},
+		{name: "no error", err: nil, want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := isRetryableCLIError(tc.err); got != tc.want {
+				t.Errorf("isRetryableCLIError(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+			if !tc.want || tc.err == nil {
+				return
+			}
+			if code := fatal(true, "%v", tc.err); code != 75 {
+				t.Errorf("fatal exit = %d, want 75 for a retryable error", code)
+			}
+		})
+	}
+}

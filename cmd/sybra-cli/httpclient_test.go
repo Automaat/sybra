@@ -296,8 +296,8 @@ func TestUpdate_FailsClosedWithNoServer(t *testing.T) {
 	if code == 0 {
 		t.Fatal("update exit 0 with no server reachable")
 	}
-	if !strings.Contains(stderr, "no Sybra server is reachable") {
-		t.Errorf("stderr = %q, want it to name the unreachable server", stderr)
+	if !refusedToUseATarget(stderr) {
+		t.Errorf("stderr = %q, want it to refuse the target it resolved", stderr)
 	}
 	entries, err := os.ReadDir(tasksDir)
 	if err != nil {
@@ -505,4 +505,60 @@ func TestNewAPIClient_RejectsInvalidDedicatedServerTarget(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestIsBoard_RejectsAStrangerAnsweringJSON pins what an inferred target may
+// commit to. The service-less case exists for a server older than the field,
+// which answers exactly {"status":"ok"} — not for any 200 carrying a JSON
+// object, which is what the check used to accept because json.Unmarshal
+// silently ignores the fields it was not given. On a developer machine an
+// unrelated process serving a JWKS document on the inferred port was taken for
+// a board and handed the bearer token.
+func TestIsBoard_RejectsAStrangerAnsweringJSON(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{name: "current server", body: `{"status":"ok","service":"sybra","home_id":"abc"}`, want: true},
+		{name: "server older than the service field", body: `{"status":"ok"}`, want: true},
+		{name: "verifier control channel", body: `{"status":"ok","service":"sybra-verifier-control"}`, want: false},
+		{name: "stranger serving a jwks document", body: `{"keys":[{"alg":"RS384","kty":"RSA"}]}`, want: false},
+		{name: "stranger serving an empty object", body: `{}`, want: false},
+		{name: "stranger whose status is not ok", body: `{"status":"degraded"}`, want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+
+			c := &apiClient{baseURL: srv.URL, http: srv.Client()}
+			if !c.reachable(t.Context()) {
+				t.Fatal("health probe did not read the response")
+			}
+			if got := c.isBoard(); got != tc.want {
+				t.Errorf("isBoard() = %v, want %v (body %s)", got, tc.want, tc.body)
+			}
+		})
+	}
+}
+
+// refusedToUseATarget reports a refusal to act on board state, in either of the
+// two shapes it can take. Which one a machine sees depends on what happens to
+// hold the port the client falls back to when the recorded one is closed:
+// nothing at all gives "no Sybra server is reachable", and an unrelated
+// process answering there gives the sharper "is not a Sybra board". Both are
+// the contract this asserts — the command refused and touched no local files —
+// so pinning only the first made the test fail on any developer machine
+// running something else on the default port.
+func refusedToUseATarget(stderr string) bool {
+	return strings.Contains(stderr, "no Sybra server is reachable") ||
+		strings.Contains(stderr, "is not a Sybra board")
 }
