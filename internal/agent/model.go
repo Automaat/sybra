@@ -2196,14 +2196,19 @@ type RunConfig struct {
 	// SYBRA_CONTROL_HOME, but must never be able to rewrite the operator's real
 	// config.yaml by inheriting ~/.sybra as their default home.
 	IsolateHome bool
-	// DisableProviderFailover keeps provider selection fixed for A/B variants:
-	// an unhealthy/limited provider fails the run instead of silently becoming a
-	// different provider while retaining stale variant attribution.
+	// DisableProviderFailover keeps provider selection fixed when the provider
+	// is part of an external execution contract (for example an agentd RunSpec).
+	// Local workflow and A/B-attributed runs leave this false: attribution records
+	// the original assignment while runtime routing separately records failover.
 	DisableProviderFailover bool
 	// ResumeSessionID, when set, passes --resume to the claude CLI so the
 	// agent continues a prior conversation instead of starting from scratch.
 	// Populated from the task's last AgentRun.SessionID on restart.
 	ResumeSessionID string
+	// ResumeSessionProvider names the provider whose local session store owns
+	// ResumeSessionID. Final dispatch drops the ID if health/limit routing picks
+	// a different provider after the session was selected.
+	ResumeSessionProvider string
 	// ExtraEnv is a list of "KEY=VALUE" strings appended to the subprocess
 	// environment. Used to inject sandbox credentials (SANDBOX_URL, KUBECONFIG)
 	// and, for every task-scoped run, the trusted SYBRA_HOME/SYBRA_CONTROL_HOME

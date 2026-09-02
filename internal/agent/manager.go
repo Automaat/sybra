@@ -914,9 +914,8 @@ func (m *Manager) ProviderRateLimited(name string) bool {
 // quota reset), so without also consulting limitGate, A/B selection kept
 // treating a hard-exhausted provider as eligible, re-picking it every retry
 // only for resolveProviderDecision's own limitGate check to reject it at
-// dispatch — burning a full worktree rebuild per cycle with
-// DisableProviderFailover set (A/B-attributed runs) preventing the
-// in-dispatch fallback that would otherwise mask it. The config-disabled and
+// dispatch — burning a full worktree rebuild per cycle before the
+// in-dispatch fallback can correct the stale selection. The config-disabled and
 // quota checks are independent of the health gate so they still hold when
 // providers.health_check.enabled=false and g is nil (checks disabled,
 // tests) — otherwise ProviderHealthy would report true for a provider the

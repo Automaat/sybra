@@ -519,6 +519,7 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	if requestedErr != nil {
 		return cfg, nil, requestedErr
 	}
+	m.reconcileResumeSessionProvider(&cfg, requestedProvider, prov.Name())
 	resolvedModel, nextRequestedModel, modelErr := resolveRunModel(requestedProvider, prov.Name(), cfg.Model)
 	if modelErr != nil {
 		m.logger.Warn("agent.run.provider_model_incompatible",
@@ -599,6 +600,34 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 
 	m.applyRuntimeDefaults(&cfg)
 	return cfg, prov, nil
+}
+
+// reconcileResumeSessionProvider drops a provider-local session when the final
+// dispatch gate selects a different provider than prediction did. Health,
+// quota, or capacity can change during dispatch jitter; carrying the stale ID
+// across that failover would make the selected CLI reject it before receiving
+// the prompt.
+func (m *Manager) reconcileResumeSessionProvider(cfg *RunConfig, requestedProvider, selectedProvider string) {
+	if cfg.ResumeSessionID == "" {
+		return
+	}
+	resumeProvider := cfg.ResumeSessionProvider
+	if resumeProvider == "" {
+		// Backward-compatible safety for callers that predate the explicit
+		// session-owner field: their requested provider was also the provider
+		// used to choose the session.
+		resumeProvider = requestedProvider
+	}
+	if resumeProvider == selectedProvider {
+		return
+	}
+	m.logger.Info("agent.run.resume_session_dropped",
+		"task_id", cfg.TaskID,
+		"from", resumeProvider,
+		"to", selectedProvider,
+	)
+	cfg.ResumeSessionID = ""
+	cfg.ResumeSessionProvider = ""
 }
 
 func (m *Manager) applyRuntimeDefaults(cfg *RunConfig) {
