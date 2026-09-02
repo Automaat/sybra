@@ -428,6 +428,14 @@ func (m *Manager) jitterDispatch() error {
 }
 
 func (m *Manager) jitterDispatchContext(ctx context.Context) error {
+	// Checked before the window is drawn, the way jitterRunDispatchContext
+	// already does it: a dispatch on a dead manager must not proceed, and
+	// whether it is refused cannot depend on the draw. The zero draw returns
+	// below without ever reaching the select, so without this a cancelled
+	// context was honoured 9999 times in 10000 and ignored once.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	m.mu.RLock()
 	ms := m.dispatchJitterMs
 	m.mu.RUnlock()
