@@ -31,7 +31,7 @@ type SQLIncidentStore struct {
 	db *db.DB
 
 	mu     sync.Mutex
-	tx     *sql.Tx
+	tx     *db.WriteTx
 	failed bool
 }
 
@@ -67,7 +67,7 @@ func (s *SQLIncidentStore) Lock() (func() error, error) {
 	s.mu.Lock()
 	ctx, cancel := context.WithTimeout(context.Background(), incidentQueryTimeout)
 
-	tx, err := s.db.SQL().BeginTx(ctx, nil)
+	tx, err := s.db.BeginWriteTx(ctx)
 	if err != nil {
 		cancel()
 		s.mu.Unlock()

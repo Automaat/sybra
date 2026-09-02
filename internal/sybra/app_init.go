@@ -32,6 +32,7 @@ import (
 	"github.com/Automaat/sybra/internal/learning"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/loopagent"
+	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/notification"
 	"github.com/Automaat/sybra/internal/poll"
@@ -2003,6 +2004,17 @@ func (a *App) initDatabase(ctx context.Context) error {
 		a.logger.Error("db.open", "backend", backend, "dsn", db.RedactDSN(dsn), "err", err)
 		return fmt.Errorf("database: %w", err)
 	}
+	if metrics.Enabled() {
+		database.SetTransactionObserver(func(observation db.TransactionObservation) {
+			metrics.DatabaseTransaction(
+				context.Background(),
+				string(observation.Dialect),
+				observation.Result,
+				observation.Duration,
+				observation.AdmissionWait,
+			)
+		})
+	}
 	version, err := db.SchemaVersion(ctx, database)
 	if err != nil {
 		_ = database.Close()
@@ -2362,6 +2374,12 @@ func (a *App) maintainTaskStorage(ctx context.Context, store *taskdb.SQLStore) {
 		}
 		if err := store.TrimHistoryOverCap(ctx); err != nil {
 			a.logger.Warn("task.history.trim_over_cap", "err", err)
+		}
+		if err := store.TrimHistoryOverBytes(ctx); err != nil {
+			a.logger.Warn("task.history.trim_over_bytes", "err", err)
+		}
+		if err := store.ReclaimStorage(ctx); err != nil {
+			a.logger.Warn("task.storage.reclaim", "err", err)
 		}
 	})
 }

@@ -217,6 +217,104 @@ func TestHistory_SweepRunsUntilEveryBatchIsDone(t *testing.T) {
 	})
 }
 
+func TestHistory_ByteSweepBringsQuietTasksUnderBudget(t *testing.T) {
+	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
+		store, err := NewSQLStore(d)
+		if err != nil {
+			t.Fatalf("NewSQLStore: %v", err)
+		}
+
+		// Given multilingual snapshots accumulated before the byte budget was
+		// enforced. The repeated rune is three UTF-8 bytes, so a character-count
+		// implementation would retain roughly three times too much data.
+		store.SetMaxHistoryPerTask(-1)
+		store.SetMaxHistoryBytesPerTask(-1)
+		for _, id := range []string{"byte1111", "byte2222"} {
+			record := sqlTask(id, "first")
+			record.Body = strings.Repeat("界", 2048)
+			for i := range 12 {
+				record.Title = fmt.Sprintf("%s-%d", id, i)
+				if err := store.PutBy(t.Context(), record, nil, "engine", []string{"title"}); err != nil {
+					t.Fatalf("PutBy %s %d: %v", id, i, err)
+				}
+			}
+		}
+
+		// When the startup-style sweep runs in several small batches
+		const budget = 20 << 10
+		store.SetMaxHistoryBytesPerTask(budget)
+		store.setHistorySweepBatch(3)
+		if err := store.TrimHistoryOverBytes(t.Context()); err != nil {
+			t.Fatalf("TrimHistoryOverBytes: %v", err)
+		}
+		if err := store.TrimHistoryOverBytes(t.Context()); err != nil {
+			t.Fatalf("TrimHistoryOverBytes rerun: %v", err)
+		}
+
+		// Then each quiet task keeps only its newest byte-bounded tail.
+		for _, id := range []string{"byte1111", "byte2222"} {
+			entries, err := store.History(t.Context(), HistoryQuery{TaskID: id})
+			if err != nil {
+				t.Fatalf("History %s: %v", id, err)
+			}
+			if len(entries) >= 12 || len(entries) == 0 {
+				t.Fatalf("%s kept %d entries, want a non-empty trimmed tail", id, len(entries))
+			}
+			totalBytes := 0
+			for i := range entries {
+				totalBytes += len(entries[i].Snapshot)
+			}
+			if totalBytes > budget && len(entries) > 1 {
+				t.Fatalf("%s kept %d snapshot bytes across %d rows, budget %d", id, totalBytes, len(entries), budget)
+			}
+			newest, err := task.ParseBytes([]byte(entries[len(entries)-1].Snapshot))
+			if err != nil {
+				t.Fatalf("parse newest %s snapshot: %v", id, err)
+			}
+			if want := id + "-11"; newest.Title != want {
+				t.Fatalf("%s newest title = %q, want %q", id, newest.Title, want)
+			}
+		}
+	})
+}
+
+func TestHistory_ByteSweepKeepsAnOversizedNewestEntry(t *testing.T) {
+	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
+		store, err := NewSQLStore(d)
+		if err != nil {
+			t.Fatalf("NewSQLStore: %v", err)
+		}
+		store.SetMaxHistoryPerTask(-1)
+		store.SetMaxHistoryBytesPerTask(-1)
+		record := sqlTask("huge1234", "first")
+		record.Body = strings.Repeat("x", 8<<10)
+		for i := range 5 {
+			record.Title = fmt.Sprintf("title-%d", i)
+			if err := store.PutBy(t.Context(), record, nil, "engine", []string{"title"}); err != nil {
+				t.Fatalf("PutBy %d: %v", i, err)
+			}
+		}
+
+		store.SetMaxHistoryBytesPerTask(1 << 10)
+		if err := store.TrimHistoryOverBytes(t.Context()); err != nil {
+			t.Fatalf("TrimHistoryOverBytes: %v", err)
+		}
+		entries, err := store.History(t.Context(), HistoryQuery{TaskID: "huge1234"})
+		if err != nil {
+			t.Fatalf("History: %v", err)
+		}
+		if len(entries) != 1 {
+			t.Fatalf("kept %d entries, want the newest oversized entry only", len(entries))
+		}
+		newest, err := task.ParseBytes([]byte(entries[0].Snapshot))
+		if err != nil || newest.Title != "title-4" {
+			t.Fatalf("newest snapshot = title %q, err %v", newest.Title, err)
+		}
+	})
+}
+
 func TestHistory_ShippedDefaultCapIsEnforced(t *testing.T) {
 	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
 		t.Helper()

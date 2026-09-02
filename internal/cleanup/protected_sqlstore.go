@@ -31,7 +31,7 @@ type SQLProtectedStore struct {
 	db *db.DB
 
 	mu sync.Mutex
-	tx *sql.Tx
+	tx *db.WriteTx
 }
 
 // NewSQLProtectedStore returns the database-backed findings ledger.
@@ -69,7 +69,7 @@ func (s *SQLProtectedStore) Lock() (func(), error) {
 	s.mu.Lock()
 	ctx, cancel := context.WithTimeout(context.Background(), protectedQueryTimeout)
 
-	tx, err := s.db.SQL().BeginTx(ctx, nil)
+	tx, err := s.db.BeginWriteTx(ctx)
 	if err != nil {
 		cancel()
 		s.mu.Unlock()
