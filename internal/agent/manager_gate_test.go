@@ -8,6 +8,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 // fakeGate lets a test control what Manager sees from the health gate without
@@ -217,6 +218,88 @@ func TestPrepareRunConfig_FailoverRemapsKnownConcreteModel(t *testing.T) {
 	}
 	if cfg.resolvedModel != "gemini-3.1-pro-preview" {
 		t.Fatalf("resolved model = %q, want copilot expensive tier", cfg.resolvedModel)
+	}
+}
+
+func TestPrepareRunConfig_FailoverDropsProviderLocalResumeSession(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.SetHealthGate(&fakeGate{
+		healthy:  map[string]bool{providerid.Claude: false, providerid.Codex: true},
+		failover: map[string]string{providerid.Claude: providerid.Codex},
+		reasons:  map[string]string{providerid.Claude: "logged_out"},
+	})
+
+	cfg, prov, err := m.prepareRunConfig(RunConfig{
+		Provider:              providerid.Claude,
+		ResumeSessionID:       "claude-session",
+		ResumeSessionProvider: providerid.Claude,
+		Mode:                  "headless",
+		Dir:                   t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+	if prov.Name() != providerid.Codex {
+		t.Fatalf("provider = %q, want codex", prov.Name())
+	}
+	if cfg.ResumeSessionID != "" {
+		t.Fatalf("ResumeSessionID = %q, want empty after cross-provider failover", cfg.ResumeSessionID)
+	}
+}
+
+func TestPrepareRunConfig_SameProviderKeepsResumeSession(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.SetHealthGate(&fakeGate{healthy: map[string]bool{providerid.Claude: true}})
+
+	cfg, prov, err := m.prepareRunConfig(RunConfig{
+		Provider:              providerid.Claude,
+		ResumeSessionID:       "claude-session",
+		ResumeSessionProvider: providerid.Claude,
+		Mode:                  "headless",
+		Dir:                   t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+	if prov.Name() != providerid.Claude {
+		t.Fatalf("provider = %q, want claude", prov.Name())
+	}
+	if cfg.ResumeSessionID != "claude-session" {
+		t.Fatalf("ResumeSessionID = %q, want matching session preserved", cfg.ResumeSessionID)
+	}
+}
+
+func TestPrepareRunConfig_PredictedFailoverSessionKeepsOriginalRouting(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.SetHealthGate(&fakeGate{
+		healthy:  map[string]bool{providerid.Codex: false, providerid.Claude: true},
+		failover: map[string]string{providerid.Codex: providerid.Claude},
+		reasons:  map[string]string{providerid.Codex: "logged_out"},
+	})
+
+	cfg, prov, err := m.prepareRunConfig(RunConfig{
+		Provider:              providerid.Codex,
+		Model:                 "gpt-5.6-terra",
+		RoutingReason:         "ab",
+		ResumeSessionID:       "claude-session",
+		ResumeSessionProvider: providerid.Claude,
+		Mode:                  "headless",
+		Dir:                   t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+	if prov.Name() != providerid.Claude {
+		t.Fatalf("provider = %q, want claude", prov.Name())
+	}
+	if cfg.ResumeSessionID != "claude-session" {
+		t.Fatalf("ResumeSessionID = %q, want predicted provider's session preserved", cfg.ResumeSessionID)
+	}
+	if cfg.resolvedModel != "sonnet" {
+		t.Fatalf("resolved model = %q, want codex cheap tier remapped to claude sonnet", cfg.resolvedModel)
+	}
+	if cfg.RoutingReason != "failover" {
+		t.Fatalf("RoutingReason = %q, want failover", cfg.RoutingReason)
 	}
 }
 
