@@ -641,12 +641,15 @@ func TestEmitExecutionEvent_StopsARemoteRunAtItsCostCeiling(t *testing.T) {
 	m, _ := newTestManager(t)
 	m.SetGuardrails(Guardrails{MaxCostUSD: 0.01})
 	backend := &stopRecordingBackend{}
-	m.SetExecutionBackend(backend)
+	// The manager has since been pointed at a different backend, which does
+	// not know this run's handle.
+	swapped := &stopRecordingBackend{}
+	m.SetExecutionBackend(swapped)
 	a := &Agent{ID: "a1", Provider: providerid.Claude, Model: "sonnet"}
 	m.mu.Lock()
 	m.agents[a.ID] = a
 	m.executionAgents[ExecutionHandle("h1")] = a.ID
-	m.activeExecutions[a.ID] = activeExecution{lastEmit: new(time.Time)}
+	m.activeExecutions[a.ID] = activeExecution{backend: backend, lastEmit: new(time.Time)}
 	m.mu.Unlock()
 	forwarded, err := json.Marshal(StreamEvent{
 		Type: "assistant", Content: "work", InputTokens: 2_000_000, OutputTokens: 2_000_000,
@@ -664,7 +667,10 @@ func TestEmitExecutionEvent_StopsARemoteRunAtItsCostCeiling(t *testing.T) {
 	// Then the worker is told to stop, rather than the leader alone believing
 	// a process it cannot reach has halted
 	if got := backend.stopped(); got != 1 {
-		t.Fatalf("backend stops = %d, want 1", got)
+		t.Fatalf("the run's own backend saw %d stops, want 1", got)
+	}
+	if got := swapped.stopped(); got != 0 {
+		t.Fatalf("a backend that never started this run saw %d stops, want 0", got)
 	}
 	if !a.WasStopped() || a.GetEscalationReason() != EscalationReasonCost {
 		t.Fatalf("agent stopped=%v reason=%q, want a cost stop", a.WasStopped(), a.GetEscalationReason())

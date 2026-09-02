@@ -166,7 +166,7 @@ func (m *Manager) EmitExecutionEvent(ctx context.Context, handle ExecutionHandle
 		return
 	}
 	if stop := m.emitExecutionEvent(ctx, handle, event, a, execution.outputStart, execution.lastEmit); stop {
-		m.stopBackendOwnedRun(ctx, handle, a)
+		m.stopBackendOwnedRun(ctx, execution.backend, handle, a)
 	}
 }
 
@@ -178,14 +178,13 @@ func (m *Manager) EmitExecutionEvent(ctx context.Context, handle ExecutionHandle
 // this the agent is marked stopped on the leader while the worker's process
 // keeps running and spending, and the run then reports both a guardrail stop
 // and the success the worker eventually sends.
-func (m *Manager) stopBackendOwnedRun(ctx context.Context, handle ExecutionHandle, a *Agent) {
-	if !a.RemotelyExecuted() {
-		return
-	}
-	m.mu.RLock()
-	backend := m.executionBackend
-	m.mu.RUnlock()
-	if backend == nil {
+//
+// The backend is the run's own, not whichever one the manager currently
+// selects: a run keeps the backend and opaque handle it started with, so a
+// backend swapped mid-run would be handed a handle that means nothing to it,
+// and the worker process would stay alive.
+func (m *Manager) stopBackendOwnedRun(ctx context.Context, backend ExecutionBackend, handle ExecutionHandle, a *Agent) {
+	if !a.RemotelyExecuted() || backend == nil {
 		return
 	}
 	if err := backend.Stop(context.WithoutCancel(ctx), handle); err != nil {
