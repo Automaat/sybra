@@ -13,6 +13,7 @@ import (
 	"github.com/Automaat/sybra/internal/clock"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/taskstatus"
 	"github.com/Automaat/sybra/internal/worktreeerr"
 )
 
@@ -851,5 +852,112 @@ func TestSurfaceStartFailure_AlreadyHumanRequiredIsNoOp(t *testing.T) {
 	got, _ := tasks.GetTask("t1")
 	if got.StatusReason != "existing reason" {
 		t.Errorf("StatusReason = %q, want unchanged existing reason", got.StatusReason)
+	}
+}
+
+func TestHaltedResumeStatus_NamesTheStageThatDispatches(t *testing.T) {
+	// Given a task whose workflow a circuit-breaker trip halted
+	tasks := newMemTasks()
+	store := newTestStore(t)
+	if err := store.Save(Definition{ID: "testing-task", Trigger: Trigger{
+		On:         "task.status_changed",
+		Conditions: []Condition{{Field: "task.status", Operator: "equals", Value: string(taskstatus.Testing)}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
+	tasks.Put(TaskInfo{ID: "t1", Status: taskstatus.Blocked, Workflow: &Execution{
+		WorkflowID: "testing-task", CurrentStep: "run_test", State: ExecFailed,
+		Variables: map[string]string{
+			circuitBreakerFailureKey("run_test"): strconv.Itoa(maxCircuitBreakerFailures),
+		},
+	}})
+
+	// When the operator asks what will move it
+	// Then it is the status the halted workflow itself triggers on, not todo
+	if got := engine.HaltedResumeStatus("t1"); got != string(taskstatus.Testing) {
+		t.Fatalf("resume status = %q, want testing", got)
+	}
+}
+
+func TestHaltedResumeStatus_SilentForAHealthyWorkflow(t *testing.T) {
+	tests := []struct {
+		name  string
+		state ExecState
+	}{
+		{"waiting", ExecWaiting},
+		{"running", ExecRunning},
+		{"completed", ExecCompleted},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Given a workflow no breaker halted
+			tasks := newMemTasks()
+			store := newTestStore(t)
+			if err := store.Save(Definition{ID: "testing-task", Trigger: Trigger{
+				On:         "task.status_changed",
+				Conditions: []Condition{{Field: "task.status", Operator: "equals", Value: string(taskstatus.Testing)}},
+			}}); err != nil {
+				t.Fatal(err)
+			}
+			engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
+			tasks.Put(TaskInfo{ID: "t1", Status: taskstatus.Blocked, Workflow: &Execution{
+				WorkflowID: "testing-task", CurrentStep: "run_test", State: tc.state,
+				Variables: map[string]string{
+					circuitBreakerFailureKey("run_test"): strconv.Itoa(maxCircuitBreakerFailures),
+				},
+			}})
+
+			// When asked
+			// Then nothing is claimed, so an ordinary unblock carries no warning
+			if got := engine.HaltedResumeStatus("t1"); got != "" {
+				t.Fatalf("resume status = %q for a %s workflow, want none", got, tc.state)
+			}
+		})
+	}
+}
+
+func TestHaltedResumeStatus_SilentForATerminalFailure(t *testing.T) {
+	tests := []struct {
+		name string
+		wf   *Execution
+	}{
+		{"step the definition no longer declares", &Execution{
+			WorkflowID: "testing-task", CurrentStep: "run_test", State: ExecFailed,
+		}},
+		{"failure recorded as finished", &Execution{
+			WorkflowID: "testing-task", CurrentStep: "run_test", State: ExecFailed,
+			CompletedAt: &time.Time{},
+			Variables: map[string]string{
+				circuitBreakerFailureKey("run_test"): strconv.Itoa(maxCircuitBreakerFailures),
+			},
+		}},
+		{"counter belonging to another step", &Execution{
+			WorkflowID: "testing-task", CurrentStep: "run_test", State: ExecFailed,
+			Variables: map[string]string{
+				circuitBreakerFailureKey("implement"): strconv.Itoa(maxCircuitBreakerFailures),
+			},
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Given a failure no status change recovers
+			tasks := newMemTasks()
+			store := newTestStore(t)
+			if err := store.Save(Definition{ID: "testing-task", Trigger: Trigger{
+				On:         "task.status_changed",
+				Conditions: []Condition{{Field: "task.status", Operator: "equals", Value: string(taskstatus.Testing)}},
+			}}); err != nil {
+				t.Fatal(err)
+			}
+			engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
+			tasks.Put(TaskInfo{ID: "t1", Status: taskstatus.Blocked, Workflow: tc.wf})
+
+			// When the operator asks what will move it
+			// Then nothing is promised, since no status brings this one back
+			if got := engine.HaltedResumeStatus("t1"); got != "" {
+				t.Fatalf("resume status = %q, want none for a terminal failure", got)
+			}
+		})
 	}
 }
