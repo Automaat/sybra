@@ -378,7 +378,11 @@ func (b *leaderExecutionBackend) relay(ctx context.Context, handle agent.Executi
 					// The manager already received its canonical Started event when
 					// the leader durably accepted or recovered this placement.
 				case executioncontract.EventOutput:
-					run.emit(ctx, handle, agent.ExecutionEvent{Kind: agent.ExecutionOutput, Output: append([]byte(nil), event.Payload...)})
+					run.emit(ctx, handle, agent.ExecutionEvent{
+						Kind:         agent.ExecutionOutput,
+						Output:       append([]byte(nil), event.Payload...),
+						OutputParsed: true,
+					})
 				case executioncontract.EventProgress:
 					var progress struct {
 						Kind    string                `json:"kind"`

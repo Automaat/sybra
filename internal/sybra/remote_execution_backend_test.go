@@ -1297,3 +1297,84 @@ func remoteBackendEvent(runID string, sequence uint64, kind executioncontract.Ev
 		Sequence: sequence, EventID: fmt.Sprintf("event:%d", sequence), IdempotencyKey: fmt.Sprintf("%s:%d", runID, sequence),
 		Type: kind, ObservedAt: time.Now().UTC(), Payload: body}
 }
+
+func TestLeaderExecutionBackendMarksRelayedOutputPreParsed(t *testing.T) {
+	// Given a worker forwarding what its own agent manager produced, which is
+	// this project's StreamEvent rather than the provider's wire format
+	dir, base := remoteBackendRepository(t)
+	database := dbtest.SQLite(t)
+	control := workercontrol.New(database)
+	session, err := control.Register(t.Context(), workercontrol.RegisterRequest{
+		WorkerID: "daemon-a", Capabilities: syntheticDaemonCapabilities(base, "sandbox=enforce"),
+		Negotiation: executioncontract.Negotiation{ProtocolMin: executioncontract.CurrentVersion(), ProtocolMax: executioncontract.CurrentVersion(), BuildVersion: "worker-test"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	canonical := task.Task{ID: "task-remote", Title: "remote", ProjectID: "repo", Branch: "main", Status: task.StatusInProgress,
+		CreatedAt: now, UpdatedAt: now, Generation: 4,
+		Workflow: &workflow.Execution{WorkflowID: "ship", CurrentStep: "implement", State: workflow.ExecWaiting}}
+	if _, err := store.Put(canonical); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{tasks: task.NewManager(store, nil), workerControl: control}
+	backend := &leaderExecutionBackend{
+		app: app, runs: make(map[agent.ExecutionHandle]*remoteExecution),
+		admitLocal: func() (bool, string) { return false, "leader pressure" },
+	}
+	sink := &recordingExecutionSink{ready: make(chan struct{})}
+	start := agent.ExecutionStart{Spec: agent.ExecutionSpec{ID: "agent-remote", TaskID: canonical.ID, Provider: providerid.Claude, Model: "sonnet"},
+		Config: agent.RunConfig{TaskID: canonical.ID, Role: agent.RoleImplementation, Mode: "headless", Prompt: "work", Dir: dir,
+			IntentID: canonical.ID + ":ship:4:1:implement:0", TaskGeneration: 4, Provider: providerid.Claude, Model: "sonnet", SandboxMode: "enforce"}, Sink: sink}
+	if _, err := backend.Start(t.Context(), start); err != nil {
+		t.Fatal(err)
+	}
+
+	// When the worker's terminal result crosses back
+	events := []executioncontract.EventEnvelope{
+		remoteBackendEvent("agent-remote", 1, executioncontract.EventStarted, map[string]any{"agentId": "worker-agent"}),
+		remoteBackendEvent("agent-remote", 2, executioncontract.EventOutput, map[string]any{
+			"type": "result", "session_id": "worker-session", "cost_usd": 0.42,
+			"input_tokens": 1200, "output_tokens": 340,
+		}),
+		remoteBackendEvent("agent-remote", 3, executioncontract.EventTerminal, map[string]any{"state": executioncontract.TerminalSucceeded, "artifactState": executioncontract.ArtifactsFailed}),
+	}
+	if _, err := control.AppendEvents(t.Context(), workercontrol.EventBatch{SessionID: session.SessionID, Events: events}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-sink.ready:
+	case <-time.After(5 * time.Second):
+		t.Fatal("remote completion was not relayed")
+	}
+
+	// Then it is marked so the manager reads it as one, instead of handing it
+	// to a provider parser that drops the run's cost, tokens and session
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	var outputs int
+	for _, ev := range sink.events {
+		if ev.Kind != agent.ExecutionOutput {
+			continue
+		}
+		outputs++
+		if !ev.OutputParsed {
+			t.Fatalf("relayed output %d is not marked pre-parsed; remote cost silently returns to zero", outputs)
+		}
+		var parsed agent.StreamEvent
+		if err := json.Unmarshal(ev.Output, &parsed); err != nil {
+			t.Fatalf("relayed payload is not a StreamEvent: %v", err)
+		}
+		if parsed.Type == "result" && parsed.CostUSD != 0.42 {
+			t.Fatalf("relayed cost = %v, want 0.42", parsed.CostUSD)
+		}
+	}
+	if outputs == 0 {
+		t.Fatal("no output event was relayed")
+	}
+}
