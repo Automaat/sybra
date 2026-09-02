@@ -41,6 +41,8 @@ type remoteExecution struct {
 
 const remoteTerminalGrace = time.Minute
 
+var errRemoteWorkspaceBaseTooLarge = errors.New("remote workspace base bundle is too large")
+
 func (r *remoteExecution) emit(ctx context.Context, handle agent.ExecutionHandle, event agent.ExecutionEvent) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -241,15 +243,11 @@ func (b *leaderExecutionBackend) placementRequest(ctx context.Context, start age
 	if err != nil {
 		return workercontrol.PlacementRequest{}, err
 	}
-	baseBundles := make([]workercontrol.WorkspaceBaseBundleInput, 0, len(anchors))
-	for _, anchor := range anchors {
-		baseBundle, baseBundleRef, bundleErr := prepareRemoteWorkspaceBase(ctx, start.Config.Dir, start.Spec.ID, baseSHA, anchor, baseRef)
-		if bundleErr != nil {
-			return workercontrol.PlacementRequest{}, bundleErr
-		}
-		baseBundles = append(baseBundles, workercontrol.WorkspaceBaseBundleInput{
-			RepositoryAnchor: anchor, Reference: baseBundleRef, Content: baseBundle,
-		})
+	baseBundles, err := prepareRemoteWorkspaceBases(
+		ctx, start.Config.Dir, start.Spec.ID, baseSHA, baseRef, anchors, executioncontract.MaxWorkspaceBaseBundleSize,
+	)
+	if err != nil {
+		return workercontrol.PlacementRequest{}, err
 	}
 	if clean.Config.SeedWorkingMemory {
 		metadata.WorkspaceRoots = append(metadata.WorkspaceRoots, executioncontract.RootWorkingMemory)
@@ -278,7 +276,8 @@ func (b *leaderExecutionBackend) placementRequest(ctx context.Context, start age
 		Spec: spec, Command: command, NodeOverride: t.NodeOverride, AssignedNode: t.AssignedNode,
 		AllowAffinityFallback: true, AllowLocalFallback: true, WorkType: workType,
 		RequireTrusted: b.app.isWorkProject(t.ProjectID), RequireEncrypted: b.app.isWorkProject(t.ProjectID),
-		Sandbox: start.Config.SandboxMode, RequireRepositoryAnchor: true, WorkspaceBaseBundles: baseBundles,
+		RequireVerifierAuth: start.Config.Role == agent.RoleReview,
+		Sandbox:             start.Config.SandboxMode, RequireRepositoryAnchor: true, WorkspaceBaseBundles: baseBundles,
 	}, nil
 }
 
@@ -294,6 +293,30 @@ func followerResolvableBaseRef(baseRef string) bool {
 }
 
 func prepareRemoteWorkspaceBase(ctx context.Context, dir, runID, baseSHA, workerAnchor, baseRef string) ([]byte, *executioncontract.ContentReference, error) {
+	return prepareRemoteWorkspaceBaseLimited(ctx, dir, runID, baseSHA, workerAnchor, baseRef, executioncontract.MaxWorkspaceBaseBundleSize)
+}
+
+func prepareRemoteWorkspaceBases(ctx context.Context, dir, runID, baseSHA, baseRef string, anchors []string, maxBytes int64) ([]workercontrol.WorkspaceBaseBundleInput, error) {
+	baseBundles := make([]workercontrol.WorkspaceBaseBundleInput, 0, len(anchors))
+	for _, anchor := range anchors {
+		baseBundle, baseBundleRef, err := prepareRemoteWorkspaceBaseLimited(ctx, dir, runID, baseSHA, anchor, baseRef, maxBytes)
+		if errors.Is(err, errRemoteWorkspaceBaseTooLarge) {
+			// Bundle size is a property of this worker's advertised repository
+			// anchor, not of the run. Omit only that anchor so placement can still
+			// choose another worker or its authorized local fallback.
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		baseBundles = append(baseBundles, workercontrol.WorkspaceBaseBundleInput{
+			RepositoryAnchor: anchor, Reference: baseBundleRef, Content: baseBundle,
+		})
+	}
+	return baseBundles, nil
+}
+
+func prepareRemoteWorkspaceBaseLimited(ctx context.Context, dir, runID, baseSHA, workerAnchor, baseRef string, maxBytes int64) ([]byte, *executioncontract.ContentReference, error) {
 	// Thin bundles are safe only against the exact object advertised by the
 	// candidate daemon. A leader-side remote-tracking ref says nothing about a
 	// stale daemon clone and must never be used as the prerequisite.
@@ -341,8 +364,8 @@ func prepareRemoteWorkspaceBase(ctx context.Context, dir, runID, baseSHA, worker
 	if err != nil {
 		return nil, nil, err
 	}
-	if info.Size() <= 0 || info.Size() > executioncontract.MaxWorkspaceBaseBundleSize {
-		return nil, nil, fmt.Errorf("remote execution base bundle size %d exceeds limit %d", info.Size(), executioncontract.MaxWorkspaceBaseBundleSize)
+	if info.Size() <= 0 || info.Size() > maxBytes {
+		return nil, nil, fmt.Errorf("%w: size %d exceeds limit %d", errRemoteWorkspaceBaseTooLarge, info.Size(), maxBytes)
 	}
 	content, err := os.ReadFile(path)
 	if err != nil {
