@@ -28,6 +28,36 @@ func TestSybraTestSkill_SupersedingSpecRequiresTrustedProvenance(t *testing.T) {
 	}
 }
 
+// The router decides a PASS on the surface the tester declared
+// (hasManualPassEvidence, internal/workflow): a startable surface owes the
+// app-start triple, a one-shot one owes an executed probe. This skill is the
+// only place a tester learns that, and a tester that guesses wrong has its
+// report rejected for a reason nothing ever told it — which is how a
+// build-script change spent three runs and its whole retry budget re-emitting
+// the same rejected PASS.
+func TestSybraTestSkill_StatesWhatEachSurfaceOwes(t *testing.T) {
+	t.Parallel()
+
+	data, err := FS.ReadFile("data/sybra-test.md")
+	if err != nil {
+		t.Fatalf("read sybra-test skill: %v", err)
+	}
+	text := string(data)
+
+	for _, want := range []string{
+		"The token you pick decides what a PASS must carry",
+		"PASS needs `app_started: true`, a `start_command`, a filled-in `readiness_probe`",
+		"`cli` — you invoked the change and read the result",
+		"`app_started`, `start_command`, and `readiness_probe` are not required",
+		"not `not run`/`skipped`/`n/a`",
+		"Do not label a startable surface `cli` because you could not start it",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("sybra-test skill missing %q:\n%s", want, text)
+		}
+	}
+}
+
 // The operator-invocable skill and the harness dispatch prompt state the same
 // review-fix policy for the same threads. Sybra no longer invokes this skill —
 // its prompt carries the runbook — so nothing else would notice the skill
