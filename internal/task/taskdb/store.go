@@ -84,6 +84,16 @@ func NewSQLStore(database *db.DB) (*SQLStore, error) {
 	return &SQLStore{db: database}, nil
 }
 
+// ReclaimStorage hands pages freed by maintenance back to SQLite when its file
+// supports incremental auto-vacuum. It is a no-op for postgres and for older
+// SQLite files that require an operator-scheduled full VACUUM.
+func (s *SQLStore) ReclaimStorage(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
+	return s.db.ReclaimFreePages(ctx)
+}
+
 const (
 	upsertTask = `INSERT INTO tasks (id, status, project_id, title, created_at, updated_at, deleted_at, doc, board_doc, assigned_node, closed_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

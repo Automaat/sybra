@@ -111,6 +111,23 @@ func TestMigrate_CreatesSchemaAndIsIdempotent(t *testing.T) {
 	})
 }
 
+func TestMigrate_CreatesTaskHistoryIDIndex(t *testing.T) {
+	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
+		var count int
+		query := `SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?`
+		if d.Dialect() == db.Postgres {
+			query = `SELECT COUNT(*) FROM pg_indexes WHERE schemaname = current_schema() AND indexname = ?`
+		}
+		if err := d.QueryRowContext(t.Context(), query, "task_history_task_id_idx").Scan(&count); err != nil {
+			t.Fatalf("find task history id index: %v", err)
+		}
+		if count != 1 {
+			t.Fatalf("task_history_task_id_idx count = %d, want 1", count)
+		}
+	})
+}
+
 func TestMigrate_RefusesADatabaseFromANewerBuild(t *testing.T) {
 	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
 		t.Helper()
@@ -306,6 +323,145 @@ func TestSQLiteDefaultPoolReadDoesNotQueueBehindWriter(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("reader saw uncommitted row: count=%d", count)
+	}
+}
+
+func TestSQLiteWriterAdmissionKeepsQueuedWritersOutOfTheReaderPool(t *testing.T) {
+	d, err := db.Open(t.Context(), db.Options{
+		Backend:      "sqlite",
+		DSN:          filepath.Join(t.TempDir(), "sybra.db"),
+		MaxOpenConns: 2,
+	})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	if _, err := d.ExecContext(t.Context(), `CREATE TABLE writer_gate_probe (id INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := d.BeginWriteTx(t.Context())
+	if err != nil {
+		t.Fatalf("begin lock-shaped writer: %v", err)
+	}
+	if _, err := first.ExecContext(t.Context(), `INSERT INTO writer_gate_probe (id) VALUES (1)`); err != nil {
+		_ = first.Rollback()
+		t.Fatalf("write first row: %v", err)
+	}
+
+	secondStarted := make(chan struct{})
+	secondDone := make(chan error, 1)
+	go func() {
+		close(secondStarted)
+		secondDone <- d.InTx(t.Context(), func(tx *sql.Tx) error {
+			_, err := tx.ExecContext(t.Context(), `INSERT INTO writer_gate_probe (id) VALUES (2)`)
+			return err
+		})
+	}()
+	<-secondStarted
+	time.Sleep(50 * time.Millisecond)
+	if got := d.SQL().Stats().InUse; got != 1 {
+		t.Fatalf("pool in-use connections = %d, want only the admitted writer", got)
+	}
+
+	readCtx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+	defer cancel()
+	var count int
+	if err := d.QueryRowContext(readCtx, `SELECT COUNT(*) FROM writer_gate_probe`).Scan(&count); err != nil {
+		t.Fatalf("reader could not use the reserved pool connection: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("reader saw uncommitted rows: %d", count)
+	}
+
+	if err := first.Commit(); err != nil {
+		t.Fatalf("first writer: %v", err)
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatalf("second writer: %v", err)
+	}
+}
+
+func TestSQLiteWriterAdmissionHonorsCancellationAndObservesWait(t *testing.T) {
+	d, err := db.Open(t.Context(), db.Options{
+		Backend: "sqlite",
+		DSN:     filepath.Join(t.TempDir(), "sybra.db"),
+	})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+
+	observed := make(chan db.TransactionObservation, 2)
+	d.SetTransactionObserver(func(observation db.TransactionObservation) { observed <- observation })
+	holding := make(chan struct{})
+	release := make(chan struct{})
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- d.InTx(t.Context(), func(*sql.Tx) error {
+			close(holding)
+			<-release
+			return nil
+		})
+	}()
+	<-holding
+
+	ctx, cancel := context.WithTimeout(t.Context(), 40*time.Millisecond)
+	defer cancel()
+	called := false
+	err = d.InTx(ctx, func(*sql.Tx) error {
+		called = true
+		return nil
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("queued writer error = %v, want deadline exceeded", err)
+	}
+	if called {
+		t.Fatal("canceled queued writer entered its transaction body")
+	}
+	canceled := <-observed
+	if canceled.Result != "canceled" || canceled.AdmissionWait < 30*time.Millisecond {
+		t.Fatalf("canceled observation = %+v", canceled)
+	}
+
+	close(release)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first writer: %v", err)
+	}
+	completed := <-observed
+	if completed.Result != "ok" || completed.Dialect != db.SQLite {
+		t.Fatalf("completed observation = %+v", completed)
+	}
+}
+
+func TestBeginWriteTx_ContextExpiryReleasesWriterAdmission(t *testing.T) {
+	d, err := db.Open(t.Context(), db.Options{
+		Backend: "sqlite",
+		DSN:     filepath.Join(t.TempDir(), "sybra.db"),
+	})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+
+	ctx, cancel := context.WithTimeout(t.Context(), 40*time.Millisecond)
+	defer cancel()
+	tx, err := d.BeginWriteTx(ctx)
+	if err != nil {
+		t.Fatalf("BeginWriteTx: %v", err)
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE TABLE expiry_probe (id INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatalf("create table in transaction: %v", err)
+	}
+	<-ctx.Done()
+
+	// Deliberately do not call Commit or Rollback: database/sql auto-rolls the
+	// transaction back on context expiry, and the wrapper must still release
+	// process-local admission for another domain's writer.
+	nextCtx, nextCancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+	defer nextCancel()
+	if err := d.InTx(nextCtx, func(*sql.Tx) error { return nil }); err != nil {
+		t.Fatalf("writer admission remained held after transaction context expiry: %v", err)
 	}
 }
 
@@ -830,5 +986,46 @@ func TestOpen_NewDatabaseReclaimsFreePages(t *testing.T) {
 	}
 	if remaining >= freed {
 		t.Fatalf("freelist = %d pages after restart, want fewer than the %d that were freed", remaining, freed)
+	}
+}
+
+func TestReclaimFreePages_ReturnsPagesWithoutAReopen(t *testing.T) {
+	handle, err := db.Open(t.Context(), db.Options{
+		Backend: "sqlite",
+		DSN:     filepath.Join(t.TempDir(), "sybra.db"),
+	})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = handle.Close() })
+	if _, err := handle.ExecContext(t.Context(), `CREATE TABLE reclaim_probe (id INTEGER PRIMARY KEY, blob TEXT)`); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	pad := strings.Repeat("x", 4096)
+	for i := range 500 {
+		if _, err := handle.ExecContext(t.Context(), `INSERT INTO reclaim_probe (id, blob) VALUES (?, ?)`, i, pad); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+	if _, err := handle.ExecContext(t.Context(), `DELETE FROM reclaim_probe`); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	var before int
+	if err := handle.QueryRowContext(t.Context(), `PRAGMA freelist_count`).Scan(&before); err != nil {
+		t.Fatalf("read freelist before reclaim: %v", err)
+	}
+	if before == 0 {
+		t.Fatal("fixture freed no pages")
+	}
+
+	if err := handle.ReclaimFreePages(t.Context()); err != nil {
+		t.Fatalf("ReclaimFreePages: %v", err)
+	}
+	var after int
+	if err := handle.QueryRowContext(t.Context(), `PRAGMA freelist_count`).Scan(&after); err != nil {
+		t.Fatalf("read freelist after reclaim: %v", err)
+	}
+	if after >= before {
+		t.Fatalf("freelist = %d pages after reclaim, want fewer than %d", after, before)
 	}
 }
