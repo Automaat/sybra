@@ -165,7 +165,33 @@ func (m *Manager) EmitExecutionEvent(ctx context.Context, handle ExecutionHandle
 		// returned its handle to the manager. No state transition depends on it.
 		return
 	}
-	m.emitExecutionEvent(ctx, handle, event, a, execution.outputStart, execution.lastEmit)
+	if stop := m.emitExecutionEvent(ctx, handle, event, a, execution.outputStart, execution.lastEmit); stop {
+		m.stopBackendOwnedRun(ctx, execution.backend, handle, a)
+	}
+}
+
+// stopBackendOwnedRun carries a guardrail's stop decision to the backend that
+// owns the process.
+//
+// A locally spawned run is torn down by the runner goroutine that owns its
+// pipe. A run placed on another machine has no such goroutine here: without
+// this the agent is marked stopped on the leader while the worker's process
+// keeps running and spending, and the run then reports both a guardrail stop
+// and the success the worker eventually sends.
+//
+// The backend is the run's own, not whichever one the manager currently
+// selects: a run keeps the backend and opaque handle it started with, so a
+// backend swapped mid-run would be handed a handle that means nothing to it,
+// and the worker process would stay alive.
+func (m *Manager) stopBackendOwnedRun(ctx context.Context, backend ExecutionBackend, handle ExecutionHandle, a *Agent) {
+	if !a.RemotelyExecuted() || backend == nil {
+		return
+	}
+	if err := backend.Stop(context.WithoutCancel(ctx), handle); err != nil {
+		m.logger.Error("agent.remote.stop", "id", a.ID, "reason", a.GetEscalationReason(), "err", err)
+		return
+	}
+	m.logger.Warn("agent.remote.stop", "id", a.ID, "reason", a.GetEscalationReason())
 }
 
 func (m *Manager) emitExecutionEvent(ctx context.Context, _ ExecutionHandle, event ExecutionEvent, a *Agent, outputStart int, lastEmit *time.Time) bool {

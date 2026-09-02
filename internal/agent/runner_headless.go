@@ -1055,10 +1055,14 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 // hostLocal is false for such a run, and every effect that describes THIS
 // host is skipped: the provider quota snapshot feeds a dispatch gate keyed by
 // provider with no node dimension, so a follower's exhausted account would
-// refuse dispatch here; the session file names a path that exists only on the
-// worker; and the live cost ceiling can mark the agent stopped while the
-// process it cannot reach keeps running and spending. Only the accounting the
-// board and the task budget need crosses the boundary.
+// refuse dispatch here, and the session file names a path that exists only on
+// the worker. Only the accounting the board and the task budget need crosses
+// the boundary.
+//
+// The cost ceiling is not one of those: it describes the run, not the host, so
+// it applies either way. Its stop reaches the worker through the backend (see
+// stopBackendOwnedRun) rather than through the pipe a remote run does not
+// have.
 func (m *Manager) applyHeadlessEvent(ctx context.Context, a *Agent, event StreamEvent, lastEmit *time.Time, provider Provider, hostLocal bool) (stop bool) {
 	if event.Type == "" {
 		return false
@@ -1130,7 +1134,7 @@ func (m *Manager) applyHeadlessEvent(ctx context.Context, a *Agent, event Stream
 		m.emit(events.AgentState(a.ID), a)
 	}
 
-	if event.Type == "assistant" && hostLocal {
+	if event.Type == "assistant" {
 		if stop := m.applyAssistantGuardrails(ctx, a, event); stop {
 			return true
 		}
