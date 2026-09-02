@@ -1675,6 +1675,24 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			wantStatus: "completed",
 		},
 		{
+			// The plain-text gate must hold the same bar as the structured
+			// one: labels alone are not evidence when the result they carry
+			// says the probe never ran.
+			name:   "plain_text_cli_pass_whose_probe_never_ran_stays_missing_evidence",
+			status: "completed",
+			output: "Tried to exercise the new gate flag.\n\n" +
+				"surface_kind: cli\n" +
+				"manual_probes:\n" +
+				"  - command: go run ./cmd/tool --gate 2.14.0\n" +
+				"    expected: the flag is accepted and echoed\n" +
+				"    actual: not run\n\n" +
+				"TEST_VERDICT: PASS",
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
 			name:       "startable_surface_that_was_never_started_stays_missing_evidence",
 			status:     "completed",
 			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web","app_started":false,"start_command":"","unable_to_run_reason":"the host has no kubernetes context","readiness_probe":{"command":"curl -fsS http://127.0.0.1:8080/health","actual":"HTTP 200","output":"ok","status":"pass"},"manual_probes":[{"command":"helm package deployments/charts/app","expected":"the chart packages","actual":"the chart packaged","observed":"helm package succeeded","output":"Successfully packaged chart","status":"pass"}]}`,

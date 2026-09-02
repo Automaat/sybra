@@ -1175,7 +1175,7 @@ func hasPlainTextManualPassEvidence(output string, t TaskInfo) (ok bool, reason 
 		return false, "plain-text PASS skipped manual testing without an explicit docs/library exemption"
 	}
 	if isOneShotSurface(surface) {
-		if !hasPlainTextManualProbeEvidence(output) {
+		if !hasPlainTextConcreteProbeEvidence(output) {
 			return false, "plain-text PASS report omitted an executed " + surface + " probe"
 		}
 		return true, ""
@@ -1220,6 +1220,37 @@ func hasPlainTextManualProbeEvidence(output string) bool {
 		containsAny(lower, "command:", "curl ", "sybra-cli", "kubectl ", "go run ", "npm run ") &&
 		containsAny(lower, "expected:", "expected output:") &&
 		containsAny(lower, "actual:", "actual output:", "observed:", "observed output:")
+}
+
+// hasPlainTextConcreteProbeEvidence is hasConcreteManualProbeEvidence's
+// plain-text counterpart: the probe labels must be present AND at least one
+// recorded result must read as an outcome rather than a not-executed marker.
+//
+// hasPlainTextManualProbeEvidence alone only asks whether the labels appear,
+// so a one-shot PASS whose single probe said "actual: not run" satisfied the
+// plain-text gate while its structured twin was rejected — weaker than the
+// structured path and weaker than what /sybra-test tells a tester it owes.
+//
+// It reads every line rather than reportScanLines, because a probe's result
+// is usually written indented under its command and reportScanLines drops
+// indented lines as fenced/quoted content.
+func hasPlainTextConcreteProbeEvidence(output string) bool {
+	if !hasPlainTextManualProbeEvidence(output) {
+		return false
+	}
+	for line := range strings.SplitSeq(output, "\n") {
+		field, value, ok := strings.Cut(strings.TrimSpace(strings.TrimLeft(line, "-* \t")), ":")
+		if !ok {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(field)) {
+		case "actual", "actual output", "observed", "observed output", "status":
+			if hasConcreteProbeResult(evidenceText(strings.TrimSpace(value))) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func hasPlainTextRegressionCheckEvidence(output string) bool {
