@@ -285,3 +285,35 @@ func (e *Engine) clearCircuitBreakerOnSuccess(taskID string, wf *Execution, step
 		e.logger.Error("workflow.circuit-breaker.clear", "task_id", taskID, "step", stepID, "err", err)
 	}
 }
+
+// HaltedResumeStatus names the status that will dispatch a task whose workflow
+// a circuit-breaker trip halted, or "" when the task is not halted.
+//
+// A halt leaves the execution failed independently of task.Status, so the
+// obvious unblock — back to todo — is accepted and then dispatches nothing:
+// todo's lane is for work that has not started and correctly declines a task
+// that already has commits and a review, and no other lane looks at it. The
+// status that does resume it is the one its own workflow triggers on, which
+// the operator has no way to know.
+func (e *Engine) HaltedResumeStatus(taskID string) string {
+	t, err := e.tasks.GetTask(taskID)
+	if err != nil || t.Workflow == nil || t.Workflow.State != ExecFailed {
+		return ""
+	}
+	def, err := e.store.Get(t.Workflow.WorkflowID)
+	if err != nil {
+		return ""
+	}
+	return triggerStatus(def.Trigger)
+}
+
+// triggerStatus reports the task status a definition activates on, or "" when
+// it is not status-triggered.
+func triggerStatus(trigger Trigger) string {
+	for _, c := range trigger.Conditions {
+		if c.Field == "task.status" && c.Operator == "equals" {
+			return c.Value
+		}
+	}
+	return ""
+}

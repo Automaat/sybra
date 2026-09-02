@@ -1061,11 +1061,19 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 			extra.Escalation = task.OperatorDecisionEvidence("operator.manual_status_change", display)
 			extra.AutonomyOutcome = task.HumanRequiredOutcome()
 		}
+		resume := s.haltedResumeStatus(id)
+		if resume != "" && resume != string(status) && !task.IsTerminalStatus(status) {
+			extra.StatusReason = task.Ptr(haltedUnblockReason(resume))
+		}
 		result, applyErr := s.tasks.Apply(task.TransitionIntent{
 			TaskID: id, ToStatus: status, Actor: "svc.tasks.update",
 			Extra: extra, OperatorOverride: true,
 		})
 		t, err = result.Task, applyErr
+		if applyErr == nil && resume != "" && resume != string(status) && !task.IsTerminalStatus(status) {
+			s.logger.Warn("svc.tasks.halted-unblock",
+				"task_id", id, "requested", string(status), "resume_status", resume)
+		}
 	} else {
 		t, err = s.tasks.UpdateMapBy(id, "svc.tasks.update", updates)
 	}
@@ -1945,4 +1953,20 @@ func (s *TaskService) viewerLinkedPRCount(prs []github.PullRequest) int {
 		}
 	}
 	return count
+}
+
+// haltedResumeStatus names the status that resumes a task whose workflow a
+// circuit-breaker trip halted, or "" when it is not halted.
+func (s *TaskService) haltedResumeStatus(id string) string {
+	if s.workflowEngine == nil {
+		return ""
+	}
+	return s.workflowEngine.HaltedResumeStatus(id)
+}
+
+// haltedUnblockReason tells the operator why the status they chose will not
+// start anything, and which one will.
+func haltedUnblockReason(resume string) string {
+	return "workflow halted by its circuit breaker — this status does not dispatch it; set the task to " +
+		resume + " to resume the step it stopped on"
 }

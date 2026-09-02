@@ -1,6 +1,7 @@
 package sybra
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/task"
@@ -125,5 +126,72 @@ func TestUpdateTask_ReadyReviewDispatchesTerminalWorkflowByTrigger(t *testing.T)
 	}
 	if got.Workflow == nil || got.Workflow.WorkflowID != "simple-task-review" {
 		t.Fatalf("workflow = %+v, want simple-task-review selected by ready-review trigger", got.Workflow)
+	}
+}
+
+func TestUpdateTask_HaltedUnblockToTodoSaysWhatWillDispatch(t *testing.T) {
+	// Given a task whose workflow a circuit-breaker trip halted at its
+	// testing stage
+	svc, a := setupTaskService(t)
+	tk, err := a.tasks.Create("halted", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	halted := &workflow.Execution{WorkflowID: "testing-task", CurrentStep: "run_test", State: workflow.ExecFailed}
+	if _, err := a.tasks.Update(tk.ID, task.Update{Workflow: &halted}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusBlocked)}); err != nil {
+		t.Fatal(err)
+	}
+
+	// When the operator unblocks it the obvious way
+	if _, err := svc.UpdateTask(tk.ID, map[string]any{"status": string(task.StatusTodo)}); err != nil {
+		t.Fatal(err)
+	}
+	svc.wg.Wait()
+
+	// Then the task says the status will not dispatch it, and names the one
+	// that will, instead of going quiet
+	got, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got.StatusReason, "testing") {
+		t.Fatalf("status reason = %q, want it to name the testing stage", got.StatusReason)
+	}
+	if !strings.Contains(got.StatusReason, "does not dispatch") {
+		t.Fatalf("status reason = %q, want it to say this status dispatches nothing", got.StatusReason)
+	}
+}
+
+func TestUpdateTask_HaltedUnblockToTheRightStageIsQuiet(t *testing.T) {
+	// Given the same halted task
+	svc, a := setupTaskService(t)
+	tk, err := a.tasks.Create("halted", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	halted := &workflow.Execution{WorkflowID: "testing-task", CurrentStep: "run_test", State: workflow.ExecFailed}
+	if _, err := a.tasks.Update(tk.ID, task.Update{Workflow: &halted}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusBlocked)}); err != nil {
+		t.Fatal(err)
+	}
+
+	// When the operator picks the stage that does dispatch it
+	if _, err := svc.UpdateTask(tk.ID, map[string]any{"status": string(task.StatusTesting)}); err != nil {
+		t.Fatal(err)
+	}
+	svc.wg.Wait()
+
+	// Then nothing warns them off the move that works
+	got, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(got.StatusReason, "does not dispatch") {
+		t.Fatalf("status reason = %q, want no warning on the status that resumes it", got.StatusReason)
 	}
 }

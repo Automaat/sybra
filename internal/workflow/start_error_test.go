@@ -853,3 +853,59 @@ func TestSurfaceStartFailure_AlreadyHumanRequiredIsNoOp(t *testing.T) {
 		t.Errorf("StatusReason = %q, want unchanged existing reason", got.StatusReason)
 	}
 }
+
+func TestHaltedResumeStatus_NamesTheStageThatDispatches(t *testing.T) {
+	// Given a task whose workflow a circuit-breaker trip halted
+	tasks := newMemTasks()
+	store := newTestStore(t)
+	if err := store.Save(Definition{ID: "testing-task", Trigger: Trigger{
+		On:         "task.status_changed",
+		Conditions: []Condition{{Field: "task.status", Operator: "equals", Value: "testing"}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
+	tasks.Put(TaskInfo{ID: "t1", Status: "blocked", Workflow: &Execution{
+		WorkflowID: "testing-task", CurrentStep: "run_test", State: ExecFailed,
+	}})
+
+	// When the operator asks what will move it
+	// Then it is the status the halted workflow itself triggers on, not todo
+	if got := engine.HaltedResumeStatus("t1"); got != "testing" {
+		t.Fatalf("resume status = %q, want testing", got)
+	}
+}
+
+func TestHaltedResumeStatus_SilentForAHealthyWorkflow(t *testing.T) {
+	tests := []struct {
+		name  string
+		state ExecState
+	}{
+		{"waiting", ExecWaiting},
+		{"running", ExecRunning},
+		{"completed", ExecCompleted},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Given a workflow no breaker halted
+			tasks := newMemTasks()
+			store := newTestStore(t)
+			if err := store.Save(Definition{ID: "testing-task", Trigger: Trigger{
+				On:         "task.status_changed",
+				Conditions: []Condition{{Field: "task.status", Operator: "equals", Value: "testing"}},
+			}}); err != nil {
+				t.Fatal(err)
+			}
+			engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
+			tasks.Put(TaskInfo{ID: "t1", Status: "blocked", Workflow: &Execution{
+				WorkflowID: "testing-task", CurrentStep: "run_test", State: tc.state,
+			}})
+
+			// When asked
+			// Then nothing is claimed, so an ordinary unblock carries no warning
+			if got := engine.HaltedResumeStatus("t1"); got != "" {
+				t.Fatalf("resume status = %q for a %s workflow, want none", got, tc.state)
+			}
+		})
+	}
+}
