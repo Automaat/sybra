@@ -19,17 +19,19 @@ export function taskTotalCost(task: TaskCostFields): number {
     if (Number.isFinite(cost) && cost >= 0) total += cost
   }
   const dropped = task.documentCompaction?.droppedRunCostUsd
-  if (Number.isFinite(dropped) && (dropped as number) >= 0) total += dropped as number
+  if (typeof dropped === 'number' && Number.isFinite(dropped) && dropped >= 0) total += dropped
   return total
 }
 
 // Every run counts, regardless of whether its cost was valid — a run with a
 // missing/invalid cost still happened and still consumed agent time. A run
-// discarded by compaction happened too, so the receipt's count is added.
+// discarded by compaction happened too, so the receipt's count is added — as a
+// whole number, since a fraction of a run never happened.
 export function taskRunCount(task: TaskCostFields): number {
-  const dropped = task.documentCompaction?.droppedAgentRuns
   const kept = task.agentRuns?.length ?? 0
-  return Number.isFinite(dropped) && (dropped as number) > 0 ? kept + (dropped as number) : kept
+  const dropped = task.documentCompaction?.droppedAgentRuns
+  if (typeof dropped !== 'number' || !Number.isInteger(dropped) || dropped <= 0) return kept
+  return kept + dropped
 }
 
 // Uniform USD cost formatting for the chat surface. A single fixed precision so

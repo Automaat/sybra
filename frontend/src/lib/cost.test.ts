@@ -61,8 +61,9 @@ describe('taskTotalCost with a compaction receipt', () => {
   })
 
   it('ignores an invalid dropped cost rather than showing NaN as money', () => {
-    expect(taskTotalCost(compacted([2], { droppedRunCostUsd: Number.NaN }))).toBe(2)
-    expect(taskTotalCost(compacted([2], { droppedRunCostUsd: -5 }))).toBe(2)
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -5, '3']) {
+      expect(taskTotalCost(compacted([2], { droppedRunCostUsd: bad }))).toBe(2)
+    }
   })
 })
 
@@ -88,7 +89,9 @@ describe('taskRunCount', () => {
   })
 
   it('ignores an invalid dropped count', () => {
-    expect(taskRunCount(compacted([1, 2], { droppedAgentRuns: Number.NaN }))).toBe(2)
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -3, 1.5, '4']) {
+      expect(taskRunCount(compacted([1, 2], { droppedAgentRuns: bad }))).toBe(2)
+    }
   })
 })
 
