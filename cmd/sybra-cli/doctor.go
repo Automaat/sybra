@@ -323,11 +323,17 @@ func renderDoctorCleanupHuman(report doctorCleanupReport) {
 
 	// An operator reaches for this during a full disk. Eligible bytes alone
 	// answered "nothing to clean" while the retained column's worth of space
-	// was sitting in these same directories, waiting on a task to go terminal
-	// or on its retention window to pass.
+	// was sitting in these same directories.
+	//
+	// The reasons are listed rather than summarised: naming only the common
+	// two sent someone hunting a retention window during an outage whose real
+	// cause was retention switched off, or an owning task that no longer
+	// resolves.
 	if retained > 0 {
-		fmt.Printf("\nRETAINED holds %s that is not eligible yet: the owning task is still\n", humanBytes(retained))
-		fmt.Println("active, or went terminal inside the retention window (sandbox.retention_hours).")
+		fmt.Printf("\nRETAINED holds %s these buckets may not delete. An entry is held when its\n", humanBytes(retained))
+		fmt.Println("owning task is still active, when a terminal task is inside the retention")
+		fmt.Println("window (sandbox.retention_hours), when age-based retention is switched off")
+		fmt.Println("(a negative retention_hours), or when the owning task cannot be resolved.")
 	}
 
 	if !report.Applied {

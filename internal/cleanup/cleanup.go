@@ -81,11 +81,13 @@ type Bucket struct {
 	Bytes       int64
 	Items       int
 	// RetainedBytes/RetainedItems account for entries this bucket holds but
-	// is not yet allowed to delete — an owning task still active, or terminal
-	// but inside the retention window. Without them a bucket reports 0 while
-	// holding tens of gigabytes, which is what a full disk looked like from
-	// `doctor cleanup`: every safe bucket empty, nothing named, and 86 GB of
-	// per-task Go build caches accounted for nowhere.
+	// is not allowed to delete, for any of the reasons eligible() can refuse
+	// on: an owning task still active, a terminal one inside the retention
+	// window, age-based retention switched off entirely, or an owning task
+	// that could not be resolved at all. Without them a bucket reports 0
+	// while holding tens of gigabytes, which is what a full disk looked like
+	// from `doctor cleanup`: every safe bucket empty, nothing named, and
+	// 86 GB of per-task Go build caches accounted for nowhere.
 	RetainedBytes int64
 	RetainedItems int
 }
@@ -578,8 +580,9 @@ func (s *Scanner) protectedLogPaths(snap snapshot) map[string]bool {
 	return ProtectedEvidenceLogPaths(s.cfg.Logging.Dir, tasks, findings)
 }
 
-// retain records an entry the bucket holds but may not delete yet, so its
-// bytes are reported rather than silently dropped from every total.
+// retain records an entry the bucket holds but may not delete, whatever
+// eligible() refused on, so its bytes are reported rather than silently
+// dropped from every total.
 func (b *Bucket) retain(path string) {
 	size, err := dirSize(path)
 	if err != nil {
