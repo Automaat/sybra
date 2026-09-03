@@ -1888,6 +1888,7 @@ func (a *App) configureTestingEscalation() {
 	a.workflowEngine.SetReviewUntilClean(a.cfg.ReviewUntilClean())
 	a.workflowEngine.SetReviewRoundsPerHour(a.cfg.Agent.ReviewRoundsPerHourLimit())
 	a.workflowEngine.SetOpenPROnUnrunnableGate(a.cfg.TestingOpenPROnUnrunnableGateEnabled())
+	a.workflowEngine.SetVerifyTimeout(a.cfg.VerifyTimeout())
 	a.warnUnboundedReviewLoop()
 }
 

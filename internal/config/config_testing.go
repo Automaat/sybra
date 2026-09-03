@@ -25,4 +25,16 @@ type TestingConfig struct {
 	// no PR for anyone to act on. Set false to restore the legacy
 	// human-required escalation.
 	OpenPROnUnrunnableGate *bool `yaml:"open_pr_on_unrunnable_gate" json:"openPrOnUnrunnableGate"`
+	// VerifyTimeoutMinutes bounds one verify_checks run — every command in
+	// the repo's `checks.verify` list together. 0 falls back to
+	// DefaultVerifyTimeoutMinutes. The budget is stretched further on an
+	// oversubscribed host (see resolveWorkflowCheckTimeout), so raise this
+	// only when the suite itself has outgrown the default rather than to
+	// compensate for load.
+	//
+	// It exists because a repo whose suite grows past the compiled-in
+	// default has no way to say so: the task blocks on a timeout that names
+	// slow tests, and the only documented escape is the `verify-blessed`
+	// tag, which skips verification for that task altogether.
+	VerifyTimeoutMinutes int `yaml:"verify_timeout_minutes" json:"verifyTimeoutMinutes"`
 }
