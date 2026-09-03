@@ -271,14 +271,18 @@ func newTLSAPIClient(raw, source, localToken string) (*apiClient, error) {
 	if path := strings.TrimSpace(u.EscapedPath()); path != "" && path != "/" {
 		return nil, fmt.Errorf("%s=%q must carry no path", source, raw)
 	}
-	// The file first: a sandboxed agent is handed one, and it cannot read the
-	// config this machine's token would otherwise come from.
-	token, fromFile, err := boardTokenFromFile()
-	if err != nil {
-		return nil, err
-	}
-	if !fromFile {
-		token = strings.TrimSpace(os.Getenv(serverTokenEnv))
+	// An explicit remote-board token wins over any ambient sandbox token file:
+	// a named target on another machine is operator intent, while the file is
+	// a local-board credential the runner may have injected for a sandboxed
+	// agent.
+	token := strings.TrimSpace(os.Getenv(serverTokenEnv))
+	fromFile := false
+	if token == "" {
+		var err error
+		token, fromFile, err = boardTokenFromFile()
+		if err != nil {
+			return nil, err
+		}
 	}
 	if token == "" && localToken != "" {
 		// This machine's own TLS board keeps its token in this machine's
@@ -291,6 +295,9 @@ func newTLSAPIClient(raw, source, localToken string) (*apiClient, error) {
 	host, _, splitErr := net.SplitHostPort(u.Host)
 	if splitErr != nil {
 		host = u.Host
+	}
+	if fromFile && !isLoopbackHost(host) {
+		return nil, fmt.Errorf("%s=%q is not loopback; a sandbox token file may only target this machine's board", source, raw)
 	}
 	return &apiClient{
 		baseURL:   "https://" + u.Host,

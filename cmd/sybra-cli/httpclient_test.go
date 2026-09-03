@@ -168,6 +168,40 @@ func TestNewAPIClientVerifierTokenRequiresLoopback(t *testing.T) {
 	}
 }
 
+func TestNewAPIClientVerifierTokenRejectsRemoteTLS(t *testing.T) {
+	tokenPath := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenPath, []byte("scoped-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SYBRA_AUTH_TOKEN_FILE", tokenPath)
+	t.Setenv(serverTargetEnv, "https://board.example:8443")
+	cfg := &config.Config{}
+	if client, err := newAPIClient(cfg); err == nil || client != nil {
+		t.Fatalf("scoped verifier credential accepted remote TLS target: %+v (err=%v)", client, err)
+	}
+}
+
+func TestNewAPIClientDedicatedRemoteTLSTokenEnvBeatsVerifierTokenFile(t *testing.T) {
+	tokenPath := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenPath, []byte("scoped-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SYBRA_AUTH_TOKEN_FILE", tokenPath)
+	t.Setenv(serverTargetEnv, "https://board.example:8443")
+	t.Setenv(serverTokenEnv, "remote-token")
+	cfg := &config.Config{}
+	client, err := newAPIClient(cfg)
+	if err != nil || client == nil {
+		t.Fatalf("dedicated remote TLS client rejected explicit token env: client=%+v err=%v", client, err)
+	}
+	if client.token != "remote-token" {
+		t.Fatalf("token = %q, want explicit remote token", client.token)
+	}
+	if client.sandboxed {
+		t.Fatal("explicit remote token should not be marked as sandbox-file sourced")
+	}
+}
+
 // TestCLI_NeverTouchesTheBoardsFiles replaces a test that proved HTTP mode
 // still worked when the local task dir was read-only. With no filesystem path
 // left the interesting claim is stronger: a full create/update/list cycle works
@@ -484,6 +518,7 @@ func TestNewAPIClient_RejectsInvalidDedicatedServerTarget(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv(serverTargetEnv, tc.raw)
 			t.Setenv(serverTokenEnv, "")
+			t.Setenv("SYBRA_AUTH_TOKEN_FILE", "")
 			cfg := config.DefaultConfig()
 			cfg.Server.AuthToken = "token"
 
