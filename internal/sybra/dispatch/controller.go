@@ -486,8 +486,6 @@ func replayMismatchDetail(stored, replay agent.AttemptIntent) string {
 	add("worktree", a.Worktree, b.Worktree)
 	add("access", string(a.Access), string(b.Access))
 	add("role", string(a.Role), string(b.Role))
-	add("task_generation", strconv.FormatUint(a.TaskGeneration, 10), strconv.FormatUint(b.TaskGeneration, 10))
-	add("worktree_generation", strconv.FormatUint(a.WorktreeGeneration, 10), strconv.FormatUint(b.WorktreeGeneration, 10))
 	add("capability_certified", strconv.FormatBool(a.CapabilityCertified), strconv.FormatBool(b.CapabilityCertified))
 	if len(diffs) == 0 {
 		return "no field differs; the comparison itself changed"
@@ -497,6 +495,24 @@ func replayMismatchDetail(stored, replay agent.AttemptIntent) string {
 
 func replayIdentity(intent agent.AttemptIntent) agent.AttemptIntent {
 	intent.Provider = ""
+	// The generations move for the same reason the provider does: they are
+	// resolved again per attempt, not carried from the claim. Manager fills a
+	// zero TaskGeneration with the task's current value before building the
+	// intent, and every write to a task bumps that — including the writes a
+	// failed replay itself causes. So a replay's intent reported the
+	// generation now while the stored one reported the generation then, they
+	// could not match, and each refusal moved them further apart: 389 against
+	// 392, then 398, then 404, until the circuit breaker tripped on the guard
+	// rather than on any dispatch fault.
+	//
+	// Nothing is given up by dropping them here. Staleness is enforced against
+	// the live value in Manager.enforceTaskGeneration, which rejects an
+	// attempt whose generation has moved on, and remote execution is fenced
+	// separately by executioncontract.GenerationFence. This comparison only
+	// ever asked whether two records describe the same attempt, and the
+	// IntentID, task, worktree, access, role and capability flag answer that.
+	intent.TaskGeneration = 0
+	intent.WorktreeGeneration = 0
 	if intent.Access == agent.AttemptAccessObserve && intent.Role.IsVerifier() {
 		intent.Worktree = ""
 	}
