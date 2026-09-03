@@ -446,6 +446,48 @@ func TestScanGoBuildCacheOrphanEligible(t *testing.T) {
 	}
 }
 
+// TestScanGoBuildCacheReportsRetainedBytes pins that space a bucket holds but
+// may not delete is counted rather than dropped.
+//
+// Reported as eligible-only, a full disk looked like this from `doctor
+// cleanup`: every safe bucket at 0 items and 0 bytes, while 83 GiB of
+// per-task Go build caches sat in this very directory waiting on their owning
+// tasks. The operator's own diagnostic said there was nothing to clean.
+func TestScanGoBuildCacheReportsRetainedBytes(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Sandbox.RetentionHours = 1
+	now := time.Now()
+
+	// Active: never eligible, whatever its age.
+	activeDir := filepath.Join(goBuildCacheDir(), "aaaa1111")
+	writeFileAt(t, filepath.Join(activeDir, "cache.a"), 100, now)
+	// Terminal but still inside the retention window.
+	freshDir := filepath.Join(goBuildCacheDir(), "bbbb2222")
+	writeFileAt(t, filepath.Join(freshDir, "cache.a"), 200, now)
+	// Terminal and past retention: eligible, so it is not retained.
+	staleDir := filepath.Join(goBuildCacheDir(), "cccc3333")
+	writeFileAt(t, filepath.Join(staleDir, "cache.a"), 400, now)
+
+	lister := &fakeLister{tasks: []task.Task{
+		{ID: "aaaa1111", Status: task.StatusInProgress, StatusChangedAt: now.Add(-100 * time.Hour)},
+		doneTask("bbbb2222", now),
+		doneTask("cccc3333", now.Add(-100*time.Hour)),
+	}}
+
+	res, err := NewScanner(cfg, lister).Scan(Options{Only: []string{BucketGoBuildCache}})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	b := res.Buckets[0]
+	if b.Items != 1 || b.Bytes != 400 {
+		t.Fatalf("eligible = %d items / %d bytes, want 1 / 400: %+v", b.Items, b.Bytes, b)
+	}
+	if b.RetainedItems != 2 || b.RetainedBytes != 300 {
+		t.Fatalf("retained = %d items / %d bytes, want 2 / 300 (active + within-retention): %+v",
+			b.RetainedItems, b.RetainedBytes, b)
+	}
+}
+
 // --- Scan: worktrees ------------------------------------------------------
 
 func TestScanWorktreesRequiresGateFlag(t *testing.T) {

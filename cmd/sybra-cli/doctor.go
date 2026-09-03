@@ -34,12 +34,16 @@ func cmdDoctor(cfg *config.Config, store taskBoard, ownsHome bool, cause string,
 }
 
 type doctorCleanupBucketJSON struct {
-	Name        string   `json:"name"`
-	Risk        string   `json:"risk"`
-	Description string   `json:"description"`
-	Items       int      `json:"items"`
-	Bytes       int64    `json:"bytes"`
-	Paths       []string `json:"paths,omitempty"`
+	Name        string `json:"name"`
+	Risk        string `json:"risk"`
+	Description string `json:"description"`
+	Items       int    `json:"items"`
+	Bytes       int64  `json:"bytes"`
+	// Retained* report what the bucket holds but may not delete yet, so a
+	// full disk is not diagnosed against a table of zeroes.
+	RetainedItems int      `json:"retainedItems"`
+	RetainedBytes int64    `json:"retainedBytes"`
+	Paths         []string `json:"paths,omitempty"`
 }
 
 type doctorCleanupSkipJSON struct {
@@ -146,12 +150,14 @@ func cmdDoctorCleanup(cfg *config.Config, store taskBoard, args []string, jsonOu
 	report := doctorCleanupReport{Applied: *apply}
 	for _, b := range scanResult.Buckets {
 		report.Buckets = append(report.Buckets, doctorCleanupBucketJSON{
-			Name:        b.Name,
-			Risk:        string(b.Risk),
-			Description: b.Description,
-			Items:       b.Items,
-			Bytes:       b.Bytes,
-			Paths:       b.Paths,
+			Name:          b.Name,
+			Risk:          string(b.Risk),
+			Description:   b.Description,
+			Items:         b.Items,
+			Bytes:         b.Bytes,
+			RetainedItems: b.RetainedItems,
+			RetainedBytes: b.RetainedBytes,
+			Paths:         b.Paths,
 		})
 	}
 
@@ -306,11 +312,23 @@ func renderDoctorCleanupFindings(findings []cleanup.Finding, jsonOut bool) int {
 
 func renderDoctorCleanupHuman(report doctorCleanupReport) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(w, "BUCKET\tRISK\tITEMS\tSIZE")
+	_, _ = fmt.Fprintln(w, "BUCKET\tRISK\tITEMS\tSIZE\tRETAINED")
+	var retained int64
 	for _, b := range report.Buckets {
-		_, _ = fmt.Fprintf(w, "%s\t%s\t%d\t%s\n", b.Name, b.Risk, b.Items, humanBytes(b.Bytes))
+		retained += b.RetainedBytes
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\n",
+			b.Name, b.Risk, b.Items, humanBytes(b.Bytes), humanBytes(b.RetainedBytes))
 	}
 	_ = w.Flush()
+
+	// An operator reaches for this during a full disk. Eligible bytes alone
+	// answered "nothing to clean" while the retained column's worth of space
+	// was sitting in these same directories, waiting on a task to go terminal
+	// or on its retention window to pass.
+	if retained > 0 {
+		fmt.Printf("\nRETAINED holds %s that is not eligible yet: the owning task is still\n", humanBytes(retained))
+		fmt.Println("active, or went terminal inside the retention window (sandbox.retention_hours).")
+	}
 
 	if !report.Applied {
 		fmt.Println("\nDry run — nothing was deleted. Pass --apply to delete eligible resources;")

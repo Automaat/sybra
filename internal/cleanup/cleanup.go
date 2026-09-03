@@ -80,6 +80,14 @@ type Bucket struct {
 	Paths       []string
 	Bytes       int64
 	Items       int
+	// RetainedBytes/RetainedItems account for entries this bucket holds but
+	// is not yet allowed to delete — an owning task still active, or terminal
+	// but inside the retention window. Without them a bucket reports 0 while
+	// holding tens of gigabytes, which is what a full disk looked like from
+	// `doctor cleanup`: every safe bucket empty, nothing named, and 86 GB of
+	// per-task Go build caches accounted for nowhere.
+	RetainedBytes int64
+	RetainedItems int
 }
 
 // Options mirrors the `doctor cleanup` CLI flags 1:1.
@@ -570,6 +578,17 @@ func (s *Scanner) protectedLogPaths(snap snapshot) map[string]bool {
 	return ProtectedEvidenceLogPaths(s.cfg.Logging.Dir, tasks, findings)
 }
 
+// retain records an entry the bucket holds but may not delete yet, so its
+// bytes are reported rather than silently dropped from every total.
+func (b *Bucket) retain(path string) {
+	size, err := dirSize(path)
+	if err != nil {
+		return
+	}
+	b.RetainedBytes += size
+	b.RetainedItems++
+}
+
 func (s *Scanner) sandboxRetention() (time.Duration, bool) {
 	return s.cfg.DefaultSandboxRetention()
 }
@@ -592,6 +611,7 @@ func (s *Scanner) scanSandboxes(snap snapshot) Bucket {
 		}
 		taskID := sandboxTaskIDFromDir(e.Name())
 		if ok, _ := eligible(snap, taskID, p, retention, disabled, s.nowTime()); !ok {
+			b.retain(p)
 			continue
 		}
 		if s.sandboxWorktreeHasUnpushedCommits(snap, taskID) {
@@ -625,6 +645,7 @@ func (s *Scanner) scanGoBuildCache(snap snapshot) Bucket {
 			continue
 		}
 		if ok, _ := eligible(snap, e.Name(), p, retention, disabled, s.nowTime()); !ok {
+			b.retain(p)
 			continue
 		}
 		size, err := dirSize(p)
@@ -656,6 +677,7 @@ func (s *Scanner) scanWorktrees(snap snapshot, opts Options) Bucket {
 		}
 		taskID := taskIDFromWorktreeDir(e.Name())
 		if ok, _ := eligible(snap, taskID, p, retention, disabled, s.nowTime()); !ok {
+			b.retain(p)
 			continue
 		}
 		if hasUnpushedCommits(p) {
