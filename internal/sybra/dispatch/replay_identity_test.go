@@ -28,6 +28,19 @@ func TestReplayIntentMatches_ToleratesADispatchDecision(t *testing.T) {
 	}{
 		{"failed over to another provider", func(i *agent.AttemptIntent) { i.Provider = providerid.Codex }},
 		{"failed over again", func(i *agent.AttemptIntent) { i.Provider = providerid.Copilot }},
+		// The generations are resolved per attempt, not carried from the
+		// claim: Manager fills a zero TaskGeneration with the task's current
+		// value, and every write to a task bumps it — including the writes a
+		// failed replay itself causes. Comparing them made a replay refuse its
+		// own attempt and moved the two further apart with each refusal, until
+		// the circuit breaker tripped on the guard rather than on a dispatch
+		// fault. Staleness is enforced against the live value in
+		// Manager.resolveAttemptGeneration instead.
+		{"the task was written since the claim", func(i *agent.AttemptIntent) { i.TaskGeneration = 404 }},
+		{"the worktree generation moved with it", func(i *agent.AttemptIntent) { i.WorktreeGeneration = 404 }},
+		{"both moved, as they do together", func(i *agent.AttemptIntent) {
+			i.TaskGeneration, i.WorktreeGeneration = 404, 404
+		}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -51,9 +64,7 @@ func TestReplayIntentMatches_RefusesADifferentAttempt(t *testing.T) {
 		change func(*agent.AttemptIntent)
 	}{
 		{"another task", func(i *agent.AttemptIntent) { i.TaskID = "t2" }},
-		{"another task generation", func(i *agent.AttemptIntent) { i.TaskGeneration = 8 }},
 		{"another worktree", func(i *agent.AttemptIntent) { i.Worktree = "/wt/other" }},
-		{"another worktree generation", func(i *agent.AttemptIntent) { i.WorktreeGeneration = 8 }},
 		{"read access instead of write", func(i *agent.AttemptIntent) { i.Access = agent.AttemptAccessObserve }},
 		{"another role", func(i *agent.AttemptIntent) { i.Role = agent.RoleReview }},
 	}
