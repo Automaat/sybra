@@ -484,10 +484,6 @@ func setupLinkedWorktree(t *testing.T) (bare, worktree string) {
 // that a production run would fail.
 func buildEnforceCfg(t *testing.T, worktree string) *RunConfig {
 	t.Helper()
-	profilePath, err := materializeSandboxProfile()
-	if err != nil {
-		t.Fatalf("materializeSandboxProfile: %v", err)
-	}
 	wtCanon, err := canonicalizeRoot(worktree)
 	if err != nil {
 		t.Fatalf("canonicalizeRoot(worktree): %v", err)
@@ -499,7 +495,7 @@ func buildEnforceCfg(t *testing.T, worktree string) *RunConfig {
 	if err := prepareGitLooseObjectDirs(gitRoots.objectDir); err != nil {
 		t.Fatalf("prepare loose object dirs: %v", err)
 	}
-	spec := enforceSpec(wtCanon, nil, wtCanon, wtCanon, "", wtCanon, profilePath, "", gitRoots, gitSandboxOverlay{})
+	spec := enforceSpec(wtCanon, nil, wtCanon, wtCanon, "", wtCanon, "", "", gitRoots, gitSandboxOverlay{})
 	cfg := &RunConfig{sandbox: spec}
 	if err := injectSandboxGitEnv(cfg, gitRoots, gitSandboxOverlay{}); err != nil {
 		t.Fatalf("inject sandbox git env: %v", err)

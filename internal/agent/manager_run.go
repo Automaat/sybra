@@ -1358,8 +1358,7 @@ func (m *Manager) injectSharedBuildCache(cfg *RunConfig) error {
 // cfg.sandbox, applied later by wrapInvocation at each provider spawn site.
 //
 // enforce fails closed — mirroring injectSandboxHome's discipline — when
-// sandbox-exec is unavailable, the embedded profile cannot be materialized,
-// or a root cannot be canonicalized: the error aborts the run before any
+// sandbox-exec is unavailable or a root cannot be canonicalized: the error aborts the run before any
 // subprocess spawns. report never blocks: the same failures are logged and
 // this run's spec falls back to "off" (unwrapped) instead of erroring, so a
 // misconfigured or unsupported host cannot break the default posture.
@@ -1480,12 +1479,10 @@ func (m *Manager) buildEnforceSpec(cfg *RunConfig, gitCtx context.Context, workt
 		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
 		return fmt.Errorf("agent.Run: sandbox git object env: %w", err)
 	}
-	profilePath, err := materializeSandboxProfile()
-	if err != nil {
-		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
-		return fmt.Errorf("agent.Run: sandbox profile: %w", err)
-	}
-	cfg.sandbox = enforceSpec(canonWorktree, gitMetadata, canonSandboxHome, canonTmp, sandboxTmpAlias(canonTmp), canonSharedCache, profilePath, "", gitRoots, gitOverlay)
+	// Darwin passes the embedded base profile directly to sandbox-exec. Keeping
+	// profilePath empty here avoids making provider startup depend on a cached
+	// file that OS temp cleanup can reclaim from a long-lived daemon.
+	cfg.sandbox = enforceSpec(canonWorktree, gitMetadata, canonSandboxHome, canonTmp, sandboxTmpAlias(canonTmp), canonSharedCache, "", "", gitRoots, gitOverlay)
 	cfg.sandbox.sidecarDir = canonSidecarDir
 	if cfg.DisableVerifierControl {
 		clearProviderStateRoots(&cfg.sandbox)
@@ -1503,7 +1500,7 @@ func (m *Manager) buildEnforceSpec(cfg *RunConfig, gitCtx context.Context, workt
 		"codex_state", cfg.sandbox.codexState, "copilot_state", cfg.sandbox.copilotState,
 		"opencode_state", cfg.sandbox.opencodeState, "git_admin", cfg.sandbox.gitAdminDir,
 		"git_common", cfg.sandbox.gitCommonDir, "git_worktrees", cfg.sandbox.gitWorktrees,
-		"tool_cache", cfg.sandbox.toolCache, "profile", profilePath)
+		"tool_cache", cfg.sandbox.toolCache, "profile", cfg.sandbox.profilePath)
 	return nil
 }
 
@@ -1592,19 +1589,14 @@ func (m *Manager) injectReadOnlyProcessSandbox(cfg *RunConfig, mode string) erro
 		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
 		return err
 	}
-	profilePath, err := materializeSandboxProfile()
-	if err != nil {
-		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
-		return fmt.Errorf("agent.Run: sandbox profile: %w", err)
-	}
-	cfg.sandbox = enforceSpec("", nil, canonSandboxHome, canonTmp, sandboxTmpAlias(canonTmp), canonSharedCache, profilePath, canonDir, gitSandboxRoots{}, gitSandboxOverlay{})
+	cfg.sandbox = enforceSpec("", nil, canonSandboxHome, canonTmp, sandboxTmpAlias(canonTmp), canonSharedCache, "", canonDir, gitSandboxRoots{}, gitSandboxOverlay{})
 	m.logger.Info("agent.sandbox.enforce.readonly_dir", "task_id", cfg.TaskID,
 		"dir", canonDir, "sandbox_home", canonSandboxHome, "tmp", canonTmp,
 		"tmp_alias", cfg.sandbox.tmpAlias,
 		"shared_cache", canonSharedCache, "claude_state", cfg.sandbox.claudeState,
 		"codex_state", cfg.sandbox.codexState, "copilot_state", cfg.sandbox.copilotState,
 		"opencode_state", cfg.sandbox.opencodeState, "tool_cache", cfg.sandbox.toolCache,
-		"profile", profilePath)
+		"profile", cfg.sandbox.profilePath)
 	return nil
 }
 

@@ -27,16 +27,11 @@ func shellQuote(s string) string {
 // host.
 
 // newEnforceSandboxCfg builds a *RunConfig with an enforce-mode sandbox spec
-// rooted at worktree/sandboxHome/tmp, materializing the real embedded
-// profile.
+// rooted at worktree/sandboxHome/tmp and using the real embedded profile.
 func newEnforceSandboxCfg(t *testing.T, worktree, sandboxHome, tmp string) *RunConfig {
 	t.Helper()
 	if !sandboxExecAvailable() {
 		t.Skip("sandbox-exec not available")
-	}
-	profile, err := materializeSandboxProfile()
-	if err != nil {
-		t.Fatalf("materializeSandboxProfile: %v", err)
 	}
 	wt, err := canonicalizeRoot(worktree)
 	if err != nil {
@@ -60,7 +55,6 @@ func newEnforceSandboxCfg(t *testing.T, worktree, sandboxHome, tmp string) *RunC
 		sandboxHome: home,
 		tmp:         tp,
 		sharedCache: shared,
-		profilePath: profile,
 	}}
 }
 

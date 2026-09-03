@@ -158,10 +158,6 @@ func sandboxWrapperName() string { return "bwrap" }
 // store, so object staging is safe and required on this platform.
 func sandboxUsesGitObjectOverlay() bool { return true }
 
-func materializeSandboxProfile() (string, error) {
-	return "", nil
-}
-
 func canonicalizeRoot(root string) (string, error) {
 	if strings.TrimSpace(root) == "" {
 		return "", fmt.Errorf("sandbox: empty root")
