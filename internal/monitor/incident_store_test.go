@@ -222,8 +222,8 @@ func TestResolveUnpublishedIncidentRemainsRetryable(t *testing.T) {
 	sink := &unresolvedIncidentSink{}
 	svc := &Service{cfg: cfg, incidents: store, sink: sink, logger: slog.Default()}
 
-	svc.reconcileHealthyIncidents(context.Background(), base.Add(time.Minute), nil, nil, true)
-	svc.reconcileHealthyIncidents(context.Background(), base.Add(2*time.Minute), nil, nil, true)
+	svc.reconcileHealthyIncidents(context.Background(), base.Add(time.Minute), nil, nil, audit.Summary{}, true)
+	svc.reconcileHealthyIncidents(context.Background(), base.Add(2*time.Minute), nil, nil, audit.Summary{}, true)
 	got, ok, err := store.Get(in.Fingerprint)
 	if err != nil || !ok {
 		t.Fatalf("Get: ok=%v err=%v", ok, err)
@@ -260,6 +260,49 @@ func TestLegacySinkSubmissionDoesNotLatchIncidentPublication(t *testing.T) {
 	}
 	if got.IssueURL != "" || got.PublishedRevision >= got.Revision {
 		t.Fatalf("placeholder submission latched publication: url=%q published=%d revision=%d", got.IssueURL, got.PublishedRevision, got.Revision)
+	}
+}
+
+func TestFailureSpikeNeedsEnoughResolvedRunsToProveRecovery(t *testing.T) {
+	t.Parallel()
+	store := newTestIncidentStore(t)
+	base := time.Date(2026, 8, 8, 4, 0, 0, 0, time.UTC)
+	cfg := config.MonitorConfig{
+		IncidentResolveGraceMinutes: 1,
+		IncidentReopenGraceMinutes:  1,
+		FailureRateThreshold:        0.3,
+	}
+	cause := RootCause{
+		FailureCode:      string(KindFailureSpike),
+		Component:        "agent",
+		Capability:       "execution",
+		ProjectScope:     "fleet",
+		ConfigGeneration: monitorConfigGeneration(KindFailureSpike, cfg),
+	}
+	in, _, err := store.Observe(Anomaly{Kind: KindFailureSpike, DetectedAt: base}, cause, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := &Service{cfg: cfg, incidents: store, sink: &unresolvedIncidentSink{}, logger: slog.Default()}
+
+	svc.reconcileHealthyIncidents(context.Background(), base.Add(time.Minute), nil, nil, audit.Summary{ResolvedRuns: minimumResolvedRunsForFailureSpike - 1}, true)
+	svc.reconcileHealthyIncidents(context.Background(), base.Add(2*time.Minute), nil, nil, audit.Summary{ResolvedRuns: minimumResolvedRunsForFailureSpike - 1}, true)
+	stillOpen, ok, err := store.Get(in.Fingerprint)
+	if err != nil || !ok {
+		t.Fatalf("Get after low-sample windows: ok=%v err=%v", ok, err)
+	}
+	if stillOpen.State != IncidentActive || stillOpen.HealthySince != nil {
+		t.Fatalf("low-sample quiet window counted as recovery: %+v", stillOpen)
+	}
+
+	svc.reconcileHealthyIncidents(context.Background(), base.Add(3*time.Minute), nil, nil, audit.Summary{ResolvedRuns: minimumResolvedRunsForFailureSpike}, true)
+	svc.reconcileHealthyIncidents(context.Background(), base.Add(4*time.Minute), nil, nil, audit.Summary{ResolvedRuns: minimumResolvedRunsForFailureSpike}, true)
+	resolved, ok, err := store.Get(in.Fingerprint)
+	if err != nil || !ok {
+		t.Fatalf("Get after sufficient sample: ok=%v err=%v", ok, err)
+	}
+	if resolved.State != IncidentResolved || resolved.ResolvedAt == nil {
+		t.Fatalf("sufficient non-spike window did not resolve incident: %+v", resolved)
 	}
 }
 

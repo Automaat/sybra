@@ -281,7 +281,7 @@ func (s *Service) tick(ctx context.Context) (Report, error) {
 			report.IssuesClosed = s.closeRecoveredLostAgents(ctx, report.Anomalies)
 			report.IssuesClosed += s.closeRecoveredUntriaged(ctx, tasks, now)
 		}
-		report.IssuesClosed += s.reconcileHealthyIncidents(ctx, now, tasks, incidentChanges, events15Err == nil && events1hErr == nil)
+		report.IssuesClosed += s.reconcileHealthyIncidents(ctx, now, tasks, incidentChanges, summary, events15Err == nil && events1hErr == nil)
 	}
 	if s.incidents != nil {
 		incidents, err := s.incidents.List()
@@ -554,7 +554,7 @@ func mergeIncidentChange(current, next IncidentChange) IncidentChange {
 	return current
 }
 
-func (s *Service) reconcileHealthyIncidents(ctx context.Context, now time.Time, tasks []task.Task, seen map[string]IncidentChange, auditObserved bool) int {
+func (s *Service) reconcileHealthyIncidents(ctx context.Context, now time.Time, tasks []task.Task, seen map[string]IncidentChange, summary audit.Summary, auditObserved bool) int {
 	if s.incidents == nil {
 		return 0
 	}
@@ -582,7 +582,7 @@ func (s *Service) reconcileHealthyIncidents(ctx context.Context, now time.Time, 
 	for _, kind := range AllAnomalyKinds() {
 		covered[string(kind)] = true
 	}
-	covered[string(KindFailureSpike)] = auditObserved
+	covered[string(KindFailureSpike)] = auditObserved && summary.ResolvedRuns >= minimumResolvedRunsForFailureSpike
 	covered[string(KindBottleneck)] = auditObserved
 	covered[string(KindNoProviderCapacity)] = len(s.snapshotProviders()) > 0
 	if auditObserved {
