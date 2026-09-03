@@ -536,6 +536,7 @@ func (a *App) agentManagerConfig(approvalAddr string) agent.ManagerConfig {
 		ControlHome:            config.HomeDir(),
 		GhShimDir:              filepath.Join(config.HomeDir(), "shims"),
 		AllowAmbientReviewAuth: a.cfg.GitHub.AllowAmbientReviewAuth,
+		AmbientReviewToken:     github.AmbientAuthToken,
 		ControlEvent: func(kind string, data map[string]any) {
 			a.logAudit(kind, "", "", data)
 		},

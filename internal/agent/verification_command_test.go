@@ -231,6 +231,50 @@ func TestTaskScopedReviewAllowsAmbientGitHubAuthWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestTaskScopedReviewResolvesAmbientGitHubAuthBeforeSandbox(t *testing.T) {
+	shimDir := t.TempDir()
+	resolved := 0
+	m := &Manager{
+		allowAmbientReviewAuth: true,
+		ambientReviewToken: func() (string, error) {
+			resolved++
+			return "keychain-backed-token", nil
+		},
+		ghShimDir: shimDir,
+		logger:    discardLogger(),
+	}
+	cfg := RunConfig{
+		TaskID: "task-review", Role: RoleReview, Dir: t.TempDir(), resolvedSandboxHome: t.TempDir(),
+		ExtraEnv: []string{"GH_TOKEN=", "GITHUB_TOKEN="},
+	}
+	if err := m.injectGitAccess(&cfg); err != nil {
+		t.Fatalf("injectGitAccess() error = %v", err)
+	}
+	if resolved != 1 {
+		t.Fatalf("ambient credential resolver calls = %d, want 1", resolved)
+	}
+	for _, key := range []string{"GH_TOKEN", "GITHUB_TOKEN"} {
+		if got := verificationEnvValue(cfg.ExtraEnv, key); got != "keychain-backed-token" {
+			t.Fatalf("%s = %q, want resolved ambient credential", key, got)
+		}
+	}
+}
+
+func TestTaskScopedReviewFailsBeforeSpawnWhenAmbientGitHubAuthCannotResolve(t *testing.T) {
+	m := &Manager{
+		allowAmbientReviewAuth: true,
+		ambientReviewToken: func() (string, error) {
+			return "", errors.New("credential store unavailable")
+		},
+		logger: discardLogger(),
+	}
+	cfg := RunConfig{TaskID: "task-review", Role: RoleReview, Dir: t.TempDir(), resolvedSandboxHome: t.TempDir()}
+	err := m.injectGitAccess(&cfg)
+	if err == nil || !strings.Contains(err.Error(), "resolve ambient review GitHub credential") {
+		t.Fatalf("injectGitAccess error = %v, want ambient credential failure", err)
+	}
+}
+
 func TestTaskScopedReviewPrefersRestrictedGitHubTokenOverAmbientAuth(t *testing.T) {
 	m := &Manager{
 		allowAmbientReviewAuth: true,

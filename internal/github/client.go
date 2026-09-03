@@ -29,12 +29,22 @@ func (ghExecer) run(args ...string) ([]byte, error) {
 	// (see runE below) — callers that want cancellation use runCtx/ghRunCtx.
 	ctx := context.Background()
 	return ghGate.execute(ctx, func() ([]byte, error) {
-		cmd := exec.CommandContext(ctx, "gh", args...)
-		if env := ghEnv(); env != nil {
-			cmd.Env = env
-		}
-		return cmd.CombinedOutput()
+		return runGHSubprocess(ctx, ghEnv(), args...)
 	})
+}
+
+// runGHSubprocess is the central raw gh subprocess constructor (PR creation has
+// a separate constructor because it also needs cmd.Dir). It does not apply
+// request pacing or auth-health observation itself: network-facing callers
+// must wrap it in ghGate.execute. AmbientAuthToken is the one exception because
+// `gh auth token` only reads the local credential store and must remain
+// available while the network auth circuit is open.
+func runGHSubprocess(ctx context.Context, env []string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "gh", args...)
+	if env != nil {
+		cmd.Env = env
+	}
+	return cmd.CombinedOutput()
 }
 
 // ghRunCtx runs gh under a context so a stalled call is killed when the context
@@ -55,11 +65,7 @@ func ghRunCtx(ctx context.Context, args ...string) ([]byte, error) {
 // shared rate budget (see #2496).
 func RunWithEnv(ctx context.Context, env []string, args ...string) ([]byte, error) {
 	return ghGate.execute(ctx, func() ([]byte, error) {
-		cmd := exec.CommandContext(ctx, "gh", args...)
-		if env != nil {
-			cmd.Env = env
-		}
-		return cmd.CombinedOutput()
+		return runGHSubprocess(ctx, env, args...)
 	})
 }
 
@@ -69,6 +75,26 @@ func RunWithEnv(ctx context.Context, env []string, args ...string) ([]byte, erro
 // call.
 func Run(ctx context.Context, args ...string) ([]byte, error) {
 	return RunWithEnv(ctx, GHEnv(), args...)
+}
+
+// AmbientAuthToken resolves gh's host credential before an enforced review
+// sandbox starts. On macOS gh commonly stores this credential in Keychain;
+// resolving the one token here avoids granting a verifier read access to the
+// operator's whole keychain. This bounded local lookup deliberately bypasses
+// the network request gate: it spends no API budget, must work while that
+// circuit is open, and cannot prove that the returned token authenticates.
+func AmbientAuthToken() (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	out, err := runGHSubprocess(ctx, nil, "auth", "token", "--hostname", "github.com")
+	if err != nil {
+		return "", fmt.Errorf("gh auth token: %w", err)
+	}
+	token := strings.TrimSpace(string(out))
+	if token == "" {
+		return "", errors.New("gh auth token returned an empty credential")
+	}
+	return token, nil
 }
 
 // runCtx lets ghExecer satisfy the optional ctxRunner interface, so callers
