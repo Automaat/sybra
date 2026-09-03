@@ -272,7 +272,13 @@ func (s *Snapshotter) commitLocked(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 	msg := fmt.Sprintf("snapshot: %s", time.Now().UTC().Format(time.RFC3339))
-	if _, err := s.run(ctx, "commit", "-m", msg); err != nil {
+	// Signing is refused explicitly rather than inherited. BuildEnv strips
+	// GIT_* but git still reads the operator's global config, so an operator
+	// who sets commit.gpgsign globally had every snapshot commit fail with
+	// "gpg failed to sign the data" wherever the agent could not sign — a
+	// sandbox, the server, CI. CommitNow only warns, so the snapshots this
+	// repo exists to provide stopped being taken and nothing said so.
+	if _, err := s.run(ctx, "-c", "commit.gpgsign=false", "commit", "-m", msg); err != nil {
 		return false, fmt.Errorf("git commit: %w", err)
 	}
 	s.lastCommit = time.Now()

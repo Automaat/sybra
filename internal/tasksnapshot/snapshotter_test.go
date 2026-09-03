@@ -403,3 +403,49 @@ func TestRun_CommitsOnInterval(t *testing.T) {
 	cancel()
 	<-done
 }
+
+// TestCommit_SucceedsWhenSigningIsRequiredButUnavailable pins that a snapshot
+// commit never depends on gpg.
+//
+// The snapshot repo is local recovery state, not a published artifact, and it
+// gains nothing from a signature. Inheriting the requirement cost real
+// coverage: on a machine with commit.gpgsign set globally, every snapshot
+// commit failed with "gpg failed to sign the data" wherever the agent could
+// not sign — and CommitNow only warns, so the snapshots silently stopped.
+//
+// gpgsign is forced on in the repo's own config, which is stricter than the
+// global setting this actually shipped against.
+func TestCommit_SucceedsWhenSigningIsRequiredButUnavailable(t *testing.T) {
+	s, gitDir, workTree := newTestSnapshotter(t)
+	ctx := context.Background()
+	if !s.EnsureRepo(ctx) {
+		t.Fatal("EnsureRepo failed")
+	}
+
+	setGitConfig(t, gitDir, workTree, "commit.gpgsign", "true")
+	setGitConfig(t, gitDir, workTree, "user.signingkey", "0000000000000000")
+	// An empty GNUPGHOME holds no secret key, so any real signing attempt
+	// fails rather than quietly succeeding on the developer's own keyring.
+	t.Setenv("GNUPGHOME", t.TempDir())
+
+	writeFile(t, filepath.Join(workTree, "task-1.md"), "content")
+	committed, err := s.Commit(ctx)
+	if err != nil {
+		t.Fatalf("Commit with signing required but unavailable: %v", err)
+	}
+	if !committed {
+		t.Fatal("expected a commit")
+	}
+	if got := gitLogCount(t, gitDir, workTree); got != 1 {
+		t.Fatalf("expected 1 commit, got %d", got)
+	}
+}
+
+func setGitConfig(t *testing.T, gitDir, workTree, key, value string) {
+	t.Helper()
+	cmd := exec.Command("git", "config", key, value)
+	cmd.Env = BuildEnv(gitDir, workTree)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git config %s: %v: %s", key, err, out)
+	}
+}
