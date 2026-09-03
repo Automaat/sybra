@@ -135,7 +135,12 @@ func TestCommit_OnChange(t *testing.T) {
 	}
 }
 
-func TestBuildEnv_StripsInheritedGitVars(t *testing.T) {
+// TestBuildEnv_StripsInheritedRepoSelectionVars pins that nothing naming a
+// repository survives. The GIT_CONFIG_* names are deliberately exempt and are
+// covered by TestBuildEnv_ForwardsConfigIsolationButNotRepoSelection: they say
+// where git reads configuration, not which repository it acts on, and
+// stripping them stopped test isolation from ever reaching these commands.
+func TestBuildEnv_StripsInheritedRepoSelectionVars(t *testing.T) {
 	t.Setenv("GIT_INDEX_FILE", "/nonexistent/bad-index")
 	t.Setenv("GIT_OBJECT_DIRECTORY", "/nonexistent/bad-objects")
 	t.Setenv("GIT_DIR", "/nonexistent/bad-git-dir")
@@ -145,7 +150,7 @@ func TestBuildEnv_StripsInheritedGitVars(t *testing.T) {
 
 	var gitVars []string
 	for _, e := range env {
-		if strings.HasPrefix(e, "GIT_") {
+		if strings.HasPrefix(e, "GIT_") && !isGitConfigEnv(e) {
 			gitVars = append(gitVars, e)
 		}
 	}
@@ -447,5 +452,46 @@ func setGitConfig(t *testing.T, gitDir, workTree, key, value string) {
 	cmd.Env = BuildEnv(gitDir, workTree)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git config %s: %v: %s", key, err, out)
+	}
+}
+
+// TestBuildEnv_ForwardsConfigIsolationButNotRepoSelection pins the split that
+// makes test isolation real without letting an ambient repository through.
+//
+// GIT_DIR and friends must never survive: they select which repository git
+// acts on, and an inherited one sent snapshot commands at the wrong repo. The
+// GIT_CONFIG_* names select where git reads configuration, and stripping them
+// with the rest meant a test could isolate its git config and still have every
+// snapshotter command read the operator's own.
+func TestBuildEnv_ForwardsConfigIsolationButNotRepoSelection(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", "/tmp/isolated-gitconfig")
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_DIR", "/tmp/ambient.git")
+	t.Setenv("GIT_WORK_TREE", "/tmp/ambient")
+	t.Setenv("GIT_INDEX_FILE", "/tmp/ambient.index")
+
+	env := BuildEnv("/want/dir.git", "/want/tree")
+
+	want := map[string]string{
+		"GIT_CONFIG_GLOBAL":   "/tmp/isolated-gitconfig",
+		"GIT_CONFIG_SYSTEM":   os.DevNull,
+		"GIT_CONFIG_NOSYSTEM": "1",
+		"GIT_DIR":             "/want/dir.git",
+		"GIT_WORK_TREE":       "/want/tree",
+	}
+	got := map[string]string{}
+	for _, kv := range env {
+		if k, v, ok := strings.Cut(kv, "="); ok && strings.HasPrefix(k, "GIT_") {
+			got[k] = v
+		}
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s = %q, want %q", k, got[k], v)
+		}
+	}
+	if _, ok := got["GIT_INDEX_FILE"]; ok {
+		t.Error("GIT_INDEX_FILE survived; an ambient index makes git snapshot the wrong tree")
 	}
 }

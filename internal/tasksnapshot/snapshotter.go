@@ -82,12 +82,33 @@ func BuildEnv(gitDir, workTree string) []string {
 	base := os.Environ()
 	env := make([]string, 0, len(base)+2)
 	for _, e := range base {
-		if strings.HasPrefix(e, "GIT_") {
+		if strings.HasPrefix(e, "GIT_") && !isGitConfigEnv(e) {
 			continue
 		}
 		env = append(env, e)
 	}
 	return append(env, "GIT_DIR="+gitDir, "GIT_WORK_TREE="+workTree)
+}
+
+// gitConfigEnvKeys name where git looks for configuration, as opposed to which
+// repository it acts on. Stripping GIT_* wholesale took these with it, so a
+// test that isolated its git configuration still had every snapshotter command
+// read the operator's real one — the isolation looked applied and was not.
+// Production sets none of them; the repository variables this function does
+// strip are the ones that must never leak in.
+var gitConfigEnvKeys = []string{
+	"GIT_CONFIG_GLOBAL=",
+	"GIT_CONFIG_SYSTEM=",
+	"GIT_CONFIG_NOSYSTEM=",
+}
+
+func isGitConfigEnv(kv string) bool {
+	for _, k := range gitConfigEnvKeys {
+		if strings.HasPrefix(kv, k) {
+			return true
+		}
+	}
+	return false
 }
 
 // run executes `git <args...>` against this Snapshotter's git-dir/work-tree,

@@ -22,6 +22,11 @@ func TestMain(m *testing.M) {
 	// tests inherit whatever the machine sets — commit.gpgsign among it —
 	// and pass or fail on the developer's configuration rather than on this
 	// package's behaviour.
+	//
+	// This reaches the snapshotter's own commands only because BuildEnv now
+	// forwards the GIT_CONFIG_* variables Isolate sets. It used to strip
+	// every GIT_* name, so isolation stopped at the test process and each
+	// git invocation still read the real global config.
 	cleanup, err := gitenv.Isolate()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "internal/tasksnapshot tests require an isolated git config:", err)
