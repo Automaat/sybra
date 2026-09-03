@@ -161,6 +161,36 @@ func (c *Config) DefaultTrashRetentionDays() int {
 // is unset.
 const DefaultSandboxRetentionHours = 24
 
+// DefaultBuildCacheIdleHours is how long a per-task Go build cache may sit
+// untouched before it is reclaimable regardless of its owning task's status.
+//
+// Task liveness is the wrong lifetime for this one resource. A build cache is
+// derived data: deleting it costs a cold rebuild and nothing else, no network
+// and no lost work. Meanwhile a task parked in human-required is not
+// terminal, so its cache — 1 to 10 GiB each here — was pinned for as long as
+// the task sat there, and 24 such tasks filled a disk while every safe bucket
+// reported nothing to reclaim.
+//
+// A week is long enough that a task picked back up the same sprint keeps its
+// warm cache, and short enough to bound what an abandoned one holds.
+const DefaultBuildCacheIdleHours = 168
+
+// BuildCacheIdle resolves how long a per-task Go build cache may sit unused
+// before it may be reclaimed. A negative Sandbox.BuildCacheIdleHours disables
+// idle reclaim, leaving these caches on the task-status lifetime alone.
+func (c *Config) BuildCacheIdle() (window time.Duration, disabled bool) {
+	hours := DefaultBuildCacheIdleHours
+	if c != nil {
+		switch {
+		case c.Sandbox.BuildCacheIdleHours < 0:
+			return 0, true
+		case c.Sandbox.BuildCacheIdleHours > 0:
+			hours = c.Sandbox.BuildCacheIdleHours
+		}
+	}
+	return time.Duration(hours) * time.Hour, false
+}
+
 // DefaultSandboxRetention resolves the configured sandbox retention window.
 // disabled reports whether age-based pruning should be skipped entirely
 // (Sandbox.RetentionHours < 0); window is meaningless when disabled is true.
