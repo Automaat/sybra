@@ -278,9 +278,22 @@ func (e *Engine) applyVerifyChecksVerdict(taskID string, step *Step, wfExec *Exe
 	// otherwise an agent could hang a test past the budget to dodge the gate.
 	if v.runErr != nil {
 		if errors.Is(v.runErr, context.DeadlineExceeded) {
+			// The budget was fixed before the run; ask what it would have been
+			// now. A host that filled up mid-run starves the suite of CPU it
+			// was promised, and calling that "slow or hanging tests" sends an
+			// operator hunting a defect in code that was merely descheduled.
+			if scaled, starved := deadlineBeatLoad(e.verifyTimeout, v.timeout); starved {
+				reason := fmt.Sprintf(
+					"verify suite ran out of its %s budget while the host was oversubscribed"+
+						" — the same run would be allowed %s at the load measured now, so this is"+
+						" contention rather than a slow or hanging test; retry when the host is quieter",
+					v.timeout, scaled)
+				return e.flagVerifyChecks(taskID, step, reason, "timeout-load-starved")
+			}
 			reason := fmt.Sprintf(
 				"verify suite exceeded the time budget (%s) on all %d attempts"+
-					" — fix slow or hanging tests, or add the `verify-blessed` tag to override",
+					" — fix slow or hanging tests, raise testing.verify_timeout_minutes,"+
+					" or add the `verify-blessed` tag to override",
 				v.timeout, verifyChecksTimeoutRetries+1)
 			return e.flagVerifyChecks(taskID, step, reason, "timeout")
 		}
@@ -297,6 +310,9 @@ func (e *Engine) applyVerifyChecksVerdict(taskID string, step *Step, wfExec *Exe
 			if v.classification.AutoFixable {
 				return e.autoFixOrFlagVerifyChecks(
 					taskID, step, wfExec, t, v.classification.Reason, v.report.FailedCmd, v.report.OutputTail)
+			}
+			if v.classification.Kind == failureclassify.UnrelatedFailure {
+				return e.routeUnrelatedVerifyFailure(taskID, step, v.classification)
 			}
 			return e.blockVerifyChecks(taskID, step, v.classification.Reason, v.classification.Kind.String())
 		}
@@ -645,6 +661,39 @@ func (e *Engine) flagVerifyChecks(taskID string, step *Step, reason, detail stri
 	e.recordEvidence(taskID, step.ID, evidenceCriterionVerifyChecks, evidence.ProofDeterministicCheck, 1, "", reason)
 	e.logger.Warn("workflow.verify-checks.flagged", "task_id", taskID, "detail", detail)
 	return stepDone(step, "flagged")
+}
+
+// routeUnrelatedVerifyFailure handles a verify run that failed only in Go
+// packages this task never touched.
+//
+// The gate has already done the work that settles the question: it read the
+// diff, read the failing packages, and confirmed they do not intersect. The
+// reason it writes ends "not this diff". Blocking on that told an operator to
+// unstick a task whose change the evidence had just cleared, and left the
+// pre-existing breakage to stop the next task the same way — three separate
+// tasks were blocked this way in one day by three unrelated broken packages.
+//
+// So route it the way the testing gate already routes an unrunnable manual
+// gate (#1928): open the PR and let CI and a human reviewer see the real
+// diff, rather than dead-ending with no PR for anyone to act on. The failing
+// packages are named in the status reason and logged, because a break nothing
+// blocks on is a break nothing notices.
+func (e *Engine) routeUnrelatedVerifyFailure(
+	taskID string, step *Step, c *verifyFailureClassification,
+) (StepOutput, error) {
+	e.logger.Warn("workflow.verify-checks.unrelated-breakage",
+		"task_id", taskID, "packages", strings.Join(c.FailedPackages, ","))
+	if !e.openPROnUnrunnableGate.Load() {
+		return e.flagVerifyChecks(taskID, step, c.Reason, c.Kind.String())
+	}
+	reason := c.Reason + " — opening the PR so CI and a human reviewer see this diff;" +
+		" the failing package(s) need fixing on their own"
+	if statusErr := e.tasks.UpdateTaskStatus(taskID, taskstatus.ReadyPR, reason); statusErr != nil {
+		return StepOutput{}, fmt.Errorf("verify-checks: set ready-pr: %w", statusErr)
+	}
+	e.recordEvidence(taskID, step.ID, evidenceCriterionVerifyChecks, evidence.ProofDeterministicCheck, 1, "", reason)
+	e.logger.Warn("workflow.verify-checks.unrelated.open-pr", "task_id", taskID)
+	return stepDone(step, "unrelated failure — opened pr")
 }
 
 func (e *Engine) blockVerifyChecks(taskID string, step *Step, reason, detail string) (StepOutput, error) {

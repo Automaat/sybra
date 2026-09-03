@@ -458,6 +458,20 @@ const DefaultTestingMaxConcurrent = 3
 // that keep surfacing distinct grounded defects without converging.
 const DefaultTestingMaxAttempts = 5
 
+// DefaultVerifyTimeoutMinutes bounds one verify_checks run when
+// TestingConfig.VerifyTimeoutMinutes is unset. Matches the value this budget
+// was compiled with before it became configurable.
+const DefaultVerifyTimeoutMinutes = 10
+
+// VerifyTimeout resolves the configured verify_checks budget.
+func (c *Config) VerifyTimeout() time.Duration {
+	minutes := DefaultVerifyTimeoutMinutes
+	if c != nil && c.Testing.VerifyTimeoutMinutes > 0 {
+		minutes = c.Testing.VerifyTimeoutMinutes
+	}
+	return time.Duration(minutes) * time.Minute
+}
+
 // TestingMaxConcurrent returns the configured cap or DefaultTestingMaxConcurrent.
 func (c *Config) TestingMaxConcurrent() int {
 	if c != nil && c.Testing.MaxConcurrent > 0 {
