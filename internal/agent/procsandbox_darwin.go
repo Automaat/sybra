@@ -25,10 +25,6 @@ var agentSandboxProfile []byte
 var (
 	sandboxExecPathOnce sync.Once
 	sandboxExecPath     string
-
-	sandboxProfileOnce sync.Once
-	sandboxProfilePath string
-	errSandboxProfile  error
 )
 
 // sandboxMechanismErr reports why this host cannot build a seatbelt sandbox,
@@ -57,27 +53,6 @@ func sandboxWrapperName() string { return "sandbox-exec" }
 // overlay here would let Git publish the real branch ref to a disposable
 // object and corrupt it when the next run resets the sandbox home.
 func sandboxUsesGitObjectOverlay() bool { return false }
-
-// materializeSandboxProfile writes the embedded seatbelt profile to a stable
-// temp file once per process and returns its path, for both the -f flag and
-// operator-facing log/error messages. The profile content is fixed at build
-// time, so re-writing it more than once per process would only waste I/O.
-func materializeSandboxProfile() (string, error) {
-	sandboxProfileOnce.Do(func() {
-		f, err := os.CreateTemp("", "sybra-agent-sandbox-*.sb")
-		if err != nil {
-			errSandboxProfile = fmt.Errorf("write sandbox profile: %w", err)
-			return
-		}
-		defer func() { _ = f.Close() }()
-		if _, err := f.Write(agentSandboxProfile); err != nil {
-			errSandboxProfile = fmt.Errorf("write sandbox profile: %w", err)
-			return
-		}
-		sandboxProfilePath = f.Name()
-	})
-	return sandboxProfilePath, errSandboxProfile
-}
 
 // canonicalizeRoot resolves root to an absolute, symlink-free path suitable
 // for templating into a seatbelt -D value. sandbox-exec matches subpaths
@@ -289,7 +264,16 @@ func wrapInvocation(name string, args []string, cfg *RunConfig) (wrappedName str
 		{"STATE_DENY_3", sandboxRootOr(stateDenyAt(cfg.sandbox.stateDenied, 2), unusedReadOnlyDirSentinel)},
 	}
 	wrapped := make([]string, 0, len(args)+2*len(params)+3)
-	wrapped = append(wrapped, "-f", cfg.sandbox.profilePath)
+	if cfg.sandbox.profilePath == "" {
+		// The base profile is immutable build input, so pass it directly. A
+		// process-lifetime file under OS temp can disappear between the host
+		// probe and a later provider spawn in a long-lived daemon.
+		wrapped = append(wrapped, "-p", string(agentSandboxProfile))
+	} else {
+		// Read enforcement extends the base profile dynamically and therefore
+		// still supplies a per-run generated profile file.
+		wrapped = append(wrapped, "-f", cfg.sandbox.profilePath)
+	}
 	for _, p := range params {
 		// Every param is templated into an unconditional subpath or literal
 		// rule, and seatbelt rejects an empty pattern outright — see
