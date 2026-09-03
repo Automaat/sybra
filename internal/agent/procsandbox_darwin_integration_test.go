@@ -19,7 +19,7 @@ import (
 )
 
 func TestSandboxReadEnforce_AllowsInheritedStderrMetadata(t *testing.T) {
-	if os.Getenv("SYBRA_TEST_FSTAT_STDERR") == "1" {
+	if os.Getenv(sandboxProbeChildEnv) == "1" {
 		var stat syscall.Stat_t
 		if err := syscall.Fstat(2, &stat); err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "fstat stderr: %v", err)
@@ -38,7 +38,7 @@ func TestSandboxReadEnforce_AllowsInheritedStderrMetadata(t *testing.T) {
 	}
 	cfg.sandbox.profilePath = profilePath
 	cmd := newDarwinSandboxCmd(cfg, os.Args[0], "-test.run=^TestSandboxReadEnforce_AllowsInheritedStderrMetadata$")
-	cmd.Env = append(cmd.Env, "SYBRA_TEST_FSTAT_STDERR=1")
+	cmd.Env = append(cmd.Env, sandboxProbeChildEnv+"=1")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
