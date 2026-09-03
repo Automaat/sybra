@@ -889,3 +889,79 @@ func TestApplyForceWorktreesSurvivesActiveTask(t *testing.T) {
 		t.Fatalf("done task's worktree should have been removed, stat err = %v", err)
 	}
 }
+
+// TestScanGoBuildCacheReclaimsIdleCaches pins that a build cache is reclaimed
+// on how long it has gone unused, not on what its owning task is doing.
+//
+// Task status alone pinned these indefinitely: human-required is not terminal,
+// so retention never started running, and 24 parked tasks held 1-10 GiB each
+// until the disk filled. A build cache is derived data — the cost of being
+// wrong is a cold rebuild.
+func TestScanGoBuildCacheReclaimsIdleCaches(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Sandbox.RetentionHours = 1
+	cfg.Sandbox.BuildCacheIdleHours = 168
+	now := time.Now()
+
+	// Active task, cache untouched for a month: reclaimable despite the task.
+	idleDir := filepath.Join(goBuildCacheDir(), "aaaa1111")
+	writeFileAt(t, filepath.Join(idleDir, "cache.a"), 100, now)
+	mustChtimes(t, idleDir, now.Add(-30*24*time.Hour))
+
+	// Active task, cache used an hour ago: a live build must not lose it.
+	warmDir := filepath.Join(goBuildCacheDir(), "bbbb2222")
+	writeFileAt(t, filepath.Join(warmDir, "cache.a"), 200, now)
+	mustChtimes(t, warmDir, now.Add(-time.Hour))
+
+	lister := &fakeLister{tasks: []task.Task{
+		{ID: "aaaa1111", Status: task.StatusInProgress, StatusChangedAt: now},
+		{ID: "bbbb2222", Status: task.StatusInProgress, StatusChangedAt: now},
+	}}
+
+	res, err := NewScanner(cfg, lister).Scan(Options{Only: []string{BucketGoBuildCache}})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	b := res.Buckets[0]
+	if b.Items != 1 || b.Bytes != 100 {
+		t.Fatalf("eligible = %d items / %d bytes, want the idle cache only (1 / 100): %+v", b.Items, b.Bytes, b)
+	}
+	if len(b.Paths) != 1 || b.Paths[0] != idleDir {
+		t.Errorf("paths = %v, want only the idle cache %s", b.Paths, idleDir)
+	}
+	if b.RetainedItems != 1 || b.RetainedBytes != 200 {
+		t.Errorf("retained = %d items / %d bytes, want the warm cache (1 / 200)", b.RetainedItems, b.RetainedBytes)
+	}
+}
+
+// TestScanGoBuildCacheIdleReclaimDisabled pins the operator's off switch: a
+// negative window restores the task-status-only lifetime.
+func TestScanGoBuildCacheIdleReclaimDisabled(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Sandbox.RetentionHours = 1
+	cfg.Sandbox.BuildCacheIdleHours = -1
+	now := time.Now()
+
+	idleDir := filepath.Join(goBuildCacheDir(), "aaaa1111")
+	writeFileAt(t, filepath.Join(idleDir, "cache.a"), 100, now)
+	mustChtimes(t, idleDir, now.Add(-30*24*time.Hour))
+
+	lister := &fakeLister{tasks: []task.Task{
+		{ID: "aaaa1111", Status: task.StatusInProgress, StatusChangedAt: now},
+	}}
+
+	res, err := NewScanner(cfg, lister).Scan(Options{Only: []string{BucketGoBuildCache}})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if b := res.Buckets[0]; b.Items != 0 || b.RetainedItems != 1 {
+		t.Fatalf("eligible = %d, retained = %d; want 0 eligible and 1 retained with idle reclaim off", b.Items, b.RetainedItems)
+	}
+}
+
+func mustChtimes(t *testing.T, path string, when time.Time) {
+	t.Helper()
+	if err := os.Chtimes(path, when, when); err != nil {
+		t.Fatalf("chtimes %s: %v", path, err)
+	}
+}

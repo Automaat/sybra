@@ -633,7 +633,7 @@ func (s *Scanner) scanSandboxes(snap snapshot) Bucket {
 
 func (s *Scanner) scanGoBuildCache(snap snapshot) Bucket {
 	dir := goBuildCacheDir()
-	b := Bucket{Name: BucketGoBuildCache, Risk: RiskSafe, Description: "orphaned/terminal-task per-task Go build cache dirs"}
+	b := Bucket{Name: BucketGoBuildCache, Risk: RiskSafe, Description: "per-task Go build cache dirs: orphaned, terminal-task, or unused past sandbox.build_cache_idle_hours"}
 	retention, disabled := s.sandboxRetention()
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -648,8 +648,10 @@ func (s *Scanner) scanGoBuildCache(snap snapshot) Bucket {
 			continue
 		}
 		if ok, _ := eligible(snap, e.Name(), p, retention, disabled, s.nowTime()); !ok {
-			b.retain(p)
-			continue
+			if !s.buildCacheIdle(p) {
+				b.retain(p)
+				continue
+			}
 		}
 		size, err := dirSize(p)
 		if err != nil {
@@ -660,6 +662,33 @@ func (s *Scanner) scanGoBuildCache(snap snapshot) Bucket {
 		b.Items++
 	}
 	return b
+}
+
+// buildCacheIdle reports whether a per-task Go build cache has gone unused
+// long enough to reclaim whatever its owning task is doing.
+//
+// Task status is the wrong lifetime for this resource alone. A build cache is
+// derived data — losing it costs a cold rebuild, no network and no work — and
+// a task parked in human-required is never terminal, so retention never
+// starts running and its cache is pinned for as long as the task sits there.
+// Twenty-four such tasks filled a disk while every safe bucket reported
+// nothing to reclaim.
+//
+// Last use is read from the directory's own mtime, not the owning task's
+// state: Go adds and removes entries at the cache root as it builds, so a
+// cache being used right now is recent by definition and one abandoned three
+// weeks ago says so. That makes an in-flight build safe without consulting
+// anything about the task.
+func (s *Scanner) buildCacheIdle(path string) bool {
+	window, disabled := s.cfg.BuildCacheIdle()
+	if disabled {
+		return false
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return s.nowTime().Sub(info.ModTime()) >= window
 }
 
 func (s *Scanner) scanWorktrees(snap snapshot, opts Options) Bucket {
