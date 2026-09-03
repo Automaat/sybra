@@ -35,7 +35,7 @@ func TestReplayIntentMatches_ToleratesADispatchDecision(t *testing.T) {
 		// own attempt and moved the two further apart with each refusal, until
 		// the circuit breaker tripped on the guard rather than on a dispatch
 		// fault. Staleness is enforced against the live value in
-		// Manager.enforceTaskGeneration instead.
+		// Manager.resolveAttemptGeneration instead.
 		{"the task was written since the claim", func(i *agent.AttemptIntent) { i.TaskGeneration = 404 }},
 		{"the worktree generation moved with it", func(i *agent.AttemptIntent) { i.WorktreeGeneration = 404 }},
 		{"both moved, as they do together", func(i *agent.AttemptIntent) {

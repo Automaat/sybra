@@ -506,7 +506,7 @@ func replayIdentity(intent agent.AttemptIntent) agent.AttemptIntent {
 	// rather than on any dispatch fault.
 	//
 	// Nothing is given up by dropping them here. Staleness is enforced against
-	// the live value in Manager.enforceTaskGeneration, which rejects an
+	// the live value in Manager.resolveAttemptGeneration, which rejects an
 	// attempt whose generation has moved on, and remote execution is fenced
 	// separately by executioncontract.GenerationFence. This comparison only
 	// ever asked whether two records describe the same attempt, and the
