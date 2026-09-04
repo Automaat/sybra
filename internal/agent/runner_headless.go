@@ -747,12 +747,19 @@ func (m *Manager) finalizeFromResult(a *Agent, prevLen int) {
 	} else if userInterruptedStream(evs) {
 		a.SetError(ErrorKindUserInterrupted, "provider run was interrupted by the user before completion")
 	}
+	// A run executed on another host reports that host's provider state. The
+	// health gate it would feed is this host's, and is keyed by provider with
+	// no node dimension, so a follower's exhausted account would fail this
+	// leader's own dispatches over to a different provider.
+	remote := a.RemotelyExecuted()
 	if streamErr := resultStreamError(evs); streamErr != nil {
 		a.SetExitErr(streamErr)
-		m.reportProviderHealthSignal(a, "", evs)
+		if !remote {
+			m.reportProviderHealthSignal(a, "", evs)
+		}
 		return
 	}
-	if m.reportCleanProviderHealthSignal(a, "", evs) == providerpkg.SignalRateLimit {
+	if !remote && m.reportCleanProviderHealthSignal(a, "", evs) == providerpkg.SignalRateLimit {
 		a.SetExitErr(errProviderRateLimited)
 		return
 	}
@@ -1032,6 +1039,31 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 		m.logger.Warn("agent.headless.parse", "id", a.ID, "err", parseErr, "line", string(line))
 		return false
 	}
+	return m.applyHeadlessEvent(ctx, a, event, lastEmit, provider, true)
+}
+
+// applyHeadlessEvent runs everything processHeadlessLine does once a line has
+// become a StreamEvent: state, output, tool accounting, and the terminal
+// result's cost and token totals.
+//
+// A run placed on another machine arrives here already parsed. The daemon
+// forwards this package's own StreamEvent rather than the provider's wire
+// format, so feeding it back through a provider parser yields nothing and the
+// run's cost, session and result are silently lost — along with the cumulative
+// task budget that reads them.
+//
+// hostLocal is false for such a run, and every effect that describes THIS
+// host is skipped: the provider quota snapshot feeds a dispatch gate keyed by
+// provider with no node dimension, so a follower's exhausted account would
+// refuse dispatch here, and the session file names a path that exists only on
+// the worker. Only the accounting the board and the task budget need crosses
+// the boundary.
+//
+// The cost ceiling is not one of those: it describes the run, not the host, so
+// it applies either way. Its stop reaches the worker through the backend (see
+// stopBackendOwnedRun) rather than through the pipe a remote run does not
+// have.
+func (m *Manager) applyHeadlessEvent(ctx context.Context, a *Agent, event StreamEvent, lastEmit *time.Time, provider Provider, hostLocal bool) (stop bool) {
 	if event.Type == "" {
 		return false
 	}
@@ -1041,7 +1073,7 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 	event = bindToolResultEvent(a.TaskID, string(a.EffectiveRole()), m.artifacts, event)
 
 	event.Timestamp = time.Now().UTC()
-	if event.LimitSnapshot != nil {
+	if event.LimitSnapshot != nil && hostLocal {
 		snapshot := *event.LimitSnapshot
 		if snapshot.Provider == "" {
 			snapshot.Provider = provider.Name()
@@ -1088,7 +1120,7 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 			a.SetSessionID(event.SessionID)
 			m.saveRegistry(ctx, a)
 		}
-		if p := provider.SessionFilePath(event.SessionID); p != "" {
+		if p := provider.SessionFilePath(event.SessionID); p != "" && hostLocal {
 			a.SetSessionFilePath(p)
 		}
 	}

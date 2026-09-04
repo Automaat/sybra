@@ -1200,7 +1200,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		AssignmentUnit:          assignment.AssignmentUnit,
 		AssignmentKey:           assignment.AssignmentKey,
 		DecisionVersion:         assignment.DecisionVersion,
-		DisableProviderFailover: assignment.ExperimentID != "",
+		DisableProviderFailover: false, // Preserve availability after A/B assignment.
 		Dir:                     dir,
 		OneShot:                 oneShot,
 		// mode is coerced to headless above, so legacy interactive tasks get

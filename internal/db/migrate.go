@@ -39,8 +39,68 @@ type migration struct {
 // Migrate applies every pending migration for the handle's dialect. It is idempotent, so a second start is a no-op, and it fails rather than downgrade a database stamped with a version this build does not know.
 func Migrate(ctx context.Context, d *DB) error {
 	return d.withMigrationLock(ctx, func() error {
-		return migrateLocked(ctx, d)
+		if d.dialect != SQLite {
+			return migrateLocked(ctx, d)
+		}
+		return waitOutContention(ctx, func() error {
+			pending, err := migrationsPending(ctx, d)
+			if err != nil || !pending {
+				return err
+			}
+			return migrateLocked(ctx, d)
+		})
 	})
+}
+
+// isMissingVersionTable reports whether the version table is simply not there
+// yet, which is every fresh database and not a failure to surface.
+func isMissingVersionTable(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "no such table")
+}
+
+// migrationsPending reports whether this start has anything to do or to
+// refuse. WAL lets it read while another process writes, so a start that
+// finds the schema already exactly current never queues for the write lock.
+//
+// Anything else is pending, including a checksum that no longer matches and a
+// version this build does not know: those are the two cases migrateLocked
+// refuses, and skipping it would turn a refusal into a silent start.
+func migrationsPending(ctx context.Context, d *DB) (bool, error) {
+	available, err := loadMigrations(d.dialect)
+	if err != nil {
+		return false, err
+	}
+	rows, err := d.QueryContext(ctx, `SELECT version, checksum FROM schema_migrations`)
+	if err != nil {
+		if isMissingVersionTable(err) || IsContention(Contended(err)) {
+			return true, nil
+		}
+		return false, fmt.Errorf("read schema_migrations: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	applied := map[int]string{}
+	for rows.Next() {
+		var (
+			version  int
+			checksum string
+		)
+		if err := rows.Scan(&version, &checksum); err != nil {
+			return false, fmt.Errorf("scan schema_migrations: %w", err)
+		}
+		applied[version] = checksum
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("iterate schema_migrations: %w", err)
+	}
+	if len(applied) != len(available) {
+		return true, nil
+	}
+	for _, m := range available {
+		if applied[m.version] != m.checksum {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // migrateLocked runs the whole sequence in one transaction so the version

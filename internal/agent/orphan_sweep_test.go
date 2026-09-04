@@ -52,9 +52,12 @@ func TestReapOwnedOrphanProviderProcessesRequiresOwnerMarker(t *testing.T) {
 		t.Fatal("owned-only sweep killed an ownerless provider process")
 	}
 
-	owned := spawnOwnedMCPHelperProcess(t, root, "chrome-devtools-mcp", mcpOwner{
-		AgentID: "owned-agent", TaskID: "task-1", Mode: "headless",
-	})
+	ownerAssignment := mcpOwner{AgentID: "owned-agent", TaskID: "task-1", Mode: "headless"}
+	owned := spawnOwnedMCPHelperProcess(t, root, "chrome-devtools-mcp", ownerAssignment)
+	// Start returns before the child has exec'd, so until the exec lands the
+	// process still reads as the test binary with no owner marker and the
+	// sweep has nothing to reap.
+	waitForOwnedProcessUnderRoot(t, []string{root}, processOwner(ownerAssignment), "chrome-devtools-mcp")
 	if got, confirmed := m.ReapOwnedOrphanProviderProcessesConfirmed(context.Background(), []string{root}); got != 1 || !confirmed {
 		t.Fatalf("owned shared-root sweep = %d, %v; want 1, true", got, confirmed)
 	}

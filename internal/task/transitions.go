@@ -37,6 +37,15 @@ var allowedTransitions = map[Status]map[Status]bool{
 		StatusInReview:      true,
 		StatusHumanRequired: true,
 		StatusBlocked:       true,
+		// A handoff enters the pipeline at the stage the operator names: the
+		// task is created at todo and its simple-task-handoff-<stage> workflow
+		// flips it straight to that stage's status. Without these three the
+		// review, testing and ready-pr entry points each trip the circuit
+		// breaker instead, which is what
+		// TestHandoffVariantsEnterFromTodo pins.
+		StatusReadyReview: true,
+		StatusTesting:     true,
+		StatusReadyPR:     true,
 		// monitor.routing.local_autoclose closes a scrubbed local
 		// investigation task from whatever non-terminal status it is
 		// currently sitting at, including a freshly created (still todo)

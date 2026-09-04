@@ -19,7 +19,7 @@ import (
 )
 
 func TestSandboxReadEnforce_AllowsInheritedStderrMetadata(t *testing.T) {
-	if os.Getenv("SYBRA_TEST_FSTAT_STDERR") == "1" {
+	if os.Getenv(sandboxProbeChildEnv) == "1" {
 		var stat syscall.Stat_t
 		if err := syscall.Fstat(2, &stat); err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "fstat stderr: %v", err)
@@ -38,7 +38,7 @@ func TestSandboxReadEnforce_AllowsInheritedStderrMetadata(t *testing.T) {
 	}
 	cfg.sandbox.profilePath = profilePath
 	cmd := newDarwinSandboxCmd(cfg, os.Args[0], "-test.run=^TestSandboxReadEnforce_AllowsInheritedStderrMetadata$")
-	cmd.Env = append(cmd.Env, "SYBRA_TEST_FSTAT_STDERR=1")
+	cmd.Env = append(cmd.Env, sandboxProbeChildEnv+"=1")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
@@ -484,10 +484,6 @@ func setupLinkedWorktree(t *testing.T) (bare, worktree string) {
 // that a production run would fail.
 func buildEnforceCfg(t *testing.T, worktree string) *RunConfig {
 	t.Helper()
-	profilePath, err := materializeSandboxProfile()
-	if err != nil {
-		t.Fatalf("materializeSandboxProfile: %v", err)
-	}
 	wtCanon, err := canonicalizeRoot(worktree)
 	if err != nil {
 		t.Fatalf("canonicalizeRoot(worktree): %v", err)
@@ -499,7 +495,7 @@ func buildEnforceCfg(t *testing.T, worktree string) *RunConfig {
 	if err := prepareGitLooseObjectDirs(gitRoots.objectDir); err != nil {
 		t.Fatalf("prepare loose object dirs: %v", err)
 	}
-	spec := enforceSpec(wtCanon, nil, wtCanon, wtCanon, "", wtCanon, profilePath, "", gitRoots, gitSandboxOverlay{})
+	spec := enforceSpec(wtCanon, nil, wtCanon, wtCanon, "", wtCanon, "", "", gitRoots, gitSandboxOverlay{})
 	cfg := &RunConfig{sandbox: spec}
 	if err := injectSandboxGitEnv(cfg, gitRoots, gitSandboxOverlay{}); err != nil {
 		t.Fatalf("inject sandbox git env: %v", err)

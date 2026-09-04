@@ -5,6 +5,10 @@ function runs(costs: (number | null | undefined)[]) {
   return { agentRuns: costs.map((c) => ({ costUsd: c })) } as any
 }
 
+function compacted(costs: (number | null | undefined)[], receipt: Record<string, unknown>) {
+  return { agentRuns: costs.map((c) => ({ costUsd: c })), documentCompaction: receipt } as any
+}
+
 describe('taskTotalCost', () => {
   it('sums 0 runs to 0', () => {
     expect(taskTotalCost(runs([]))).toBe(0)
@@ -43,6 +47,26 @@ describe('taskTotalCost', () => {
   })
 })
 
+describe('taskTotalCost with a compaction receipt', () => {
+  it('adds the cost of runs compaction discarded', () => {
+    expect(taskTotalCost(compacted([1.5], { droppedRunCostUsd: 4.3 }))).toBe(5.8)
+  })
+
+  it('reports a task whose every run was discarded', () => {
+    expect(taskTotalCost(compacted([], { droppedRunCostUsd: 4.3 }))).toBe(4.3)
+  })
+
+  it('ignores a receipt with no dropped cost', () => {
+    expect(taskTotalCost(compacted([2], { trimmedRunFields: 33 }))).toBe(2)
+  })
+
+  it('ignores an invalid dropped cost rather than showing NaN as money', () => {
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -5, '3']) {
+      expect(taskTotalCost(compacted([2], { droppedRunCostUsd: bad }))).toBe(2)
+    }
+  })
+})
+
 describe('taskRunCount', () => {
   it('counts 0 runs', () => {
     expect(taskRunCount(runs([]))).toBe(0)
@@ -58,6 +82,16 @@ describe('taskRunCount', () => {
 
   it('handles missing agentRuns entirely', () => {
     expect(taskRunCount({} as any)).toBe(0)
+  })
+
+  it('counts runs compaction discarded', () => {
+    expect(taskRunCount(compacted([1, 2], { droppedAgentRuns: 98 }))).toBe(100)
+  })
+
+  it('ignores an invalid dropped count', () => {
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -3, 1.5, '4']) {
+      expect(taskRunCount(compacted([1, 2], { droppedAgentRuns: bad }))).toBe(2)
+    }
   })
 })
 

@@ -47,8 +47,15 @@ const (
 	testFailureFingerprintKey  = "failure_fingerprint"
 	testSurfaceUnavailableKey  = "surface_unavailable"
 	testSchemaReaskKey         = "schema_reask"
-	testFailuresHeading        = "## Test Failures"
-	acceptanceLedgerHeading    = "## Acceptance Ledger"
+	// testPassEvidenceReasonKey carries why a PASS report's manual-testing
+	// evidence was rejected, so the re-ask can name it. Without it every
+	// rejected PASS was re-asked with the FAIL-shaped missingEvidenceReask
+	// ("for EVERY claimed defect you MUST include..."), which tells a tester
+	// that claimed no defect nothing at all — so it re-emitted the same
+	// report until the retry budget ran out.
+	testPassEvidenceReasonKey = "pass_evidence_reason"
+	testFailuresHeading       = "## Test Failures"
+	acceptanceLedgerHeading   = "## Acceptance Ledger"
 	// resolvedTestFailuresHeading is what a stale "## Test Failures" section
 	// is renamed to when a newer cycle supersedes it (see
 	// stripTestFailuresSections). Deliberately distinct from testFailuresHeading
@@ -102,6 +109,21 @@ const (
 		"if it genuinely cannot start here."
 
 	missingEvidenceHumanReason = "test-runner report lacked machine-checkable evidence after auto-retries — needs local reproduction"
+
+	passEvidenceHumanReason = "test-runner PASS report was rejected for its manual-testing evidence after auto-retries — check the surface it declared against what the change actually exposes"
+
+	// passEvidenceReask is the re-ask for a PASS whose verdict was never in
+	// question — only the evidence backing it. It must not read as pressure to
+	// find a defect: a tester nudged toward FAIL by the re-ask itself sends
+	// correct work back for re-implementation.
+	passEvidenceReask = "Your previous report emitted PASS and was rejected for the manual-testing " +
+		"evidence backing it, not for the verdict itself: %s. Do not turn a PASS into a FAIL to " +
+		"satisfy this. Re-run the probes your verdict rests on and record each in the schema " +
+		"fields — surface_kind, the exact command, its verbatim output, and the result you read " +
+		"from it. Declare the surface you actually exercised: use cli for a change you invoke and " +
+		"read the result of, library for an internal change with no runnable product surface " +
+		"(with unable_to_run_reason filled in), and the web/server/desktop/k8s tokens only for a " +
+		"surface you started and probed while it ran."
 
 	schemaReaskHumanReason = "test-runner says the product surface cannot start on this host but never emitted the schema form — check whether its provider honours the output schema"
 
@@ -259,7 +281,7 @@ func clearTestVerdictVars(wfExec *Execution) {
 	if wfExec == nil || wfExec.Variables == nil {
 		return
 	}
-	for _, suffix := range []string{".verdict", "." + testVerdictOutcomeKey, "." + testVerdictTaintedKey, "." + testFailureFingerprintKey, "." + testSurfaceUnavailableKey, "." + testSchemaReaskKey} {
+	for _, suffix := range []string{".verdict", "." + testVerdictOutcomeKey, "." + testVerdictTaintedKey, "." + testFailureFingerprintKey, "." + testSurfaceUnavailableKey, "." + testSchemaReaskKey, "." + testPassEvidenceReasonKey} {
 		delete(wfExec.Variables, "step."+testVerdictSourceStep+suffix)
 	}
 }
@@ -1031,6 +1053,12 @@ func hasManualPassEvidence(output string, t TaskInfo) (ok bool, reason string) {
 	if surface == "library" || surface == "docs" || surface == "none" {
 		return false, "PASS skipped manual testing without an explicit docs/library exemption"
 	}
+	if isOneShotSurface(surface) {
+		if !hasConcreteManualProbeEvidence(parsed.ManualProbes) {
+			return false, "PASS report omitted an executed " + surface + " probe"
+		}
+		return true, ""
+	}
 	if !parsed.AppStarted {
 		return false, "PASS report did not confirm app_started"
 	}
@@ -1099,6 +1127,23 @@ func normalizeSurfaceKind(s string) string {
 	return fallback
 }
 
+// isOneShotSurface reports whether a product surface is exercised by invoking
+// it and reading the result rather than by starting something and probing it
+// while it runs. A one-shot surface leaves no process behind, so it has no
+// start_command and nothing a readiness probe could poll; demanding
+// app_started of one rejects every honest report a CLI-shaped change can
+// produce, which is how a build-script fix passed its probes three times and
+// still burned its whole auto-retry budget on missing_evidence.
+//
+// This is not the docs/library exemption: a one-shot surface still has to show
+// a probe that actually ran, and at the stricter concrete-result bar
+// (hasConcreteProbeEvidence) the exemption path does not apply, so a tester
+// cannot label a web change "cli" to dodge starting it any more cheaply than
+// it could already have said "library".
+func isOneShotSurface(surface string) bool {
+	return surface == "cli"
+}
+
 func isManualTestExemption(surface string, t TaskInfo) bool {
 	if surface == "library" {
 		return true
@@ -1128,6 +1173,12 @@ func hasPlainTextManualPassEvidence(output string, t TaskInfo) (ok bool, reason 
 	}
 	if surface == "library" || surface == "docs" || surface == "none" {
 		return false, "plain-text PASS skipped manual testing without an explicit docs/library exemption"
+	}
+	if isOneShotSurface(surface) {
+		if !hasPlainTextConcreteProbeEvidence(output) {
+			return false, "plain-text PASS report omitted an executed " + surface + " probe"
+		}
+		return true, ""
 	}
 	lower := strings.ToLower(output)
 	if !containsAny(lower, "app_started: true", "app started: true") {
@@ -1171,6 +1222,37 @@ func hasPlainTextManualProbeEvidence(output string) bool {
 		containsAny(lower, "actual:", "actual output:", "observed:", "observed output:")
 }
 
+// hasPlainTextConcreteProbeEvidence is hasConcreteManualProbeEvidence's
+// plain-text counterpart: the probe labels must be present AND at least one
+// recorded result must read as an outcome rather than a not-executed marker.
+//
+// hasPlainTextManualProbeEvidence alone only asks whether the labels appear,
+// so a one-shot PASS whose single probe said "actual: not run" satisfied the
+// plain-text gate while its structured twin was rejected — weaker than the
+// structured path and weaker than what /sybra-test tells a tester it owes.
+//
+// It reads every line rather than reportScanLines, because a probe's result
+// is usually written indented under its command and reportScanLines drops
+// indented lines as fenced/quoted content.
+func hasPlainTextConcreteProbeEvidence(output string) bool {
+	if !hasPlainTextManualProbeEvidence(output) {
+		return false
+	}
+	for line := range strings.SplitSeq(output, "\n") {
+		field, value, ok := strings.Cut(strings.TrimSpace(strings.TrimLeft(line, "-* \t")), ":")
+		if !ok {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(field)) {
+		case "actual", "actual output", "observed", "observed output", "status":
+			if hasConcreteProbeResult(evidenceText(strings.TrimSpace(value))) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func hasPlainTextRegressionCheckEvidence(output string) bool {
 	lower := strings.ToLower(output)
 	return containsAny(lower, "automated_checks:", "automated checks:", "regression check:", "test harness:") &&
@@ -1202,6 +1284,19 @@ func hasManualProbeEvidence(probes manualProbeEvidenceList) bool {
 			return true
 		}
 		if hasRawManualProbeEvidence(p.Raw) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasConcreteManualProbeEvidence is hasManualProbeEvidence's stricter sibling:
+// it requires a probe whose recorded result reads as an outcome rather than a
+// not-executed marker. One-shot surfaces gate on this instead of the app-start
+// triple, so it is the only thing standing between a "cli" PASS and the router.
+func hasConcreteManualProbeEvidence(probes manualProbeEvidenceList) bool {
+	for _, p := range probes {
+		if hasConcreteProbeEvidence(p.Command, p.Actual, p.Output, p.Observed, p.Status, p.Raw) {
 			return true
 		}
 	}
@@ -1501,6 +1596,7 @@ func applyTestVerdictCompletion(wfExec *Execution, output *StepOutput, body stri
 			}
 			wfExec.SetVar("step."+output.StepID+"."+testVerdictOutcomeKey, testOutcomeMissingEvidence)
 			wfExec.SetVar("step."+output.StepID+"."+testVerdictTaintedKey, testProtocolMissingEvidence)
+			wfExec.SetVar("step."+output.StepID+"."+testPassEvidenceReasonKey, reason)
 			output.Status = "failed"
 			output.Output = appendTestProtocolViolation(output.Output, reason)
 			return testProtocolMissingEvidence, testOutcomeMissingEvidence, ""
@@ -2537,6 +2633,9 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 		// tester with the specific contract it broke before involving a human.
 		if violation == testProtocolMissingEvidence {
 			reask, humanReason := missingEvidenceReask, missingEvidenceHumanReason
+			if r := wfExec.Variables["step."+testVerdictSourceStep+"."+testPassEvidenceReasonKey]; r != "" {
+				reask, humanReason = fmt.Sprintf(passEvidenceReask, r), passEvidenceHumanReason
+			}
 			if wfExec.Variables["step."+testVerdictSourceStep+"."+testSchemaReaskKey] != "" {
 				reask, humanReason = schemaReask, schemaReaskHumanReason
 			}

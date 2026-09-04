@@ -48,9 +48,10 @@ type Sidecar struct {
 // left a task disagreeing with its own plan or review, and nothing afterwards
 // could tell which of the two was current.
 type SQLStore struct {
-	db                *db.DB
-	maxHistoryPerTask int
-	historySweepBatch int
+	db                     *db.DB
+	maxHistoryPerTask      int
+	maxHistoryBytesPerTask int
+	historySweepBatch      int
 }
 
 // SetMaxHistoryPerTask overrides the per-task history cap. 0 restores the
@@ -60,6 +61,15 @@ func (s *SQLStore) SetMaxHistoryPerTask(n int) {
 		return
 	}
 	s.maxHistoryPerTask = n
+}
+
+// SetMaxHistoryBytesPerTask overrides the per-task history size budget. 0
+// restores the default; a negative value keeps every entry regardless of size.
+func (s *SQLStore) SetMaxHistoryBytesPerTask(n int) {
+	if s == nil {
+		return
+	}
+	s.maxHistoryBytesPerTask = n
 }
 
 func (s *SQLStore) WithTaskLock(ctx context.Context, id string, fn func() error) error {
@@ -72,6 +82,16 @@ func NewSQLStore(database *db.DB) (*SQLStore, error) {
 		return nil, errors.New("task store needs an open database")
 	}
 	return &SQLStore{db: database}, nil
+}
+
+// ReclaimStorage hands pages freed by maintenance back to SQLite when its file
+// supports incremental auto-vacuum. It is a no-op for postgres and for older
+// SQLite files that require an operator-scheduled full VACUUM.
+func (s *SQLStore) ReclaimStorage(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
+	return s.db.ReclaimFreePages(ctx)
 }
 
 const (
