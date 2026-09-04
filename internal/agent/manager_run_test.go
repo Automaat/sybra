@@ -368,6 +368,14 @@ func TestJitterDispatch_SleepsWithinBound(t *testing.T) {
 // TestJitterDispatch_AbortsOnContextCancel verifies a manager shutdown mid-
 // jitter aborts the dispatch promptly instead of blocking for the full window.
 func TestJitterDispatch_AbortsOnContextCancel(t *testing.T) {
+	// cancelAfter is the only timing this test may reason about. The window
+	// itself is drawn from [0, ms), so a draw shorter than it finishes on its
+	// own and returns nil with nothing to interrupt — legitimately. slack
+	// covers the scheduler gap between the window elapsing and the cancel
+	// goroutine actually running, inside which either outcome is correct.
+	const cancelAfter = 20 * time.Millisecond
+	const slack = 100 * time.Millisecond
+
 	ctx, cancel := context.WithCancel(context.Background())
 	m := mustNewManager(t, ctx, func(string, any) {}, discardLogger(), t.TempDir())
 	m.mu.Lock()
@@ -375,17 +383,44 @@ func TestJitterDispatch_AbortsOnContextCancel(t *testing.T) {
 	m.mu.Unlock()
 
 	go func() {
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(cancelAfter)
 		cancel()
 	}()
 
 	start := time.Now()
 	err := m.jitterDispatch()
-	if err == nil {
-		t.Fatal("expected context error when the manager shuts down mid-jitter")
-	}
-	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+	elapsed := time.Since(start)
+	if elapsed > 500*time.Millisecond {
 		t.Fatalf("jitterDispatch did not abort promptly on ctx cancel: %s", elapsed)
+	}
+	if err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	// Only a call that outlived the cancel by a clear margin and still
+	// reported success is a defect. Thresholding on anything shorter than the
+	// cancel delay fails whenever the draw legitimately beat it.
+	if err == nil && elapsed > cancelAfter+slack {
+		t.Fatalf("jitter ran %s, outlasting the cancel, and still returned nil", elapsed)
+	}
+}
+
+// TestJitterDispatch_RefusesADeadContext pins the half of the contract that
+// holds for every draw: a manager already shut down does not dispatch, whether
+// or not it drew a window to sleep through.
+func TestJitterDispatch_RefusesADeadContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	m := mustNewManager(t, ctx, func(string, any) {}, discardLogger(), t.TempDir())
+	// A jitter of 1 makes the window rand.N(1), which is always zero, so this
+	// takes the zero-draw early return every time — the one path that skipped
+	// the select and so ignored a cancelled context. A larger window would
+	// hide the defect behind the select in all but one run per ms.
+	m.mu.Lock()
+	m.dispatchJitterMs = 1
+	m.mu.Unlock()
+	cancel()
+
+	if err := m.jitterDispatch(); err == nil {
+		t.Fatal("jitterDispatch proceeded on a cancelled context")
 	}
 }
 

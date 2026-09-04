@@ -170,6 +170,38 @@ func TestPlacementPinsAffinityTrustHealthAndFallback(t *testing.T) {
 	})
 }
 
+func TestPlacementRequiresVerifierAuthentication(t *testing.T) {
+	dbtest.Each(t, func(t *testing.T, engine dbtest.Engine) {
+		t.Helper()
+		service := New(engine.Open(t))
+		registerPlacementWorker(t, service, "ordinary", []string{
+			"capacity=4", "provider=claude", "provider_health:claude=healthy", "sandbox=enforce",
+		})
+		fallback := placementRequest(t, "run-verifier-fallback", "effect-verifier-fallback")
+		fallback.RequireVerifierAuth = true
+		fallback.AllowLocalFallback = true
+		local, err := service.ScheduleStart(t.Context(), fallback)
+		if err != nil || !local.LocalFallback {
+			t.Fatalf("verifier local fallback = %+v, %v", local, err)
+		}
+
+		registerPlacementWorker(t, service, "verifier", []string{
+			"capacity=4", "provider=claude", "provider_health:claude=healthy", "sandbox=enforce", "verifier_auth=true",
+		})
+
+		request := placementRequest(t, "run-verifier", "effect-verifier")
+		request.RequireVerifierAuth = true
+		placed, err := service.ScheduleStart(t.Context(), request)
+		if err != nil || placed.WorkerID != "verifier" {
+			t.Fatalf("verifier placement = %+v, %v", placed, err)
+		}
+		if len(placed.Candidates) != 2 || placed.Candidates[0].Eligible ||
+			!slices.Contains(placed.Candidates[0].Reasons, "verifier authentication capability is required") {
+			t.Fatalf("placement candidates = %+v", placed.Candidates)
+		}
+	})
+}
+
 func TestConcurrentPlacementCannotDuplicateRunOrCapacity(t *testing.T) {
 	dbtest.Each(t, func(t *testing.T, engine dbtest.Engine) {
 		t.Helper()

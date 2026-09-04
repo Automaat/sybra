@@ -1639,6 +1639,60 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			wantTaint:  testProtocolMissingEvidence,
 		},
 		{
+			// A one-shot surface leaves no process to start or poll. The probe
+			// it did run is the whole evidence a CLI-shaped change can offer,
+			// and demanding app_started of it rejected every honest report.
+			name:       "cli_pass_backed_by_an_executed_probe_needs_no_app_start",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"cli","app_started":false,"start_command":"","readiness_probe":{"command":"","expected":"","actual":"","observed":"","output":"","status":"","url":""},"manual_probes":[{"command":"make print/versions","expected":"the gate version is printed","actual":"RC=0; printed gate 2.14.0","observed":"PASS","output":"Gate version: 2.14.0\nRC=0","status":"passed"}],"automated_checks":[],"unable_to_run_reason":""}`,
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+		{
+			// The relaxed app-start rule is not a relaxed evidence rule: a
+			// probe that admits it never ran proves nothing about the change.
+			name:       "cli_pass_whose_only_probe_never_ran_stays_missing_evidence",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"cli","app_started":false,"start_command":"","readiness_probe":{"command":"","expected":"","actual":"","observed":"","output":"","status":"","url":""},"manual_probes":[{"command":"make print/versions","expected":"the gate version is printed","actual":"not run","observed":"skipped","output":"","status":"not run"}],"automated_checks":[],"unable_to_run_reason":""}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:   "plain_text_cli_pass_backed_by_an_executed_probe_needs_no_app_start",
+			status: "completed",
+			output: "Exercised the new gate flag by hand.\n\n" +
+				"surface_kind: cli\n" +
+				"manual_probes:\n" +
+				"  - command: go run ./cmd/tool --gate 2.14.0\n" +
+				"    expected: the flag is accepted and echoed\n" +
+				"    actual: exit code 0, printed gate 2.14.0\n\n" +
+				"TEST_VERDICT: PASS",
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+		{
+			// The plain-text gate must hold the same bar as the structured
+			// one: labels alone are not evidence when the result they carry
+			// says the probe never ran.
+			name:   "plain_text_cli_pass_whose_probe_never_ran_stays_missing_evidence",
+			status: "completed",
+			output: "Tried to exercise the new gate flag.\n\n" +
+				"surface_kind: cli\n" +
+				"manual_probes:\n" +
+				"  - command: go run ./cmd/tool --gate 2.14.0\n" +
+				"    expected: the flag is accepted and echoed\n" +
+				"    actual: not run\n\n" +
+				"TEST_VERDICT: PASS",
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
 			name:       "startable_surface_that_was_never_started_stays_missing_evidence",
 			status:     "completed",
 			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web","app_started":false,"start_command":"","unable_to_run_reason":"the host has no kubernetes context","readiness_probe":{"command":"curl -fsS http://127.0.0.1:8080/health","actual":"HTTP 200","output":"ok","status":"pass"},"manual_probes":[{"command":"helm package deployments/charts/app","expected":"the chart packages","actual":"the chart packaged","observed":"helm package succeeded","output":"Successfully packaged chart","status":"pass"}]}`,
@@ -1680,6 +1734,28 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 				t.Fatal("fingerprint is empty for evidenced failure")
 			}
 		})
+	}
+}
+
+// The router can only name the rejection reason if the verdict pass recorded
+// it; without this the two halves drift and the re-ask silently falls back to
+// the FAIL-shaped note.
+func TestApplyTestVerdictCompletion_RecordsWhyAPassWasRejected(t *testing.T) {
+	t.Parallel()
+
+	wf := &Execution{Variables: map[string]string{}}
+	prepareTestVerdictAttemptVars(wf, testVerdictSourceStep, "")
+	out := StepOutput{
+		StepID: testVerdictSourceStep,
+		Status: "completed",
+		Output: `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web","app_started":false,"start_command":"","readiness_probe":{"command":"","expected":"","actual":"","observed":"","output":"","status":"","url":""},"manual_probes":[],"automated_checks":[],"unable_to_run_reason":""}`,
+	}
+	if _, outcome, _ := applyTestVerdictCompletion(wf, &out, "", TaskInfo{}); outcome != testOutcomeMissingEvidence {
+		t.Fatalf("outcome = %q, want %q", outcome, testOutcomeMissingEvidence)
+	}
+	got := wf.Variables["step."+testVerdictSourceStep+"."+testPassEvidenceReasonKey]
+	if !strings.Contains(got, "app_started") {
+		t.Errorf("recorded reason = %q, want it to name app_started", got)
 	}
 }
 
@@ -2872,6 +2948,49 @@ func TestRouteTestResult_MissingEvidenceParksWithReaskThenEscalates(t *testing.T
 	}
 	if reason := tasks.Reason("t-evidence-cap"); !strings.Contains(reason, "machine-checkable") {
 		t.Errorf("reason = %q, want machine-checkable mention", reason)
+	}
+}
+
+// A rejected PASS used to be re-asked with the FAIL-shaped note ("for EVERY
+// claimed defect you MUST include..."), which says nothing to a tester that
+// claimed no defect — so it re-emitted the identical report until the retry
+// budget ran out and the task quarantined. The re-ask must name the evidence
+// reason instead, and must not read as an instruction to produce a FAIL.
+func TestRouteTestResult_RejectedPassReasksAboutEvidenceNotDefects(t *testing.T) {
+	t.Parallel()
+	e, tasks := makeTestEngine(t)
+	reason := "PASS report did not confirm app_started"
+	vars := map[string]string{
+		"step." + testVerdictSourceStep + "." + testVerdictTaintedKey:     testProtocolMissingEvidence,
+		"step." + testVerdictSourceStep + "." + testPassEvidenceReasonKey: reason,
+	}
+	_, ti, err := routeWithOutcome(t, e, tasks, "t-pass-evidence", testOutcomeMissingEvidence, vars)
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("err = %v, want errStepParked", err)
+	}
+	note := ti.Workflow.Variables[testingReaskNoteVar]
+	if !strings.Contains(note, reason) {
+		t.Errorf("reask note = %q, want the rejection reason %q", note, reason)
+	}
+	if strings.Contains(note, "claimed defect") {
+		t.Errorf("reask note = %q, want no FAIL-shaped defect guidance", note)
+	}
+
+	// At cap the human reason must say the verdict was never the problem, so a
+	// triaging human does not go looking for the defect the tester never found.
+	capVars := map[string]string{
+		"step." + testVerdictSourceStep + "." + testVerdictTaintedKey:     testProtocolMissingEvidence,
+		"step." + testVerdictSourceStep + "." + testPassEvidenceReasonKey: reason,
+		testingAutoRetryKey(testOutcomeMissingEvidence):                   strconv.Itoa(testingAutoRetryCap),
+	}
+	if _, ti, err = routeWithOutcome(t, e, tasks, "t-pass-evidence-cap", testOutcomeMissingEvidence, capVars); err != nil {
+		t.Fatal(err)
+	}
+	if ti.Status != taskstatus.HumanRequired {
+		t.Errorf("status = %q, want human-required", ti.Status)
+	}
+	if got := tasks.Reason("t-pass-evidence-cap"); !strings.Contains(got, "PASS report") {
+		t.Errorf("reason = %q, want it to name the rejected PASS", got)
 	}
 }
 

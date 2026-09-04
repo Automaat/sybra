@@ -3252,3 +3252,44 @@ func TestBuildCapacityReport_EmptyHealthIsUnknown(t *testing.T) {
 		t.Errorf("disabled health checking raised an outage error: %+v", findings)
 	}
 }
+
+// TestIsRetryableCLIError_CoversACallDeadline pins that a board too contended
+// to answer inside the call deadline is retryable like the 503 it is.
+//
+// Exit 1 tells an agent the work failed; exit 75 tells it to try again. Under
+// real board contention this path fired dozens of times in a row, and the
+// requests frequently committed server-side anyway — so the plain failure sent
+// agents to abandon work that had already partly happened.
+//
+// It asserts the predicate only, never fatal(). fatal writes the message to
+// the process-wide os.Stderr, which races captureStderr in whichever parallel
+// test happens to be running beside it — the race detector caught exactly that
+// pairing with TestUmbrella_JSONStdoutStaysClean. That fatal maps a retryable
+// error to 75 is pinned end-to-end, through a captured stderr, by the
+// lock-timeout case above.
+func TestIsRetryableCLIError_CoversACallDeadline(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "call deadline", err: context.DeadlineExceeded, want: true},
+		{name: "wrapped call deadline", err: fmt.Errorf("post update: %w", context.DeadlineExceeded), want: true},
+		{name: "socket deadline", err: os.ErrDeadlineExceeded, want: true},
+		{name: "board busy", err: &apiError{Status: http.StatusServiceUnavailable}, want: true},
+		{name: "cancelled by the caller", err: context.Canceled, want: false},
+		{name: "ordinary failure", err: fmt.Errorf("task not found"), want: false},
+		{name: "no error", err: nil, want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := isRetryableCLIError(tc.err); got != tc.want {
+				t.Errorf("isRetryableCLIError(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}

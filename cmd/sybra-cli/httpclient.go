@@ -78,6 +78,10 @@ type apiClient struct {
 	// boardService is what the peer called itself in its health response, or
 	// "" when it named nothing. See reachable.
 	boardService string
+	// boardStatus is the health document's status field, kept so a peer that
+	// names no service can still be held to the legacy health shape.
+	boardStatus string
+
 	// boardHomeID digests the SYBRA_HOME the board reported serving, learned
 	// during the reachability probe. Empty until that probe has run.
 	boardHomeID string
@@ -411,6 +415,7 @@ func (c *apiClient) reachable(ctx context.Context) bool {
 		return false
 	}
 	var health struct {
+		Status  string `json:"status"`
 		Service string `json:"service"`
 		HomeID  string `json:"home_id"`
 	}
@@ -419,6 +424,7 @@ func (c *apiClient) reachable(ctx context.Context) bool {
 	}
 	c.boardHomeID = health.HomeID
 	c.boardService = health.Service
+	c.boardStatus = health.Status
 	return true
 }
 
@@ -436,7 +442,16 @@ func (c *apiClient) isBoard() bool {
 	if c == nil {
 		return false
 	}
-	return c.boardService == "" || c.boardService == httpserve.ServiceMarker
+	if c.boardService == httpserve.ServiceMarker {
+		return true
+	}
+	// Silence is accepted only in the shape the old server actually answered
+	// in. json.Unmarshal ignores the fields it was not given, so without this
+	// every 200 carrying any JSON object at all read as a service-less board:
+	// an unrelated process serving a JWKS document on the inferred port was
+	// committed to, and handed the bearer token, before the first call failed
+	// to parse as tasks.
+	return c.boardService == "" && strings.EqualFold(c.boardStatus, "ok")
 }
 
 // servesThisHome reports a peer an inferred target may be used for.

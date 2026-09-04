@@ -52,6 +52,79 @@ func TestProbeGPGSigningReportsMissingKey(t *testing.T) {
 	}
 }
 
+// gpg.format=ssh must follow git's own resolution: gpg.ssh.program signs with
+// -Y sign -n git, and the -f argument names a real key file for both a pub
+// path and a literal key blob.
+func TestProbeGPGSigningSSHFormat(t *testing.T) {
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "probe.pub")
+	if err := os.WriteFile(keyPath, []byte("ssh-ed25519 AAAA path\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		key     string
+		wantKey string
+		staged  bool
+		wantErr bool
+	}{{name: "pub path", key: keyPath, wantKey: keyPath},
+		{name: "tilde path", key: "~/probe.pub", wantKey: keyPath},
+		{name: "literal key", key: "ssh-ed25519 AAAA literal", wantKey: "signing_key.pub", staged: true},
+		{name: "missing path", key: filepath.Join(dir, "absent.pub"), wantErr: true},
+		{name: "unusable signer", key: keyPath, wantKey: keyPath, wantErr: true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			argsFile := filepath.Join(root, "args")
+			exitCode := map[bool]int{true: 7, false: 0}[tc.name == "unusable signer"]
+			script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" >> %s\ncat > /dev/null\nexit %d\n", argsFile, exitCode)
+			signer := filepath.Join(root, "fake-ssh-keygen")
+			if err := os.WriteFile(signer, []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			configPath := filepath.Join(root, "gitconfig")
+			configBody := fmt.Sprintf("[user]\n\tsigningkey = %s\n[gpg]\n\tformat = ssh\n[gpg \"ssh\"]\n\tprogram = %s\n", tc.key, signer)
+			if err := os.WriteFile(configPath, []byte(configBody), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("GIT_CONFIG_GLOBAL", configPath)
+			t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+			t.Setenv("HOME", dir)
+			err := ProbeGPGSigning(context.Background())
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("ProbeGPGSigning() error = %v, wantErr %v", err, tc.wantErr)
+			}
+			if tc.wantErr {
+				return
+			}
+			args, err := os.ReadFile(argsFile)
+			if err != nil {
+				t.Fatalf("read args: %v", err)
+			}
+			argv := strings.Split(strings.TrimSpace(string(args)), "\n")
+			if len(argv) != 6 {
+				t.Fatalf("fake signer argv = %v, want 6 args", argv)
+			}
+			if argv[0] != "-Y" || argv[1] != "sign" || argv[2] != "-n" || argv[3] != "git" || argv[4] != "-f" {
+				t.Fatalf("fake signer argv = %v", argv)
+			}
+			if !filepath.IsAbs(argv[5]) {
+				t.Fatalf("signing key arg = %q, want an absolute path", argv[5])
+			}
+			if tc.staged {
+				if filepath.Base(argv[5]) != tc.wantKey {
+					t.Fatalf("literal key staged at %q, want %s", argv[5], tc.wantKey)
+				}
+				if _, err := os.Stat(argv[5]); !os.IsNotExist(err) {
+					t.Fatalf("staged key file %q still exists after probe", argv[5])
+				}
+			} else if argv[5] != tc.wantKey {
+				t.Fatalf("signing key arg = %q, want %q", argv[5], tc.wantKey)
+			}
+		})
+	}
+}
+
 func TestNormalizeSigningPolicy(t *testing.T) {
 	tests := []struct {
 		raw  string

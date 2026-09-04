@@ -1200,6 +1200,37 @@ func TestRecordSystemAgentStartIgnoresMissingTask(t *testing.T) {
 	}
 }
 
+// TestLocalWorkflowDispatchDoesNotDisableProviderFailover guards the seam that
+// stranded A/B-attributed runs when provider health changed after assignment.
+// Experiment metadata records the original selection; local dispatch must
+// still be free to choose a healthy provider at the final Manager.Run gate.
+// Remote agentd execution is intentionally outside this tree because its
+// assigned provider is part of the external RunSpec contract.
+func TestLocalWorkflowDispatchDoesNotDisableProviderFailover(t *testing.T) {
+	err := filepath.Walk(".", func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		source := string(data)
+		if strings.Contains(source, "DisableProviderFailover: true") ||
+			strings.Contains(source, "DisableProviderFailover: assignment") ||
+			strings.Contains(source, "DisableProviderFailover: p.assignment") {
+			t.Errorf("%s pins a local workflow provider; keep dispatch-time failover enabled", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestAgentAdapterStartAgentFailsClosedOnDroppedRunRecord pins #2199's
 // remaining gap: recordSystemAgentStart must not log-and-continue when
 // AddRunWithStatus fails for a reason other than the task having disappeared

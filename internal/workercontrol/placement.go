@@ -39,6 +39,11 @@ type PlacementRequest struct {
 	Sandbox                 string                            `json:"sandbox,omitempty"`
 	WarmCacheHints          []string                          `json:"warmCacheHints,omitempty"`
 	RequireRepositoryAnchor bool                              `json:"requireRepositoryAnchor,omitempty"`
+	// RequireVerifierAuth keeps independent review agents off workers that
+	// cannot supply Sybra's restricted GitHub App credential. A local fallback
+	// is safer than dispatching the run and discovering the missing capability
+	// only after it has consumed a workflow retry.
+	RequireVerifierAuth bool `json:"requireVerifierAuth,omitempty"`
 	// WorkspaceBaseBundles are leader-only transport inputs keyed by the exact
 	// repository HEAD advertised by a worker. Descriptors participate in stable
 	// request identity; bytes do not. Worker control selects and persists one
@@ -296,6 +301,9 @@ func scorePlacement(session placementSession, request PlacementRequest) Placemen
 	}
 	if request.RequireEncrypted && !session.capabilities.flags["encrypted_work"] {
 		reject("encrypted work capability is required")
+	}
+	if request.RequireVerifierAuth && !session.capabilities.flags["verifier_auth"] {
+		reject("verifier authentication capability is required")
 	}
 	if request.RequireRepositoryAnchor {
 		if !session.capabilities.flags["workspace_base_bundle"] {

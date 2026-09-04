@@ -256,14 +256,14 @@ func TestLeaderExecutionBackendReclaimsExistingEffectAfterRestart(t *testing.T) 
 	database := dbtest.SQLite(t)
 	control := workercontrol.New(database)
 	session, err := control.Register(t.Context(), workercontrol.RegisterRequest{
-		WorkerID: "daemon-a", Capabilities: syntheticDaemonCapabilities(base),
+		WorkerID: "daemon-a", Capabilities: syntheticDaemonCapabilities(base, "verifier_auth=true"),
 		Negotiation: executioncontract.Negotiation{ProtocolMin: executioncontract.CurrentVersion(), ProtocolMax: executioncontract.CurrentVersion(), BuildVersion: "worker-test"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := control.Register(t.Context(), workercontrol.RegisterRequest{
-		WorkerID: "daemon-b", Capabilities: syntheticDaemonCapabilities(base),
+		WorkerID: "daemon-b", Capabilities: syntheticDaemonCapabilities(base, "verifier_auth=true"),
 		Negotiation: executioncontract.Negotiation{ProtocolMin: executioncontract.CurrentVersion(), ProtocolMax: executioncontract.CurrentVersion(), BuildVersion: "worker-test"},
 	}); err != nil {
 		t.Fatal(err)
@@ -639,6 +639,82 @@ func TestLeaderExecutionBackendUsesSingleAdmissionBeforeClaimingLocalFallback(t 
 	}
 	if admissions != 1 {
 		t.Fatalf("local admission calls = %d, want one before durable placement", admissions)
+	}
+}
+
+func TestLeaderExecutionBackendKeepsReviewLocalWithoutVerifierWorker(t *testing.T) {
+	database := dbtest.SQLite(t)
+	control := workercontrol.New(database)
+	dir, base := remoteBackendRepository(t)
+	if _, err := control.Register(t.Context(), workercontrol.RegisterRequest{
+		WorkerID:     "ordinary-daemon",
+		Capabilities: syntheticDaemonCapabilities(base, "sandbox=enforce"),
+		Negotiation: executioncontract.Negotiation{
+			ProtocolMin:  executioncontract.CurrentVersion(),
+			ProtocolMax:  executioncontract.CurrentVersion(),
+			BuildVersion: "worker-test",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	canonical := task.Task{
+		ID: "task-review-fallback", Title: "review", ProjectID: "repo", Branch: "main", Status: task.StatusReadyReview,
+		CreatedAt: now, UpdatedAt: now, Generation: 4,
+		Workflow: &workflow.Execution{WorkflowID: "review", CurrentStep: "code_review", State: workflow.ExecWaiting},
+	}
+	if _, err := store.Put(canonical); err != nil {
+		t.Fatal(err)
+	}
+	backend := &leaderExecutionBackend{
+		app:         &App{tasks: task.NewManager(store, nil), workerControl: control},
+		local:       acceptingLocalBackend{},
+		runs:        make(map[agent.ExecutionHandle]*remoteExecution),
+		admitLocal:  func() (bool, string) { return true, "" },
+		admitRemote: func() (bool, string) { return true, "" },
+	}
+	start := agent.ExecutionStart{
+		Spec: agent.ExecutionSpec{ID: "agent-review-fallback", TaskID: canonical.ID, Provider: providerid.Claude, Model: "sonnet"},
+		Config: agent.RunConfig{
+			TaskID: canonical.ID, Role: agent.RoleReview, Mode: "headless", Prompt: "review", Dir: dir,
+			IntentID: canonical.ID + ":review:4:1:code_review:0", TaskGeneration: 4,
+			Provider: providerid.Claude, Model: "sonnet", SandboxMode: "enforce",
+		},
+		Sink: &recordingExecutionSink{ready: make(chan struct{})},
+	}
+	if handle, err := backend.Start(t.Context(), start); err != nil || handle != "local:accepted" {
+		t.Fatalf("Start() = (%q, %v), want local verifier fallback", handle, err)
+	}
+	if _, err := control.RemoteRunForEffect(t.Context(), start.Config.IntentID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("RemoteRunForEffect() error = %v, want no remote verifier reservation", err)
+	}
+}
+
+func TestPrepareRemoteWorkspaceBaseMarksOversizeAnchor(t *testing.T) {
+	dir, base := remoteBackendRepository(t)
+	_, _, err := prepareRemoteWorkspaceBaseLimited(
+		t.Context(), dir, "run-oversize", base, "", "refs/heads/main", 1,
+	)
+	if !errors.Is(err, errRemoteWorkspaceBaseTooLarge) {
+		t.Fatalf("prepareRemoteWorkspaceBaseLimited() error = %v, want oversized-bundle signal", err)
+	}
+}
+
+func TestPrepareRemoteWorkspaceBasesSkipsOnlyOversizeAnchor(t *testing.T) {
+	dir, base := remoteBackendRepository(t)
+	stale := strings.Repeat("f", 40)
+	bundles, err := prepareRemoteWorkspaceBases(
+		t.Context(), dir, "run-mixed-anchors", base, "refs/heads/main", []string{stale, base}, 1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bundles) != 1 || bundles[0].RepositoryAnchor != base || bundles[0].Reference != nil || len(bundles[0].Content) != 0 {
+		t.Fatalf("prepared bundles = %+v, want only the already-resolved anchor", bundles)
 	}
 }
 
@@ -1095,7 +1171,7 @@ func TestLeaderExecutionBackendVirtualizesSidecarPathAndFollowsResumedSession(t 
 	database := dbtest.SQLite(t)
 	control := workercontrol.New(database)
 	session, err := control.Register(t.Context(), workercontrol.RegisterRequest{
-		WorkerID: "daemon-resume", Capabilities: syntheticDaemonCapabilities(base),
+		WorkerID: "daemon-resume", Capabilities: syntheticDaemonCapabilities(base, "verifier_auth=true"),
 		Negotiation: executioncontract.Negotiation{ProtocolMin: executioncontract.CurrentVersion(), ProtocolMax: executioncontract.CurrentVersion(), BuildVersion: "worker-test"},
 	})
 	if err != nil {
@@ -1134,7 +1210,7 @@ func TestLeaderExecutionBackendVirtualizesSidecarPathAndFollowsResumedSession(t 
 	}
 	replacement, err := control.Register(t.Context(), workercontrol.RegisterRequest{
 		WorkerID: "daemon-resume", ResumeSessionID: session.SessionID,
-		Capabilities: syntheticDaemonCapabilities(base),
+		Capabilities: syntheticDaemonCapabilities(base, "verifier_auth=true"),
 		Negotiation:  executioncontract.Negotiation{ProtocolMin: executioncontract.CurrentVersion(), ProtocolMax: executioncontract.CurrentVersion(), BuildVersion: "worker-test"},
 	})
 	if err != nil {
@@ -1260,7 +1336,7 @@ func TestPrepareRemoteWorkspaceBaseUsesSharedAncestorForDivergedWorker(t *testin
 		t.Fatal("worker fixture unexpectedly already contains the leader-only base")
 	}
 
-	content, ref, err := prepareRemoteWorkspaceBase(t.Context(), dir, "run-diverged", base, workerAnchor)
+	content, ref, err := prepareRemoteWorkspaceBase(t.Context(), dir, "run-diverged", base, workerAnchor, "refs/heads/main")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1296,4 +1372,85 @@ func remoteBackendEvent(runID string, sequence uint64, kind executioncontract.Ev
 	return executioncontract.EventEnvelope{Version: executioncontract.CurrentVersion(), BuildVersion: "worker-test", RunID: runID,
 		Sequence: sequence, EventID: fmt.Sprintf("event:%d", sequence), IdempotencyKey: fmt.Sprintf("%s:%d", runID, sequence),
 		Type: kind, ObservedAt: time.Now().UTC(), Payload: body}
+}
+
+func TestLeaderExecutionBackendMarksRelayedOutputPreParsed(t *testing.T) {
+	// Given a worker forwarding what its own agent manager produced, which is
+	// this project's StreamEvent rather than the provider's wire format
+	dir, base := remoteBackendRepository(t)
+	database := dbtest.SQLite(t)
+	control := workercontrol.New(database)
+	session, err := control.Register(t.Context(), workercontrol.RegisterRequest{
+		WorkerID: "daemon-a", Capabilities: syntheticDaemonCapabilities(base, "sandbox=enforce"),
+		Negotiation: executioncontract.Negotiation{ProtocolMin: executioncontract.CurrentVersion(), ProtocolMax: executioncontract.CurrentVersion(), BuildVersion: "worker-test"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	canonical := task.Task{ID: "task-remote", Title: "remote", ProjectID: "repo", Branch: "main", Status: task.StatusInProgress,
+		CreatedAt: now, UpdatedAt: now, Generation: 4,
+		Workflow: &workflow.Execution{WorkflowID: "ship", CurrentStep: "implement", State: workflow.ExecWaiting}}
+	if _, err := store.Put(canonical); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{tasks: task.NewManager(store, nil), workerControl: control}
+	backend := &leaderExecutionBackend{
+		app: app, runs: make(map[agent.ExecutionHandle]*remoteExecution),
+		admitLocal: func() (bool, string) { return false, "leader pressure" },
+	}
+	sink := &recordingExecutionSink{ready: make(chan struct{})}
+	start := agent.ExecutionStart{Spec: agent.ExecutionSpec{ID: "agent-remote", TaskID: canonical.ID, Provider: providerid.Claude, Model: "sonnet"},
+		Config: agent.RunConfig{TaskID: canonical.ID, Role: agent.RoleImplementation, Mode: "headless", Prompt: "work", Dir: dir,
+			IntentID: canonical.ID + ":ship:4:1:implement:0", TaskGeneration: 4, Provider: providerid.Claude, Model: "sonnet", SandboxMode: "enforce"}, Sink: sink}
+	if _, err := backend.Start(t.Context(), start); err != nil {
+		t.Fatal(err)
+	}
+
+	// When the worker's terminal result crosses back
+	events := []executioncontract.EventEnvelope{
+		remoteBackendEvent("agent-remote", 1, executioncontract.EventStarted, map[string]any{"agentId": "worker-agent"}),
+		remoteBackendEvent("agent-remote", 2, executioncontract.EventOutput, map[string]any{
+			"type": "result", "session_id": "worker-session", "cost_usd": 0.42,
+			"input_tokens": 1200, "output_tokens": 340,
+		}),
+		remoteBackendEvent("agent-remote", 3, executioncontract.EventTerminal, map[string]any{"state": executioncontract.TerminalSucceeded, "artifactState": executioncontract.ArtifactsFailed}),
+	}
+	if _, err := control.AppendEvents(t.Context(), workercontrol.EventBatch{SessionID: session.SessionID, Events: events}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-sink.ready:
+	case <-time.After(5 * time.Second):
+		t.Fatal("remote completion was not relayed")
+	}
+
+	// Then it is marked so the manager reads it as one, instead of handing it
+	// to a provider parser that drops the run's cost, tokens and session
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	var outputs int
+	for _, ev := range sink.events {
+		if ev.Kind != agent.ExecutionOutput {
+			continue
+		}
+		outputs++
+		if !ev.OutputParsed {
+			t.Fatalf("relayed output %d is not marked pre-parsed; remote cost silently returns to zero", outputs)
+		}
+		var parsed agent.StreamEvent
+		if err := json.Unmarshal(ev.Output, &parsed); err != nil {
+			t.Fatalf("relayed payload is not a StreamEvent: %v", err)
+		}
+		if parsed.Type == "result" && parsed.CostUSD != 0.42 {
+			t.Fatalf("relayed cost = %v, want 0.42", parsed.CostUSD)
+		}
+	}
+	if outputs == 0 {
+		t.Fatal("no output event was relayed")
+	}
 }

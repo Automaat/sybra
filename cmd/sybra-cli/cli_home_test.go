@@ -152,8 +152,8 @@ func TestBoardCommandRefusesWithNoServer(t *testing.T) {
 	if code == 0 {
 		t.Fatal("list exit 0 with no server reachable")
 	}
-	if !strings.Contains(stderr, "no Sybra server is reachable") {
-		t.Errorf("stderr = %q, want it to name the unreachable server", stderr)
+	if !refusedToUseATarget(stderr) {
+		t.Errorf("stderr = %q, want it to refuse the target it resolved", stderr)
 	}
 	// Nothing may have been written where the board's files would live.
 	if _, err := os.Stat(filepath.Join(home, "tasks")); err == nil {

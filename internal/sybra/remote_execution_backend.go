@@ -18,6 +18,7 @@ import (
 	"github.com/Automaat/sybra/internal/agentworkspace"
 	"github.com/Automaat/sybra/internal/executioncontract"
 	"github.com/Automaat/sybra/internal/gitexec"
+	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/version"
 	"github.com/Automaat/sybra/internal/workercontrol"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -39,6 +40,8 @@ type remoteExecution struct {
 }
 
 const remoteTerminalGrace = time.Minute
+
+var errRemoteWorkspaceBaseTooLarge = errors.New("remote workspace base bundle is too large")
 
 func (r *remoteExecution) emit(ctx context.Context, handle agent.ExecutionHandle, event agent.ExecutionEvent) {
 	r.mu.RLock()
@@ -180,6 +183,32 @@ func (b *leaderExecutionBackend) remoteAdmission() (admitted bool, reason string
 	return b.admitRemote()
 }
 
+// remoteBaseRef names the ref a remote workspace's base commit came from. The
+// follower resolves this ref and requires the base SHA to be an ancestor of
+// it (agentworkspace.PrepareWithBaseBundle), unless a base bundle replaces it
+// first — see followerResolvableBaseRef, which keeps a non-branch ref from
+// ever reaching that gate unbundled.
+//
+// A review worktree is a detached checkout of refs/pull/<N>/head and carries
+// no branch, so symbolic-ref cannot name it. Falling straight through to that
+// call blocked every review task remote execution touched: the git failure
+// burned a dispatch attempt, and the provider failover between retries then
+// made the replayed intent stop matching its claimed effect (#3458).
+func remoteBaseRef(ctx context.Context, t task.Task, dir string) (string, error) {
+	if branch := strings.TrimSpace(t.Branch); branch != "" {
+		return "refs/heads/" + branch, nil
+	}
+	if out, err := gitexec.Output(ctx, gitexec.Options{Dir: dir}, "symbolic-ref", "--short", "HEAD"); err == nil {
+		if branch := strings.TrimSpace(out); branch != "" {
+			return "refs/heads/" + branch, nil
+		}
+	}
+	if t.PRNumber > 0 {
+		return fmt.Sprintf("refs/pull/%d/head", t.PRNumber), nil
+	}
+	return "", fmt.Errorf("detached worktree %s has no branch or pull request to name its base", dir)
+}
+
 func (b *leaderExecutionBackend) placementRequest(ctx context.Context, start agent.ExecutionStart) (workercontrol.PlacementRequest, error) {
 	t, err := b.app.tasks.Get(start.Spec.TaskID)
 	if err != nil {
@@ -198,18 +227,15 @@ func (b *leaderExecutionBackend) placementRequest(ctx context.Context, start age
 	if clean.Config.SidecarDir != "" {
 		clean.Config.Prompt = strings.ReplaceAll(clean.Config.Prompt, clean.Config.SidecarDir, agent.RemoteSidecarPathToken)
 	}
-	baseRef := t.Branch
-	if baseRef == "" {
-		baseRef, err = gitexec.Output(ctx, gitexec.Options{Dir: start.Config.Dir}, "symbolic-ref", "--short", "HEAD")
-		if err != nil {
-			return workercontrol.PlacementRequest{}, fmt.Errorf("remote execution base ref: %w", err)
-		}
+	baseRef, err := remoteBaseRef(ctx, t, start.Config.Dir)
+	if err != nil {
+		return workercontrol.PlacementRequest{}, fmt.Errorf("remote execution base ref: %w", err)
 	}
 	metadata := agent.RemoteRunMetadata{
 		BuildVersion: version.Version, RunID: start.Spec.ID, EffectID: start.Config.IntentID,
 		WorkflowID: t.Workflow.WorkflowID, WorkflowGeneration: t.Generation, WorkflowStepID: t.Workflow.CurrentStep,
 		Deadline: time.Now().UTC().Add(24 * time.Hour), WorkspaceRepositoryID: t.ProjectID,
-		WorkspaceBaseSHA: baseSHA, WorkspaceBaseRef: "refs/heads/" + baseRef,
+		WorkspaceBaseSHA: baseSHA, WorkspaceBaseRef: baseRef,
 		WorkspaceRoots:  []executioncontract.LogicalRoot{executioncontract.RootWorktree, executioncontract.RootSidecar, executioncontract.RootArtifact},
 		ExpectedOutputs: append([]executioncontract.ExpectedOutput(nil), start.Config.RemoteExpectedOutputs...),
 	}
@@ -217,15 +243,11 @@ func (b *leaderExecutionBackend) placementRequest(ctx context.Context, start age
 	if err != nil {
 		return workercontrol.PlacementRequest{}, err
 	}
-	baseBundles := make([]workercontrol.WorkspaceBaseBundleInput, 0, len(anchors))
-	for _, anchor := range anchors {
-		baseBundle, baseBundleRef, bundleErr := prepareRemoteWorkspaceBase(ctx, start.Config.Dir, start.Spec.ID, baseSHA, anchor)
-		if bundleErr != nil {
-			return workercontrol.PlacementRequest{}, bundleErr
-		}
-		baseBundles = append(baseBundles, workercontrol.WorkspaceBaseBundleInput{
-			RepositoryAnchor: anchor, Reference: baseBundleRef, Content: baseBundle,
-		})
+	baseBundles, err := prepareRemoteWorkspaceBases(
+		ctx, start.Config.Dir, start.Spec.ID, baseSHA, baseRef, anchors, executioncontract.MaxWorkspaceBaseBundleSize,
+	)
+	if err != nil {
+		return workercontrol.PlacementRequest{}, err
 	}
 	if clean.Config.SeedWorkingMemory {
 		metadata.WorkspaceRoots = append(metadata.WorkspaceRoots, executioncontract.RootWorkingMemory)
@@ -254,20 +276,61 @@ func (b *leaderExecutionBackend) placementRequest(ctx context.Context, start age
 		Spec: spec, Command: command, NodeOverride: t.NodeOverride, AssignedNode: t.AssignedNode,
 		AllowAffinityFallback: true, AllowLocalFallback: true, WorkType: workType,
 		RequireTrusted: b.app.isWorkProject(t.ProjectID), RequireEncrypted: b.app.isWorkProject(t.ProjectID),
-		Sandbox: start.Config.SandboxMode, RequireRepositoryAnchor: true, WorkspaceBaseBundles: baseBundles,
+		RequireVerifierAuth: start.Config.Role == agent.RoleReview,
+		Sandbox:             start.Config.SandboxMode, RequireRepositoryAnchor: true, WorkspaceBaseBundles: baseBundles,
 	}, nil
 }
 
-func prepareRemoteWorkspaceBase(ctx context.Context, dir, runID, baseSHA, workerAnchor string) ([]byte, *executioncontract.ContentReference, error) {
+// followerResolvableBaseRef reports whether a follower's own run clone can
+// resolve this base ref. That clone carries refs/heads/* as remote-tracking
+// refs and nothing else, so only a branch ref survives the ancestry gate in
+// agentworkspace.PrepareWithBaseBundle. Any other ref — a detached review
+// checkout's refs/pull/<N>/head — must ship a base bundle, which replaces the
+// ref with the imported one before that gate runs.
+func followerResolvableBaseRef(baseRef string) bool {
+	branch, ok := strings.CutPrefix(baseRef, "refs/heads/")
+	return ok && branch != "" && !strings.HasPrefix(branch, "refs/")
+}
+
+func prepareRemoteWorkspaceBase(ctx context.Context, dir, runID, baseSHA, workerAnchor, baseRef string) ([]byte, *executioncontract.ContentReference, error) {
+	return prepareRemoteWorkspaceBaseLimited(ctx, dir, runID, baseSHA, workerAnchor, baseRef, executioncontract.MaxWorkspaceBaseBundleSize)
+}
+
+func prepareRemoteWorkspaceBases(ctx context.Context, dir, runID, baseSHA, baseRef string, anchors []string, maxBytes int64) ([]workercontrol.WorkspaceBaseBundleInput, error) {
+	baseBundles := make([]workercontrol.WorkspaceBaseBundleInput, 0, len(anchors))
+	for _, anchor := range anchors {
+		baseBundle, baseBundleRef, err := prepareRemoteWorkspaceBaseLimited(ctx, dir, runID, baseSHA, anchor, baseRef, maxBytes)
+		if errors.Is(err, errRemoteWorkspaceBaseTooLarge) {
+			// Bundle size is a property of this worker's advertised repository
+			// anchor, not of the run. Omit only that anchor so placement can still
+			// choose another worker or its authorized local fallback.
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		baseBundles = append(baseBundles, workercontrol.WorkspaceBaseBundleInput{
+			RepositoryAnchor: anchor, Reference: baseBundleRef, Content: baseBundle,
+		})
+	}
+	return baseBundles, nil
+}
+
+func prepareRemoteWorkspaceBaseLimited(ctx context.Context, dir, runID, baseSHA, workerAnchor, baseRef string, maxBytes int64) ([]byte, *executioncontract.ContentReference, error) {
 	// Thin bundles are safe only against the exact object advertised by the
 	// candidate daemon. A leader-side remote-tracking ref says nothing about a
 	// stale daemon clone and must never be used as the prerequisite.
 	anchor := strings.TrimSpace(workerAnchor)
-	if anchor != "" && gitexec.Run(ctx, gitexec.Options{Dir: dir}, "merge-base", "--is-ancestor", baseSHA, anchor) == nil {
+	if anchor != "" && followerResolvableBaseRef(baseRef) &&
+		gitexec.Run(ctx, gitexec.Options{Dir: dir}, "merge-base", "--is-ancestor", baseSHA, anchor) == nil {
 		return nil, nil, nil
 	}
 	prerequisite := ""
-	if anchor != "" {
+	// A non-branch base ref ships a bundle precisely so the imported ref can
+	// replace it, and a thin bundle against an anchor that already contains
+	// the base is empty — git refuses to write one. Only a follower-resolvable
+	// ref may narrow the bundle against the anchor.
+	if anchor != "" && followerResolvableBaseRef(baseRef) {
 		// Diverged histories can still use a thin bundle. The merge base is
 		// necessarily present when the daemon has the exact advertised anchor,
 		// while excluding the anchor itself would incorrectly omit the leader's
@@ -301,8 +364,8 @@ func prepareRemoteWorkspaceBase(ctx context.Context, dir, runID, baseSHA, worker
 	if err != nil {
 		return nil, nil, err
 	}
-	if info.Size() <= 0 || info.Size() > executioncontract.MaxWorkspaceBaseBundleSize {
-		return nil, nil, fmt.Errorf("remote execution base bundle size %d exceeds limit %d", info.Size(), executioncontract.MaxWorkspaceBaseBundleSize)
+	if info.Size() <= 0 || info.Size() > maxBytes {
+		return nil, nil, fmt.Errorf("%w: size %d exceeds limit %d", errRemoteWorkspaceBaseTooLarge, info.Size(), maxBytes)
 	}
 	content, err := os.ReadFile(path)
 	if err != nil {
@@ -338,7 +401,11 @@ func (b *leaderExecutionBackend) relay(ctx context.Context, handle agent.Executi
 					// The manager already received its canonical Started event when
 					// the leader durably accepted or recovered this placement.
 				case executioncontract.EventOutput:
-					run.emit(ctx, handle, agent.ExecutionEvent{Kind: agent.ExecutionOutput, Output: append([]byte(nil), event.Payload...)})
+					run.emit(ctx, handle, agent.ExecutionEvent{
+						Kind:         agent.ExecutionOutput,
+						Output:       append([]byte(nil), event.Payload...),
+						OutputParsed: true,
+					})
 				case executioncontract.EventProgress:
 					var progress struct {
 						Kind    string                `json:"kind"`

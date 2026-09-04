@@ -987,7 +987,15 @@ func TestExecVerifyChecks_GoInfraFailureBlocks(t *testing.T) {
 	}
 }
 
-func TestExecVerifyChecks_UnrelatedGoPackageFailureBlocks(t *testing.T) {
+// TestExecVerifyChecks_UnrelatedGoPackageFailureOpensPR pins that a task is
+// not stopped by a break the gate has already attributed elsewhere.
+//
+// classifyUnrelatedVerifyGoFailure reads the diff, reads the failing packages,
+// and confirms they do not intersect — its own reason ends "not this diff".
+// Blocking on that asked an operator to unstick a task the evidence had just
+// cleared, and left the real break to stop the next task the same way: three
+// tasks were blocked in one day by three different pre-existing failures.
+func TestExecVerifyChecks_UnrelatedGoPackageFailureOpensPR(t *testing.T) {
 	t.Parallel()
 	wt := makeBaseRepo(t, map[string]string{
 		"go.mod":                          "module example.com/verifyrepo\n\ngo 1.26.5\n",
@@ -1007,18 +1015,51 @@ func TestExecVerifyChecks_UnrelatedGoPackageFailureBlocks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if out.Output != "blocked" {
-		t.Fatalf("Output = %q, want blocked", out.Output)
+	if out.Output != "unrelated failure — opened pr" {
+		t.Fatalf("Output = %q, want the unrelated-failure PR route", out.Output)
 	}
 	ti := mustGetTaskInfo(t, tasks, "t1")
-	if ti.Status != "blocked" {
-		t.Fatalf("status = %q, want blocked", ti.Status)
+	if ti.Status != taskstatus.ReadyPR {
+		t.Fatalf("status = %q, want ready-pr", ti.Status)
 	}
+	// The break still has to be visible: nothing blocks on it now, so the
+	// reason is the only place a human learns which package is broken.
 	if !strings.Contains(ti.StatusReason, "untouched Go package(s): internal/agent") {
 		t.Fatalf("reason = %q, want untouched package classification", ti.StatusReason)
 	}
 	if wf.Variables["step.verify_checks.auto_fix"] != "" {
 		t.Fatalf("auto-fix counter = %q, want empty for unrelated failure", wf.Variables["step.verify_checks.auto_fix"])
+	}
+}
+
+// TestExecVerifyChecks_UnrelatedFailureWithoutPRRouteStopsShortOfBlocked pins
+// the legacy escalation for an operator who turned the PR route off: still not
+// blocked, because the diff is still not what failed.
+func TestExecVerifyChecks_UnrelatedFailureWithoutPRRouteStopsShortOfBlocked(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{
+		"go.mod":                          "module example.com/verifyrepo\n\ngo 1.26.5\n",
+		"internal/agent/agent.go":         "package agent\n\nfunc Ready() bool { return true }\n",
+		"internal/promptlab/promptlab.go": "package promptlab\n\nfunc Title() string { return \"a\" }\n",
+	})
+	writeRepoFile(t, wt, "internal/promptlab/promptlab.go", "package promptlab\n\nfunc Title() string { return \"b\" }\n")
+	gitRun(t, wt, "add", ".")
+	gitRun(t, wt, "commit", "-m", "feat: change promptlab")
+
+	cmd := `go test ./... >/dev/null 2>&1; printf '# example.com/verifyrepo/internal/agent\n--- FAIL: TestSomething (60.00s)\nFAIL\texample.com/verifyrepo/internal/agent\t60.064s\nFAIL\n' >&2; exit 1`
+	engine, tasks := newVerifyChecksEngine(t, wt, []string{cmd})
+	engine.SetOpenPROnUnrunnableGate(false)
+	tasks.Put(TaskInfo{ID: "t1", Status: taskstatus.InProgress})
+
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), implementedExec(), TaskInfo{ID: "t1", Status: taskstatus.InProgress})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "flagged" {
+		t.Fatalf("Output = %q, want flagged", out.Output)
+	}
+	if ti := mustGetTaskInfo(t, tasks, "t1"); ti.Status != taskstatus.HumanRequired {
+		t.Fatalf("status = %q, want human-required", ti.Status)
 	}
 }
 

@@ -26,8 +26,10 @@ var hostSandboxMechanismErr = sandboxMechanismErr
 // carries the reason a caller has to show an operator.
 func sandboxExecAvailable() bool { return hostSandboxMechanismErr() == nil }
 
-// ProbeSandboxPosture validates the host mechanism and embedded profile
-// before dispatch, without spawning a provider process.
+// ProbeSandboxPosture validates the host mechanism before dispatch, without
+// spawning a provider process. The immutable base profile is embedded in the
+// binary and passed directly to the wrapper at each spawn, so there is no
+// profile file whose persistence needs separate certification.
 func ProbeSandboxPosture(rawMode string) (SandboxPostureObservation, error) {
 	mode, err := config.NormalizeSandboxMode(rawMode)
 	if err != nil {
@@ -54,13 +56,7 @@ func ProbeSandboxPosture(rawMode string) (SandboxPostureObservation, error) {
 		observation.Evidence = sandboxWrapperName() + " available; report mode does not wrap the process"
 		return observation, nil
 	}
-	profile, profileErr := materializeSandboxProfile()
-	if profileErr != nil {
-		observation.Available = false
-		observation.Evidence = "sandbox profile unavailable"
-		return observation, profileErr
-	}
 	observation.Contained = true
-	observation.Evidence = sandboxWrapperName() + " profile ready at " + profile
+	observation.Evidence = sandboxWrapperName() + " embedded profile ready"
 	return observation, nil
 }
