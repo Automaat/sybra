@@ -2139,8 +2139,74 @@ func TestBuiltinSimpleTaskImplement_VerifyChecksWiring(t *testing.T) {
 	if got, _ := ResolveTransition(gates.Next, map[string]string{"task.status": "human-required"}); got != "" {
 		t.Errorf("flagged parallel_gates goto = %q, want end", got)
 	}
+	if got, _ := ResolveTransition(gates.Next, map[string]string{"task.status": "ready-pr"}); got != "" {
+		t.Errorf("unrelated-failure parallel_gates goto = %q, want end", got)
+	}
 	if got, _ := ResolveTransition(gates.Next, map[string]string{"task.status": "in-progress"}); got != "set_ready_review" {
 		t.Errorf("clean parallel_gates goto = %q, want set_ready_review", got)
+	}
+}
+
+func TestAdvanceStep_UnrelatedVerifyFailureCompletesCurrentWorkflowAtReadyPR(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		workflowID string
+		stepID     string
+	}{
+		{workflowID: "simple-task-implement", stepID: "parallel_gates"},
+		{workflowID: "prompt-lab-author", stepID: "verify_checks"},
+		{workflowID: "simple-task-best-of-n-implement", stepID: "verify_checks"},
+		{workflowID: "simple-task-review", stepID: "verify_checks"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.workflowID, func(t *testing.T) {
+			defs, err := BuiltinDefinitions()
+			if err != nil {
+				t.Fatalf("BuiltinDefinitions: %v", err)
+			}
+			store, err := NewStore(t.TempDir())
+			if err != nil {
+				t.Fatalf("NewStore: %v", err)
+			}
+			var found bool
+			for i := range defs {
+				if defs[i].ID == tc.workflowID {
+					if err := store.Save(defs[i]); err != nil {
+						t.Fatalf("Save(%s): %v", tc.workflowID, err)
+					}
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("builtin %s not found", tc.workflowID)
+			}
+
+			tasks := newMemTasks()
+			tasks.Put(TaskInfo{
+				ID:     "t1",
+				Status: taskstatus.ReadyPR,
+				Workflow: &Execution{
+					WorkflowID:  tc.workflowID,
+					CurrentStep: tc.stepID,
+					State:       ExecRunning,
+					Variables:   map[string]string{},
+				},
+			})
+			engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
+			if err := engine.AdvanceStep("t1", StepOutput{StepID: tc.stepID, Status: "completed", Output: "unrelated failure — opened pr"}); err != nil {
+				t.Fatalf("AdvanceStep: %v", err)
+			}
+
+			got := mustGetTaskInfo(t, tasks, "t1")
+			if got.Status != taskstatus.ReadyPR {
+				t.Fatalf("status = %q, want ready-pr", got.Status)
+			}
+			if got.Workflow == nil || got.Workflow.State != ExecCompleted || got.Workflow.CurrentStep != "" {
+				t.Fatalf("workflow = %+v, want completed terminal handoff", got.Workflow)
+			}
+		})
 	}
 }
 

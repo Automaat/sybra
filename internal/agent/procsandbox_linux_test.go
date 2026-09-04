@@ -3,6 +3,9 @@
 package agent
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -124,6 +127,11 @@ func TestWrapInvocation_Linux_EnforceBindsOnlyWriteRoots(t *testing.T) {
 	if !strings.Contains(joined, "update-ref 'refs/heads/fix/task'") {
 		t.Fatalf("sync wrapper must update only the current branch ref: %s", joined)
 	}
+	if !strings.Contains(joined, `base_ref=$(cat '/data/home/.sybra-git-overlay/refs/task'`) ||
+		!strings.Contains(joined, `elif [ "$new_ref" != "$base_ref" ]; then`) ||
+		!strings.Contains(joined, `"$new_ref" "$base_ref"`) {
+		t.Fatalf("sync wrapper must skip no-op ref writes and CAS real updates: %s", joined)
+	}
 	sep := slices.Index(args, "--")
 	if sep < 0 || sep+1 >= len(args) || args[sep+1] != "claude" {
 		t.Fatalf("provider must follow the -- separator, got: %s", joined)
@@ -146,6 +154,111 @@ func TestWrapInvocation_Linux_DetachedHeadStillSyncsObjects(t *testing.T) {
 	if !strings.Contains(joined, "sync_git_objects") {
 		t.Fatalf("detached-head command does not publish overlay objects: %s", joined)
 	}
+}
+
+func TestSandboxSyncShell_UnchangedRefPreservesReflog(t *testing.T) {
+	repo := t.TempDir()
+	runGitOrFail(t, repo, "init", "-q", "-b", "main")
+	runGitOrFail(t, repo, "config", "user.email", "t@example.com")
+	runGitOrFail(t, repo, "config", "user.name", "T")
+	runGitOrFail(t, repo, "config", "commit.gpgsign", "false")
+	runGitOrFail(t, repo, "commit", "-q", "--allow-empty", "-m", "seed")
+
+	gitOutput := func(args ...string) string {
+		t.Helper()
+		cmd := exec.CommandContext(t.Context(), "git", append([]string{"-C", repo}, args...)...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return string(out)
+	}
+	head := strings.TrimSpace(gitOutput("rev-parse", "HEAD"))
+	overlay := t.TempDir()
+	refFile := filepath.Join(overlay, "refs", "main")
+	if err := os.MkdirAll(filepath.Dir(refFile), 0o700); err != nil {
+		t.Fatalf("create overlay ref dir: %v", err)
+	}
+	if err := os.WriteFile(refFile, []byte(head+"\n"), 0o600); err != nil {
+		t.Fatalf("write overlay ref: %v", err)
+	}
+
+	reflogs := func() string {
+		return gitOutput("reflog", "show", "--format=%H%x00%gD%x00%gs", "HEAD") +
+			gitOutput("reflog", "show", "--format=%H%x00%gD%x00%gs", "refs/heads/main")
+	}
+	before := reflogs()
+	name, args := sandboxSyncShell(nil, &RunConfig{sandbox: sandboxSpec{
+		worktree:            repo,
+		gitObjectDir:        filepath.Join(repo, ".git", "objects"),
+		gitOverlayObjectDir: filepath.Join(overlay, "objects"),
+		gitOverlayRefFile:   refFile,
+		gitBranchRef:        "refs/heads/main",
+	}})
+	truePath, err := exec.LookPath("true")
+	if err != nil {
+		t.Fatalf("resolve true: %v", err)
+	}
+	// sandboxSyncShell passes the sandbox launcher as argv[3]. Replacing it
+	// with true exercises only the post-command publisher, without requiring
+	// bwrap or mutating its package-global probe state.
+	args[3] = truePath
+	cmd := exec.CommandContext(t.Context(), name, args...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("run sync wrapper: %v: %s", err, out)
+	}
+	if after := reflogs(); after != before {
+		t.Fatalf("no-op sandbox publish changed ref history\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+func TestSandboxSyncShell_UnchangedOverlayDoesNotRewindConcurrentRefAdvance(t *testing.T) {
+	repo := t.TempDir()
+	runGitOrFail(t, repo, "init", "-q", "-b", "main")
+	runGitOrFail(t, repo, "config", "user.email", "t@example.com")
+	runGitOrFail(t, repo, "config", "user.name", "T")
+	runGitOrFail(t, repo, "config", "commit.gpgsign", "false")
+	runGitOrFail(t, repo, "commit", "-q", "--allow-empty", "-m", "base")
+	base := strings.TrimSpace(runGitOutputOrFail(t, repo, "rev-parse", "HEAD"))
+	runGitOrFail(t, repo, "commit", "-q", "--allow-empty", "-m", "concurrent")
+	concurrent := strings.TrimSpace(runGitOutputOrFail(t, repo, "rev-parse", "HEAD"))
+	runGitOrFail(t, repo, "reset", "-q", "--hard", base)
+
+	overlay := t.TempDir()
+	refFile := filepath.Join(overlay, "refs", "main")
+	if err := os.MkdirAll(filepath.Dir(refFile), 0o700); err != nil {
+		t.Fatalf("create overlay ref dir: %v", err)
+	}
+	if err := os.WriteFile(refFile, []byte(base+"\n"), 0o600); err != nil {
+		t.Fatalf("write overlay ref: %v", err)
+	}
+
+	advance := "git -C " + shellQuote(repo) + " update-ref refs/heads/main " + shellQuote(concurrent) + " " + shellQuote(base)
+	name, args := sandboxSyncShell([]string{"-c", advance}, &RunConfig{sandbox: sandboxSpec{
+		worktree:            repo,
+		gitObjectDir:        filepath.Join(repo, ".git", "objects"),
+		gitOverlayObjectDir: filepath.Join(overlay, "objects"),
+		gitOverlayRefFile:   refFile,
+		gitBranchRef:        "refs/heads/main",
+	}})
+	args[3] = "/bin/sh"
+	cmd := exec.CommandContext(t.Context(), name, args...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("run sync wrapper: %v: %s", err, out)
+	}
+	if got := strings.TrimSpace(runGitOutputOrFail(t, repo, "rev-parse", "refs/heads/main")); got != concurrent {
+		t.Fatalf("branch ref = %s, want concurrent advance %s (overlay baseline %s must not rewind it)", got, concurrent, base)
+	}
+}
+
+func runGitOutputOrFail(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.CommandContext(t.Context(), "git", append([]string{"-C", dir}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, out)
+	}
+	return string(out)
 }
 
 // TestInjectProcessSandbox_ReadOnlyDirNeverBindsDirWritable pins the

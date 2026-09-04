@@ -94,6 +94,17 @@ func TestIsTransitionAllowed_NamedLegalMoves(t *testing.T) {
 	}
 }
 
+// verify_checks can prove a failing package is unrelated to the task's diff
+// and route the valid change directly to PR creation. The gate runs while the
+// task is still in-progress, including inside prompt-lab-author.
+func TestTransitions_UnrelatedVerifyFailureCanOpenPRFromInProgress(t *testing.T) {
+	for _, from := range []Status{StatusInProgress, StatusReadyReview} {
+		if !IsTransitionAllowed(from, StatusReadyPR) {
+			t.Fatalf("%s -> ready-pr is refused; unrelated verify failures cannot reach PR creation", from)
+		}
+	}
+}
+
 func TestIsTransitionAllowed_TerminalStatusesHaveNoAutomatedExit(t *testing.T) {
 	t.Parallel()
 

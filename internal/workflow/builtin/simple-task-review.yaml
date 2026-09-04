@@ -358,6 +358,11 @@ steps:
           operator: equals
           value: human-required
         goto: ""
+      - when:
+          field: task.status
+          operator: equals
+          value: ready-pr
+        goto: ""
       - goto: detect_tampering
 
   # Mechanical check (no LLM): re-scan the full diff for test/CI tampering after
