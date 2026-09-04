@@ -19,6 +19,7 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, "internal/sybra/runenv tests require an isolated git config:", err)
 		os.Exit(1)
 	}
-	defer cleanup()
-	os.Exit(m.Run())
+	code := m.Run()
+	cleanup()
+	os.Exit(code)
 }
