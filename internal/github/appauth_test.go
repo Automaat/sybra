@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -237,6 +238,44 @@ func TestForceRefreshAppToken_AlwaysRemintsEvenWhenFresh(t *testing.T) {
 	}
 	if got := cachedAppToken(); got == first {
 		t.Fatalf("forced refresh kept the same cached token %q", got)
+	}
+}
+
+func TestForceRefreshAppTokenPublishesEveryMint(t *testing.T) {
+	path, _ := writeTestKey(t, false)
+	t.Cleanup(DisableAppAuth)
+	var published []string
+	SetAppTokenChangeHook(func() {
+		if token := CurrentAppToken(); token != "" {
+			published = append(published, token)
+		}
+	})
+	t.Cleanup(func() { SetAppTokenChangeHook(nil) })
+
+	var mints int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mints++
+		w.WriteHeader(http.StatusCreated)
+		_, _ = fmt.Fprintf(w, `{"token":"ghs_token_%d","expires_at":"%s"}`,
+			mints, time.Now().Add(time.Hour).UTC().Format(time.RFC3339))
+	}))
+	defer srv.Close()
+	origBase := appAPIBaseURL
+	appAPIBaseURL = srv.URL
+	t.Cleanup(func() { appAPIBaseURL = origBase })
+
+	if err := EnableAppAuth(AppCredentials{AppID: 42, InstallationID: 7, PrivateKeyPath: path}); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	if err := RefreshAppToken(t.Context()); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if err := ForceRefreshAppToken(t.Context()); err != nil {
+		t.Fatalf("force refresh: %v", err)
+	}
+	want := []string{"ghs_token_1", "ghs_token_2"}
+	if !slices.Equal(published, want) {
+		t.Fatalf("published tokens = %v, want %v", published, want)
 	}
 }
 
