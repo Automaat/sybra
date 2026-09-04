@@ -551,14 +551,14 @@ func TestIsBoard_RejectsAStrangerAnsweringJSON(t *testing.T) {
 }
 
 // refusedToUseATarget reports a refusal to act on board state, in either of the
-// two shapes it can take. Which one a machine sees depends on what happens to
+// three shapes it can take. Which one a machine sees depends on what happens to
 // hold the port the client falls back to when the recorded one is closed:
 // nothing at all gives "no Sybra server is reachable", and an unrelated
-// process answering there gives the sharper "is not a Sybra board". Both are
-// the contract this asserts — the command refused and touched no local files —
-// so pinning only the first made the test fail on any developer machine
-// running something else on the default port.
+// process answering there gives "is not a Sybra board". A Sybra board for a
+// different home gives "does not serve". Each is a refusal to touch local
+// files, so pinning only one makes the test depend on the developer machine.
 func refusedToUseATarget(stderr string) bool {
 	return strings.Contains(stderr, "no Sybra server is reachable") ||
-		strings.Contains(stderr, "is not a Sybra board")
+		strings.Contains(stderr, "is not a Sybra board") ||
+		strings.Contains(stderr, "does not serve")
 }
