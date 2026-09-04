@@ -89,10 +89,59 @@ func (e *Engine) replayPersistedEffectsTask(t *TaskInfo) bool {
 	if !ok {
 		return false
 	}
+	if currentStepHasTerminalHeadlessRunPendingRecovery(*t, step) {
+		e.resumeSkip.Log(e.logger, "workflow.effect-replay.skip", t.ID,
+			"terminal_run_pending_recovery|"+step.ID+"|"+rec.ID.String(),
+			"task_id", t.ID, "reason", "terminal_run_pending_recovery", "step", step.ID, "effect", rec.ID.String())
+		return false
+	}
 	if rec.CompletedAt == nil && e.resumePreflightConsumesTick(t, step, "workflow.effect-replay.skip") {
 		return true
 	}
 	return e.replayPendingEffect(t, step, &def)
+}
+
+func currentStepHasTerminalHeadlessRunPendingRecovery(t TaskInfo, step *Step) bool {
+	if t.Workflow == nil || t.Workflow.CurrentStep == "" || step == nil {
+		return false
+	}
+	record := t.Workflow.RecordForStep(t.Workflow.CurrentStep)
+	currentStepRole := ""
+	if record == nil && step.Type == StepRunAgent {
+		currentStepRole = step.Config.Role
+	}
+	for i := range slices.Backward(t.AgentRuns) {
+		run := &t.AgentRuns[i]
+		if run.AgentID == "" {
+			continue
+		}
+		if stepID, ok := t.Workflow.AgentRoute(run.AgentID); !ok || stepID != t.Workflow.CurrentStep {
+			if !legacyTerminalRunMatchesCurrentStep(*run, currentStepRole) {
+				continue
+			}
+		}
+		if run.Mode != "headless" || run.State != "stopped" {
+			return false
+		}
+		return run.Outcome == "success" || run.Outcome == "failure"
+	}
+	return false
+}
+
+func legacyTerminalRunMatchesCurrentStep(run AgentRunInfo, currentStepRole string) bool {
+	if run.Role == "" || currentStepRole == "" {
+		return false
+	}
+	return run.Role == currentStepRole && runRoleIsVerifier(run.Role)
+}
+
+func runRoleIsVerifier(role string) bool {
+	switch role {
+	case "review", "test-runner", "eval":
+		return true
+	default:
+		return false
+	}
 }
 
 func (e *Engine) replayPendingEffect(t *TaskInfo, step *Step, def *Definition) bool {

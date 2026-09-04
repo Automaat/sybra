@@ -119,6 +119,8 @@ type AgentRunInfo struct {
 	AgentID                string
 	Role                   string
 	Provider               string
+	Mode                   string
+	State                  string
 	RequestedSkill         string
 	SkillExecutionMode     string
 	SkillConformance       string
@@ -784,6 +786,26 @@ func (e *Engine) SetAdmissionConfig(cfg config.AdmissionConfig) {
 // SetPlanAutoApproveHook.
 func (e *Engine) SetAdmissionDecisionHook(hook func(TaskInfo, AdmissionDecision)) {
 	e.admissionDecisionHook = hook
+}
+
+// CurrentStepRunRole reports the current step's run_agent role, if any.
+func (e *Engine) CurrentStepRunRole(taskID string) string {
+	if taskID == "" {
+		return ""
+	}
+	t, err := e.tasks.GetTask(taskID)
+	if err != nil || t.Workflow == nil || t.Workflow.CurrentStep == "" {
+		return ""
+	}
+	def, err := e.resolveExecutionDefinition(taskID, t)
+	if err != nil {
+		return ""
+	}
+	step := def.StepByID(t.Workflow.CurrentStep)
+	if step == nil || step.Type != StepRunAgent {
+		return ""
+	}
+	return step.Config.Role
 }
 
 // Defs returns the workflow definition store.

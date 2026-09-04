@@ -667,7 +667,12 @@ func (r *Recovery) recoverStaleInteractive(ctx context.Context, t *task.Task) {
 // false when the task does not match the "completed but callback lost" shape.
 // Callers should only skip generic stale-restart logic on a true return.
 func (r *Recovery) recoverCompletedHeadlessRun(ctx context.Context, t *task.Task) bool {
-	lr := latestTrackedCurrentStepRun(t)
+	currentStepRole := ""
+	if r.WorkflowEngine != nil && t != nil && t.Workflow != nil && t.Workflow.CurrentStep != "" &&
+		t.Workflow.RecordForStep(t.Workflow.CurrentStep) == nil {
+		currentStepRole = strings.TrimSpace(r.WorkflowEngine.CurrentStepRunRole(t.ID))
+	}
+	lr := latestTrackedCurrentStepRun(t, currentStepRole)
 	if lr == nil {
 		return false
 	}
@@ -700,7 +705,8 @@ func (r *Recovery) recoverCompletedHeadlessRun(ctx context.Context, t *task.Task
 	if r.Agents.HasRunningAgentForTask(t.ID) {
 		return false
 	}
-	if !r.reconcileBeforeAdvance(ctx, t.ID, lr.AgentID, reconcile.IntentStaleRun) {
+	legacyVerifierWithoutRoute := legacyVerifierRunWithoutRoute(t, lr, currentStepRole)
+	if !legacyVerifierWithoutRoute && !r.reconcileBeforeAdvance(ctx, t.ID, lr.AgentID, reconcile.IntentStaleRun) {
 		return true
 	}
 	success := lr.Outcome == task.RunOutcomeSuccess
@@ -768,22 +774,39 @@ func lastAgentRun(t *task.Task) *task.AgentRun {
 	return &t.AgentRuns[len(t.AgentRuns)-1]
 }
 
-func latestTrackedCurrentStepRun(t *task.Task) *task.AgentRun {
+func latestTrackedCurrentStepRun(t *task.Task, currentStepRole string) *task.AgentRun {
 	if t == nil || t.Workflow == nil || t.Workflow.CurrentStep == "" {
 		return nil
 	}
+	currentStepRole = strings.TrimSpace(currentStepRole)
 	for i := range slices.Backward(t.AgentRuns) {
 		run := &t.AgentRuns[i]
 		if run.AgentID == "" {
 			continue
 		}
 		stepID, ok := t.Workflow.AgentRoute(run.AgentID)
-		if !ok || stepID != t.Workflow.CurrentStep {
+		if ok && stepID == t.Workflow.CurrentStep {
+			return run
+		}
+		if currentStepRole == "" || strings.TrimSpace(run.Role) != currentStepRole ||
+			!agent.Role(run.Role).IsVerifier() {
 			continue
 		}
 		return run
 	}
 	return nil
+}
+
+func legacyVerifierRunWithoutRoute(t *task.Task, run *task.AgentRun, currentStepRole string) bool {
+	if t == nil || t.Workflow == nil || run == nil {
+		return false
+	}
+	if currentStepRole == "" || strings.TrimSpace(run.Role) != currentStepRole ||
+		!agent.Role(run.Role).IsVerifier() {
+		return false
+	}
+	_, tracked := t.Workflow.AgentRoute(run.AgentID)
+	return !tracked
 }
 
 func recoverySkippedForVerifyAutoFixRewind(t *task.Task, lr *task.AgentRun) bool {
