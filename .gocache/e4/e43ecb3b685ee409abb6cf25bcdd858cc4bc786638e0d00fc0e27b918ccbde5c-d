@@ -1,0 +1,4 @@
+./doc.go
+./fake_devicetaintrule.go
+./fake_resource_client.go
+./fake_resourcepoolstatusrequest.go

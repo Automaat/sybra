@@ -1,0 +1,6 @@
+./doc.go
+./fake_certificates_client.go
+./fake_certificatesigningrequest.go
+./fake_certificatesigningrequest_expansion.go
+./fake_clustertrustbundle.go
+./fake_podcertificaterequest.go

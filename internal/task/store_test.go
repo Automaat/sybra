@@ -7,11 +7,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
@@ -68,6 +70,204 @@ func TestStoreCreate(t *testing.T) {
 
 	if _, err := os.Stat(task.FilePath); err != nil {
 		t.Errorf("file not written: %v", err)
+	}
+}
+
+func TestStoreCreate_RetriesIDCollisionWithoutOverwriting(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := Task{
+		ID:         "deadbeef",
+		Title:      "original task",
+		Slug:       "original-task",
+		Status:     StatusTodo,
+		Generation: 1,
+		AgentMode:  AgentModeHeadless,
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+	}
+	originalData, err := Marshal(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalPath := filepath.Join(store.Dir(), original.ID+".md")
+	if err := os.WriteFile(originalPath, originalData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ids := []string{"deadbeef", "cafebabe"}
+	store.newTaskID = func() string {
+		id := ids[0]
+		ids = ids[1:]
+		return id
+	}
+	created, err := store.Create("new task", "new body", AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if created.ID != "cafebabe" {
+		t.Fatalf("created ID = %q, want collision retry ID cafebabe", created.ID)
+	}
+	got, err := os.ReadFile(originalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, originalData) {
+		t.Fatal("collision replaced the original task file")
+	}
+}
+
+func TestStoreCreateFull_RetriesBeforeWritingSidecars(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := Task{
+		ID:         "deadbeef",
+		Title:      "original task",
+		Slug:       "original-task",
+		Status:     StatusTodo,
+		Generation: 1,
+		AgentMode:  AgentModeHeadless,
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+	}
+	originalData, err := Marshal(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalPath := filepath.Join(store.Dir(), original.ID+".md")
+	if err := os.WriteFile(originalPath, originalData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Plans().Write(original.ID, "original plan"); err != nil {
+		t.Fatal(err)
+	}
+
+	ids := []string{"deadbeef", "cafebabe"}
+	store.newTaskID = func() string {
+		id := ids[0]
+		ids = ids[1:]
+		return id
+	}
+	plan := "new plan"
+	created, err := store.CreateFull("new task", "new body", AgentModeHeadless, Update{Plan: &plan})
+	if err != nil {
+		t.Fatalf("CreateFull: %v", err)
+	}
+	if created.ID != "cafebabe" {
+		t.Fatalf("created ID = %q, want collision retry ID cafebabe", created.ID)
+	}
+	got, err := os.ReadFile(originalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, originalData) {
+		t.Fatal("collision replaced the original task file")
+	}
+	originalPlan, err := store.Plans().Read(original.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if originalPlan != "original plan" {
+		t.Fatalf("original sidecar = %q, want unchanged original plan", originalPlan)
+	}
+	newPlan, err := store.Plans().Read(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newPlan != plan {
+		t.Fatalf("new sidecar = %q, want %q", newPlan, plan)
+	}
+}
+
+func TestStoreCreate_DoesNotReuseIDWithOrphanedSidecars(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Plans().Write("deadbeef", "interrupted creation plan"); err != nil {
+		t.Fatal(err)
+	}
+	ids := []string{"deadbeef", "cafebabe"}
+	store.newTaskID = func() string {
+		id := ids[0]
+		ids = ids[1:]
+		return id
+	}
+	created, err := store.Create("new task", "new body", AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if created.ID != "cafebabe" {
+		t.Fatalf("created ID = %q, want retry ID cafebabe", created.ID)
+	}
+	plan, err := store.Plans().Read("deadbeef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan != "interrupted creation plan" {
+		t.Fatalf("orphaned sidecar = %q, want preserved contents", plan)
+	}
+}
+
+func TestStoreLockNewTask_SymlinkAliasSharesReservation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink setup requires elevated Windows privileges")
+	}
+	root := t.TempDir()
+	realDir := filepath.Join(root, "tasks")
+	realStore, err := NewStore(realDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aliasDir := filepath.Join(root, "tasks-alias")
+	if err := os.Symlink(realDir, aliasDir); err != nil {
+		t.Fatal(err)
+	}
+	alias, err := NewStore(aliasDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	unlock, err := realStore.lockNewTask("deadbeef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	released := false
+	defer func() {
+		if !released {
+			unlock()
+		}
+	}()
+	acquired := make(chan struct{})
+	errCh := make(chan error, 1)
+	go func() {
+		otherUnlock, err := alias.lockNewTask("deadbeef")
+		if err != nil {
+			errCh <- err
+			return
+		}
+		close(acquired)
+		otherUnlock()
+	}()
+	select {
+	case <-acquired:
+		t.Fatal("symlink-alias store acquired an already-held creation reservation")
+	case err := <-errCh:
+		t.Fatalf("symlink-alias reservation: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	unlock()
+	released = true
+	select {
+	case <-acquired:
+	case err := <-errCh:
+		t.Fatalf("symlink-alias reservation: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("symlink-alias store did not acquire reservation after release")
 	}
 }
 
@@ -141,7 +341,7 @@ func TestStoreGet(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	created, err := store.Create("Find me", "body", "interactive")
+	created, err := store.Create("Find me", "body", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,13 +529,17 @@ func TestStoreUpdateAgentMode(t *testing.T) {
 	}
 
 	updated, err := store.Update(created.ID, Update{
-		AgentMode: Ptr("interactive"),
+		AgentMode: Ptr("headless"),
 	})
 	if err != nil {
 		t.Fatalf("update agent_mode: %v", err)
 	}
-	if updated.AgentMode != "interactive" {
-		t.Errorf("AgentMode = %q, want %q", updated.AgentMode, "interactive")
+	if updated.AgentMode != "headless" {
+		t.Errorf("AgentMode = %q, want %q", updated.AgentMode, "headless")
+	}
+
+	if _, err := store.Update(created.ID, Update{AgentMode: Ptr("interactive")}); err == nil {
+		t.Fatal("expected error updating agent_mode to removed interactive value")
 	}
 }
 
@@ -412,8 +616,10 @@ func TestStoreUpdateStatusHumanRequired(t *testing.T) {
 	}
 
 	updated, err := store.Update(created.ID, Update{
-		Status:       Ptr(StatusHumanRequired),
-		StatusReason: Ptr("agent failed with errors"),
+		Status:          Ptr(StatusHumanRequired),
+		StatusReason:    Ptr("human decision required"),
+		Escalation:      OperatorDecisionRequired("test.operator_decision", "human decision required"),
+		AutonomyOutcome: HumanRequiredOutcome(),
 	})
 	if err != nil {
 		t.Fatalf("update: %v", err)
@@ -421,8 +627,8 @@ func TestStoreUpdateStatusHumanRequired(t *testing.T) {
 	if updated.Status != StatusHumanRequired {
 		t.Errorf("Status = %q, want %q", updated.Status, StatusHumanRequired)
 	}
-	if updated.StatusReason != "agent failed with errors" {
-		t.Errorf("StatusReason = %q, want %q", updated.StatusReason, "agent failed with errors")
+	if updated.StatusReason != "human decision required" {
+		t.Errorf("StatusReason = %q, want %q", updated.StatusReason, "human decision required")
 	}
 
 	reloaded, err := store.Get(created.ID)
@@ -432,17 +638,161 @@ func TestStoreUpdateStatusHumanRequired(t *testing.T) {
 	if reloaded.Status != StatusHumanRequired {
 		t.Errorf("persisted Status = %q, want %q", reloaded.Status, StatusHumanRequired)
 	}
-	if reloaded.StatusReason != "agent failed with errors" {
-		t.Errorf("persisted StatusReason = %q, want %q", reloaded.StatusReason, "agent failed with errors")
+	if reloaded.StatusReason != "human decision required" {
+		t.Errorf("persisted StatusReason = %q, want %q", reloaded.StatusReason, "human decision required")
 	}
 
-	// Verify reason clears when status changes without explicit reason
+	// Status changes no longer clear parked metadata implicitly.
 	updated2, err := store.Update(created.ID, Update{Status: Ptr(StatusInProgress)})
 	if err != nil {
 		t.Fatalf("update2: %v", err)
 	}
-	if updated2.StatusReason != "" {
-		t.Errorf("StatusReason after status change = %q, want empty", updated2.StatusReason)
+	if updated2.StatusReason != "human decision required" {
+		t.Errorf("StatusReason after status change = %q, want preserved", updated2.StatusReason)
+	}
+}
+
+func TestStoreUpdate_ClearFieldsAreExplicit(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("Explicit clear task", "", AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reason := "needs human bless"
+	initialBlocker := blocker.State{Kind: blocker.KindTamperDetected, Actor: blocker.ActorWorkflow}
+	flagged, err := store.Update(created.ID, Update{
+		Status:       Ptr(StatusHumanRequired),
+		StatusReason: Ptr(reason),
+		Blocker:      Ptr(initialBlocker),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	preserved, err := store.Update(flagged.ID, Update{Status: Ptr(StatusInProgress)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preserved.StatusReason != reason {
+		t.Fatalf("StatusReason = %q, want preserved %q", preserved.StatusReason, reason)
+	}
+	if preserved.Blocker != initialBlocker {
+		t.Fatalf("Blocker = %+v, want preserved %+v", preserved.Blocker, initialBlocker)
+	}
+
+	cleared, err := store.Update(flagged.ID, Update{
+		ClearStatusReason: Ptr(true),
+		ClearBlocker:      Ptr(true),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared.StatusReason != "" {
+		t.Fatalf("StatusReason = %q, want cleared", cleared.StatusReason)
+	}
+	if !cleared.Blocker.IsZero() {
+		t.Fatalf("Blocker = %+v, want zero", cleared.Blocker)
+	}
+}
+
+func TestStoreCreateFull_ValidatesAndFlagsTamperBlocker(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reason := workflow.TamperFlaggedReasonPrefix + " internal/foo_test.go: added-skip"
+	created, err := store.CreateFull("Tamper task", "", AgentModeHeadless, Update{
+		Status:       Ptr(StatusHumanRequired),
+		StatusReason: Ptr(reason),
+		Blocker: Ptr(blocker.State{
+			Kind:       blocker.KindTamperDetected,
+			Actor:      blocker.ActorWorkflow,
+			NextAction: "bless_tampering",
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created.TamperFlagged {
+		t.Fatal("TamperFlagged = false, want true")
+	}
+
+	_, err = store.CreateFull("Invalid human blocker", "", AgentModeHeadless, Update{
+		Status:  Ptr(StatusHumanRequired),
+		Blocker: Ptr(blocker.State{Kind: blocker.KindWorktreeRepair, Actor: blocker.ActorWorkflow}),
+	})
+	if err == nil {
+		t.Fatal("CreateFull invalid blocker err = nil, want validation failure")
+	}
+}
+
+func TestStoreCreateFull_SandboxOffRequiresReason(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	off := false
+	if _, err := store.CreateFull("sandbox off", "", AgentModeHeadless, Update{
+		Sandbox: &off,
+	}); err == nil {
+		t.Fatal("CreateFull sandbox off without reason err = nil, want validation failure")
+	}
+
+	reason := "docker-in-docker e2e needs host mounts"
+	created, err := store.CreateFull("sandbox off", "", AgentModeHeadless, Update{
+		Sandbox:          &off,
+		SandboxOffReason: Ptr("  " + reason + "  "),
+	})
+	if err != nil {
+		t.Fatalf("CreateFull sandbox off with reason: %v", err)
+	}
+	if created.Sandbox == nil || *created.Sandbox {
+		t.Fatalf("Sandbox = %v, want false", created.Sandbox)
+	}
+	if created.SandboxOffReason != reason {
+		t.Fatalf("SandboxOffReason = %q, want %q", created.SandboxOffReason, reason)
+	}
+}
+
+func TestStoreUpdate_SandboxOffRequiresReason(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("sandbox update", "", AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	off := false
+	if _, err := store.Update(created.ID, Update{Sandbox: &off}); err == nil {
+		t.Fatal("Update sandbox off without reason err = nil, want validation failure")
+	}
+
+	reason := "docker-in-docker e2e needs host mounts"
+	updated, err := store.Update(created.ID, Update{
+		Sandbox:          &off,
+		SandboxOffReason: Ptr("  " + reason + "  "),
+	})
+	if err != nil {
+		t.Fatalf("Update sandbox off with reason: %v", err)
+	}
+	if updated.Sandbox == nil || *updated.Sandbox {
+		t.Fatalf("Sandbox = %v, want false", updated.Sandbox)
+	}
+	if updated.SandboxOffReason != reason {
+		t.Fatalf("SandboxOffReason = %q, want %q", updated.SandboxOffReason, reason)
 	}
 }
 
@@ -462,7 +812,11 @@ func TestStoreUpdateTestingCycleStartedAt_AutoStamp(t *testing.T) {
 	}
 
 	// Move to human-required (no cycle stamp set yet).
-	_, err = store.Update(created.ID, Update{Status: Ptr(StatusHumanRequired)})
+	_, err = store.Update(created.ID, Update{
+		Status:          Ptr(StatusHumanRequired),
+		Escalation:      OperatorDecisionRequired("test.operator_decision", "choose how to continue"),
+		AutonomyOutcome: HumanRequiredOutcome(),
+	})
 	if err != nil {
 		t.Fatalf("set human-required: %v", err)
 	}
@@ -657,6 +1011,33 @@ func TestStoreAddRunWithStatus(t *testing.T) {
 	}
 	if len(got.AgentRuns) != 1 {
 		t.Fatalf("AgentRuns len = %d, want 1", len(got.AgentRuns))
+	}
+}
+
+func TestStoreAddRunWithStatusClearsHumanRequiredEvidence(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := StatusHumanRequired
+	created, err := store.CreateFull("Run task", "", "headless", Update{
+		Status:          &status,
+		Escalation:      OperatorDecisionRequired("operator.choose", "choose"),
+		AutonomyOutcome: HumanRequiredOutcome(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddRunWithStatus(created.ID, AgentRun{AgentID: "agent-001"}, Ptr(StatusInProgress)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Escalation.IsZero() || got.AutonomyOutcome != "" {
+		t.Fatalf("restart retained stale evidence: %#v / %q", got.Escalation, got.AutonomyOutcome)
 	}
 }
 
@@ -878,12 +1259,13 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 	}
 
 	run := AgentRun{
-		AgentID:  "agent-payload",
-		Role:     "implementation",
-		Mode:     "headless",
-		State:    "running",
-		Provider: "claude",
-		Model:    "old-model",
+		AgentID:         "agent-payload",
+		Role:            "implementation",
+		Mode:            "headless",
+		State:           "running",
+		Provider:        "claude",
+		Model:           "old-model",
+		DecisionVersion: 7,
 	}
 	if err := store.AddRun(created.ID, run); err != nil {
 		t.Fatal(err)
@@ -898,6 +1280,7 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 		Result:                  Ptr("completed with result"),
 		Verdict:                 Ptr("sybra_bug"),
 		VerdictRendered:         Ptr(true),
+		RecoveryReplayRejected:  Ptr(true),
 		LogFile:                 Ptr("/tmp/sybra/agent-payload.ndjson"),
 		Provider:                Ptr("codex"),
 		Model:                   Ptr("gpt-5"),
@@ -915,7 +1298,12 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 		TestOutcome:             Ptr("product_bug"),
 		TestFailureFingerprint:  Ptr("fingerprint-123"),
 		HeadSHA:                 Ptr("0123456789abcdef0123456789abcdef01234567"),
+		FinalCommitSource:       Ptr("fallback"),
 		SubagentCallCount:       Ptr(3),
+		ResumeZeroOutputStall:   Ptr(true),
+		TurnCount:               Ptr(17),
+		ToolFailures:            Ptr(4),
+		ReviewSalvaged:          Ptr(true),
 	}
 	assertRunPatchCoversEveryField(t, patch)
 
@@ -945,6 +1333,7 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 		VariantID:               "variant-b",
 		AssignmentUnit:          "task",
 		AssignmentKey:           "task-abc123",
+		DecisionVersion:         7,
 		ReasoningEffort:         "high",
 		RequestedSkill:          "sybra-test",
 		SkillExecutionMode:      "injected",
@@ -955,16 +1344,22 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 		EscalationReason:        "cost",
 		CostUSD:                 1.23,
 		PremiumRequests:         2.5,
+		ToolFailures:            4,
 		Result:                  "completed with result",
 		Verdict:                 "sybra_bug",
 		VerdictRendered:         true,
+		RecoveryReplayRejected:  true,
+		ReviewSalvaged:          true,
 		LogFile:                 "/tmp/sybra/agent-payload.ndjson",
 		SessionID:               "session-123",
 		ProtocolViolation:       "missing-json",
 		TestOutcome:             "product_bug",
 		TestFailureFingerprint:  "fingerprint-123",
 		HeadSHA:                 "0123456789abcdef0123456789abcdef01234567",
+		FinalCommitSource:       "fallback",
 		SubagentCallCount:       3,
+		ResumeZeroOutputStall:   true,
+		TurnCount:               17,
 	})
 }
 
@@ -1066,8 +1461,23 @@ func assertAgentRunPayload(t *testing.T, got, want AgentRun) {
 	if got.HeadSHA != want.HeadSHA {
 		t.Errorf("HeadSHA = %q, want %q", got.HeadSHA, want.HeadSHA)
 	}
+	if got.FinalCommitSource != want.FinalCommitSource {
+		t.Errorf("FinalCommitSource = %q, want %q", got.FinalCommitSource, want.FinalCommitSource)
+	}
 	if got.SubagentCallCount != want.SubagentCallCount {
 		t.Errorf("SubagentCallCount = %d, want %d", got.SubagentCallCount, want.SubagentCallCount)
+	}
+	if got.ResumeZeroOutputStall != want.ResumeZeroOutputStall {
+		t.Errorf("ResumeZeroOutputStall = %t, want %t", got.ResumeZeroOutputStall, want.ResumeZeroOutputStall)
+	}
+	if got.TurnCount != want.TurnCount {
+		t.Errorf("TurnCount = %d, want %d", got.TurnCount, want.TurnCount)
+	}
+	if got.RecoveryReplayRejected != want.RecoveryReplayRejected {
+		t.Errorf("RecoveryReplayRejected = %v, want %v", got.RecoveryReplayRejected, want.RecoveryReplayRejected)
+	}
+	if got.ReviewSalvaged != want.ReviewSalvaged {
+		t.Errorf("ReviewSalvaged = %v, want %v", got.ReviewSalvaged, want.ReviewSalvaged)
 	}
 }
 
@@ -1151,6 +1561,88 @@ func TestStoreUpdateRunSessionID(t *testing.T) {
 	}
 	if reloaded.AgentRuns[0].SessionID != "ses-abc123" {
 		t.Errorf("reloaded SessionID = %q, want %q", reloaded.AgentRuns[0].SessionID, "ses-abc123")
+	}
+}
+
+func TestStoreUpdateRunResumeZeroOutputStall(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("Zero output stall task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddRun(created.ID, AgentRun{AgentID: "agent-z", Mode: "headless", State: "running"}); err != nil {
+		t.Fatal(err)
+	}
+
+	err = store.UpdateRun(created.ID, "agent-z", RunPatch{
+		State:                 Ptr("done"),
+		ResumeZeroOutputStall: Ptr(true),
+	})
+	if err != nil {
+		t.Fatalf("UpdateRun: %v", err)
+	}
+
+	got, err := store.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.AgentRuns[0].ResumeZeroOutputStall {
+		t.Errorf("ResumeZeroOutputStall = %v, want true", got.AgentRuns[0].ResumeZeroOutputStall)
+	}
+
+	// Verify YAML round-trip persists the marker.
+	reloaded, err := Parse(got.FilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reloaded.AgentRuns[0].ResumeZeroOutputStall {
+		t.Errorf("reloaded ResumeZeroOutputStall = %v, want true", reloaded.AgentRuns[0].ResumeZeroOutputStall)
+	}
+}
+
+// TestStoreUpdateRunResumeZeroOutputStallFalseNeverClears mirrors the
+// SessionID/HeadSHA "empty means unchanged" guard: RunPatch.ResumeZeroOutputStall
+// is a latch like VerdictRendered — a false pointer must never clear an
+// already-set marker, since applyRunLifecycle only ever sets it true.
+func TestStoreUpdateRunResumeZeroOutputStallFalseNeverClears(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("Zero output stall latch task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddRun(created.ID, AgentRun{
+		AgentID:               "agent-latch",
+		Mode:                  "headless",
+		State:                 "running",
+		ResumeZeroOutputStall: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	err = store.UpdateRun(created.ID, "agent-latch", RunPatch{
+		State:                 Ptr("done"),
+		ResumeZeroOutputStall: Ptr(false),
+	})
+	if err != nil {
+		t.Fatalf("UpdateRun: %v", err)
+	}
+
+	got, err := store.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.AgentRuns[0].ResumeZeroOutputStall {
+		t.Errorf("ResumeZeroOutputStall = %v, want true (latch must not clear)", got.AgentRuns[0].ResumeZeroOutputStall)
 	}
 }
 
@@ -1298,7 +1790,7 @@ func TestStoreCreateDefaultMode(t *testing.T) {
 	}
 }
 
-func TestStoreListSkipsMalformed(t *testing.T) {
+func TestStoreListSurfacesMalformedAsDegraded(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	store, err := NewStore(dir)
@@ -1319,8 +1811,167 @@ func TestStoreListSkipsMalformed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(tasks) != 2 {
+		t.Fatalf("got %d tasks, want 2 (valid task plus degraded entry)", len(tasks))
+	}
+	var degraded *Task
+	for i := range tasks {
+		if tasks[i].Degraded {
+			degraded = &tasks[i]
+		}
+	}
+	if degraded == nil {
+		t.Fatal("malformed file was not surfaced as degraded")
+	}
+	if degraded.Status != StatusHumanRequired {
+		t.Errorf("degraded status = %q, want %q", degraded.Status, StatusHumanRequired)
+	}
+	if degraded.ParseError == "" || degraded.FilePath != filepath.Join(dir, "bad.md") {
+		t.Errorf("degraded entry = %+v, want parse error and source path", *degraded)
+	}
+}
+
+// A degraded entry's ID must be unaddressable: it is derived from a filename,
+// not from a real task, so if CRUD resolved it to `<dir>/<id>.md` an
+// update/delete issued against the board card would land on whatever task
+// happens to occupy that path.
+func TestStoreDegradedIDIsNotAddressable(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "bad.md"), []byte("not valid frontmatter"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tasks, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 || !tasks[0].Degraded {
+		t.Fatalf("List = %+v, want a single degraded entry", tasks)
+	}
+	id := tasks[0].ID
+	if !IsDegradedID(id) {
+		t.Fatalf("degraded ID %q not recognized by IsDegradedID", id)
+	}
+	if err := ValidateID(id); err == nil {
+		t.Errorf("ValidateID(%q) = nil, want rejection so the ID can never be minted or persisted", id)
+	}
+
+	if _, err := store.Get(id); err == nil {
+		t.Error("Get on a degraded ID succeeded, want rejection")
+	}
+	if _, err := store.Update(id, Update{Title: Ptr("hijacked")}); err == nil {
+		t.Error("Update on a degraded ID succeeded, want rejection")
+	}
+	if err := store.Delete(id); err == nil {
+		t.Error("Delete on a degraded ID succeeded, want rejection")
+	}
+	if _, err := store.Put(Task{ID: id, Title: "hijacked", Status: StatusTodo, AgentMode: AgentModeHeadless}); err == nil {
+		t.Error("Put with a degraded ID succeeded, want rejection")
+	}
+}
+
+// A hand-written task file claiming a degraded-reserved ID must not join the
+// board under that ID — it would be a second entry sharing the synthetic ID
+// of whatever unreadable file hashes to it.
+func TestStoreListRejectsReservedDegradedIDInFrontmatter(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := "---\nid: " + degradedIDPrefix + "0123456789abcdef\ntitle: Impostor\nstatus: todo\nagent_mode: headless\n---\n"
+	if err := os.WriteFile(filepath.Join(dir, "impostor.md"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tasks, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(tasks) != 1 {
-		t.Errorf("got %d tasks, want 1 (should skip malformed)", len(tasks))
+		t.Fatalf("got %d tasks, want 1", len(tasks))
+	}
+	if !tasks[0].Degraded {
+		t.Fatalf("impostor task = %+v, want it surfaced as degraded rather than accepted", tasks[0])
+	}
+	if tasks[0].Title == "Impostor" {
+		t.Error("impostor frontmatter was trusted; want a filename-derived degraded entry")
+	}
+}
+
+func TestStoreListLeavesMalformedFileInPlace(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bad := filepath.Join(dir, "bad.md")
+	if err := os.WriteFile(bad, []byte("not valid frontmatter"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Listing must never move or delete an unparseable file: the file may be
+	// mid-write by an editor or another process, and a repaired file has to
+	// return to the board on its own.
+	for i := range 2 {
+		tasks, err := store.List()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(tasks) != 1 || !tasks[0].Degraded {
+			t.Fatalf("List #%d = %+v, want a single degraded entry", i+1, tasks)
+		}
+		if _, err := os.Stat(bad); err != nil {
+			t.Fatalf("bad.md no longer in the tasks dir after List #%d: %v", i+1, err)
+		}
+	}
+
+	repaired, err := Marshal(Task{ID: "bad", Title: "Repaired", Status: StatusTodo, AgentMode: AgentModeHeadless})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bad, repaired, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 || tasks[0].Degraded {
+		t.Fatalf("List after repair = %+v, want the repaired task back on the board", tasks)
+	}
+}
+
+func TestStoreGetPropagatesSidecarReadError(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.Create("Task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Replace the plan sidecar with a directory so os.ReadFile fails with a
+	// real I/O error (EISDIR) instead of the not-exist case Read already
+	// turns into a nil error.
+	planPath := filepath.Join(dir, created.ID+".plan.md")
+	if err := os.Mkdir(planPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.Get(created.ID); err == nil {
+		t.Fatal("expected error from Get when a sidecar read fails, got nil")
 	}
 }
 
@@ -1669,7 +2320,6 @@ func TestStoreListCacheSkipsSnapshotWhenFilesChangedDuringBuild(t *testing.T) {
 		Slug:            "external",
 		Title:           "External",
 		Status:          StatusTodo,
-		TaskType:        TaskTypeNormal,
 		AgentMode:       AgentModeHeadless,
 		CreatedAt:       now,
 		UpdatedAt:       now,
@@ -1723,7 +2373,6 @@ func TestStoreCreateInvalidatesWarmCacheAfterExternalAddWithoutInvalidate(t *tes
 		Slug:            "external",
 		Title:           "External",
 		Status:          StatusTodo,
-		TaskType:        TaskTypeNormal,
 		AgentMode:       AgentModeHeadless,
 		CreatedAt:       now,
 		UpdatedAt:       now,
@@ -2421,14 +3070,17 @@ func TestStoreGet_PathTraversalSlugRejected(t *testing.T) {
 		t.Fatal("Store.Get with path-traversal slug: expected error, got nil")
 	}
 
-	// List must also skip the malformed file (it logs and continues).
+	// List must surface the malformed file without returning its unsafe slug.
 	tasks, err := store.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	for _, task := range tasks {
-		if task.ID == tk.ID {
-			t.Errorf("malformed-slug task appeared in List: slug=%q", task.Slug)
+	for _, listed := range tasks {
+		if listed.ID == tk.ID {
+			t.Errorf("malformed-slug task appeared as real task: slug=%q", listed.Slug)
+		}
+		if listed.Degraded && listed.ParseError == "" {
+			t.Error("degraded malformed-slug task lacks parse error")
 		}
 	}
 }
@@ -2495,6 +3147,54 @@ func TestStoreListInvalidatePathTargetedRefresh(t *testing.T) {
 	}
 	if len(tasks) != 1 {
 		t.Fatalf("want 1 task remaining, got %d", len(tasks))
+	}
+}
+
+func TestInvalidatePathWaitsForTaskWriterBeforeRefreshingCache(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tk, err := store.Create("Before", "body", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.List(); err != nil {
+		t.Fatal(err)
+	}
+
+	unlock, err := store.lockTask(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	store.refreshBeforeLock = func() { close(started) }
+	done := make(chan struct{})
+	go func() { store.InvalidatePath(tk.FilePath); close(done) }()
+	<-started
+	select {
+	case <-done:
+		t.Fatal("refresh ran while task writer lock was held")
+	case <-time.After(50 * time.Millisecond):
+	}
+	unlock()
+	if _, err := store.Update(tk.ID, Update{Title: Ptr("After")}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("refresh did not complete after writer lock release")
+	}
+	listed, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, got := range listed {
+		if got.ID == tk.ID && got.Title != "After" {
+			t.Fatalf("cached title = %q, want After", got.Title)
+		}
 	}
 }
 
@@ -3112,34 +3812,6 @@ func TestStoreDelete_RenameFailureLeavesTaskIntact(t *testing.T) {
 	}
 	if _, err := store.Get(created.ID); err != nil {
 		t.Errorf("task should still be gettable after a failed delete: %v", err)
-	}
-}
-
-func TestStoreGcOrphanChatInteraction_TrashesInsteadOfUnlinking(t *testing.T) {
-	t.Parallel()
-	store, err := NewStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	chat, err := store.CreateChat("owner/repo")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// gcOrphanChats (internal/recovery) deletes orphaned chat tasks through
-	// Manager.Delete → Store.Delete; assert that path now trashes the chat
-	// task rather than unlinking it outright, so a wrongly-GC'd chat is
-	// still recoverable.
-	if err := store.Delete(chat.ID); err != nil {
-		t.Fatal(err)
-	}
-	entries, err := store.ListTrash()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 1 || entries[0].ID != chat.ID {
-		t.Fatalf("ListTrash() = %+v, want the trashed chat task", entries)
 	}
 }
 

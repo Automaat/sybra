@@ -15,7 +15,8 @@ calls:
 
 | Poller | What it searches | Default cadence |
 |--------|------------------|-----------------|
-| reviews | `author:@me`, `review-requested:@me`, `reviewed-by:@me` (3 legs) | fast 2m / slow 10m |
+| sybra_prs | `author:@me` for self-authored PR discovery; known linked task PRs are monitored even on a secondary | active 2m / idle 10m |
+| assigned_prs | `review-requested:@me` + `reviewed-by:@me` (2 legs) | active 2m / idle 10m |
 | issues  | assigned + labeled (`sybra`) issues, combined in one request | 10m |
 | renovate | Renovate-bot PRs across project repos | fast 2m / slow 10m |
 
@@ -29,17 +30,25 @@ github:
   enabled: true
 
   # Split polling across machines that share one token. "secondary" skips the
-  # reviews/issues/renovate search polls so only the primary spends the shared
-  # budget. Empty/"primary" runs them. Triage and on-demand per-PR calls run
-  # everywhere regardless.
+  # search-backed issue/assigned-PR discovery so only the primary spends the
+  # shared budget. Empty/"primary" runs them. Triage and on-demand per-PR calls
+  # run everywhere regardless; secondary still monitors known linked Sybra PRs.
   poller_role: primary
 
-  # Poll-interval overrides in seconds (0 = built-in default). Raise these on a
-  # low-limit (personal token) instance; lower them on a high-limit App-token
-  # instance.
-  reviews_fast_seconds: 120      # default 120 (was 60)
-  reviews_slow_seconds: 600      # default 600 (was 300)
-  issues_seconds: 600            # default 600 (was 300)
+  polling:
+    issues:
+      enabled: true
+      interval: 10m              # default 10m
+    sybra_prs:
+      enabled: true
+      active_interval: 2m        # default 2m
+      idle_interval: 10m         # default 10m
+    assigned_prs:
+      enabled: true
+      active_interval: 2m        # default 2m
+      idle_interval: 10m         # default 10m
+
+  # Renovate still uses the legacy top-level overrides.
   renovate_fast_seconds: 120     # default 120 (was 60)
   renovate_slow_seconds: 600     # default 600 (was 300)
 ```
@@ -54,16 +63,19 @@ accurate remaining quota for every `gh` path — including the `gh pr view` /
 ### Running two machines on one token
 
 Set the laptop to `poller_role: secondary` (or split by `project_types`) so the
-server is the sole search poller. Without this, both instances run the same
-`@me` searches and double-bill the shared token — the fastest way to trip the
-**secondary** rate limit.
+server is the sole issue/assigned-review search poller. Without this, both
+instances run the same `@me` discovery searches and double-bill the shared
+token. A secondary still performs known linked Sybra PR reconciliation, which
+is intentional and much cheaper than duplicating the global searches.
 
 ## Lifting the ceiling: GitHub App auth
 
 A personal token gets 5,000 REST req/hr. A GitHub App **installation token**
-gets 15,000 REST req/hr (and higher GraphQL headroom). Sybra mints a short-lived
-installation token, refreshes it every 30m, and injects it into the `gh`
-subprocess via `GH_TOKEN` — no call site changes.
+gets 15,000 REST req/hr (and higher GraphQL headroom). Sybra mints short-lived
+installation tokens, refreshes its cache every 30m, and gives GitHub
+subprocesses a fresh token at the point of use. Agent runs do not carry a raw
+`GH_TOKEN` for their whole lifetime; the agent `gh` shim mints one immediately
+before execing the real `gh` binary.
 
 ```yaml
 github:
@@ -83,7 +95,12 @@ When unset/disabled, `gh` uses its own auth unchanged.
 2. **Permissions** — Repository: *Contents* (read/write), *Issues* (read/write),
    *Pull requests* (read/write), *Metadata* (read). Organization/Account: none.
    Match these to what your automations actually do.
-3. **Webhook** — uncheck *Active* (Sybra polls; it doesn't receive webhooks).
+3. **Webhook** — to enable comment-command task creation, keep *Active*
+   checked, set the URL to the externally reachable `/webhook/github` route,
+   set a webhook secret, and subscribe to **Issue comments**. Configure the
+   same secret in `integrations.github.webhook.secret` and enable that nested
+   webhook block. If comment commands are not used, uncheck *Active*. See
+   [GitHub comment-command webhooks](github-webhooks.md).
 4. **Create**, then note the **App ID** (shown on the App's page).
 5. **Generate a private key** — on the App's page, *Private keys → Generate a
    private key*. A `.pem` downloads. Put it where the server can read it

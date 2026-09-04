@@ -15,11 +15,44 @@ import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Cr
 import * as artifact$0 from "../artifact/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as attachment$0 from "../attachment/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as monitor$0 from "../monitor/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as task$0 from "../task/models.js";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as $models from "./models.js";
+
+/**
+ * AppendTaskProgress records one progress entry against a task and bumps its
+ * updated-at.
+ * 
+ * sybra-cli cannot do this half locally: the artifact store lives beside the
+ * board it belongs to, so a client appending to its own disk while touching
+ * another machine's task writes the entry where the owning instance will never
+ * read it. Scrubbing happens here for the same reason — the work blocklist
+ * comes from the project record on this side of the wire.
+ */
+export function AppendTaskProgress(taskID: string, kind: string, role: string, message: string): $CancellablePromise<artifact$0.ProgressEntry> {
+    return $Call.ByID(643455980, taskID, kind, role, message).then(($result: any) => {
+        return $$createType0($result);
+    });
+}
+
+/**
+ * ApplyTransition runs a status transition through the same gate the GUI and
+ * the workflow engine use, so a CLI status change is admitted, audited, and
+ * dispatched identically wherever it was typed.
+ */
+export function ApplyTransition(intent: task$0.TransitionIntent): $CancellablePromise<task$0.TransitionResult> {
+    return $Call.ByID(2200551777, intent).then(($result: any) => {
+        return $$createType1($result);
+    });
+}
 
 /**
  * AssignTask persists a task pushed from the cluster leader into this
@@ -40,7 +73,16 @@ export function AssignTask(t: task$0.Task): $CancellablePromise<void> {
  */
 export function BlessTampering(taskID: string): $CancellablePromise<task$0.Task> {
     return $Call.ByID(2730384212, taskID).then(($result: any) => {
-        return $$createType0($result);
+        return $$createType2($result);
+    });
+}
+
+/**
+ * ClassifyTask runs the triage classifier over one task and applies its verdict atomically.
+ */
+export function ClassifyTask(id: string, model: string): $CancellablePromise<$models.TriageResultDTO> {
+    return $Call.ByID(4082697257, id, model).then(($result: any) => {
+        return $$createType3($result);
     });
 }
 
@@ -50,7 +92,16 @@ export function BlessTampering(taskID: string): $CancellablePromise<task$0.Task>
  */
 export function CreateTask(title: string, body: string, mode: string): $CancellablePromise<task$0.Task> {
     return $Call.ByID(1715598451, title, body, mode).then(($result: any) => {
-        return $$createType0($result);
+        return $$createType2($result);
+    });
+}
+
+/**
+ * CreateTaskFull creates a task with initial field values, optionally landing it directly in a status other than the default. An empty status uses the default.
+ */
+export function CreateTaskFull(title: string, body: string, mode: string, status: string, init: task$0.Update): $CancellablePromise<task$0.Task> {
+    return $Call.ByID(3337703166, title, body, mode, status, init).then(($result: any) => {
+        return $$createType2($result);
     });
 }
 
@@ -64,8 +115,12 @@ export function CreateTask(title: string, body: string, mode: string): $Cancella
  */
 export function CreateTaskWithInit(title: string, body: string, mode: string, init: task$0.Update): $CancellablePromise<task$0.Task> {
     return $Call.ByID(1219464293, title, body, mode, init).then(($result: any) => {
-        return $$createType0($result);
+        return $$createType2($result);
     });
+}
+
+export function DeleteAttachment(taskID: string, attachmentID: string): $CancellablePromise<void> {
+    return $Call.ByID(737517256, taskID, attachmentID);
 }
 
 /**
@@ -76,13 +131,20 @@ export function DeleteTask(id: string): $CancellablePromise<void> {
 }
 
 /**
+ * DeleteTrashedGeneration permanently removes one retained generation, reporting whether it existed.
+ */
+export function DeleteTrashedGeneration(id: string): $CancellablePromise<boolean> {
+    return $Call.ByID(783968426, id);
+}
+
+/**
  * DispatchFromHumanRequired flips a task parked in human-required to target
- * (one of in-progress/testing/ready-pr/in-review), recording reason as the
- * audit-visible status_reason. For dispatching targets it synchronously
- * re-enters the workflow via task.status_changed; on any failure to do so it
- * fails closed, reverting the task to human-required with an explanatory
- * status_reason so the operator is never left with a task silently stuck in
- * a target status with no workflow driving it.
+ * (one of in-progress/ready-review/testing/ready-pr/in-review), recording
+ * reason as the audit-visible status_reason. For dispatching targets it
+ * synchronously re-enters the workflow via task.status_changed; on any failure
+ * to do so it fails closed, reverting the task to human-required with an
+ * explanatory status_reason so the operator is never left with a task silently
+ * stuck in a target status with no workflow driving it.
  * 
  * The whole check-then-write sequence runs under the workflow engine's
  * per-task human-action lock (shared with plan-review's
@@ -91,8 +153,21 @@ export function DeleteTask(id: string): $CancellablePromise<void> {
  */
 export function DispatchFromHumanRequired(id: string, target: string, reason: string): $CancellablePromise<task$0.Task> {
     return $Call.ByID(3753750864, id, target, reason).then(($result: any) => {
-        return $$createType0($result);
+        return $$createType2($result);
     });
+}
+
+/**
+ * ExpandUmbrella expands a ☂️ umbrella issue into a gated child DAG. An empty model uses the instance's configured planner.
+ */
+export function ExpandUmbrella(issueURL: string, model: string): $CancellablePromise<$models.UmbrellaExpandDTO> {
+    return $Call.ByID(2988873146, issueURL, model).then(($result: any) => {
+        return $$createType4($result);
+    });
+}
+
+export function GetAttachmentURL(taskID: string, attachmentID: string): $CancellablePromise<string> {
+    return $Call.ByID(3926233316, taskID, attachmentID);
 }
 
 /**
@@ -100,7 +175,7 @@ export function DispatchFromHumanRequired(id: string, target: string, reason: st
  */
 export function GetTamperReport(taskID: string): $CancellablePromise<$models.TamperReportDTO> {
     return $Call.ByID(929982993, taskID).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType5($result);
     });
 }
 
@@ -109,25 +184,45 @@ export function GetTamperReport(taskID: string): $CancellablePromise<$models.Tam
  */
 export function GetTask(id: string): $CancellablePromise<task$0.Task> {
     return $Call.ByID(2262172043, id).then(($result: any) => {
-        return $$createType0($result);
+        return $$createType2($result);
     });
 }
 
 export function GetTaskSetupLog(taskID: string): $CancellablePromise<$models.TaskSetupLogDTO> {
     return $Call.ByID(3273454814, taskID).then(($result: any) => {
-        return $$createType2($result);
+        return $$createType6($result);
+    });
+}
+
+export function ListAttachments(taskID: string): $CancellablePromise<task$0.Attachment[]> {
+    return $Call.ByID(1026482144, taskID).then(($result: any) => {
+        return $$createType8($result);
+    });
+}
+
+/**
+ * ListTaskArtifactMetas returns the artifact index for a task, untruncated and
+ * without content.
+ * 
+ * ListTaskArtifacts serves the GUI's diagnostics panel and inlines a capped
+ * copy of every file, which is the wrong shape for `sybra-cli artifact list`:
+ * it renders sizes from the index and would report the cap instead.
+ */
+export function ListTaskArtifactMetas(taskID: string): $CancellablePromise<artifact$0.Meta[]> {
+    return $Call.ByID(715793153, taskID).then(($result: any) => {
+        return $$createType10($result);
     });
 }
 
 export function ListTaskArtifacts(taskID: string): $CancellablePromise<$models.TaskArtifactDTO[]> {
     return $Call.ByID(1612534482, taskID).then(($result: any) => {
-        return $$createType4($result);
+        return $$createType12($result);
     });
 }
 
 export function ListTaskAuditEvents(taskID: string, days: number): $CancellablePromise<$models.TaskAuditEventDTO[]> {
     return $Call.ByID(1451731527, taskID, days).then(($result: any) => {
-        return $$createType6($result);
+        return $$createType14($result);
     });
 }
 
@@ -137,30 +232,95 @@ export function ListTaskAuditEvents(taskID: string, days: number): $CancellableP
  */
 export function ListTaskProgress(taskID: string): $CancellablePromise<artifact$0.ProgressEntry[]> {
     return $Call.ByID(821819796, taskID).then(($result: any) => {
-        return $$createType8($result);
+        return $$createType15($result);
     });
 }
 
 /**
- * ListTasks returns all tasks from the store, excluding ephemeral chat tasks.
- * Chat tasks are surfaced exclusively through the Chats view.
+ * ListTaskSnapshotHistory returns the newest commits from the snapshot repo of
+ * the tasks dir. The repo lives beside the board it snapshots, so a client
+ * reading its own would report a different board's history.
+ */
+export function ListTaskSnapshotHistory(limit: number): $CancellablePromise<$models.TaskHistoryEntryDTO[]> {
+    return $Call.ByID(1492707365, limit).then(($result: any) => {
+        return $$createType17($result);
+    });
+}
+
+/**
+ * ListTasks returns the board projection of every task. Historical prompt and
+ * result text is intentionally omitted: cards need run metadata for cost/count
+ * badges, while TaskDetail immediately calls GetTask for the selected task.
+ * Returning that text here made every board refresh serialize the complete
+ * lifetime prompt history of every task (hundreds of MiB on a mature board).
  */
 export function ListTasks(): $CancellablePromise<task$0.Task[]> {
     return $Call.ByID(3360976520).then(($result: any) => {
-        return $$createType9($result);
+        return $$createType18($result);
     });
 }
 
 /**
  * ListTasksForNode returns the subset of the board relevant to a cluster
- * follower's mirror: tasks assigned to that node, excluding chat tasks and
- * terminal tasks closed longer than mirrorStaleTerminalWindow ago. Unlike
- * ListTasks, this is sized for repeated polling rather than a one-off full
- * board read.
+ * follower's mirror: tasks assigned to that node, excluding terminal tasks
+ * closed longer than mirrorStaleTerminalWindow ago. Unlike ListTasks, this is
+ * sized for repeated polling rather than a one-off full board read.
+ * 
+ * Also includes tasks with no AssignedNode at all. This service call always
+ * runs against this instance's own store (the leader polls each follower's
+ * HTTP API individually), so an unassigned task here unambiguously lives on
+ * this node — e.g. created by this follower's own local umbrella expansion
+ * or triage, never routed by a leader. AssignedNode is leader-only metadata
+ * (see Assigner.route/stampNode); a follower has no way to stamp its own
+ * name onto a task it created itself, so without this, such a task is
+ * permanently invisible to the leader's mirror — see cluster.mirror.adopted.
  */
 export function ListTasksForNode(node: string): $CancellablePromise<task$0.Task[]> {
     return $Call.ByID(844621143, node).then(($result: any) => {
-        return $$createType9($result);
+        return $$createType18($result);
+    });
+}
+
+/**
+ * ListTrash returns every retained generation of every soft-deleted task.
+ */
+export function ListTrash(): $CancellablePromise<task$0.TrashEntry[]> {
+    return $Call.ByID(3045208924).then(($result: any) => {
+        return $$createType20($result);
+    });
+}
+
+/**
+ * MapDuplicateIncidents points duplicate GitHub issues at an incident's
+ * canonical one and records the mapping.
+ * 
+ * The whole operation runs here because both ends are the server's: the
+ * incident ledger it reads and writes, and the issue repo from its own monitor
+ * config.
+ */
+export function MapDuplicateIncidents(fingerprint: string, duplicates: number[], coverage: string): $CancellablePromise<$models.MapDuplicateIncidentsDTO> {
+    return $Call.ByID(2852449980, fingerprint, duplicates, coverage).then(($result: any) => {
+        return $$createType21($result);
+    });
+}
+
+/**
+ * PruneAllTrash removes every retained generation past its retention window.
+ */
+export function PruneAllTrash(): $CancellablePromise<$models.TrashPruneReportDTO> {
+    return $Call.ByID(1776862997).then(($result: any) => {
+        return $$createType22($result);
+    });
+}
+
+/**
+ * ReadTaskArtifact returns one artifact whole. `artifact get` writes the bytes
+ * to stdout for a pipeline to consume, so a truncated read would corrupt the
+ * output rather than shorten it.
+ */
+export function ReadTaskArtifact(taskID: string, name: string): $CancellablePromise<string> {
+    return $Call.ByID(4045928577, taskID, name).then(($result: any) => {
+        return $Create.ByteSlice($result);
     });
 }
 
@@ -193,6 +353,40 @@ export function RecoverLostAgent(taskID: string): $CancellablePromise<void> {
 }
 
 /**
+ * ReindexTaskArtifacts rebuilds a task's artifact index from the files on disk.
+ */
+export function ReindexTaskArtifacts(taskID: string): $CancellablePromise<void> {
+    return $Call.ByID(2541262407, taskID);
+}
+
+/**
+ * RestoreFromTrash brings the newest retained generation of a deleted task back onto the board.
+ */
+export function RestoreFromTrash(id: string): $CancellablePromise<task$0.Task> {
+    return $Call.ByID(566591386, id).then(($result: any) => {
+        return $$createType2($result);
+    });
+}
+
+/**
+ * ScanMonitor runs one anomaly-detector pass and returns its report.
+ */
+export function ScanMonitor(): $CancellablePromise<monitor$0.Report> {
+    return $Call.ByID(4233564415).then(($result: any) => {
+        return $$createType23($result);
+    });
+}
+
+/**
+ * TouchTask bumps a task's updated-at without changing any field. Used to surface out-of-band edits, such as an appended progress entry.
+ */
+export function TouchTask(id: string): $CancellablePromise<task$0.Task> {
+    return $Call.ByID(3403397652, id).then(($result: any) => {
+        return $$createType2($result);
+    });
+}
+
+/**
  * UpdateTask applies field updates to a task. The workflow engine drives
  * all status-based transitions; this method only handles cleanup on done.
  * 
@@ -200,24 +394,56 @@ export function RecoverLostAgent(taskID: string): $CancellablePromise<void> {
  * the testing workflow needs a clean slate (no in-flight agents or pending
  * human steps) so the user can't accidentally lose context by dragging.
  * 
- * Moving a task to "in-progress" when its workflow is terminal (completed or
- * failed) and no agent is running restarts the workflow — allowing the user to
- * retry implementation after a human-required escalation.
+ * Moving a task to a dispatching stage when its workflow is terminal (completed
+ * or failed) and no agent is running restarts the workflow — allowing the user
+ * to retry implementation, review, testing, or PR creation after a failed run.
  */
 export function UpdateTask(id: string, updates: { [_ in string]?: any }): $CancellablePromise<task$0.Task> {
     return $Call.ByID(3948756754, id, updates).then(($result: any) => {
-        return $$createType0($result);
+        return $$createType2($result);
+    });
+}
+
+/**
+ * UpdateTaskFields applies a typed field update. It is the struct-shaped
+ * counterpart to UpdateTask's map form, which sybra-cli cannot use for the
+ * fields it edits: task.Update has no JSON tags, so a map round-trip would
+ * have to re-derive every key name by hand.
+ */
+export function UpdateTaskFields(id: string, u: task$0.Update): $CancellablePromise<task$0.Task> {
+    return $Call.ByID(2254192575, id, u).then(($result: any) => {
+        return $$createType2($result);
+    });
+}
+
+export function UploadAttachment(taskID: string, fileName: string, data: string): $CancellablePromise<task$0.Attachment> {
+    return $Call.ByID(1704419594, taskID, fileName, data).then(($result: any) => {
+        return $$createType7($result);
     });
 }
 
 // Private type creation functions
-const $$createType0 = task$0.Task.createFrom;
-const $$createType1 = $models.TamperReportDTO.createFrom;
-const $$createType2 = $models.TaskSetupLogDTO.createFrom;
-const $$createType3 = $models.TaskArtifactDTO.createFrom;
-const $$createType4 = $Create.Array($$createType3);
-const $$createType5 = $models.TaskAuditEventDTO.createFrom;
-const $$createType6 = $Create.Array($$createType5);
-const $$createType7 = artifact$0.ProgressEntry.createFrom;
+const $$createType0 = artifact$0.ProgressEntry.createFrom;
+const $$createType1 = task$0.TransitionResult.createFrom;
+const $$createType2 = task$0.Task.createFrom;
+const $$createType3 = $models.TriageResultDTO.createFrom;
+const $$createType4 = $models.UmbrellaExpandDTO.createFrom;
+const $$createType5 = $models.TamperReportDTO.createFrom;
+const $$createType6 = $models.TaskSetupLogDTO.createFrom;
+const $$createType7 = attachment$0.Attachment.createFrom;
 const $$createType8 = $Create.Array($$createType7);
-const $$createType9 = $Create.Array($$createType0);
+const $$createType9 = artifact$0.Meta.createFrom;
+const $$createType10 = $Create.Array($$createType9);
+const $$createType11 = $models.TaskArtifactDTO.createFrom;
+const $$createType12 = $Create.Array($$createType11);
+const $$createType13 = $models.TaskAuditEventDTO.createFrom;
+const $$createType14 = $Create.Array($$createType13);
+const $$createType15 = $Create.Array($$createType0);
+const $$createType16 = $models.TaskHistoryEntryDTO.createFrom;
+const $$createType17 = $Create.Array($$createType16);
+const $$createType18 = $Create.Array($$createType2);
+const $$createType19 = task$0.TrashEntry.createFrom;
+const $$createType20 = $Create.Array($$createType19);
+const $$createType21 = $models.MapDuplicateIncidentsDTO.createFrom;
+const $$createType22 = $models.TrashPruneReportDTO.createFrom;
+const $$createType23 = monitor$0.Report.createFrom;

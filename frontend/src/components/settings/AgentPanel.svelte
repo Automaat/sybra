@@ -41,7 +41,7 @@
 
 <Section title="Agent defaults" description="Provider, model, and execution defaults applied to new tasks.">
   <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
-    <SelectField id="agent-provider" label="Agent type" keyPath="agent.provider"
+    <SelectField id="agent-provider" label="Agent type" keyPath="execution.agent.provider"
       options={[
         { value: 'claude', label: 'Claude' },
         { value: 'codex', label: 'Codex' },
@@ -51,21 +51,12 @@
       bind:value={settings.agent.provider}
       modified={a.provider !== d.provider}
       onreset={() => (settings.agent.provider = d.provider)} />
-    <SelectField id="agent-model" label="Default model" keyPath="agent.model"
+    <SelectField id="agent-model" label="Default model" keyPath="execution.agent.model"
       options={modelOptions}
       bind:value={settings.agent.model}
       modified={a.model !== d.model}
       onreset={() => (settings.agent.model = d.model)} />
-    <SelectField id="agent-mode" label="Default mode" keyPath="agent.mode"
-      options={[
-        { value: '', label: '— none —' },
-        { value: 'headless', label: 'Headless' },
-        { value: 'interactive', label: 'Interactive' },
-      ]}
-      bind:value={settings.agent.mode}
-      modified={a.mode !== d.mode}
-      onreset={() => (settings.agent.mode = d.mode)} />
-    <NumberField id="agent-concurrency" label="Max concurrent" keyPath="agent.max_concurrent" min={1} max={100}
+    <NumberField id="agent-concurrency" label="Max concurrent" keyPath="execution.agent.max_concurrent" min={1} max={100}
       description="1–100"
       bind:value={settings.agent.maxConcurrent}
       modified={a.maxConcurrent !== d.maxConcurrent}
@@ -122,7 +113,7 @@
 
   <AdvancedDisclosure open={advancedOpen}>
     <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
-      <SelectField id="agent-permmode" label="Headless permission mode" keyPath="agent.headless_permission_mode"
+      <SelectField id="agent-permmode" label="Headless permission mode" keyPath="execution.agent.headless_permission_mode"
         description="auto activates the destructive-op classifier; bypass keeps full skip-permissions"
         options={[
           { value: '', label: 'Bypass (default)' },
@@ -145,7 +136,7 @@
         <span class="text-xs text-surface-500 dark:text-surface-400">Default = true (approval hook gates each tool call)</span>
       </div>
 
-      <TextField id="agent-fallback" label="Fallback model" placeholder="e.g. sonnet" keyPath="agent.fallback_model"
+      <TextField id="agent-fallback" label="Fallback model" placeholder="e.g. sonnet" keyPath="execution.agent.fallback_model"
         bind:value={settings.agent.fallbackModel}
         modified={a.fallbackModel !== d.fallbackModel}
         onreset={() => (settings.agent.fallbackModel = d.fallbackModel)} />
@@ -162,45 +153,47 @@
         <span class="text-xs text-surface-500 dark:text-surface-400">Keep agents running across an app restart (default true)</span>
       </div>
 
-      <NumberField id="agent-maxcost" label="Max cost per run (USD)" keyPath="agent.max_cost_usd" min={0} step={0.5}
-        bind:value={settings.agent.maxCostUsd}
-        modified={a.maxCostUsd !== d.maxCostUsd}
-        onreset={() => (settings.agent.maxCostUsd = d.maxCostUsd)} />
-      <NumberField id="agent-maxturns" label="Max turns" keyPath="agent.max_turns" min={0}
-        bind:value={settings.agent.maxTurns}
-        modified={a.maxTurns !== d.maxTurns}
-        onreset={() => (settings.agent.maxTurns = d.maxTurns)} />
-      <NumberField id="agent-bash" label="Bash timeout (seconds)" keyPath="agent.bash_timeout_seconds" min={0}
+      <NumberField id="agent-maxcost" label="Post-result cost ceiling (USD)" keyPath="execution.agent.post_result_cost_usd" min={0} step={0.5}
+        description="Reactive: checked only when a run reports its terminal result"
+        bind:value={settings.agent.postResultCostUsd}
+        modified={a.postResultCostUsd !== d.postResultCostUsd}
+        onreset={() => (settings.agent.postResultCostUsd = d.postResultCostUsd)} />
+      <NumberField id="agent-maxturns" label="Max assistant events" keyPath="execution.agent.max_assistant_events" min={0}
+        description="Counts top-level assistant stream events, not provider CLI turns"
+        bind:value={settings.agent.maxAssistantEvents}
+        modified={a.maxAssistantEvents !== d.maxAssistantEvents}
+        onreset={() => (settings.agent.maxAssistantEvents = d.maxAssistantEvents)} />
+      <NumberField id="agent-bash" label="Bash timeout (seconds)" keyPath="execution.agent.bash_timeout" min={0}
         description="0 = default (300)"
         bind:value={settings.agent.bashTimeoutSeconds}
         modified={a.bashTimeoutSeconds !== d.bashTimeoutSeconds}
         onreset={() => (settings.agent.bashTimeoutSeconds = d.bashTimeoutSeconds)} />
-      <NumberField id="agent-watchdog" label="Retry watchdog" keyPath="agent.retry_watchdog" min={-1}
+      <NumberField id="agent-watchdog" label="Retry watchdog" keyPath="execution.agent.retry_watchdog" min={-1}
         description="0 = default (30); -1 disables"
         bind:value={settings.agent.retryWatchdog}
         modified={a.retryWatchdog !== d.retryWatchdog}
         onreset={() => (settings.agent.retryWatchdog = d.retryWatchdog)} />
-      <NumberField id="agent-jitter" label="Dispatch jitter (ms)" keyPath="agent.dispatch_jitter_ms" min={0}
+      <NumberField id="agent-jitter" label="Dispatch jitter (ms)" keyPath="execution.agent.dispatch_jitter_ms" min={0}
         description="Random pre-dispatch delay to de-sync ready tasks (0 = off)"
         bind:value={settings.agent.dispatchJitterMs}
         modified={a.dispatchJitterMs !== d.dispatchJitterMs}
         onreset={() => (settings.agent.dispatchJitterMs = d.dispatchJitterMs)} />
-      <NumberField id="agent-logret" label="Log retention (days)" keyPath="agent.log_retention_days" min={-1}
+      <NumberField id="agent-logret" label="Log retention (days)" keyPath="execution.agent.log_retention" min={-1}
         description="-1 disables age pruning; 0 = default (14)"
         bind:value={settings.agent.logRetentionDays}
         modified={a.logRetentionDays !== d.logRetentionDays}
         onreset={() => (settings.agent.logRetentionDays = d.logRetentionDays)} />
-      <NumberField id="agent-loggzip" label="Log gzip after (days)" keyPath="agent.log_gzip_after_days" min={-1}
+      <NumberField id="agent-loggzip" label="Log gzip after (days)" keyPath="execution.agent.log_gzip_after" min={-1}
         description="-1 disables compression; 0 = default (3)"
         bind:value={settings.agent.logGzipAfterDays}
         modified={a.logGzipAfterDays !== d.logGzipAfterDays}
         onreset={() => (settings.agent.logGzipAfterDays = d.logGzipAfterDays)} />
-      <NumberField id="agent-logmax" label="Log max size (MB)" keyPath="agent.log_retention_max_size_mb" min={-1}
+      <NumberField id="agent-logmax" label="Log max size (MB)" keyPath="execution.agent.log_retention_max_size_mb" min={-1}
         description="-1 disables size cap; 0 = default (1024)"
         bind:value={settings.agent.logRetentionMaxSizeMb}
         modified={a.logRetentionMaxSizeMb !== d.logRetentionMaxSizeMb}
         onreset={() => (settings.agent.logRetentionMaxSizeMb = d.logRetentionMaxSizeMb)} />
-      <NumberField id="agent-approval-port" label="Approval port" keyPath="agent.approval_port" min={0} max={65535}
+      <NumberField id="agent-approval-port" label="Approval port" keyPath="execution.agent.approval_port" min={0} max={65535}
         description="Pin the localhost approval-server port (0 = random)"
         bind:value={settings.agent.approvalPort}
         modified={a.approvalPort !== d.approvalPort}

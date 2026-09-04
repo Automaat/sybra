@@ -17,7 +17,7 @@ func TestIsAgentFailure(t *testing.T) {
 		{"legacy failed event", audit.Event{Type: audit.EventAgentFailed}, true},
 		{"completed stopped is success", audit.Event{Type: audit.EventAgentCompleted, Data: map[string]any{"state": "stopped"}}, false},
 		{"completed error is failure", audit.Event{Type: audit.EventAgentCompleted, Data: map[string]any{"state": "error"}}, true},
-		{"completed without state is success", audit.Event{Type: audit.EventAgentCompleted, Data: map[string]any{}}, false},
+		{"completed without state is unknown non-failure", audit.Event{Type: audit.EventAgentCompleted, Data: map[string]any{}}, false},
 		{"unrelated event", audit.Event{Type: audit.EventTaskCreated}, false},
 	}
 	for _, tt := range tests {
@@ -284,19 +284,36 @@ func TestCheckGHAuthUnavailable(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC()
 
-	if got := checkGHAuthUnavailable(true, now); len(got) != 0 {
+	if got := checkGHAuthUnavailable(true, "healthy", now); len(got) != 0 {
 		t.Errorf("authenticated=true: expected no findings, got %d", len(got))
 	}
 
-	got := checkGHAuthUnavailable(false, now)
+	// Permanent misconfiguration: single actionable critical alert.
+	got := checkGHAuthUnavailable(false, "misconfigured", now)
 	if len(got) != 1 {
-		t.Fatalf("authenticated=false: expected one finding, got %d", len(got))
+		t.Fatalf("authenticated=false, misconfigured: expected one finding, got %d", len(got))
 	}
 	if got[0].Category != CatGHAuthUnavailable {
 		t.Errorf("category = %s, want %s", got[0].Category, CatGHAuthUnavailable)
 	}
 	if got[0].Severity != SeverityCritical {
 		t.Errorf("severity = %s, want %s", got[0].Severity, SeverityCritical)
+	}
+	if got[0].Evidence["state"] != "misconfigured" {
+		t.Errorf("evidence[state] = %v, want misconfigured", got[0].Evidence["state"])
+	}
+
+	// Transient failure (unavailable/rate_limited/refreshing/unknown):
+	// downgraded, since the circuit breaker and force-refresh already retry
+	// this on their own instead of needing a human to intervene.
+	for _, state := range []string{"unavailable", "rate_limited", "refreshing", ""} {
+		got := checkGHAuthUnavailable(false, state, now)
+		if len(got) != 1 {
+			t.Fatalf("authenticated=false, state=%q: expected one finding, got %d", state, len(got))
+		}
+		if got[0].Severity != SeverityWarning {
+			t.Errorf("state=%q: severity = %s, want %s", state, got[0].Severity, SeverityWarning)
+		}
 	}
 }
 

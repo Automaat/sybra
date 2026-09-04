@@ -18,27 +18,42 @@ import (
 // (~/.sybra/agents/<id>.yaml). Written when the PID is known and whenever
 // the session ID is first captured; deleted when the agent terminates.
 type Record struct {
-	ID             string    `yaml:"id"`
-	TaskID         string    `yaml:"task_id,omitempty"`
-	Name           string    `yaml:"name,omitempty"`
-	Mode           string    `yaml:"mode"`
-	Provider       string    `yaml:"provider"`
-	Model          string    `yaml:"model,omitempty"`
-	ExperimentID   string    `yaml:"experiment_id,omitempty"`
-	VariantID      string    `yaml:"variant_id,omitempty"`
-	AssignmentUnit string    `yaml:"assignment_unit,omitempty"`
-	AssignmentKey  string    `yaml:"assignment_key,omitempty"`
-	PID            int       `yaml:"pid"`
-	SessionID      string    `yaml:"session_id,omitempty"`
-	LogPath        string    `yaml:"log_path,omitempty"`
-	CWD            string    `yaml:"cwd,omitempty"`
-	SandboxHomeDir string    `yaml:"sandbox_home_dir,omitempty"`
-	StartedAt      time.Time `yaml:"started_at"`
-	ProcStartedAt  string    `yaml:"proc_started_at,omitempty"` // ps lstart, guards PID reuse
-	StdinPath      string    `yaml:"stdin_path,omitempty"`      // FIFO for interactive survival
-	PendingPrompts []string  `yaml:"pending_prompts,omitempty"` // queued follow-up turns
-	OneShot        bool      `yaml:"one_shot,omitempty"`
-	MaxTurns       int       `yaml:"max_turns,omitempty"`
+	ID                      string        `yaml:"id"`
+	TaskID                  string        `yaml:"task_id,omitempty"`
+	Name                    string        `yaml:"name,omitempty"`
+	Role                    Role          `yaml:"role,omitempty"`
+	Mode                    string        `yaml:"mode"`
+	Provider                string        `yaml:"provider"`
+	Model                   string        `yaml:"model,omitempty"`
+	RequestedModel          string        `yaml:"requested_model,omitempty"`
+	ExperimentID            string        `yaml:"experiment_id,omitempty"`
+	VariantID               string        `yaml:"variant_id,omitempty"`
+	RoutingReason           string        `yaml:"routing_reason,omitempty"`
+	AssignmentUnit          string        `yaml:"assignment_unit,omitempty"`
+	AssignmentKey           string        `yaml:"assignment_key,omitempty"`
+	DecisionVersion         int           `yaml:"decision_version,omitempty"`
+	AttemptIntentID         string        `yaml:"attempt_intent_id,omitempty"`
+	AttemptTaskKey          string        `yaml:"attempt_task_key,omitempty"`
+	AttemptTaskGen          uint64        `yaml:"attempt_task_generation,omitempty"`
+	AttemptWorktree         string        `yaml:"attempt_worktree,omitempty"`
+	AttemptWorkGen          uint64        `yaml:"attempt_worktree_generation,omitempty"`
+	AttemptAccess           AttemptAccess `yaml:"attempt_access,omitempty"`
+	AttemptLeaseID          string        `yaml:"attempt_lease_id,omitempty"`
+	AttemptVersion          uint64        `yaml:"attempt_version,omitempty"`
+	PID                     int           `yaml:"pid"`
+	SessionID               string        `yaml:"session_id,omitempty"`
+	LogPath                 string        `yaml:"log_path,omitempty"`
+	CWD                     string        `yaml:"cwd,omitempty"`
+	SandboxHomeDir          string        `yaml:"sandbox_home_dir,omitempty"`
+	StartedAt               time.Time     `yaml:"started_at"`
+	ProcStartedAt           string        `yaml:"proc_started_at,omitempty"` // ps lstart, guards PID reuse
+	StdinPath               string        `yaml:"stdin_path,omitempty"`      // FIFO for interactive survival
+	PendingPrompts          []string      `yaml:"pending_prompts,omitempty"` // queued follow-up turns
+	SteerCommandIDs         []string      `yaml:"steer_command_ids,omitempty"`
+	SteerDispatching        bool          `yaml:"steer_dispatching,omitempty"`
+	UnthrottledOutputEvents bool          `yaml:"unthrottled_output_events,omitempty"`
+	OneShot                 bool          `yaml:"one_shot,omitempty"`
+	MaxTurns                int           `yaml:"max_turns,omitempty"`
 	// RequirePermissions preserves a codex chat's sandbox/approval choice
 	// across a restart (codex respawns per turn and would otherwise default
 	// to permissive).

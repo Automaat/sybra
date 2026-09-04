@@ -1,0 +1,217 @@
+# Sybra agent daemon
+
+`sybra-agentd` is an outbound-only execution worker. It does not initialize a
+Sybra board, task or project stores, workflows, GitHub automation, loop agents,
+monitoring/evaluation services, or the UI/API server.
+
+## Leader authority and legacy migration
+
+On a database-backed `cluster.role: leader` board, every workflow `run_agent`
+effect is now placed independently through the worker scheduler. The leader
+keeps the only canonical task, Agent record, workflow effect claim, budget,
+sidecars, history, and completion callback. A daemon receives an immutable run
+spec and returns ordered events plus a handback package; it never receives or
+persists a task document. If no eligible daemon exists, the scheduler records
+an explicit local decision and the same leader-owned completion path runs the
+provider locally.
+
+The older `cluster.followers` task-assignment and snapshot-mirroring mode is
+deprecated. Existing fields remain loadable for rollback, and existing task
+`assigned_node` metadata acts as placement affinity when the matching daemon
+uses that worker ID, but a database-backed leader no longer pushes canonical
+task snapshots to those nodes. Install `sybra-agentd` on each
+execution node, point `leader_url` at the leader's `/worker/v1` service, copy
+repository mirrors into the daemon's `repositories` map, then remove the old
+follower service after its in-flight task runs have drained.
+
+An execution node runs agents, so it needs whatever the process sandbox needs.
+With `sandbox_mode: enforce` (below) a stock Ubuntu 24.04 node also needs
+`bubblewrap` **and** the AppArmor profile this repo ships — the distribution
+denies unprivileged user namespaces by default, and without the profile every
+dispatched run fails closed at certification with a working `bwrap` on PATH.
+See "The bwrap AppArmor profile" in [the deploy runbook](../deploy/README.md).
+
+Start it with a dedicated YAML file and a leader token supplied only through an
+environment variable:
+
+```yaml
+leader_url: https://leader.example.test
+token_env: SYBRA_AGENTD_TOKEN
+capacity: 2
+providers: [claude, codex]
+models: [sonnet, gpt-5.4]
+labels: { zone: home }
+trusted_work: false
+encrypted_work: false
+warm_caches: [go-build]
+sandbox_mode: enforce
+workspace_root: /var/lib/sybra-agentd/workspaces
+state_root: /var/lib/sybra-agentd/state
+spool_max_bytes: 67108864
+workspace_retention_hours: 168
+repositories:
+  example-repo: /var/lib/sybra-agentd/clones/example.git
+secret_env:
+  run/example/provider-key: ANTHROPIC_API_KEY
+```
+
+```bash
+SYBRA_AGENTD_TOKEN=... sybra-agentd -config /etc/sybra/sybra-agentd.yaml
+```
+
+For the shipped systemd deployment, install
+`deploy/systemd/sybra-agentd.service`, place the YAML at
+`/etc/sybra/sybra-agentd.yaml`, and put only secret environment assignments in
+`/etc/sybra/sybra-agentd.env` (mode `0600`). The release builder stages
+`sybra-agentd` beside `sybra-server`; the leader's final `ExecStartPost` then
+restarts an enabled daemon asynchronously after every healthy activation. The
+unit's `KillMode=process` leaves detached provider children alive, while the
+daemon's persistent `state_root` lets the replacement process re-adopt them.
+The leader must use a database backend and `cluster.role: leader`; a standalone
+board deliberately does not expose the durable worker scheduler.
+Install the unit with `systemctl enable --now sybra-agentd`; its
+`StateDirectory=sybra-agentd` provisions `/var/lib/sybra-agentd` for the
+unprivileged service account.
+
+The leader URL must use HTTPS except on loopback. `token_env` and `secret_env`
+name environment variables; secret values are never written to the config.
+The leader token is stripped from every provider subprocess. Run-scoped secret
+references are resolved locally and only the requested provider environment
+binding is injected.
+
+Repository locations are daemon-local. The wire contract carries only the
+opaque `repositories` key and an immutable full base SHA. For every accepted
+run the daemon clones that mapping into an isolated logical `worktree` root,
+verifies the SHA is reachable from the declared base ref, and checks out the
+SHA detached; a ref that moves after dispatch cannot change the run's input.
+Agent-facing paths are supplied through `SYBRA_WORKTREE_ROOT`,
+`SYBRA_SIDECAR_ROOT`, `SYBRA_ARTIFACT_ROOT`, and
+`SYBRA_WORKING_MEMORY_ROOT`, never leader host paths.
+
+The state root contains a stable generated node identity, the restart-survival
+process registry, the local approval endpoint identity, and an atomically
+rewritten bounded spool. Event and artifact delivery is at least once. If the
+spool limit is reached, the daemon reports `agentd: durable spool exhausted`
+and stops the affected run rather than dropping output. Capacity overflow and
+draining reject new starts with an explicit terminal event. Existing runs may
+finish while draining.
+
+Completion produces one deterministic, content-addressed package: a Git bundle
+for committed descendants, separate binary patches preserving staged and
+unstaged tracked changes,
+sorted untracked blobs with portable modes, and only outputs declared by the
+run. Each member has a size and SHA-256 digest; packages are bounded to 512
+members, 32 MiB each, and 128 MiB total. `NOTES.md` and evidence scratch are
+Git-excluded before execution. Working memory is returned only through an
+explicit private output on author roles and is never part of Git handback.
+
+The daemon retains a workspace and its durable upload until the leader
+acknowledges the complete package, then deletes both. Unacknowledged or stale
+diagnostic handbacks are retained for `workspace_retention_hours` (seven days
+by default) and then reaped. The leader stores uploads as `staged`, not ready:
+workflow advancement waits for a generation-fenced importer to verify package
+membership/hashes, exact base ancestry, and a clean canonical base before any
+Git mutation. The importer holds the worktree manager's canonical mutation
+lock across both generation checks, quarantine validation, Git publication,
+and declared-output import. Stale/corrupt handbacks are marked rejected and
+retained privately; accepted Git state, sidecars, evidence/artifacts, and
+private working memory flow into their leader-owned stores. Neither outcome is
+workflow completion by itself.
+
+`sandbox_mode: enforce` fails each run closed if the host containment mechanism
+or workspace profile cannot be established. `report` is accepted for rollout
+diagnostics but does not claim containment. Provider health, OS/architecture,
+capacity, sandbox posture, labels, models, mapped repositories, warm-cache
+hints, build/protocol versions, and trusted/encrypted work eligibility are
+advertised during registration.
+
+The leader schedules each run independently. `node_override` is a hard pin and
+fails clearly when that node is unavailable; the legacy `assigned_node` value
+is treated as an affinity and may fall back when policy allows. Active session
+rows are locked while the fenced run and start command are persisted, so the
+same transaction reserves advertised capacity. Terminal runs release capacity
+idempotently. Draining or disabled nodes finish accepted work but receive no
+new placements; diagnostics show their state, active and available capacity,
+and placement results carry per-candidate rejection reasons. A caller must opt
+in explicitly when no eligible daemon may fall back to local execution.
+
+PR review runs additionally require the `verifier_auth=true` worker
+capability. The shipped daemon does not advertise it yet because it has no
+restricted GitHub App verifier-token integration; those runs therefore fall
+back to the leader instead of consuming retries on a worker that cannot start
+them. Do not advertise the capability from a custom worker unless it supplies
+the same restricted verifier credential and isolation as the leader.
+
+## Operations runbook
+
+### Enroll and rotate credentials
+
+1. Create a dedicated leader bearer token and expose it to the daemon through
+   the variable named by `token_env`; never put the value in YAML or a unit
+   file argument. Start the daemon and confirm `/worker/v1/diagnostics` shows
+   the expected worker ID, protocol/build, repository capability, sandbox
+   posture, and non-expired lease.
+2. The leader currently accepts one bearer token, so rotate with a coordinated
+   drain rather than assuming an overlap window: drain every daemon, wait for
+   `activeRuns=0` and `pendingEvents=0`, stop them, replace the leader token,
+   replace each daemon's `token_env` value, then restart the daemons. Verify new
+   sessions before restoring placement. A replacement session fences the old
+   session atomically; do not clone a daemon `state_root` onto another machine
+   because it contains the stable identity and delivery cursors. A zero-downtime
+   overlapping rotation requires future multi-token leader support.
+3. Rotate provider secrets independently through `secret_env`. Existing runs
+   retain only their run-scoped files; a new approval/action obtains a fresh
+   scoped grant and never receives the leader token.
+
+### Drain and upgrade
+
+1. POST `/worker/v1/drain` with the current session ID. Confirm diagnostics
+   reports `draining`; new placements must show `worker is draining` while
+   active runs continue delivering events and artifacts.
+2. Wait for `activeRuns=0` and `pendingEvents=0`. Preserve `state_root` and
+   provider process state, replace the binary, then restart with the same
+   configuration. The daemon resumes its session and unacknowledged cursors.
+3. Mixed minor protocol versions are negotiated and supported. A different
+   major is refused during registration/dispatch with the supported range; do
+   not bypass this fence. Upgrade the leader first when a release requires a
+   new major, then drain and roll workers one at a time.
+
+### Recover a stuck or partitioned run
+
+- Connectivity loss alone is not permission to reassign or launch a second
+  provider. Restore the route and allow the daemon to replay its durable spool;
+  exact duplicates are accepted, gaps or changed repeats are rejected. The
+  leader's run/effect record and daemon workspace should be preserved while
+  investigating.
+- If the daemon process restarted but the provider survived, keep the same
+  `state_root`; re-adoption replays provider output after the durable output
+  cursor and emits one terminal fate. If re-adoption is impossible, the daemon
+  emits an explicit failed terminal instead of guessing success.
+- For a stale/replaced session, restart using the persisted resume session and
+  command cursor. Controls and terminal acknowledgements resolve the run's
+  current owner. Never edit cursor rows or `spool.json` by hand; retain them for
+  diagnosis and use a fresh worker identity only after accepted runs are
+  terminal.
+- A corrupt, incomplete, stale-generation, wrong-base, or branch-moved
+  handback is rejected before canonical mutation. Keep the rejected staging
+  record and workspace until the cause is understood; retry from the same
+  immutable base or dispatch a new fenced workflow effect.
+
+### Spool exhaustion and alerts
+
+Diagnostics expose only counters and now include `spoolBytes`,
+`spoolMaxBytes`, and stable alert codes—never prompts, event bodies, artifact
+bytes, or credentials. Alert on:
+
+- `spool_pressure`: durable spool is at least 80% full. Restore leader
+  connectivity/acknowledgements or drain the node; do not delete the spool.
+- `unacknowledged_events`: output is waiting for leader acknowledgement.
+  Persistent growth indicates a partition or stalled leader consumer.
+- `capacity_saturated`: all advertised run slots are occupied. Scale or wait;
+  it is not evidence that a run is stuck.
+
+At the hard limit the daemon fails the affected run explicitly while retaining
+reserved room for its terminal event. Recovery is to restore delivery and let
+acknowledgements compact the spool. Copy `state_root` for diagnosis before any
+operator-directed retirement; deleting it can discard unacknowledged output
+and removes the evidence needed to distinguish replay from a new run.

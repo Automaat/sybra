@@ -15,19 +15,21 @@ import (
 // missing sysctl on a locked-down CI image) never prevents the others from
 // reporting, and never itself counts as pressure — it surfaces as NaN.
 func readSample(probeDir string) Sample {
+	diskPct, diskBytes := diskFree(probeDir)
 	return Sample{
-		DiskFreePct:     diskFreePct(probeDir),
+		DiskFreePct:     diskPct,
+		DiskFreeBytes:   diskBytes,
 		MemAvailablePct: memAvailablePct(),
 		LoadPerCPU:      loadPerCPU(),
 	}
 }
 
-func diskFreePct(dir string) float64 {
+func diskFree(dir string) (pct, bytes float64) {
 	var st unix.Statfs_t
 	if err := unix.Statfs(dir, &st); err != nil || st.Blocks == 0 {
-		return math.NaN()
+		return math.NaN(), math.NaN()
 	}
-	return float64(st.Bavail) / float64(st.Blocks) * 100
+	return float64(st.Bavail) / float64(st.Blocks) * 100, float64(st.Bavail) * float64(st.Bsize)
 }
 
 // memAvailablePct approximates macOS's notion of "available" memory as

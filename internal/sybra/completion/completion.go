@@ -19,16 +19,23 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/backoff"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/fsutil"
+	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/loopagent"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/reconcile"
+	"github.com/Automaat/sybra/internal/runoutcome"
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/textutil"
 	"github.com/Automaat/sybra/internal/verdict"
+	"github.com/Automaat/sybra/internal/watchdogreason"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
 )
@@ -44,6 +51,9 @@ const (
 	// to a task review sidecar when a review run is stopped by the cost
 	// guardrail before it can post a draft.
 	interruptedReviewMaxLen = 12000
+
+	completionUpdateRunRetryInitialDelay = 250 * time.Millisecond
+	completionUpdateRunRetryMaxDelay     = 5 * time.Second
 )
 
 // Config carries every dependency Handler needs. Only Logger and Tasks are
@@ -51,19 +61,20 @@ const (
 // (a subsystem that failed to start) can leave it unset.
 type Config struct {
 	Logger *slog.Logger
-	Audit  *audit.Logger
+	Audit  audit.Store
 	Emit   func(string, any)
 
 	Tasks          *task.Manager
 	Worktrees      *worktree.Manager
 	Sandboxes      *sandbox.Manager
 	WorkflowEngine workflow.CompletionWorkflow
-	Stats          *stats.Store
+	Stats          stats.Repository
 	Limits         *limits.Store
 	LoopSched      *loopagent.Scheduler
 	PRTracker      *github.IssueTracker
 	Cfg            *config.Config
 	Artifacts      *artifact.Store
+	Reconciler     reconcile.Runner
 	WorkScrub      func(projectID string) *WorkScrubContext
 
 	// HumanReviewComplete routes a completed human-review agent's verdict
@@ -90,14 +101,14 @@ type WorkScrubContext struct {
 // wires only the deps the scenario exercises.
 type Handler struct {
 	logger *slog.Logger
-	audit  *audit.Logger
+	audit  audit.Store
 	emit   func(string, any)
 
 	tasks          *task.Manager
 	worktrees      *worktree.Manager
 	sandboxes      *sandbox.Manager
 	workflowEngine workflow.CompletionWorkflow
-	stats          *stats.Store
+	stats          stats.Repository
 	limits         *limits.Store
 	loopSched      *loopagent.Scheduler
 	prTracker      *github.IssueTracker
@@ -106,7 +117,8 @@ type Handler struct {
 	// completed test-runner's Playwright MCP evidence (screenshots/console
 	// logs) before terminal worktree cleanup. Nil-safe: importTestRunnerEvidence
 	// no-ops when unset (degraded init / tests).
-	artifacts *artifact.Store
+	artifacts  *artifact.Store
+	reconciler reconcile.Runner
 	// workScrub resolves a project ID to a WorkScrubContext (App.workScrubContextForTask).
 	// Used by importTestRunnerEvidence to redact work-repo identifiers from
 	// captured evidence before it lands in the local artifact store. Nil-safe:
@@ -133,6 +145,7 @@ func New(cfg Config) *Handler {
 		prTracker:           cfg.PRTracker,
 		cfg:                 cfg.Cfg,
 		artifacts:           cfg.Artifacts,
+		reconciler:          cfg.Reconciler,
 		workScrub:           cfg.WorkScrub,
 		humanReviewComplete: cfg.HumanReviewComplete,
 		conflictRecovery:    cfg.ConflictRecovery,
@@ -154,16 +167,27 @@ func runDurationSeconds(ag *agent.Agent) float64 {
 	return max(ag.GetLastEventAt().Sub(ag.StartedAt).Seconds(), 0)
 }
 
-func buildCompletionAuditData(ag *agent.Agent, state agent.State, role agent.Role, cost, duration, premiumRequests float64, input, output, cacheCreate, cacheRead, reasoning int) map[string]any {
+func buildCompletionAuditData(ag *agent.Agent, state agent.State, role agent.Role, outcome string, cost, duration, premiumRequests float64, input, output, cacheCreate, cacheRead, reasoning int) map[string]any {
 	auditData := map[string]any{
-		"mode":       ag.Mode,
-		"cost_usd":   cost,
-		"duration_s": duration,
-		"state":      string(state),
-		"role":       role,
-		"provider":   ag.Provider,
-		"name":       ag.Name,
-		"log_file":   ag.LogPath,
+		"mode":             ag.Mode,
+		"cost_usd":         cost,
+		"duration_s":       duration,
+		"state":            string(state),
+		"outcome":          outcome,
+		"role":             role,
+		"provider":         ag.Provider,
+		"model":            ag.Model,
+		"reasoning_effort": ag.ReasoningEffort,
+		"name":             ag.Name,
+		"log_file":         ag.LogPath,
+		"turn_count":       ag.GetTurnCount(),
+		"tool_calls":       ag.GetToolCalls(),
+	}
+	if ag.ExperimentID != "" {
+		auditData["experiment_id"] = ag.ExperimentID
+	}
+	if ag.VariantID != "" {
+		auditData["variant_id"] = ag.VariantID
 	}
 	if reasoning > 0 {
 		auditData["reasoning_tokens"] = reasoning
@@ -210,8 +234,9 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 	// parent task and skip the storage paths below, but their lifecycle
 	// still belongs in the audit trail.
 	duration := runDurationSeconds(ag)
-	role := h.roleForAgentName(ag.Name)
-	auditData := buildCompletionAuditData(ag, state, role, cost, duration, premiumRequests, input, output, cacheCreate, cacheRead, reasoning)
+	role := h.roleForAgent(ag)
+	outcome := h.runOutcome(ag, role, exitErr, resultContent)
+	auditData := buildCompletionAuditData(ag, state, role, outcome, cost, duration, premiumRequests, input, output, cacheCreate, cacheRead, reasoning)
 	h.logAudit(audit.EventAgentCompleted, ag.TaskID, ag.ID, auditData)
 	if reason := ag.GetEscalationReason(); agent.IsCheckpointEscalation(reason) {
 		h.logAudit(audit.EventAgentCheckpoint, ag.TaskID, ag.ID, map[string]any{
@@ -221,7 +246,7 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 		})
 	}
 
-	h.recordRunStats(ag, role, cost, duration, exitErr, resultContent)
+	h.recordRunStats(ag, role, outcome, cost, duration)
 
 	// Loop agents run without a TaskID — let the scheduler record cost
 	// before the early return below kicks in.
@@ -241,32 +266,92 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 	h.emitPromptRenderedAudit(ag)
 
 	runUpdates := h.buildRunPatch(ag, state, cost, premiumRequests, resultContent, exitErr)
-	if err := h.tasks.UpdateRun(ag.TaskID, ag.ID, runUpdates); err != nil {
+	if err := h.tasks.UpdateRunBy(ag.TaskID, "completion.record_run_result", ag.ID, runUpdates); err != nil {
+		if errors.Is(err, fsutil.ErrLockTimeout) {
+			h.logger.Warn("task.update-run.deferred", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
+			go h.retryUpdateRunCompletion(ag, runUpdates, resultContent, exitErr)
+			return
+		}
 		h.logger.Error("task.update-run", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
 	}
-	h.salvageInterruptedReview(ag)
-	h.markCompletedReview(ag, exitErr)
+	h.afterRunPersisted(ag, resultContent, exitErr)
+}
+
+func (h *Handler) retryUpdateRunCompletion(ag *agent.Agent, runUpdates task.RunPatch, resultContent string, exitErr error) {
+	for attempt := 1; ; attempt++ {
+		delay := backoff.ForAttempt(attempt, completionUpdateRunRetryInitialDelay, completionUpdateRunRetryMaxDelay).Delay
+		time.Sleep(delay)
+		err := h.tasks.UpdateRunBy(ag.TaskID, "completion.record_run_result", ag.ID, runUpdates)
+		if err == nil {
+			h.logger.Info("task.update-run.deferred.persisted", "task_id", ag.TaskID, "agent_id", ag.ID)
+			h.afterRunPersisted(ag, resultContent, exitErr)
+			return
+		}
+		if !errors.Is(err, fsutil.ErrLockTimeout) {
+			h.logger.Error("task.update-run.deferred.failed", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
+			return
+		}
+		h.logger.Warn("task.update-run.deferred.retry", "task_id", ag.TaskID, "agent_id", ag.ID, "delay", delay, "err", err)
+	}
+}
+
+func (h *Handler) afterRunPersisted(ag *agent.Agent, resultContent string, exitErr error) {
+	// Resolved before any review-side-effect or routing side effect below: a
+	// parked adoption may only persist its run and clear the workflow step.
+	// markCompletedReview/salvageInterruptedReview set Task.Reviewed/CodeReview
+	// without the workflow engine recording review evidence (that only happens
+	// on advancement, which parked adoption skips) — running them here would
+	// leave the resumed simple-task-review workflow believing review already
+	// happened while require_evidence still finds the criterion missing,
+	// parking the task again. handleFixReviewCompletion in particular pushes
+	// the survivor's branch (and under review-hold rewrites the task's
+	// status), which must not happen behind a human's or the monitor's
+	// deliberate parking.
+	parked, parkedAdoption := h.parkedAdoption(ag)
+	stall := classifyStall(ag, exitErr)
+	if !h.reconcileAuthorCompletion(ag, stall.Stalled) {
+		return
+	}
+
+	if !parkedAdoption {
+		h.salvageInterruptedReview(ag)
+		h.markCompletedReview(ag, exitErr)
+	}
 
 	// Human-review agents are out-of-band diagnostics — they must not
 	// feed into the workflow engine (which would advance the step that
 	// originally caused the human-required transition based on the
 	// diagnostic verdict).
-	if agent.RoleFromName(ag.Name) == agent.RoleHumanReview {
+	if ag.EffectiveRole() == agent.RoleHumanReview {
 		if h.humanReviewComplete != nil {
 			h.humanReviewComplete(ag)
 		}
 		return
 	}
 
-	if agent.RoleFromName(ag.Name) == agent.RoleFixReview && exitErr == nil {
+	if !parkedAdoption && ag.EffectiveRole() == agent.RoleFixReview && exitErr == nil && !stall.Stalled {
 		h.handleFixReviewCompletion(ag)
 	}
 
-	if !h.notifyWorkflowEngine(ag, resultContent, exitErr) {
+	if parkedAdoption {
+		// Reattach adopted this survivor over a parked/terminal task status to
+		// save its uncommitted work (see agent.ParksLiveAgent). Its result is
+		// already persisted above, but the workflow engine gates advancement on
+		// Workflow.State alone — letting it advance here would run the next
+		// step (e.g. set_ready_review) and drag a task a human or the monitor
+		// deliberately parked back into the pipeline.
+		h.logger.Warn("agent.completion.parked-adoption",
+			"task_id", ag.TaskID, "agent_id", ag.ID, "task_status", parked)
+		if h.workflowEngine != nil {
+			h.workflowEngine.ClearAgentStep(ag.TaskID, ag.ID)
+		}
+	} else if !h.notifyWorkflowEngine(ag, resultContent, exitErr, stall) {
 		return
 	}
-
-	if agent.RoleFromName(ag.Name) == agent.RoleTestRunner {
+	// Import evidence even when workflow advancement was suppressed above: the
+	// terminal-task cleanup below removes the managed worktree, and anything
+	// written to .sybra/evidence while Sybra was down would otherwise be lost.
+	if ag.EffectiveRole() == agent.RoleTestRunner {
 		h.importEvidenceForAgent(ag)
 	}
 
@@ -280,6 +365,110 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 			go h.sandboxes.Remove(ag.TaskID)
 		}
 	}
+}
+
+func (h *Handler) reconcileAuthorCompletion(ag *agent.Agent, stalled bool) bool {
+	role := ag.EffectiveRole()
+	if h.reconciler == nil || !role.AuthorsCode() {
+		return true
+	}
+	intent := reconcile.IntentAuthorCompletion
+	switch role {
+	case agent.RoleFixReview:
+		intent = reconcile.IntentFixReview
+	case agent.RolePRFix, agent.RoleTestFix:
+		intent = reconcile.IntentPRFix
+	case agent.RoleHumanReview:
+		intent = reconcile.IntentHumanRecovery
+	default:
+		// The AuthorsCode guard above excludes every verifier/coordinator role;
+		// implementation and any future code-author role use the base intent.
+	}
+	plan, err := h.reconciler.Reconcile(context.Background(), reconcile.Request{TaskID: ag.TaskID, RunID: ag.ID, Intent: intent})
+	if err != nil {
+		h.logger.Error("post-run.reconcile", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
+		// A stalled attempt still has to reach the workflow's retry/reschedule
+		// handling. That path is non-destructive; cleanup remains independently
+		// fail-closed behind CanCleanup's fresh observation.
+		return stalled || role == agent.RoleHumanReview
+	}
+	// Human-review remains an out-of-band diagnosis. Reconciliation still
+	// checkpoints any authored work first, but its verdict handler owns the
+	// resulting task transition.
+	if role == agent.RoleHumanReview {
+		return true
+	}
+	switch plan.Action {
+	case reconcile.ActionAdvance, reconcile.ActionResumeMergeablePR:
+		return plan.DeliverRunOutcome
+	case reconcile.ActionWait:
+		h.logger.Info("post-run.reconcile.wait", "task_id", ag.TaskID, "agent_id", ag.ID, "reason", plan.Reason)
+		return stalled
+	case reconcile.ActionRepair:
+		if plan.DeliverRunOutcome {
+			return true
+		}
+		if h.conflictRecovery != nil && h.conflictRecovery(ag.TaskID) {
+			h.logger.Info("post-run.reconcile.repair-started", "task_id", ag.TaskID, "agent_id", ag.ID, "reason", plan.Reason)
+			h.logAudit(audit.EventReconciliationRepairAttempted, ag.TaskID, ag.ID, map[string]any{"result": "started", "reason": plan.Reason})
+		} else {
+			h.logger.Warn("post-run.reconcile.repair-held", "task_id", ag.TaskID, "agent_id", ag.ID, "reason", plan.Reason)
+			h.logAudit(audit.EventReconciliationRepairAttempted, ag.TaskID, ag.ID, map[string]any{"result": "held", "reason": plan.Reason})
+		}
+		return false
+	case reconcile.ActionQuarantine:
+		return h.parkReconciliation(ag.TaskID, plan, task.StatusBlocked)
+	case reconcile.ActionHumanDecision:
+		return h.parkReconciliation(ag.TaskID, plan, task.StatusHumanRequired)
+	default:
+		h.logger.Warn("post-run.reconcile.effect-incomplete", "task_id", ag.TaskID, "agent_id", ag.ID, "action", plan.Action, "reason", plan.Reason)
+		return false
+	}
+}
+
+func (h *Handler) parkReconciliation(taskID string, plan reconcile.Plan, status task.Status) bool {
+	extra := task.Update{StatusReason: task.Ptr("post-run reconciliation: " + plan.Reason)}
+	if status == task.StatusHumanRequired {
+		extra.Escalation = task.OperatorDecisionRequired("post_run.pr_closed", plan.Reason)
+		extra.AutonomyOutcome = task.HumanRequiredOutcome()
+	} else {
+		extra.Escalation = task.MachineFailure("post_run.git_unhealthy", plan.Reason)
+		extra.AutonomyOutcome = task.QuarantinedOutcome()
+	}
+	_, err := h.tasks.Apply(task.TransitionIntent{
+		TaskID: taskID, ToStatus: status, Actor: "post-run.reconciler", Extra: extra,
+		ExpectedGeneration: &plan.Preconditions.TaskGeneration,
+		IdempotencyKey:     "post-run:" + plan.Preconditions.RunID + ":" + string(plan.Action),
+	})
+	if err != nil {
+		h.logger.Error("post-run.reconcile.park", "task_id", taskID, "action", plan.Action, "err", err)
+	}
+	return false
+}
+
+// parkedAdoption reports whether ag is a survivor that reattach adopted over a
+// parked/terminal task status AND whose task is still parked, meaning its
+// completion must not advance the workflow. Returns the blocking status for
+// logging.
+//
+// The live status is re-read rather than trusting the reattach-time snapshot:
+// a human who parked the task while the app was down may since have put it
+// back in flight, in which case this is an ordinary completion and has to
+// advance normally. A task that cannot be read at all is treated as still
+// parked — advancing on an unknown status is the unsafe direction.
+func (h *Handler) parkedAdoption(ag *agent.Agent) (string, bool) {
+	parked := ag.AdoptedParkedStatus()
+	if parked == "" {
+		return "", false
+	}
+	t, err := h.tasks.Get(ag.TaskID)
+	if err != nil {
+		return parked, true
+	}
+	if !agent.ParksLiveAgent(string(t.Status)) {
+		return "", false
+	}
+	return string(t.Status), true
 }
 
 func terminalResultContent(ag *agent.Agent) string {
@@ -402,6 +591,7 @@ func addRunMetadata(updates *task.RunPatch, ag *agent.Agent) {
 		updates.SkillConformance = task.Ptr(ag.SkillConformance)
 	}
 	updates.SubagentCallCount = task.Ptr(ag.GetSubagentCallCount())
+	updates.TurnCount = task.Ptr(ag.GetTurnCount())
 }
 
 func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiumRequests float64, resultContent string, exitErr error) task.RunPatch {
@@ -425,10 +615,7 @@ func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiu
 			ag.SkillConformance = skillattr.ConformanceRecovered
 		}
 	}
-	truncated := resultContent
-	if len(truncated) > maxResultLen {
-		truncated = truncated[:maxResultLen] + "\n... (truncated)"
-	}
+	truncated := textutil.TruncateBytes(resultContent, maxResultLen, "\n... (truncated)")
 	runUpdates := task.RunPatch{
 		State:           task.Ptr(string(state)),
 		CostUSD:         task.Ptr(cost),
@@ -438,6 +625,7 @@ func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiu
 		SessionID:       task.Ptr(ag.GetSessionID()),
 		Model:           task.Ptr(ag.Model),
 		Provider:        task.Ptr(ag.Provider),
+		ToolFailures:    task.Ptr(ag.GetToolFailures()),
 	}
 	if ag.SkillExecutionMode != "" {
 		runUpdates.SkillExecutionMode = task.Ptr(ag.SkillExecutionMode)
@@ -452,7 +640,7 @@ func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiu
 	// For human-review agents, parse the verdict from the live (untruncated)
 	// output and persist it in its own field so detector.go can read it even
 	// when the full result text is longer than maxResultLen.
-	if agent.RoleFromName(ag.Name) == agent.RoleHumanReview {
+	if ag.EffectiveRole() == agent.RoleHumanReview {
 		if v, _, err := verdict.Parse(finalAssistantText(ag)); err == nil {
 			runUpdates.Verdict = task.Ptr(v.Decision)
 		}
@@ -462,15 +650,28 @@ func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiu
 	if sha := h.captureHeadSHA(ag.TaskID); sha != "" {
 		runUpdates.HeadSHA = task.Ptr(sha)
 	}
+	// Watchdog.handleZeroOutputStall records the bare zeroOutputReason constant
+	// (internal/watchdog/agent.go), not the "watchdog: silent hang: ..." string
+	// watchdogreason.SilentHang wraps it in for the task's StatusReason, so
+	// ag.GetErrorMsg() here is the bare constant. Comparing directly against it
+	// (not via watchdogreason.IsSilentHang, which checks the wrapped form) is
+	// intentional. The "rate_limit" kind is still accepted because a run that
+	// stalled before this build shipped carries the kind this case borrowed
+	// then, and its resume must still be recognized.
+	errKind, errMsg := ag.GetError()
+	if (errKind == agent.ErrorKindSilentHang || errKind == "rate_limit") && errMsg == watchdogreason.ZeroOutputBeforeStartup {
+		runUpdates.ResumeZeroOutputStall = task.Ptr(true)
+	}
 	return runUpdates
 }
 
 // notifyWorkflowEngine advances the workflow engine for a completed agent.
 // Returns false if the caller should return immediately. Signal kills and
-// Sybra-initiated stops stall for recovery; rate limits and malformed tool
-// calls immediately re-drive the same step so provider failover can choose a
-// healthy peer. Auth failures fall through (need human login) — they take the
-// normal failed path.
+// Sybra-initiated stops stall for recovery; rate limits, silent hangs,
+// malformed tool calls, and rejected-tool/user interruptions immediately
+// re-drive the same step, where a rate limit fails over on the health gate and
+// a silent hang is routed around its provider by the engine. Auth failures
+// fall through (need human login) and take the normal failed path.
 //
 // Load-bearing: PR #722's SIGINT-first path lets default Go binaries (e.g.
 // fake-claude in tests) exit with code 2 (NOT WaitStatus.Signaled), so
@@ -484,22 +685,25 @@ func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiu
 // process, but its work already finished cleanly via a terminal result event
 // — treating it as a stall would silently re-queue already-completed work
 // instead of finalizing it.
-func (h *Handler) notifyWorkflowEngine(ag *agent.Agent, resultContent string, exitErr error) bool {
+func (h *Handler) notifyWorkflowEngine(ag *agent.Agent, resultContent string, exitErr error, stall stallDisposition) bool {
 	if h.workflowEngine == nil {
 		return true
 	}
-	stalled, rateLimited, malformedTool, stopStalled, checkpointStopped := classifyStall(ag, exitErr)
-	if stalled {
+	if stall.Stalled {
 		h.logger.Warn("agent.completion.stall",
 			"task_id", ag.TaskID, "agent_id", ag.ID,
-			"signaled", isSignalKill(exitErr), "stopped", stopStalled, "rate_limited", rateLimited, "malformed_tool", malformedTool, "checkpoint", checkpointStopped)
+			"signaled", isSignalKill(exitErr), "stopped", stall.StopStalled, "rate_limited", stall.RateLimited, "silent_hang", stall.SilentHang, "malformed_tool", stall.MalformedTool, "tool_use_aborted", stall.ToolUseAborted, "user_interrupted", stall.UserInterrupted, "checkpoint", stall.CheckpointStopped, "prompt_undelivered", stall.PromptUndelivered)
 		switch {
-		case checkpointStopped:
+		case stall.CheckpointStopped:
 			h.workflowEngine.RescheduleCheckpointedAgent(ag.TaskID, ag.ID)
-		case rateLimited || malformedTool:
+		case stall.ToolUseAborted || stall.UserInterrupted:
+			h.workflowEngine.RescheduleInterruptedAgent(ag.TaskID, ag.ID)
+		case stall.PromptUndelivered:
+			h.workflowEngine.ReschedulePromptUndeliveredAgent(ag.TaskID, ag.ID)
+		case stall.RateLimited || stall.SilentHang || stall.MalformedTool:
 			h.workflowEngine.RescheduleRateLimitedAgent(ag.TaskID, ag.ID)
 		default:
-			h.workflowEngine.ClearAgentStep(ag.ID)
+			h.workflowEngine.ClearAgentStep(ag.TaskID, ag.ID)
 		}
 		return false
 	}
@@ -513,32 +717,55 @@ func (h *Handler) notifyWorkflowEngine(ag *agent.Agent, resultContent string, ex
 	return true
 }
 
-// classifyStall reports whether a completion is a retryable stall — signal
-// kill, stop-before-result, provider rate limit, or malformed tool call —
-// rather than the agent's actual terminal outcome. buildRunPatch and
+// classifyStall reports whether a completion is a retryable stall: signal
+// kill, stop-before-result, provider rate limit, malformed tool call,
+// rejected-tool interruption, or an undelivered prompt rather than the agent's
+// actual terminal outcome.
+// buildRunPatch and
 // notifyWorkflowEngine both key off this so the persisted AgentRun.Outcome and
 // the workflow's Success signal can never diverge: a stalled run is retried,
 // so it must be neither a persisted success nor a persisted failure.
-func classifyStall(ag *agent.Agent, exitErr error) (stalled, rateLimited, malformedTool, stopStalled, checkpointStopped bool) {
-	rateLimited = isRateLimitedRun(ag, exitErr)
-	malformedTool = ag.GetErrorKind() == "malformed_tool_call"
-	// Cost guardrails intentionally hard-stop the subprocess, but they are a
-	// budget failure, not an infra stall. Let them flow through the bounded
-	// failed-completion path instead of ClearAgentStep/ResumeStalled.
+type stallDisposition struct {
+	Stalled           bool
+	RateLimited       bool
+	SilentHang        bool
+	MalformedTool     bool
+	ToolUseAborted    bool
+	UserInterrupted   bool
+	PromptUndelivered bool
+	StopStalled       bool
+	CheckpointStopped bool
+}
+
+func classifyStall(ag *agent.Agent, exitErr error) stallDisposition {
+	out := stallDisposition{
+		RateLimited:       isRateLimitedRun(ag, exitErr),
+		SilentHang:        isSilentHangRun(ag),
+		MalformedTool:     ag.GetErrorKind() == "malformed_tool_call",
+		ToolUseAborted:    isToolUseAbortedRun(ag),
+		UserInterrupted:   isUserInterruptedRun(ag),
+		PromptUndelivered: ag.GetErrorKind() == agent.ErrorKindPromptUndelivered,
+	}
+	// Cost and forked-subagent-turn guardrails intentionally hard-stop the
+	// subprocess, but they are a budget/runaway failure, not an infra stall.
+	// Let them flow through the bounded failed-completion path instead of
+	// ClearAgentStep/ResumeStalled — otherwise the runaway workflow step is
+	// silently re-dispatched on the next sweep, defeating the ceiling.
 	costStopped := ag.WasStopped() && ag.GetEscalationReason() == agent.EscalationReasonCost
+	subagentTurnsStopped := ag.WasStopped() && ag.GetEscalationReason() == agent.EscalationReasonSubagentTurns
 	checkpointFailed := ag.WasStopped() && ag.GetEscalationReason() == agent.EscalationReasonCheckpointFailed
-	checkpointStopped = ag.WasStopped() && ag.GetEscalationReason() == agent.EscalationReasonCheckpoint
-	stopStalled = ag.WasStopped() && !ag.WasCompletedByResult() && !costStopped && !checkpointFailed && !checkpointStopped
-	stalled = isSignalKill(exitErr) || stopStalled || rateLimited || malformedTool || checkpointStopped
-	return stalled, rateLimited, malformedTool, stopStalled, checkpointStopped
+	out.CheckpointStopped = ag.WasStopped() && ag.GetEscalationReason() == agent.EscalationReasonCheckpoint
+	out.StopStalled = ag.WasStopped() && !ag.WasCompletedByResult() && !costStopped && !subagentTurnsStopped && !checkpointFailed && !out.CheckpointStopped
+	out.Stalled = isSignalKill(exitErr) || out.StopStalled || out.RateLimited || out.SilentHang || out.MalformedTool || out.ToolUseAborted || out.UserInterrupted || out.CheckpointStopped || out.PromptUndelivered
+	return out
 }
 
 // runTerminalOutcome derives the AgentRun.Outcome value for a completed run:
-// empty for a stall (see classifyStall — retried, not a definitive result),
+// empty for a stall (see classifyStall: retried, not a definitive result),
 // otherwise success/failure keyed off the same exitErr notifyWorkflowEngine
 // uses for AgentCompletion.Success.
 func runTerminalOutcome(ag *agent.Agent, exitErr error) string {
-	if stalled, _, _, _, _ := classifyStall(ag, exitErr); stalled {
+	if classifyStall(ag, exitErr).Stalled {
 		return ""
 	}
 	if exitErr == nil {
@@ -548,17 +775,17 @@ func runTerminalOutcome(ag *agent.Agent, exitErr error) string {
 }
 
 func (h *Handler) markCompletedReview(ag *agent.Agent, exitErr error) {
-	if agent.RoleFromName(ag.Name) != agent.RoleReview || exitErr != nil {
+	if ag.EffectiveRole() != agent.RoleReview || exitErr != nil {
 		return
 	}
 	reviewed := true
-	if _, err := h.tasks.Update(ag.TaskID, task.Update{Reviewed: &reviewed}); err != nil {
+	if _, err := h.tasks.UpdateBy(ag.TaskID, "completion.mark_completed_review", task.Update{Reviewed: &reviewed}); err != nil {
 		h.logger.Warn("task.mark-reviewed", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
 	}
 }
 
 func (h *Handler) salvageInterruptedReview(ag *agent.Agent) {
-	if h.tasks == nil || agent.RoleFromName(ag.Name) != agent.RoleReview || ag.GetEscalationReason() != "cost" {
+	if h.tasks == nil || ag.EffectiveRole() != agent.RoleReview || ag.GetEscalationReason() != "cost" {
 		return
 	}
 	current, err := h.tasks.Get(ag.TaskID)
@@ -566,11 +793,16 @@ func (h *Handler) salvageInterruptedReview(ag *agent.Agent) {
 		h.logger.Warn("review.interrupted.get-task", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
 		return
 	}
-	if strings.TrimSpace(current.CodeReview) != "" {
-		return
-	}
 	transcript := interruptedReviewAssistantTranscript(ag)
 	if transcript == "" {
+		return
+	}
+	// A round that produced assistant output reviewed something, whether or not
+	// there is room to store it. Marking only the rounds whose content lands
+	// would leave every later cost-stopped round on a task charging nothing,
+	// because the first salvage keeps the sidecar occupied.
+	h.markReviewSalvaged(ag)
+	if strings.TrimSpace(current.CodeReview) != "" {
 		return
 	}
 	var b strings.Builder
@@ -583,8 +815,19 @@ func (h *Handler) salvageInterruptedReview(ag *agent.Agent) {
 	}
 	b.WriteString(transcript)
 	content := b.String()
-	if _, err := h.tasks.Update(ag.TaskID, task.Update{CodeReview: &content}); err != nil {
+	if _, err := h.tasks.UpdateBy(ag.TaskID, "completion.salvage_interrupted_review", task.Update{CodeReview: &content}); err != nil {
 		h.logger.Warn("review.interrupted.write", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
+	}
+}
+
+// markReviewSalvaged records that a run reviewed something despite failing, so
+// the lifetime ceiling counts it. No outcome value can say that on its own.
+func (h *Handler) markReviewSalvaged(ag *agent.Agent) {
+	salvaged := true
+	if err := h.tasks.UpdateRunBy(ag.TaskID, "completion.salvage_interrupted_review", ag.ID, task.RunPatch{
+		ReviewSalvaged: &salvaged,
+	}); err != nil {
+		h.logger.Warn("review.interrupted.mark", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
 	}
 }
 
@@ -611,11 +854,7 @@ func interruptedReviewAssistantTranscript(ag *agent.Agent) string {
 	if b.Len() == 0 {
 		return ""
 	}
-	transcript := b.String()
-	if len(transcript) > interruptedReviewMaxLen {
-		transcript = transcript[:interruptedReviewMaxLen] + "\n\n... (truncated)"
-	}
-	return transcript
+	return textutil.TruncateBytes(b.String(), interruptedReviewMaxLen, "\n\n... (truncated)")
 }
 
 // handleFixReviewCompletion routes a finished manual fix-review agent. Without
@@ -648,9 +887,15 @@ func (h *Handler) holdFixReviewForHuman(ag *agent.Agent) {
 		return
 	}
 	const reason = "review-hold: replies drafted as a pending review — verify & submit on GitHub"
-	t, err := h.tasks.Update(ag.TaskID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(reason),
+	result, err := h.tasks.Apply(task.TransitionIntent{
+		TaskID:   ag.TaskID,
+		ToStatus: task.StatusHumanRequired,
+		Actor:    "completion.hold_fix_review_for_human",
+		Extra: task.Update{
+			StatusReason:    task.Ptr(reason),
+			Escalation:      task.OperatorDecisionRequired("review.pending_submission", reason),
+			AutonomyOutcome: task.HumanRequiredOutcome(),
+		},
 	})
 	if err != nil {
 		h.logger.Error("fix-review.hold.human-required", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
@@ -658,7 +903,7 @@ func (h *Handler) holdFixReviewForHuman(ag *agent.Agent) {
 	}
 	h.logger.Info("fix-review.hold",
 		"task_id", ag.TaskID, "agent_id", ag.ID,
-		"mode", h.cfg.ReviewHoldMode(), "branch", t.Branch)
+		"mode", h.cfg.ReviewHoldMode(), "branch", result.Task.Branch)
 }
 
 func (h *Handler) pushFixReviewBranch(ag *agent.Agent) {
@@ -672,6 +917,10 @@ func (h *Handler) pushFixReviewBranch(ag *agent.Agent) {
 		return
 	}
 	if t.ProjectID == "" {
+		return
+	}
+	if t.IsPRReview() {
+		h.logger.Info("fix-review.push-skipped", "task_id", ag.TaskID, "agent_id", ag.ID, "branch", t.Branch, "pr", t.PRNumber, "reason", "pr review task")
 		return
 	}
 
@@ -722,9 +971,15 @@ func (h *Handler) recoverDivergedFixReviewPush(ag *agent.Agent, branch string, p
 	}
 	h.logger.Warn("fix-review.push-diverged", "task_id", ag.TaskID, "agent_id", ag.ID, "branch", branch, "err", pushErr)
 	reason := "fix-review: branch diverged from remote and needs manual rebase/merge before the fix can be pushed"
-	if _, err := h.tasks.Update(ag.TaskID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(reason),
+	if _, err := h.tasks.Apply(task.TransitionIntent{
+		TaskID:   ag.TaskID,
+		ToStatus: task.StatusBlocked,
+		Actor:    "completion.recover_diverged_fix_review_push",
+		Extra: task.Update{
+			StatusReason:    task.Ptr(reason),
+			Escalation:      task.MachineFailure("git.remote_diverged", reason),
+			AutonomyOutcome: task.QuarantinedOutcome(),
+		},
 	}); err != nil {
 		h.logger.Error("fix-review.push-diverged.human-required", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
 	}
@@ -741,11 +996,11 @@ func (h *Handler) captureHeadSHA(taskID string) string {
 	if err != nil || !h.worktrees.Exists(t) {
 		return ""
 	}
-	out, err := exec.CommandContext(context.Background(), "git", "-C", h.worktrees.PathFor(t), "rev-parse", "HEAD").Output()
+	out, err := gitexec.Output(context.Background(), gitexec.Options{Dir: h.worktrees.PathFor(t)}, "rev-parse", "HEAD")
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	return out
 }
 
 // runOutcome derives the stats.RunRecord outcome for a completed agent run.
@@ -764,35 +1019,63 @@ func (h *Handler) captureHeadSHA(taskID string) string {
 // benign post-result glitch (e.g. a trailing stream hiccup) left exitErr
 // non-nil, so it is recorded as completed rather than inflating the role's
 // failure_rate with a run that was never actually a failure.
-func runOutcome(ag *agent.Agent, role agent.Role, exitErr error, resultContent string) string {
-	if stalled, _, _, _, _ := classifyStall(ag, exitErr); stalled {
-		return stats.OutcomeStalled
+func (h *Handler) runOutcome(ag *agent.Agent, role agent.Role, exitErr error, resultContent string) string {
+	stall := classifyStall(ag, exitErr)
+	if stall.Stalled {
+		switch {
+		case h.isSupersededStop(ag.TaskID):
+			return runoutcome.Superseded
+		case stall.CheckpointStopped || stall.StopStalled:
+			return runoutcome.Stalled
+		case isSignalKill(exitErr) && !ag.WasStopped():
+			return runoutcome.CancelledShutdown
+		default:
+			return runoutcome.Stalled
+		}
 	}
 	if exitErr == nil {
-		return stats.OutcomeCompleted
+		return runoutcome.Completed
 	}
 	if role == agent.RoleTestRunner {
 		if v := workflow.ExtractTestVerdict(resultContent); v == "PASS" || v == "FAIL" {
-			return stats.OutcomeCompleted
+			return runoutcome.Completed
 		}
 	}
-	return stats.OutcomeFailed
+	return runoutcome.Failed
 }
 
-func (h *Handler) roleForAgentName(name string) agent.Role {
-	role, ok := agent.ParseRoleFromName(name)
-	if ok || !strings.Contains(name, ":") {
+func (h *Handler) isSupersededStop(taskID string) bool {
+	if h.tasks == nil || taskID == "" {
+		return false
+	}
+	t, err := h.tasks.Get(taskID)
+	if err != nil {
+		return false
+	}
+	if strings.Contains(strings.ToLower(t.StatusReason), "superseded") {
+		return true
+	}
+	if t.Workflow == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(t.Workflow.Variables["cancel_reason"]), "superseded")
+}
+
+func (h *Handler) roleForAgent(ag *agent.Agent) agent.Role {
+	role := ag.EffectiveRole()
+	if ag.Role != "" || !strings.Contains(ag.Name, ":") {
 		return role
 	}
-	h.logger.Warn("agent.role.unknown-prefix", "name", name)
+	if _, ok := agent.ParseRoleFromName(ag.Name); ok {
+		return role
+	}
+	h.logger.Warn("agent.role.unknown-prefix", "name", ag.Name)
 	return role
 }
 
 // recordRunStats persists a stats.RunRecord for the completed agent.
-// No-op when the stats store failed to initialize at startup. resultContent
-// is the agent's final message text, forwarded to runOutcome for test-runner
-// verdict recovery.
-func (h *Handler) recordRunStats(ag *agent.Agent, role agent.Role, cost, duration float64, exitErr error, resultContent string) {
+// No-op when the stats store failed to initialize at startup.
+func (h *Handler) recordRunStats(ag *agent.Agent, role agent.Role, outcome string, cost, duration float64) {
 	if h.stats == nil {
 		return
 	}
@@ -802,7 +1085,7 @@ func (h *Handler) recordRunStats(ag *agent.Agent, role agent.Role, cost, duratio
 	cacheRead := ag.GetCacheReadInputTokens()
 	reasoning := ag.GetReasoningTokens()
 	agCost := estimatedRunCost(ag, cost, ag.GetPremiumRequests())
-	outcome := runOutcome(ag, role, exitErr, resultContent)
+	taskGeneration, taskGenerationKnown := ag.GetAttemptTaskGeneration()
 	var projectID string
 	if ag.TaskID != "" {
 		if t, err := h.tasks.Get(ag.TaskID); err == nil {
@@ -812,6 +1095,8 @@ func (h *Handler) recordRunStats(ag *agent.Agent, role agent.Role, cost, duratio
 	_ = h.stats.Record(stats.RunRecord{
 		ID:                       ag.ID,
 		TaskID:                   ag.TaskID,
+		TaskGeneration:           taskGeneration,
+		TaskGenerationKnown:      taskGenerationKnown,
 		ProjectID:                projectID,
 		Mode:                     ag.Mode,
 		Role:                     string(role),
@@ -820,8 +1105,10 @@ func (h *Handler) recordRunStats(ag *agent.Agent, role agent.Role, cost, duratio
 		ReasoningEffort:          ag.ReasoningEffort,
 		ExperimentID:             ag.ExperimentID,
 		VariantID:                ag.VariantID,
+		RoutingReason:            ag.RoutingReason,
 		AssignmentUnit:           ag.AssignmentUnit,
 		AssignmentKey:            ag.AssignmentKey,
+		RoutingDecisionVersion:   ag.DecisionVersion,
 		RequestedSkill:           ag.RequestedSkill,
 		SkillExecutionMode:       ag.SkillExecutionMode,
 		ResolvedSkillSourceHash:  ag.ResolvedSkillSourceHash,
@@ -837,7 +1124,7 @@ func (h *Handler) recordRunStats(ag *agent.Agent, role agent.Role, cost, duratio
 		TurnCount:                ag.GetTurnCount(),
 		ToolCalls:                ag.GetToolCalls(),
 		SubagentCallCount:        ag.GetSubagentCallCount(),
-		Outcome:                  outcome,
+		Outcome:                  runoutcome.Normalize(outcome),
 		Timestamp:                time.Now(),
 	})
 	if h.limits != nil {
@@ -868,6 +1155,7 @@ func estimatedRunCost(ag *agent.Agent, cost, premiumRequests float64) float64 {
 		CostUSD:         cost,
 		InputTokens:     ag.GetInputTokens(),
 		OutputTokens:    ag.GetOutputTokens(),
+		CacheCreate:     ag.GetCacheCreationInputTokens(),
 		CacheRead:       ag.GetCacheReadInputTokens(),
 		ReasoningTokens: ag.GetReasoningTokens(),
 		PremiumRequests: premiumRequests,
@@ -880,6 +1168,22 @@ func estimatedRunCost(ag *agent.Agent, cost, premiumRequests float64) float64 {
 // as an exit-0 result, so the agent error kind is authoritative.
 func isRateLimitedRun(ag *agent.Agent, exitErr error) bool {
 	return ag.GetErrorKind() == "rate_limit"
+}
+
+// isSilentHangRun reports whether the watchdog killed this run for producing no
+// output at all. It shares the rate-limited run's immediate-reschedule branch
+// (neither carries a verdict, and both re-drive the same step) without sharing
+// its provider-health verdict.
+func isSilentHangRun(ag *agent.Agent) bool {
+	return ag.GetErrorKind() == agent.ErrorKindSilentHang
+}
+
+func isToolUseAbortedRun(ag *agent.Agent) bool {
+	return ag.GetErrorKind() == agent.ErrorKindToolUseAborted
+}
+
+func isUserInterruptedRun(ag *agent.Agent) bool {
+	return ag.GetErrorKind() == agent.ErrorKindUserInterrupted
 }
 
 // isSignalKill reports whether err represents a process killed by an OS signal.

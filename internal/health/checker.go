@@ -5,13 +5,14 @@ import (
 	"encoding/json"
 	"log/slog"
 	"math"
-	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/procstat"
+	"github.com/Automaat/sybra/internal/runacct"
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/task"
 )
@@ -24,13 +25,13 @@ const (
 
 // Checker runs periodic health checks on audit data and task state.
 type Checker struct {
-	auditDir string
-	tasks    *task.Manager
-	homeDir  string
-	logger   *slog.Logger
-	emit     func(string, any)
-	owned    func() OwnedProcesses
-	docker   dockerRunner
+	trail   auditReader
+	tasks   *task.Manager
+	homeDir string
+	logger  *slog.Logger
+	emit    func(string, any)
+	owned   func() OwnedProcesses
+	docker  dockerRunner
 
 	// sandboxQuarantine returns the currently quarantined sandbox cleanup
 	// failures (see sandbox.Manager.QuarantinedEntries). nil disables the
@@ -38,11 +39,15 @@ type Checker struct {
 	sandboxQuarantine func() []sandbox.QuarantineEntry
 	pressure          func() *PressureStatus
 	// ghAuthProbe, when set, is called once per tick with a live
-	// github.Authenticated() result so credential loss is caught proactively
-	// (checkGHAuthUnavailable) instead of only after a push/issue-filing
-	// attempt has already failed. nil disables the check — set only when
-	// GitHub integration is enabled (see SetGHAuthProbe).
-	ghAuthProbe func() bool
+	// github.Authenticated() result plus the shared auth-health state
+	// (github.AuthHealthSnapshot().State, passed as a plain string so this
+	// package doesn't need to import internal/github) so credential loss is
+	// caught proactively (checkGHAuthUnavailable) instead of only after a
+	// push/issue-filing attempt has already failed, and a permanent
+	// misconfiguration can be told apart from a transient blip. nil disables
+	// the check — set only when GitHub integration is enabled (see
+	// SetGHAuthProbe).
+	ghAuthProbe func() (authenticated bool, state string)
 
 	mu     sync.RWMutex
 	report *Report
@@ -50,7 +55,7 @@ type Checker struct {
 
 // New creates a Checker. Call Run to start the ticker loop.
 func New(
-	auditDir string,
+	trail auditReader,
 	tasks *task.Manager,
 	homeDir string,
 	logger *slog.Logger,
@@ -58,12 +63,12 @@ func New(
 	owned func() OwnedProcesses,
 ) *Checker {
 	return &Checker{
-		auditDir: auditDir,
-		tasks:    tasks,
-		homeDir:  homeDir,
-		logger:   logger,
-		emit:     emit,
-		owned:    owned,
+		trail:   trail,
+		tasks:   tasks,
+		homeDir: homeDir,
+		logger:  logger,
+		emit:    emit,
+		owned:   owned,
 	}
 }
 
@@ -82,10 +87,11 @@ func (c *Checker) SetPressureStatus(f func() *PressureStatus) {
 }
 
 // SetGHAuthProbe wires in a live GitHub-auth probe (typically
-// github.Authenticated), enabling checkGHAuthUnavailable. Optional — omit
-// when GitHub integration is disabled, so an install with no gh CLI/token
-// configured at all doesn't get a spurious critical finding every tick.
-func (c *Checker) SetGHAuthProbe(f func() bool) {
+// github.Authenticated paired with github.AuthHealthSnapshot().State),
+// enabling checkGHAuthUnavailable. Optional — omit when GitHub integration is
+// disabled, so an install with no gh CLI/token configured at all doesn't get
+// a spurious critical finding every tick.
+func (c *Checker) SetGHAuthProbe(f func() (authenticated bool, state string)) {
 	c.ghAuthProbe = f
 }
 
@@ -132,20 +138,22 @@ func (c *Checker) check(ctx context.Context) {
 	now := time.Now().UTC()
 	since := now.Add(-lookback)
 
-	dayEvents, err := audit.Read(c.auditDir, audit.Query{Since: since, Until: now})
+	dayEvents, err := c.readTrail(audit.Query{Since: since, Until: now})
 	if err != nil {
 		c.logger.Warn("health.check.audit_read", "err", err)
 		dayEvents = nil
 	}
 
 	weekSince := now.Add(-weekLookback)
-	weekEvents, err := audit.Read(c.auditDir, audit.Query{Since: weekSince, Until: now})
+	weekEvents, err := c.readTrail(audit.Query{Since: weekSince, Until: now})
 	if err != nil {
 		c.logger.Warn("health.check.audit_read_week", "err", err)
 		weekEvents = nil
 	}
 
-	tasks, err := c.tasks.List()
+	// Health checks need board fields and degraded file entries, but never the
+	// lifetime prompt/result transcripts carried by full task documents.
+	tasks, err := c.tasks.ListBoard()
 	if err != nil {
 		c.logger.Warn("health.check.task_list", "err", err)
 		tasks = nil
@@ -155,6 +163,7 @@ func (c *Checker) check(ctx context.Context) {
 	findings = append(findings, checkFailureRate(dayEvents, now)...)
 	findings = append(findings, checkCostOutliers(dayEvents, now)...)
 	findings = append(findings, checkStuckTasks(dayEvents, tasks, now)...)
+	findings = append(findings, checkUnreadableTasks(tasks, now)...)
 	findings = append(findings, checkWorkflowLoops(dayEvents, now)...)
 	findings = append(findings, checkStatusBounce(dayEvents, now)...)
 	findings = append(findings, checkCostDrift(dayEvents, weekEvents, now)...)
@@ -164,7 +173,8 @@ func (c *Checker) check(ctx context.Context) {
 	findings = append(findings, checkGHIssueAuthFailure(dayEvents, now)...)
 	findings = append(findings, checkGHPushAuthFailure(dayEvents, now)...)
 	if c.ghAuthProbe != nil {
-		findings = append(findings, checkGHAuthUnavailable(c.ghAuthProbe(), now)...)
+		authenticated, state := c.ghAuthProbe()
+		findings = append(findings, checkGHAuthUnavailable(authenticated, state, now)...)
 	}
 	docker := sampleDockerDisk(ctx, c.docker, now)
 	findings = append(findings, checkDockerReclaimable(docker, now)...)
@@ -245,26 +255,34 @@ func safeFloat(v float64) float64 {
 	return v
 }
 
+// BuildStats computes run/failure/cost stats from an audit event stream —
+// the same accounting internal/evaluation.Compute uses for its own run
+// totals (runacct.Count with CountsTowardCodeAuthorFailureRate), exported so
+// evaluation.ReconcileReports can prove the two agree over the same event
+// window instead of re-deriving an equivalent computation that could drift
+// from this one silently.
+func BuildStats(events []audit.Event) Stats {
+	return buildStats(events)
+}
+
 func buildStats(events []audit.Event) Stats {
 	s := Stats{CostByRole: make(map[string]float64)}
-	runs := audit.NormalizeAgentRuns(events)
-	for i := range runs {
-		run := &runs[i]
-		if !run.Terminal {
-			continue
-		}
-		s.TotalAgentRuns++
-		if run.Failed {
-			s.FailedAgentRuns++
-		}
-		cost, _ := run.TerminalEvent.Data["cost_usd"].(float64)
-		s.TotalCostUSD += cost
-		role, _ := run.TerminalEvent.Data["role"].(string)
-		s.CostByRole[roleLabel(role)] += cost
+	records := audit.RunRecords(events)
+	counts := runacct.Count(records, nil, runacct.CountConfig{
+		CountsTowardFailure: runacct.CountsTowardCodeAuthorFailureRate,
+	})
+	s.TotalAgentRuns = counts.Runs
+	s.ResolvedRuns = counts.Resolved
+	s.StalledRuns = counts.Stalled
+	s.UnknownRuns = counts.Unknown
+	s.FailedAgentRuns = counts.Failures
+	for i := range records {
+		s.TotalCostUSD += records[i].CostUSD
+		s.CostByRole[roleLabel(records[i].Role)] += records[i].CostUSD
 	}
 
-	if s.TotalAgentRuns > 0 {
-		s.FailureRate = round2(float64(s.FailedAgentRuns) / float64(s.TotalAgentRuns))
+	if s.ResolvedRuns > 0 {
+		s.FailureRate = round2(float64(s.FailedAgentRuns) / float64(s.ResolvedRuns))
 	}
 	s.TotalCostUSD = round2(s.TotalCostUSD)
 	for k, v := range s.CostByRole {
@@ -274,6 +292,11 @@ func buildStats(events []audit.Event) Stats {
 	return s
 }
 
+// persist atomically writes r to disk. Using a temp-file+rename (via
+// fsutil.AtomicWrite) instead of a plain os.WriteFile means a crash or
+// disk-full mid-write can never leave behind a truncated report — readers
+// (selfmonitor, `sybra-cli` inspection commands) always see either the
+// previous good report or the new one, never a half-written file.
 func (c *Checker) persist(r *Report) {
 	path := filepath.Join(c.homeDir, "health-report.json")
 	data, err := json.MarshalIndent(r, "", "  ")
@@ -281,7 +304,21 @@ func (c *Checker) persist(r *Report) {
 		c.logger.Warn("health.persist.marshal", "err", err)
 		return
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := fsutil.AtomicWrite(path, data); err != nil {
 		c.logger.Warn("health.persist.write", "err", err)
 	}
+}
+
+// auditReader is the trail this checker reads. It is an interface rather than a
+// directory because under a database backend the day-files stop growing, and a
+// checker left on the directory reports every check all-clear for ever.
+type auditReader interface {
+	Read(audit.Query) ([]audit.Event, error)
+}
+
+func (c *Checker) readTrail(q audit.Query) ([]audit.Event, error) {
+	if c.trail == nil {
+		return nil, nil
+	}
+	return c.trail.Read(q)
 }

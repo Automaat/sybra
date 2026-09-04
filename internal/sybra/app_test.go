@@ -15,6 +15,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/agentqueue"
+	"github.com/Automaat/sybra/internal/attachment"
 	"github.com/Automaat/sybra/internal/config"
 	eventnames "github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/health"
@@ -99,9 +100,12 @@ func setupManualQueueApp(t *testing.T, taskDir, queueDir string, maxConcurrent i
 	fakebin := t.TempDir()
 	fakeClaude := filepath.Join(fakebin, "claude")
 	if err := os.WriteFile(fakeClaude, []byte("#!/usr/bin/env bash\n"+
-		"trap 'exit 0' TERM INT\n"+
+		"child=''\n"+
+		"trap 'test -z \"$child\" || { kill \"$child\" 2>/dev/null; wait \"$child\" 2>/dev/null; }; exit 0' TERM INT\n"+
+		"sleep 5 &\n"+
+		"child=$!\n"+
 		"printf '{\"type\":\"system\",\"session_id\":\"fake-session\"}\\n'\n"+
-		"sleep 5\n"+
+		"wait \"$child\"\n"+
 		"printf '{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"fake-session\",\"result\":\"done\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0}}\\n'\n"),
 		0o755); err != nil {
 		t.Fatalf("write fake claude: %v", err)
@@ -146,14 +150,13 @@ func setupManualQueueApp(t *testing.T, taskDir, queueDir string, maxConcurrent i
 	}
 }
 
-func createResearchTaskWithPriority(t *testing.T, tasks *task.Manager, title string, priority task.Priority) task.Task {
+func createTaskWithPriority(t *testing.T, tasks *task.Manager, title string, priority task.Priority) task.Task {
 	t.Helper()
 	created, err := tasks.Create(title, "", "headless")
 	if err != nil {
 		t.Fatalf("task Create(%q): %v", title, err)
 	}
 	updated, err := tasks.Update(created.ID, task.Update{
-		TaskType: task.Ptr(task.TaskTypeResearch),
 		Priority: task.Ptr(priority),
 	})
 	if err != nil {
@@ -269,6 +272,26 @@ func setupTaskService(t *testing.T) (*TaskService, *App) {
 	a := setupApp(t)
 	var wg sync.WaitGroup
 
+	// Workflow run_agent steps that declare needs_worktree use the same
+	// project-aware adapter wiring as production. Individual tests can seed a
+	// synthetic project through a.projects when they expect such a step to
+	// launch; tests without one exercise the fail-closed preparation path.
+	projects, err := project.NewStore(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wm := worktree.New(worktree.Config{
+		WorktreesDir:     t.TempDir(),
+		Projects:         projects,
+		Tasks:            a.tasks,
+		Logger:           a.logger,
+		AgentChecker:     a.agents.HasRunningAgentForTask,
+		LiveAgentChecker: a.agents.HasLiveRegisteredAgentForTask,
+	})
+	a.projects = projects
+	a.worktrees = wm
+	a.agentOrch = agentorch.New(a.tasks, projects, a.agents, nil, a.logger, wm, nil)
+
 	wfDir := t.TempDir()
 	wfStore, err := workflow.NewStore(wfDir)
 	if err != nil {
@@ -278,8 +301,8 @@ func setupTaskService(t *testing.T) (*TaskService, *App) {
 		t.Fatal(err)
 	}
 	ta := &taskAdapter{tasks: a.tasks}
-	aa := &agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks}
-	engine := workflow.NewEngine(wfStore, ta, aa, a.logger)
+	aa := &agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks, projects: projects}
+	engine := workflow.NewTestEngine(wfStore, ta, aa, a.logger)
 	// Bind the test context so a background workflow (spawned by CreateTask)
 	// unwinds when the test ends — otherwise classify_task's retry backoff can
 	// outlive the task dir's cleanup and leak a sleeping goroutine.
@@ -301,6 +324,23 @@ func setupTaskService(t *testing.T) (*TaskService, *App) {
 		wg:             &wg,
 		logger:         a.logger,
 	}
+	attachments, err := attachment.NewStore(t.TempDir(), int64(config.DefaultAttachmentMaxSizeMB)*1024*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.attachments = attachments
+	a.tasks.SetDeleteHook(func(id string) {
+		if err := attachments.DeleteTask(id); err != nil {
+			t.Fatalf("attachments.DeleteTask(%s): %v", id, err)
+		}
+	})
+	// t.Cleanup runs last-added-first: registering this after every t.TempDir()
+	// above (including setupApp's WorktreesDir) joins CreateTask's background
+	// workflow goroutine before any of those dirs are removed, closing a race
+	// where a goroutine still mid-write when the context cancels loses to
+	// RemoveAll ("directory not empty") — reproduced live under the OS
+	// sandbox's added scheduling latency.
+	t.Cleanup(wg.Wait)
 	return svc, a
 }
 
@@ -587,14 +627,14 @@ func TestStartAgentTaskNotFound(t *testing.T) {
 func TestStartAgentQueuedManualDoesNotRegisterLiveAgent(t *testing.T) {
 	a := setupManualQueueApp(t, "", "", 1)
 
-	blocker := createResearchTaskWithPriority(t, a.tasks, "blocker", task.PriorityMedium)
+	blocker := createTaskWithPriority(t, a.tasks, "blocker", task.PriorityMedium)
 	blockerAgent, err := a.agentOrch.StartAgent(blocker.ID, "headless", "hold", false, false)
 	if err != nil {
 		t.Fatalf("StartAgent(blocker): %v", err)
 	}
 	t.Cleanup(func() { _ = a.agents.StopAgent(blockerAgent.ID) })
 
-	queuedTask := createResearchTaskWithPriority(t, a.tasks, "queued manual", task.PriorityHigh)
+	queuedTask := createTaskWithPriority(t, a.tasks, "queued manual", task.PriorityHigh)
 	queued, err := a.StartAgent(queuedTask.ID, "headless", "ship it", true)
 	if err != nil {
 		t.Fatalf("StartAgent(queuedTask): %v", err)
@@ -635,21 +675,21 @@ func TestManualQueueDrainPriorityAndWorkflowPreservation(t *testing.T) {
 		<-done
 	}()
 
-	blocker := createResearchTaskWithPriority(t, a.tasks, "blocker", task.PriorityMedium)
+	blocker := createTaskWithPriority(t, a.tasks, "blocker", task.PriorityMedium)
 	_, err := a.agentOrch.StartAgent(blocker.ID, "headless", "hold", false, false)
 	if err != nil {
 		t.Fatalf("StartAgent(blocker): %v", err)
 	}
 
-	high := createResearchTaskWithPriority(t, a.tasks, "manual high", task.PriorityHigh)
-	low := createResearchTaskWithPriority(t, a.tasks, "manual low", task.PriorityLow)
+	high := createTaskWithPriority(t, a.tasks, "manual high", task.PriorityHigh)
+	low := createTaskWithPriority(t, a.tasks, "manual low", task.PriorityLow)
 	if _, err := a.StartAgent(high.ID, "headless", "high", false); err != nil {
 		t.Fatalf("StartAgent(high): %v", err)
 	}
 	if _, err := a.StartAgent(low.ID, "headless", "low", false); err != nil {
 		t.Fatalf("StartAgent(low): %v", err)
 	}
-	workflowTask := createResearchTaskWithPriority(t, a.tasks, "workflow token", task.PriorityUrgent)
+	workflowTask := createTaskWithPriority(t, a.tasks, "workflow token", task.PriorityUrgent)
 	a.agentQueue.Offer(agentqueue.Item{
 		TaskID:   workflowTask.ID,
 		Role:     string(agent.RoleImplementation),
@@ -693,12 +733,12 @@ func TestManualQueueReloadDrainsAfterRestart(t *testing.T) {
 	queueDir := t.TempDir()
 
 	first := setupManualQueueApp(t, taskDir, queueDir, 1)
-	blocker := createResearchTaskWithPriority(t, first.tasks, "blocker", task.PriorityMedium)
+	blocker := createTaskWithPriority(t, first.tasks, "blocker", task.PriorityMedium)
 	blockerAgent, err := first.agentOrch.StartAgent(blocker.ID, "headless", "hold", false, false)
 	if err != nil {
 		t.Fatalf("StartAgent(blocker): %v", err)
 	}
-	queuedTask := createResearchTaskWithPriority(t, first.tasks, "restart queued", task.PriorityHigh)
+	queuedTask := createTaskWithPriority(t, first.tasks, "restart queued", task.PriorityHigh)
 	if _, err := first.StartAgent(queuedTask.ID, "headless", "after restart", false); err != nil {
 		t.Fatalf("StartAgent(queuedTask): %v", err)
 	}
@@ -856,12 +896,11 @@ func TestResolvePermission(t *testing.T) {
 	}
 }
 
-func TestResolveExecutionDebugAlwaysRequiresPermissions(t *testing.T) {
+func TestResolveExecutionUsesExplicitPermissionOverride(t *testing.T) {
 	t.Parallel()
-	tk := task.Task{TaskType: task.TaskTypeDebug, RequirePermissions: task.Ptr(false)}
-	// TaskTypeDebug hardcodes requirePerm=true regardless of task field.
+	tk := task.Task{RequirePermissions: task.Ptr(false)}
 	_, _, requirePerm, _ := agentorch.ResolveExecution(tk, "headless", "", nil)
-	if !requirePerm {
-		t.Error("debug task should always require permissions")
+	if requirePerm {
+		t.Error("task-level permission override should be honored")
 	}
 }

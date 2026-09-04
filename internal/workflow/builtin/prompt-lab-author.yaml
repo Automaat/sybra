@@ -129,6 +129,11 @@ steps:
           operator: equals
           value: human-required
         goto: ""
+      - when:
+          field: task.status
+          operator: equals
+          value: ready-pr
+        goto: ""
       - goto: set_ready_review
 
   - id: set_ready_review

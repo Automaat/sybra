@@ -10,8 +10,12 @@ const mockEventsOn = vi.fn((..._args: any[]) => vi.fn())
 
 vi.mock('$lib/api', () => ({
   EventsOn: (...args: any[]) => mockEventsOn(...args),
+  GetSettings: vi.fn().mockResolvedValue({ browser: { inApp: false } }),
   GetProviderHealth: vi.fn().mockResolvedValue([]),
   ProviderHealthEnabled: vi.fn().mockResolvedValue(false),
+  GetVersion: vi.fn().mockResolvedValue({ version: 'test' }),
+  getConnectionState: () => 'open',
+  OnConnectionChange: () => () => {},
 }))
 
 vi.mock('./stores/tasks.svelte.js', () => ({

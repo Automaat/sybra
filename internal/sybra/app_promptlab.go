@@ -21,7 +21,7 @@ import (
 type promptLabCoordinator struct {
 	tasks             *task.Manager
 	projects          *project.Store
-	stats             *stats.Store
+	stats             stats.Repository
 	logger            *slog.Logger
 	cfg               *config.Config
 	allowsProjectType func(project.ProjectType) bool
@@ -40,7 +40,7 @@ const promptLabNoProjectErr = "prompt-lab approval unavailable: project " + prom
 func newPromptLabCoordinator(
 	tasks *task.Manager,
 	projects *project.Store,
-	statsStore *stats.Store,
+	statsStore stats.Repository,
 	logger *slog.Logger,
 	cfg *config.Config,
 	allowsProjectType func(project.ProjectType) bool,
@@ -122,7 +122,7 @@ func (c *promptLabCoordinator) tick(ctx context.Context) {
 // this coordinator builds and applies the blocklist itself rather than
 // assuming that precedent covers it too.
 func (c *promptLabCoordinator) fileScrubbedProposals(ctx context.Context, result promptlab.RunResult) ([]task.Task, error) {
-	existing, err := c.tasks.List()
+	existing, err := c.tasks.ListBoard()
 	if err != nil {
 		return nil, err
 	}
@@ -144,13 +144,16 @@ func (c *promptLabCoordinator) fileScrubbedProposals(ctx context.Context, result
 			status = task.StatusHumanRequired
 		}
 		update := task.Update{
-			Status: &status,
-			Tags:   &tags,
+			Tags: &tags,
+		}
+		if status == task.StatusHumanRequired {
+			update.Escalation = task.PolicyRequired("promptlab.approval_required", "prompt proposal requires approval")
+			update.AutonomyOutcome = task.HumanRequiredOutcome()
 		}
 		if projectID := promptLabTargetProjectID(c.projects); projectID != "" {
 			update.ProjectID = &projectID
 		}
-		created, err := c.tasks.CreateFull(p.Title, body, task.AgentModeHeadless, update)
+		created, err := c.tasks.CreateWithStatus(p.Title, body, task.AgentModeHeadless, status, update)
 		if err != nil {
 			return filed, err
 		}
@@ -185,7 +188,7 @@ func (c *promptLabCoordinator) maybeAutoApprove(ctx context.Context, t task.Task
 }
 
 func (c *promptLabCoordinator) setStatusReason(taskID, reason string) {
-	if _, err := c.tasks.Update(taskID, task.Update{StatusReason: &reason}); err != nil {
+	if _, err := c.tasks.UpdateBy(taskID, "promptlab.set_status_reason", task.Update{StatusReason: &reason}); err != nil {
 		c.logger.Warn("promptlab.status_reason.failed", "task_id", taskID, "err", err)
 	}
 }

@@ -13,7 +13,6 @@
 package cleanup
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io/fs"
@@ -26,8 +25,11 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/buildcache"
+	"github.com/Automaat/sybra/internal/clock"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/fsutil"
+	"github.com/Automaat/sybra/internal/gitexec"
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -78,6 +80,16 @@ type Bucket struct {
 	Paths       []string
 	Bytes       int64
 	Items       int
+	// RetainedBytes/RetainedItems account for entries this bucket holds but
+	// is not allowed to delete, for any of the reasons eligible() can refuse
+	// on: an owning task still active, a terminal one inside the retention
+	// window, age-based retention switched off entirely, or an owning task
+	// that could not be resolved at all. Without them a bucket reports 0
+	// while holding tens of gigabytes, which is what a full disk looked like
+	// from `doctor cleanup`: every safe bucket empty, nothing named, and
+	// 86 GB of per-task Go build caches accounted for nowhere.
+	RetainedBytes int64
+	RetainedItems int
 }
 
 // Options mirrors the `doctor cleanup` CLI flags 1:1.
@@ -138,10 +150,12 @@ type TaskLister interface {
 
 // Scanner scans and applies cleanup over one Sybra home directory.
 type Scanner struct {
-	cfg   *config.Config
-	tasks TaskLister
-	// now is the injectable clock; defaults to time.Now.
-	now func() time.Time
+	cfg       *config.Config
+	tasks     TaskLister
+	protected *ProtectedStore
+	// clock drives the retention window. Read without a lock; set once at
+	// construction or during test setup.
+	clock clock.Clock
 	// externalRunner is the injectable external-bucket probe; defaults to
 	// shelling out to `docker system df`.
 	externalRunner func() (string, error)
@@ -150,7 +164,7 @@ type Scanner struct {
 // NewScanner builds a Scanner over cfg's resolved directories and tasks
 // (typically the CLI's live task.Manager, or a fake in tests).
 func NewScanner(cfg *config.Config, tasks TaskLister) *Scanner {
-	return &Scanner{cfg: cfg, tasks: tasks, now: time.Now}
+	return &Scanner{cfg: cfg, tasks: tasks, protected: DefaultProtectedStore(), clock: clock.System{}}
 }
 
 type snapshot struct {
@@ -303,11 +317,77 @@ func goBuildCacheDir() string {
 func gitStatusClean(path string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "git", "-C", path, "status", "--porcelain").Output()
+	out, err := gitexec.Output(ctx, gitexec.Options{Dir: path}, "status", "--porcelain")
 	if err != nil {
 		return false
 	}
-	return len(bytes.TrimSpace(out)) == 0
+	return out == ""
+}
+
+// hasUnpushedCommits reports whether the worktree at path holds commits not
+// on any remote. Unlike gitStatusClean this is never bypassed by --force: a
+// clean-but-unpushed worktree holds finished work with no other copy, which
+// --force exists to blow past for merely-dirty (in-progress, discardable)
+// state, not completed-but-undelivered commits (#2593).
+func hasUnpushedCommits(path string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return project.HasUnpushedCommits(ctx, path)
+}
+
+// sandboxWorktreeHasUnpushedCommits reports whether the sandbox dir's owning
+// task has a git worktree still holding commits not on any remote. A sandbox
+// (~/.sybra/sandboxes/<taskID>) is a separate per-task data dir from the git
+// worktree, so this resolves the task's worktree path and defers to the same
+// git check scanWorktrees uses — an unattended diskreclaim pass must never
+// reap a sandbox tied to completed-but-unpushed work (#2593). Mirrors
+// worktree.Manager.HasUnpushedCommits. Returns false — nothing to protect —
+// when the task, its project, or worktree cannot be resolved, or when the
+// worktree is externally adopted (owned by the tool that created it, so its
+// git state is not Sybra's to protect).
+func (s *Scanner) sandboxWorktreeHasUnpushedCommits(snap snapshot, taskID string) bool {
+	if taskID == "" || taskID == unknownTaskID {
+		return false
+	}
+	wtPath, ok := s.sandboxWorktreePath(snap, taskID)
+	if !ok {
+		return false
+	}
+	return hasUnpushedCommits(wtPath)
+}
+
+// sandboxWorktreePath resolves the Sybra-managed worktree path for taskID. For
+// a live task it uses DirName(); for a deleted task (record gone from snap) it
+// falls back to scanning the worktrees dir for a directory whose embedded task
+// ID matches — the deleted-task case is exactly the one the unpushed-commits
+// guard must protect, yet a live record no longer exists to compute DirName()
+// from (#2593). Externally-adopted worktrees (WorktreeDir set) are never
+// resolved: they live outside WorktreesDir, so the directory scan never
+// surfaces them either.
+func (s *Scanner) sandboxWorktreePath(snap snapshot, taskID string) (string, bool) {
+	if t, exists := snap.byID[taskID]; exists {
+		if t.ProjectID == "" || t.WorktreeDir != "" {
+			return "", false
+		}
+		wtPath := filepath.Join(s.cfg.WorktreesDir, t.DirName())
+		if _, err := os.Stat(wtPath); err != nil {
+			return "", false
+		}
+		return wtPath, true
+	}
+	entries, err := os.ReadDir(s.cfg.WorktreesDir)
+	if err != nil {
+		return "", false
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if taskIDFromWorktreeDir(e.Name()) == taskID {
+			return filepath.Join(s.cfg.WorktreesDir, e.Name()), true
+		}
+	}
+	return "", false
 }
 
 // resolveBucketNames returns the bucket names Scan/Apply should consider:
@@ -338,7 +418,7 @@ func (s *Scanner) Scan(opts Options) (Result, error) {
 	for _, name := range resolveBucketNames(opts) {
 		switch name {
 		case BucketLogs:
-			buckets = append(buckets, s.scanLogs(opts))
+			buckets = append(buckets, s.scanLogs(snap, opts))
 		case BucketAudit:
 			buckets = append(buckets, s.scanAudit(opts))
 		case BucketSandboxes:
@@ -410,23 +490,24 @@ func (s *Scanner) ageEligible(bucketName, path string, opts Options) (ok bool, r
 	if opts.OlderThan > 0 {
 		retention = opts.OlderThan
 	}
-	if s.now().Sub(info.ModTime()) < retention {
+	if s.nowTime().Sub(info.ModTime()) < retention {
 		return false, "within retention window"
 	}
 	return true, "past retention"
 }
 
-func (s *Scanner) scanLogs(opts Options) Bucket {
+func (s *Scanner) scanLogs(snap snapshot, opts Options) Bucket {
 	b := Bucket{Name: BucketLogs, Risk: RiskSafe, Description: "per-agent NDJSON logs and per-task worktree setup logs past retention"}
-	s.scanLogDir(filepath.Join(s.cfg.Logging.Dir, "agents"), opts, &b)
-	s.scanLogDir(filepath.Join(s.cfg.Logging.Dir, "worktrees"), opts, &b)
+	protected := s.protectedLogPaths(snap)
+	s.scanLogDir(filepath.Join(s.cfg.Logging.Dir, "agents"), opts, protected, &b)
+	s.scanLogDir(filepath.Join(s.cfg.Logging.Dir, "worktrees"), opts, protected, &b)
 	return b
 }
 
 // scanLogDir appends every plain, non-symlink, age-eligible file directly
 // under dir to b. Shared by the agents/ and worktrees/ subdirectories of the
 // logs bucket, which are sized and retained identically.
-func (s *Scanner) scanLogDir(dir string, opts Options, b *Bucket) {
+func (s *Scanner) scanLogDir(dir string, opts Options, protected map[string]bool, b *Bucket) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
@@ -437,6 +518,9 @@ func (s *Scanner) scanLogDir(dir string, opts Options, b *Bucket) {
 		}
 		p := filepath.Join(dir, e.Name())
 		if isSymlink(p) {
+			continue
+		}
+		if protected[p] {
 			continue
 		}
 		if ok, _ := s.ageEligible(BucketLogs, p, opts); !ok {
@@ -481,6 +565,33 @@ func (s *Scanner) scanAudit(opts Options) Bucket {
 	return b
 }
 
+func (s *Scanner) protectedLogPaths(snap snapshot) map[string]bool {
+	if s == nil || s.protected == nil {
+		return nil
+	}
+	findings, err := s.protected.List()
+	if err != nil || len(findings) == 0 {
+		return nil
+	}
+	tasks := make([]task.Task, 0, len(snap.byID))
+	for id := range snap.byID {
+		tasks = append(tasks, snap.byID[id])
+	}
+	return ProtectedEvidenceLogPaths(s.cfg.Logging.Dir, tasks, findings)
+}
+
+// retain records an entry the bucket holds but may not delete, whatever
+// eligible() refused on, so its bytes are reported rather than silently
+// dropped from every total.
+func (b *Bucket) retain(path string) {
+	size, err := dirSize(path)
+	if err != nil {
+		return
+	}
+	b.RetainedBytes += size
+	b.RetainedItems++
+}
+
 func (s *Scanner) sandboxRetention() (time.Duration, bool) {
 	return s.cfg.DefaultSandboxRetention()
 }
@@ -501,7 +612,12 @@ func (s *Scanner) scanSandboxes(snap snapshot) Bucket {
 		if isSymlink(p) {
 			continue
 		}
-		if ok, _ := eligible(snap, sandboxTaskIDFromDir(e.Name()), p, retention, disabled, s.now()); !ok {
+		taskID := sandboxTaskIDFromDir(e.Name())
+		if ok, _ := eligible(snap, taskID, p, retention, disabled, s.nowTime()); !ok {
+			b.retain(p)
+			continue
+		}
+		if s.sandboxWorktreeHasUnpushedCommits(snap, taskID) {
 			continue
 		}
 		size, err := dirSize(p)
@@ -517,7 +633,7 @@ func (s *Scanner) scanSandboxes(snap snapshot) Bucket {
 
 func (s *Scanner) scanGoBuildCache(snap snapshot) Bucket {
 	dir := goBuildCacheDir()
-	b := Bucket{Name: BucketGoBuildCache, Risk: RiskSafe, Description: "orphaned/terminal-task per-task Go build cache dirs"}
+	b := Bucket{Name: BucketGoBuildCache, Risk: RiskSafe, Description: "per-task Go build cache dirs: orphaned, terminal-task, or unused past sandbox.build_cache_idle_hours"}
 	retention, disabled := s.sandboxRetention()
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -531,8 +647,11 @@ func (s *Scanner) scanGoBuildCache(snap snapshot) Bucket {
 		if isSymlink(p) {
 			continue
 		}
-		if ok, _ := eligible(snap, e.Name(), p, retention, disabled, s.now()); !ok {
-			continue
+		if ok, _ := eligible(snap, e.Name(), p, retention, disabled, s.nowTime()); !ok {
+			if !s.buildCacheIdle(p) {
+				b.retain(p)
+				continue
+			}
 		}
 		size, err := dirSize(p)
 		if err != nil {
@@ -543,6 +662,33 @@ func (s *Scanner) scanGoBuildCache(snap snapshot) Bucket {
 		b.Items++
 	}
 	return b
+}
+
+// buildCacheIdle reports whether a per-task Go build cache has gone unused
+// long enough to reclaim whatever its owning task is doing.
+//
+// Task status is the wrong lifetime for this resource alone. A build cache is
+// derived data — losing it costs a cold rebuild, no network and no work — and
+// a task parked in human-required is never terminal, so retention never
+// starts running and its cache is pinned for as long as the task sits there.
+// Twenty-four such tasks filled a disk while every safe bucket reported
+// nothing to reclaim.
+//
+// Last use is read from the directory's own mtime, not the owning task's
+// state: Go adds and removes entries at the cache root as it builds, so a
+// cache being used right now is recent by definition and one abandoned three
+// weeks ago says so. That makes an in-flight build safe without consulting
+// anything about the task.
+func (s *Scanner) buildCacheIdle(path string) bool {
+	window, disabled := s.cfg.BuildCacheIdle()
+	if disabled {
+		return false
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return s.nowTime().Sub(info.ModTime()) >= window
 }
 
 func (s *Scanner) scanWorktrees(snap snapshot, opts Options) Bucket {
@@ -562,7 +708,11 @@ func (s *Scanner) scanWorktrees(snap snapshot, opts Options) Bucket {
 			continue
 		}
 		taskID := taskIDFromWorktreeDir(e.Name())
-		if ok, _ := eligible(snap, taskID, p, retention, disabled, s.now()); !ok {
+		if ok, _ := eligible(snap, taskID, p, retention, disabled, s.nowTime()); !ok {
+			b.retain(p)
+			continue
+		}
+		if hasUnpushedCommits(p) {
 			continue
 		}
 		if !opts.Force && !gitStatusClean(p) {
@@ -706,6 +856,11 @@ func (s *Scanner) revalidate(bucketName, path string, snap snapshot, opts Option
 
 	switch bucketName {
 	case BucketLogs, BucketAudit:
+		if bucketName == BucketLogs {
+			if protected := s.protectedLogPaths(snap); protected[path] {
+				return false, "log retained as cleanup evidence"
+			}
+		}
 		return s.ageEligible(bucketName, path, opts)
 	case BucketSandboxes, BucketGoBuildCache:
 		retention, disabled := s.sandboxRetention()
@@ -713,12 +868,21 @@ func (s *Scanner) revalidate(bucketName, path string, snap snapshot, opts Option
 		if bucketName == BucketSandboxes {
 			taskID = sandboxTaskIDFromDir(taskID)
 		}
-		return eligible(snap, taskID, path, retention, disabled, s.now())
+		if ok, reason := eligible(snap, taskID, path, retention, disabled, s.nowTime()); !ok {
+			return false, reason
+		}
+		if bucketName == BucketSandboxes && s.sandboxWorktreeHasUnpushedCommits(snap, taskID) {
+			return false, "owning task worktree has commits not pushed to any remote"
+		}
+		return true, "eligible"
 	case BucketWorktrees:
 		retention, disabled := s.sandboxRetention()
 		taskID := taskIDFromWorktreeDir(filepath.Base(path))
-		if ok, reason := eligible(snap, taskID, path, retention, disabled, s.now()); !ok {
+		if ok, reason := eligible(snap, taskID, path, retention, disabled, s.nowTime()); !ok {
 			return false, reason
+		}
+		if hasUnpushedCommits(path) {
+			return false, "worktree has commits not pushed to any remote"
 		}
 		if !opts.Force && !gitStatusClean(path) {
 			return false, "worktree has uncommitted changes"
@@ -730,3 +894,5 @@ func (s *Scanner) revalidate(bucketName, path string, snap snapshot, opts Option
 		return false, "unhandled bucket"
 	}
 }
+
+func (s *Scanner) nowTime() time.Time { return clock.Or(s.clock).Now() }

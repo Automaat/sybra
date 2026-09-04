@@ -10,6 +10,7 @@ import (
 	"github.com/Automaat/sybra/internal/llmjob"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -49,7 +50,7 @@ func claudeModelOverride(model string) map[string]string {
 	if strings.TrimSpace(model) == "" {
 		return nil
 	}
-	return map[string]string{"claude": model}
+	return map[string]string{providerid.Claude: model}
 }
 
 func buildPrompt(t task.Task, projects []project.Project) string {
@@ -64,12 +65,12 @@ Rules:
 - tags: pick from: backend, frontend, infra, docs, ci, auth, db, test. Also include one of small|medium|large and one of bug|feature|refactor|review|chore|docs — 2-5 of these vocabulary tags. Separately, add the routing tags "noplan" and/or "trivial" when the task qualifies (see the noplan/trivial guide below): these are the only tags outside the lists above you may emit, and they do NOT count toward the 2-5 — never drop a deserved "noplan"/"trivial" to stay under the cap.
 - size: small|medium|large
 - type: bug|feature|refactor|review|chore|docs
-- mode: headless (automated, no human-in-the-loop needed) or interactive (needs human judgment during execution)
+- mode: always "headless" — interactive mode was removed and the schema no longer accepts it
 - project_id: if the task title or body contains a github.com URL matching one of the registered projects below, set this to that project's "owner/repo". Otherwise empty string. If the "System metadata" section below already shows an existing_project_id or issue_url resolving to a registered project, leave project_id empty — the system already knows the answer and will not use your guess to override it. Only ever set this from a clear github.com URL, never from topical/vocabulary similarity to a project's name.
 
 Decision guide for mode:
-- PR review, simple fix, test writing, refactor → headless
-- Architecture decision, unclear scope, complex debugging → interactive
+- Always emit "headless" regardless of how ambiguous, architectural, or
+  complex the task looks — interactive mode has been removed.
 
 Decision guide for size:
 - small: <50 LOC, single file, trivial

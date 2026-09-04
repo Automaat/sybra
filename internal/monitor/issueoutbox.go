@@ -4,13 +4,18 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/errclass"
 	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/github"
 	"gopkg.in/yaml.v3"
@@ -30,6 +35,11 @@ var issueOutboxMaxDepth = 200
 // misconfiguration nobody is going to fix.
 var issueOutboxMaxAttempts = 20
 
+var (
+	issueOutboxFlushBatchSize = 10
+	issueOutboxItemTimeout    = 15 * time.Second
+)
+
 // issueSubmitter is the subset of *GHIssueSink a DurableGHIssueSink wraps.
 // Narrowed to an interface so tests can substitute a fake without a real gh
 // binary.
@@ -39,14 +49,19 @@ type issueSubmitter interface {
 
 // outboxItem is one pending issue filing, persisted as a single YAML file.
 type outboxItem struct {
-	Fingerprint   string    `yaml:"fingerprint"`
-	Title         string    `yaml:"title"`
-	Body          string    `yaml:"body"`
-	ExtraLabels   []string  `yaml:"extra_labels,omitempty"`
-	Attempts      int       `yaml:"attempts"`
-	FirstFailedAt time.Time `yaml:"first_failed_at"`
-	LastAttemptAt time.Time `yaml:"last_attempt_at"`
-	LastError     string    `yaml:"last_error,omitempty"`
+	Fingerprint    string         `yaml:"fingerprint"`
+	Operation      string         `yaml:"operation,omitempty"`
+	Title          string         `yaml:"title"`
+	Body           string         `yaml:"body"`
+	ExtraLabels    []string       `yaml:"extra_labels,omitempty"`
+	Incident       *Incident      `yaml:"incident,omitempty"`
+	IncidentChange IncidentChange `yaml:"incident_change,omitempty"`
+	Duplicates     []int          `yaml:"duplicates,omitempty"`
+	Coverage       string         `yaml:"coverage,omitempty"`
+	Attempts       int            `yaml:"attempts"`
+	FirstFailedAt  time.Time      `yaml:"first_failed_at"`
+	LastAttemptAt  time.Time      `yaml:"last_attempt_at"`
+	LastError      string         `yaml:"last_error,omitempty"`
 }
 
 func fingerprintTitle(title string) string {
@@ -117,6 +132,19 @@ func (s *issueOutboxStore) load(log *slog.Logger) []outboxItem {
 	return out
 }
 
+// get reads one pending filing from its file.
+func (s *issueOutboxStore) get(fingerprint string) (outboxItem, bool) {
+	data, err := os.ReadFile(s.filePath(fingerprint))
+	if err != nil {
+		return outboxItem{}, false
+	}
+	var it outboxItem
+	if err := yaml.Unmarshal(data, &it); err != nil {
+		return outboxItem{}, false
+	}
+	return it, true
+}
+
 func (s *issueOutboxStore) depth() int {
 	paths, err := fsutil.ListFiles(s.dir, ".yaml")
 	if err != nil {
@@ -138,10 +166,24 @@ func (s *issueOutboxStore) depth() int {
 // returned to the caller unchanged without consuming outbox space.
 type DurableGHIssueSink struct {
 	inner    issueSubmitter
-	store    *issueOutboxStore
+	store    IssueOutboxPersistence
 	logger   *slog.Logger
-	name     string        // sink identity for logs, e.g. "monitor" or "human-review"
-	auditLog *audit.Logger // optional; nil in tests that construct the struct directly
+	name     string      // sink identity for logs, e.g. "monitor" or "human-review"
+	auditLog audit.Store // optional; nil in tests that construct the struct directly
+
+	// mu serializes outbox mutation (flushPending/persist) so a
+	// recovery-triggered ReplayPending racing with a normal SubmitIssue's own
+	// opportunistic flush never both retry the same pending item and file it
+	// twice.
+	mu sync.Mutex
+	// flushMu prevents concurrent callers from retrying the same loaded batch,
+	// but is deliberately separate from mu: network calls must not block store
+	// readers or persistence.
+	flushMu sync.Mutex
+	// replayed counts filings that succeeded after being queued — the
+	// "replay" metric surfaced by internal/metrics. Read without mu since
+	// atomic.Int64 is self-synchronizing.
+	replayed atomic.Int64
 }
 
 // NewDurableGHIssueSink wraps inner with a bounded on-disk retry outbox
@@ -150,7 +192,7 @@ type DurableGHIssueSink struct {
 // (no audit event is emitted, only the log line) — callers that want the
 // failure surfaced as a health.Finding (see internal/health's
 // checkGHIssueAuthFailure) must pass a non-nil logger.
-func NewDurableGHIssueSink(inner *GHIssueSink, dir, name string, logger *slog.Logger, auditLog *audit.Logger) (*DurableGHIssueSink, error) {
+func NewDurableGHIssueSink(inner *GHIssueSink, dir, name string, logger *slog.Logger, auditLog audit.Store) (*DurableGHIssueSink, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -158,7 +200,16 @@ func NewDurableGHIssueSink(inner *GHIssueSink, dir, name string, logger *slog.Lo
 	if err != nil {
 		return nil, err
 	}
-	return &DurableGHIssueSink{inner: inner, store: store, logger: logger, name: name, auditLog: auditLog}, nil
+	return NewDurableGHIssueSinkWith(inner, store, name, logger, auditLog), nil
+}
+
+// NewDurableGHIssueSinkWith returns a sink persisting through store rather than
+// to files.
+func NewDurableGHIssueSinkWith(inner *GHIssueSink, store IssueOutboxPersistence, name string, logger *slog.Logger, auditLog audit.Store) *DurableGHIssueSink {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &DurableGHIssueSink{inner: inner, store: store, logger: logger, name: name, auditLog: auditLog}
 }
 
 // Submit implements IssueSink.
@@ -177,27 +228,132 @@ func (d *DurableGHIssueSink) SubmitIssue(ctx context.Context, title, body string
 	if err == nil {
 		return created, url, nil
 	}
-	if !github.IsAuthError(err) {
+	if github.ClassifyError(err, errclass.GitHubCircuitEscalationBiased) != errclass.Auth {
 		return created, url, err
 	}
 	d.persist(title, body, extraLabels, err)
 	return created, url, err
 }
 
+// CloseIfOpen implements IssueCloser when the wrapped sink supports it (the
+// production *GHIssueSink always does); a no-op otherwise. Closing is
+// best-effort and does not go through the outbox — a transient failure here
+// just means the issue stays open for the next tick's retry.
+func (d *DurableGHIssueSink) CloseIfOpen(ctx context.Context, a Anomaly, comment string) (bool, error) {
+	closer, ok := d.inner.(IssueCloser)
+	if !ok {
+		return false, nil
+	}
+	return closer.CloseIfOpen(ctx, a, comment)
+}
+
+func (d *DurableGHIssueSink) ApplyIncident(ctx context.Context, in Incident, change IncidentChange, body string) (bool, IncidentArtifact, error) {
+	d.flushPending(ctx)
+	sink, ok := d.inner.(IncidentSink)
+	if !ok {
+		return false, IncidentArtifact{}, errors.New("durable issue sink: incident operations unsupported")
+	}
+	created, artifact, err := sink.ApplyIncident(ctx, in, change, body)
+	if err != nil && github.ClassifyError(err, errclass.GitHubCircuitEscalationBiased) == errclass.Auth {
+		d.persistIncident("apply_incident", in, change, body, nil, "", err)
+	}
+	return created, artifact, err
+}
+
+func (d *DurableGHIssueSink) ResolveIncident(ctx context.Context, in Incident, comment string) (bool, error) {
+	d.flushPending(ctx)
+	sink, ok := d.inner.(IncidentSink)
+	if !ok {
+		return false, errors.New("durable issue sink: incident operations unsupported")
+	}
+	closed, err := sink.ResolveIncident(ctx, in, comment)
+	if err != nil && github.ClassifyError(err, errclass.GitHubCircuitEscalationBiased) == errclass.Auth {
+		d.persistIncident("resolve_incident", in, IncidentClosed, comment, nil, "", err)
+	}
+	return closed, err
+}
+
+func (d *DurableGHIssueSink) MapDuplicateIncidents(ctx context.Context, in Incident, duplicates []int, coverage string) error {
+	d.flushPending(ctx)
+	sink, ok := d.inner.(IncidentSink)
+	if !ok {
+		return errors.New("durable issue sink: incident operations unsupported")
+	}
+	err := sink.MapDuplicateIncidents(ctx, in, duplicates, coverage)
+	if err != nil && github.ClassifyError(err, errclass.GitHubCircuitEscalationBiased) == errclass.Auth {
+		d.persistIncident("map_duplicate_incidents", in, IncidentExpanded, "", duplicates, coverage, err)
+	}
+	return err
+}
+
+// ReplayPending immediately retries every queued filing. Wired to
+// github.OnAuthRecovered (see internal/sybra's lifecycle wiring) so a
+// credential recovery drains the outbox right away instead of waiting for
+// this sink's next natural SubmitIssue call, which for a rare anomaly kind
+// could be hours away — see #2453. Safe to call concurrently with
+// SubmitIssue's own opportunistic flush; both funnel through the same lock.
+func (d *DurableGHIssueSink) ReplayPending(ctx context.Context) {
+	d.flushPending(ctx)
+}
+
+// ReplayedTotal returns the cumulative count of queued filings that
+// succeeded after being retried from the outbox, without any request/task
+// content — the "replay" metric in #2453's fix list.
+func (d *DurableGHIssueSink) ReplayedTotal() int64 { return d.replayed.Load() }
+
+// Depth returns the current number of filings queued in the outbox.
+func (d *DurableGHIssueSink) Depth() int64 { return int64(d.store.depth()) }
+
+// OldestPendingAge returns how long the oldest queued filing has been
+// pending relative to now, or 0 when the outbox is empty.
+func (d *DurableGHIssueSink) OldestPendingAge(now time.Time) time.Duration {
+	d.mu.Lock()
+	pending := d.store.load(d.logger)
+	d.mu.Unlock()
+	var oldest time.Time
+	for i := range pending {
+		if oldest.IsZero() || pending[i].FirstFailedAt.Before(oldest) {
+			oldest = pending[i].FirstFailedAt
+		}
+	}
+	if oldest.IsZero() {
+		return 0
+	}
+	return now.Sub(oldest)
+}
+
 // flushPending retries every currently-pending outbox item once. Items that
 // succeed are removed; items that fail again are re-persisted with a bumped
 // attempt count, or dropped once issueOutboxMaxAttempts is exceeded.
 func (d *DurableGHIssueSink) flushPending(ctx context.Context) {
+	d.flushMu.Lock()
+	defer d.flushMu.Unlock()
+	d.mu.Lock()
 	pending := d.store.load(d.logger)
+	d.mu.Unlock()
+	if len(pending) > issueOutboxFlushBatchSize {
+		pending = pending[:issueOutboxFlushBatchSize]
+	}
 	for i := range pending {
 		it := &pending[i]
-		created, _, err := d.inner.SubmitIssue(ctx, it.Title, it.Body, it.ExtraLabels)
+		itemCtx, cancel := context.WithTimeout(ctx, issueOutboxItemTimeout)
+		created, err := d.retryItem(itemCtx, *it)
+		cancel()
+		d.mu.Lock()
+		current, ok := d.lookup(it.Fingerprint)
+		if !ok || !reflect.DeepEqual(current, *it) {
+			d.mu.Unlock()
+			continue
+		}
 		if err == nil {
 			if delErr := d.store.del(it.Fingerprint); delErr != nil {
 				d.logger.Warn("monitor.issue_outbox.retry.cleanup-failed", "sink", d.name, "fingerprint", it.Fingerprint, "err", delErr)
+				d.mu.Unlock()
 				continue
 			}
+			d.replayed.Add(1)
 			d.logger.Info("monitor.issue_outbox.retry.succeeded", "sink", d.name, "fingerprint", it.Fingerprint, "created", created, "attempts", it.Attempts+1)
+			d.mu.Unlock()
 			continue
 		}
 		it.Attempts++
@@ -208,11 +364,35 @@ func (d *DurableGHIssueSink) flushPending(ctx context.Context) {
 				d.logger.Warn("monitor.issue_outbox.retry.cleanup-failed", "sink", d.name, "fingerprint", it.Fingerprint, "err", delErr)
 			}
 			d.logger.Error("monitor.issue_outbox.retry.exhausted", "sink", d.name, "fingerprint", it.Fingerprint, "title", it.Title, "attempts", it.Attempts, "err", it.LastError)
+			d.mu.Unlock()
 			continue
 		}
 		if putErr := d.store.put(*it); putErr != nil {
 			d.logger.Warn("monitor.issue_outbox.retry.persist-failed", "sink", d.name, "fingerprint", it.Fingerprint, "err", putErr)
 		}
+		d.mu.Unlock()
+	}
+}
+
+func (d *DurableGHIssueSink) retryItem(ctx context.Context, it outboxItem) (bool, error) {
+	if it.Operation == "" {
+		created, _, err := d.inner.SubmitIssue(ctx, it.Title, it.Body, it.ExtraLabels)
+		return created, err
+	}
+	sink, ok := d.inner.(IncidentSink)
+	if !ok || it.Incident == nil {
+		return false, errors.New("durable issue sink: invalid queued incident operation")
+	}
+	switch it.Operation {
+	case "apply_incident":
+		created, _, err := sink.ApplyIncident(ctx, *it.Incident, it.IncidentChange, it.Body)
+		return created, err
+	case "resolve_incident":
+		return sink.ResolveIncident(ctx, *it.Incident, it.Body)
+	case "map_duplicate_incidents":
+		return false, sink.MapDuplicateIncidents(ctx, *it.Incident, it.Duplicates, it.Coverage)
+	default:
+		return false, fmt.Errorf("durable issue sink: unknown queued operation %q", it.Operation)
 	}
 }
 
@@ -221,6 +401,8 @@ func (d *DurableGHIssueSink) flushPending(ctx context.Context) {
 // failing filing produces one actionable log line per outage, not one per
 // attempt.
 func (d *DurableGHIssueSink) persist(title, body string, extraLabels []string, submitErr error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	fp := fingerprintTitle(title)
 	now := time.Now().UTC()
 	existing, hadExisting := d.lookup(fp)
@@ -254,16 +436,62 @@ func (d *DurableGHIssueSink) persist(title, body string, extraLabels []string, s
 	}
 }
 
+func incidentOperationRank(operation string) int {
+	switch operation {
+	case "resolve_incident":
+		return 3
+	case "map_duplicate_incidents":
+		return 2
+	case "apply_incident":
+		return 1
+	default:
+		return 0
+	}
+}
+
+// persistIncident replaces any older desired state for this incident. A later
+// revision subsumes an earlier create/comment/close operation, so auth recovery
+// converges on the newest durable state instead of replaying stale transitions.
+func (d *DurableGHIssueSink) persistIncident(operation string, in Incident, change IncidentChange, body string, duplicates []int, coverage string, submitErr error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	fp := fingerprintTitle("incident:" + in.Fingerprint)
+	now := time.Now().UTC()
+	existing, hadExisting := d.lookup(fp)
+	if hadExisting && existing.Incident != nil {
+		oldRevision := existing.Incident.Revision
+		if oldRevision > in.Revision || (oldRevision == in.Revision && incidentOperationRank(existing.Operation) > incidentOperationRank(operation)) {
+			return
+		}
+	}
+	copyIncident := in
+	it := outboxItem{
+		Fingerprint: fp, Operation: operation, Title: IncidentTitle(in), Body: body, Incident: &copyIncident,
+		IncidentChange: change, Duplicates: append([]int(nil), duplicates...), Coverage: coverage,
+		FirstFailedAt: now, LastAttemptAt: now, LastError: redactedErrorString(submitErr),
+	}
+	if hadExisting {
+		it.Attempts = existing.Attempts
+		it.FirstFailedAt = existing.FirstFailedAt
+	} else if d.store.depth() >= issueOutboxMaxDepth {
+		d.logger.Error("monitor.issue_outbox.full", "sink", d.name, "depth", issueOutboxMaxDepth, "incident", in.Fingerprint, "err", it.LastError)
+		return
+	}
+	if err := d.store.put(it); err != nil {
+		d.logger.Warn("monitor.issue_outbox.persist-failed", "sink", d.name, "fingerprint", fp, "err", err)
+		return
+	}
+	if !hadExisting {
+		d.logger.Error("monitor.issue.auth_failed", "sink", d.name, "incident", in.Fingerprint, "operation", operation, "err", it.LastError,
+			"hint", "incident publication is unauthenticated and queued for retry")
+		audit.LogEvent(d.auditLog, d.logger, audit.EventGHIssueAuthFailed, "", "", map[string]any{
+			"sink": d.name, "operation": operation, "err": it.LastError,
+		})
+	}
+}
+
 func (d *DurableGHIssueSink) lookup(fingerprint string) (outboxItem, bool) {
-	data, err := os.ReadFile(d.store.filePath(fingerprint))
-	if err != nil {
-		return outboxItem{}, false
-	}
-	var it outboxItem
-	if err := yaml.Unmarshal(data, &it); err != nil {
-		return outboxItem{}, false
-	}
-	return it, true
+	return d.store.get(fingerprint)
 }
 
 // redactedErrorString returns err's message with GitHub token-shaped

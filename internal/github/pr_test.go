@@ -1,6 +1,7 @@
 package github
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -446,6 +447,102 @@ func TestRequestReviewersWith_passesArgs(t *testing.T) {
 	}
 }
 
+func TestRequestCopilotReview_RequestsCopilotBot(t *testing.T) {
+	orig := defaultExecer
+	fe := &recordingSequenceExecer{
+		results: []scriptedResult{
+			{output: []byte(`{"data":{"repository":{"pullRequest":{"id":"PR_kwDOtest42"}}}}`)},
+			{output: []byte(`{"data":{"requestReviews":{"pullRequest":{"id":"PR_kwDOtest42"}}}}`)},
+		},
+	}
+	defaultExecer = fe
+	t.Cleanup(func() { defaultExecer = orig })
+
+	if err := RequestCopilotReview("owner/repo", 42); err != nil {
+		t.Fatalf("RequestCopilotReview: %v", err)
+	}
+	if len(fe.calls) != 2 {
+		t.Fatalf("calls = %d, want 2: %v", len(fe.calls), fe.calls)
+	}
+
+	// First call resolves the PR's GraphQL node id.
+	idCall := fe.calls[0]
+	if !containsArg(idCall, "graphql") {
+		t.Errorf("id call args = %v, want graphql", idCall)
+	}
+	if !containsArg(idCall, "owner=owner") || !containsArg(idCall, "name=repo") || !containsArg(idCall, "number=42") {
+		t.Errorf("id call args = %v, missing owner/name/number", idCall)
+	}
+
+	// Second call must be the requestReviews mutation targeting Copilot's
+	// bot node id — this is the only GitHub operation that actually
+	// enqueues a Copilot review (the REST requested_reviewers endpoint
+	// silently no-ops for the bot).
+	mutCall := fe.calls[1]
+	if !containsArg(mutCall, "graphql") {
+		t.Errorf("mutation call args = %v, want graphql", mutCall)
+	}
+	if !containsArg(mutCall, "prId=PR_kwDOtest42") || !containsArg(mutCall, "botId="+copilotReviewerBotID) {
+		t.Errorf("mutation call args = %v, missing prId/botId", mutCall)
+	}
+}
+
+func TestRequestCopilotReview_InvalidRepo(t *testing.T) {
+	t.Parallel()
+	fe := &recordingSequenceExecer{}
+	if err := requestCopilotReviewCtxWith(context.Background(), fe, "not-a-repo", 42); err == nil {
+		t.Fatal("expected error for repo without owner/name")
+	}
+	if fe.callIdx != 0 {
+		t.Errorf("calls = %d, want 0 (should fail before any API call)", fe.callIdx)
+	}
+}
+
+func TestRequestCopilotReview_IDQueryGraphQLError(t *testing.T) {
+	t.Parallel()
+	fe := &recordingSequenceExecer{
+		results: []scriptedResult{
+			{output: []byte(`{"errors":[{"message":"Could not resolve to a PullRequest"}]}`)},
+		},
+	}
+	err := requestCopilotReviewCtxWith(context.Background(), fe, "owner/repo", 42)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if fe.callIdx != 1 {
+		t.Errorf("calls = %d, want 1 (should not attempt the mutation after id lookup fails)", fe.callIdx)
+	}
+}
+
+func TestRequestCopilotReview_EmptyNodeID(t *testing.T) {
+	t.Parallel()
+	fe := &recordingSequenceExecer{
+		results: []scriptedResult{
+			{output: []byte(`{"data":{"repository":{"pullRequest":{"id":""}}}}`)},
+		},
+	}
+	err := requestCopilotReviewCtxWith(context.Background(), fe, "owner/repo", 42)
+	if err == nil {
+		t.Fatal("expected error for empty node id")
+	}
+	if fe.callIdx != 1 {
+		t.Errorf("calls = %d, want 1 (should not attempt the mutation with an empty prId)", fe.callIdx)
+	}
+}
+
+func TestRequestCopilotReview_MutationGraphQLError(t *testing.T) {
+	t.Parallel()
+	fe := &recordingSequenceExecer{
+		results: []scriptedResult{
+			{output: []byte(`{"data":{"repository":{"pullRequest":{"id":"PR_kwDOtest42"}}}}`)},
+			{output: []byte(`{"errors":[{"message":"BOT_kgDOCnlnWA is not a valid reviewer"}]}`)},
+		},
+	}
+	if err := requestCopilotReviewCtxWith(context.Background(), fe, "owner/repo", 42); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
 func TestRequestReviewersWith_emptySkips(t *testing.T) {
 	t.Parallel()
 	fe := &recordingExecer{}
@@ -642,6 +739,38 @@ func TestEnableAutoMerge(t *testing.T) {
 		}
 		if _, ok := prStateCache.Get(key); !ok {
 			t.Error("cache entry was invalidated by a non-default execer, want untouched")
+		}
+	})
+}
+
+func TestClosePRWith(t *testing.T) {
+	t.Parallel()
+	t.Run("success passes args with comment", func(t *testing.T) {
+		t.Parallel()
+		fe := &recordingExecer{}
+		if err := closePRWith(t.Context(), fe, "owner/repo", 42, "Superseded by #43."); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := []string{"pr", "close", "42", "--repo", "owner/repo", "--comment", "Superseded by #43."}
+		if len(fe.lastArgs) != len(want) {
+			t.Fatalf("args = %v, want %v", fe.lastArgs, want)
+		}
+		for i, a := range fe.lastArgs {
+			if a != want[i] {
+				t.Errorf("arg[%d] = %q, want %q", i, a, want[i])
+			}
+		}
+	})
+
+	t.Run("gh error passthrough", func(t *testing.T) {
+		t.Parallel()
+		fe := &fakeExecer{output: []byte("not authorized"), err: fmt.Errorf("exit 1")}
+		err := closePRWith(t.Context(), fe, "owner/repo", 42, "Superseded")
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if !strings.Contains(err.Error(), "gh pr close 42") {
+			t.Errorf("error = %v, want it to mention 'gh pr close 42'", err)
 		}
 	})
 }

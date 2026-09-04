@@ -3,6 +3,7 @@
 
 import * as AgentService from "./agentservice.js";
 import * as App from "./app.js";
+import * as AuditService from "./auditservice.js";
 import * as BrowserService from "./browserservice.js";
 import * as ClusterService from "./clusterservice.js";
 import * as ConfigService from "./configservice.js";
@@ -15,12 +16,14 @@ import * as PlanningService from "./planningservice.js";
 import * as ProjectService from "./projectservice.js";
 import * as PromptLabService from "./promptlabservice.js";
 import * as ReviewService from "./reviewservice.js";
+import * as SelfMonitorService from "./selfmonitorservice.js";
 import * as StatsService from "./statsservice.js";
 import * as TaskService from "./taskservice.js";
 import * as WorkflowService from "./workflowservice.js";
 export {
     AgentService,
     App,
+    AuditService,
     BrowserService,
     ClusterService,
     ConfigService,
@@ -33,6 +36,7 @@ export {
     ProjectService,
     PromptLabService,
     ReviewService,
+    SelfMonitorService,
     StatsService,
     TaskService,
     WorkflowService
@@ -44,15 +48,26 @@ export {
     AppSettings,
     ClusterNodeDTO,
     CodexModel,
+    ConfigMutationResult,
+    ConfigPathExplanation,
+    ConfigRecovery,
     CopilotModel,
+    HarnessEvolutionRunDTO,
     LoggingSettings,
     LoopAgentRun,
+    MapDuplicateIncidentsDTO,
     MonitorReportBinding,
+    PromptLabRunDTO,
+    ProviderRoutingSettings,
     RuntimeInfo,
     TamperFindingDTO,
     TamperReportDTO,
     TaskArtifactDTO,
     TaskAuditEventDTO,
+    TaskHistoryEntryDTO,
     TaskSetupLogDTO,
+    TrashPruneReportDTO,
+    TriageResultDTO,
+    UmbrellaExpandDTO,
     VersionInfo
 } from "./models.js";

@@ -108,14 +108,14 @@ func (d *agentDispatcher) Dispatch(ctx context.Context, a Anomaly) (string, erro
 		return "", fmt.Errorf("dispatch %s: working directory unresolved", a.Kind)
 	}
 	cfg := agent.RunConfig{
-		TaskID:                 taskID,
-		Name:                   name,
-		Mode:                   "headless",
-		Prompt:                 DispatchPrompt(a, d.issueRepo, project.PushRemote(ctx, dir)),
-		AllowedTools:           []string{"Bash", "Read"},
-		Dir:                    dir,
-		Model:                  d.model,
-		IgnoreConcurrencyLimit: true,
+		TaskID:       taskID,
+		Name:         name,
+		Role:         agent.RoleMonitor,
+		Mode:         "headless",
+		Prompt:       dispatchPromptForAnomaly(a, d.issueRepo, project.PushRemote(ctx, dir)),
+		AllowedTools: []string{"Bash", "Read"},
+		Dir:          dir,
+		Model:        d.model,
 	}
 	ag, err := d.agents.Run(cfg)
 	if err != nil {

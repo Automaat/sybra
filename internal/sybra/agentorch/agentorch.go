@@ -8,9 +8,9 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
@@ -18,14 +18,17 @@ import (
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/bgop"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/evaluation"
+	"github.com/Automaat/sybra/internal/executioncontract"
+	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/pressure"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/provider"
-	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/skillinvoke"
+	"github.com/Automaat/sybra/internal/sybra/runenv"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
@@ -33,20 +36,21 @@ import (
 )
 
 // ResolveExecution derives the effective mode, directory, permission mode, and
-// whether project worktree setup should be skipped based on the task's type.
-// hintMode is used when the task type does not force a specific mode.
-// Permission priority: task-level override > TaskType hardcoded > config default > true.
+// whether project worktree setup should be skipped. Task mode is explicit; task
+// type does not affect execution.
+//
+// "interactive" is coerced to "headless": it is no longer a dispatchable
+// agent.RunConfig.Mode, but task.AgentModeInteractive is still a valid,
+// load-only value on old task files (see task.validAgentModes), and
+// simple-task-implement's `implement` step templates its mode straight off
+// {{.Task.AgentMode}}. Without this, a legacy interactive task would dispatch
+// RunConfig{Mode: "interactive"} and fail outright instead of running like
+// every other task.
 func ResolveExecution(t task.Task, hintMode, researchMachineDir string, cfg *config.Config) (mode, dir string, requirePerm, skipWorktree bool) {
-	switch t.TaskType {
-	case task.TaskTypeDebug:
-		return "interactive", "", true, false
-	case task.TaskTypeResearch:
-		return "headless", researchMachineDir, ResolvePermission(t, cfg), true
-	case task.TaskTypeChat:
-		return "interactive", "", ResolvePermission(t, cfg), false
-	default:
-		return hintMode, "", ResolvePermission(t, cfg), false
+	if hintMode == "interactive" {
+		hintMode = "headless"
 	}
+	return hintMode, "", ResolvePermission(t, cfg), false
 }
 
 // ResolvePermission returns the effective require_permissions value for a task.
@@ -86,9 +90,17 @@ func ResolveSandboxMode(t task.Task, cfg *config.Config) string {
 	return cfg.DefaultSandboxMode()
 }
 
+// maxResumeZeroOutputStalls is the number of consecutive zero-output-stall
+// runs a session may accumulate (see AgentRun.ResumeZeroOutputStall) before
+// PickImplementationResumeSession treats it as poisoned and abandons it for
+// an older session, or a fresh one.
+const maxResumeZeroOutputStalls = 2
+
 // PickImplementationResumeSession walks AgentRuns newest-first and returns
 // the most recent session_id from a prior implementation run that belongs
-// to the current workflow execution and provider.
+// to the current workflow execution and provider — unless that session has
+// been poisoned by repeated zero-output stalls (see below), in which case it
+// is skipped in favor of an older, non-poisoned qualifying session.
 //
 // Three filters are applied:
 //
@@ -114,7 +126,25 @@ func ResolveSandboxMode(t task.Task, cfg *config.Config) string {
 //     prompt is ever sent. Empty run.Provider is allowed only for legacy
 //     runs predating provider recording; provider="" disables the filter
 //     (useful for callers that have no provider context).
+//
+// Circuit breaker: contiguity for "N consecutive stalls" is defined over the
+// qualifying subsequence (i.e. runs that already passed the three filters
+// above), not the raw run list — a run belonging to a different role/provider
+// or predating workflowStart never breaks a streak, it is simply invisible to
+// this logic. Walking that subsequence newest-first, runs are grouped by
+// SessionID: the first (newest) group is the resume candidate. If it
+// accumulates maxResumeZeroOutputStalls consecutive ResumeZeroOutputStall
+// runs with no intervening non-stall run, it is poisoned and skipped — the
+// walk continues into the next distinct SessionID group as the new candidate.
+// A qualifying run of the current (not-yet-poisoned) candidate session that
+// is NOT a zero-output stall resolves the candidate immediately: a session
+// that has ever produced output is never treated as poisoned, no matter what
+// stalls happened earlier in its history.
 func PickImplementationResumeSession(runs []task.AgentRun, workflowStart time.Time, dispatchProvider string) string {
+	candidate := ""
+	stallStreak := 0
+	poisoned := false
+
 	for i := range slices.Backward(runs) {
 		run := &runs[i]
 		if run.SessionID == "" {
@@ -129,7 +159,32 @@ func PickImplementationResumeSession(runs []task.AgentRun, workflowStart time.Ti
 		if dispatchProvider != "" && run.Provider != "" && run.Provider != dispatchProvider {
 			continue
 		}
-		return run.SessionID
+		if run.SessionID != candidate {
+			// About to cross into an older, distinct session group. If the
+			// current candidate accumulated stalls but never reached the
+			// poison threshold, it is still valid and newer — resolve it now
+			// rather than discarding it for a staler session. Mirrors the
+			// post-loop fallback so it applies at every group boundary too.
+			if candidate != "" && !poisoned {
+				return candidate
+			}
+			candidate = run.SessionID
+			stallStreak = 0
+			poisoned = false
+		}
+		if poisoned {
+			continue
+		}
+		if !run.ResumeZeroOutputStall {
+			return candidate
+		}
+		stallStreak++
+		if stallStreak >= maxResumeZeroOutputStalls {
+			poisoned = true
+		}
+	}
+	if candidate != "" && !poisoned {
+		return candidate
 	}
 	return ""
 }
@@ -145,11 +200,16 @@ type Orchestrator struct {
 	sandboxes *sandbox.Manager
 	bgops     *bgop.Tracker
 	logger    *slog.Logger
-	audit     *audit.Logger
+	audit     audit.Store
 	// pressureGate defers new work when the local host is short on disk,
 	// memory, or CPU headroom. Late-bound via SetPressureGate so startup can
 	// construct it from config after New returns. Nil disables gating.
 	pressureGate *pressure.Gate
+	// pressureAdmission selects the applicable pressure posture for a task.
+	// Cluster leaders use this to distinguish daemon-bound execution from
+	// work that will consume local provider capacity. When nil, pressureGate
+	// remains the backwards-compatible local-only admission source.
+	pressureAdmission func(taskID string) (bool, string)
 	// queue is the admission queue a workflow implementation dispatch falls
 	// back to when the agent pool is saturated (see StartAgentWithAssignment's
 	// admissionGate). Late-bound via SetQueue once agentqueue.New succeeds at
@@ -157,6 +217,10 @@ type Orchestrator struct {
 	// exactly as it did before this feature landed) — every read site
 	// nil-guards for this reason.
 	queue *agentqueue.Queue
+	// runenv certifies the concrete worktree, Git admin area, provider, and
+	// host posture immediately before Run. Nil is retained for construction
+	// tests and degraded startup; App always late-binds it before dispatch.
+	runenv *runenv.Service
 	// conflictRecovery turns a worktree-prep rebase conflict into an autonomous
 	// conflict pr-fix instead of a human escalation. Wired via SetConflictRecovery
 	// in wireServices after the review.Handler exists; nil keeps the
@@ -167,6 +231,19 @@ type Orchestrator struct {
 	// the ordering is easy to regress silently.
 	conflictRecovery func(taskID string) bool
 	ctx              context.Context
+	// sloReport is the latest autonomy SLO compliance verdict, late-bound via
+	// SetSLOReport (wired from evaluation.Service.Deps.OnSLOReport). nil
+	// until the first evaluation tick — handleSaturatedDispatch's throttle
+	// treats nil the same as a non-exhausted budget, so a config with
+	// SLO.ThrottleOnBudgetExhausted enabled but no evaluation service running
+	// never throttles.
+	sloReport atomic.Pointer[evaluation.SLOReport]
+}
+
+// SetSLOReport late-binds the most recent SLO compliance verdict. Called
+// from evaluation.Service's per-tick callback; safe for concurrent use.
+func (o *Orchestrator) SetSLOReport(r evaluation.SLOReport) {
+	o.sloReport.Store(&r)
 }
 
 // New constructs an Orchestrator. Sandboxes and Bgops are late-bound fields,
@@ -176,7 +253,7 @@ func New(
 	tasks *task.Manager,
 	projects *project.Store,
 	agents *agent.Manager,
-	al *audit.Logger,
+	al audit.Store,
 	logger *slog.Logger,
 	worktrees *worktree.Manager,
 	cfg *config.Config,
@@ -207,10 +284,20 @@ func (o *Orchestrator) SetPressureGate(gate *pressure.Gate) {
 	o.pressureGate = gate
 }
 
+// SetPressureAdmission late-binds task-aware resource-pressure admission.
+func (o *Orchestrator) SetPressureAdmission(fn func(taskID string) (bool, string)) {
+	o.pressureAdmission = fn
+}
+
 // SetConflictRecovery late-binds the autonomous conflict-recovery callback
 // once the review.Handler that implements it exists.
 func (o *Orchestrator) SetConflictRecovery(fn func(taskID string) bool) {
 	o.conflictRecovery = fn
+}
+
+// SetRunEnvironment late-binds pre-dispatch certification.
+func (o *Orchestrator) SetRunEnvironment(service *runenv.Service) {
+	o.runenv = service
 }
 
 // SetQueue late-binds the admission queue once agentqueue.New succeeds at
@@ -294,7 +381,7 @@ func (o *Orchestrator) resolveDispatchProvider(taskID string, assignment workflo
 	resolved, err := o.agents.ResolveProvider(agent.RunConfig{
 		TaskID:                  taskID,
 		Provider:                assignment.Provider,
-		DisableProviderFailover: assignment.ExperimentID != "",
+		DisableProviderFailover: false, // A/B attribution must not pin local dispatch.
 	})
 	if err == nil {
 		return resolved
@@ -381,15 +468,16 @@ func PrependSupervisorSteer(tasks *task.Manager, taskID, prompt string) (string,
 	if steer == "" {
 		return prompt, nil
 	}
-	if _, uErr := tasks.Update(taskID, task.Update{SupervisorSteer: task.Ptr("")}); uErr != nil {
+	if _, uErr := tasks.UpdateBy(taskID, "agentorch.consume_supervisor_steer", task.Update{SupervisorSteer: task.Ptr("")}); uErr != nil {
 		return prompt, fmt.Errorf("clear supervisor steer: %w", uErr)
 	}
 	return "Supervisor course-correction: " + steer + "\n\n" + prompt, nil
 }
 
 type startOptions struct {
-	admissionGate bool
-	manualDrain   bool
+	admissionGate      bool
+	manualDrain        bool
+	skipDispatchJitter bool
 	// outputSchema is the workflow step's OutputSchema, threaded onto the
 	// implementation RunConfig so a run_agent step with output_schema reaches
 	// the provider with --json-schema / --output-schema. Empty for the
@@ -406,6 +494,13 @@ func (o *Orchestrator) StartAgent(taskID, mode, prompt string, includeTaskDescri
 	return ag, err
 }
 
+// StartManualAgent dispatches an explicit operator request without randomized
+// provider-gate jitter. Preparation and all admission checks still apply.
+func (o *Orchestrator) StartManualAgent(taskID, mode, prompt string, includeTaskDescription, oneShot bool) (*agent.Agent, error) {
+	ag, _, err := o.startAgent(o.baseCtx(), taskID, mode, prompt, includeTaskDescription, oneShot, "", workflow.AgentAssignment{}, startOptions{skipDispatchJitter: true})
+	return ag, err
+}
+
 // StartQueuedManualItem replays a previously queued manual start once the app
 // drain has observed available capacity. Unlike StartAgent, it never silently
 // re-queues on a transient pool-busy race; the caller re-offers the original
@@ -415,7 +510,10 @@ func (o *Orchestrator) StartQueuedManualItem(ctx context.Context, it agentqueue.
 		return nil, fmt.Errorf("task %s: queued manual replay requires manual queue item", it.TaskID)
 	}
 	mode := FirstNonEmpty(it.Mode, "headless")
-	ag, _, err := o.startAgent(ctx, it.TaskID, mode, it.Prompt, it.IncludeTaskDescription, false, "", workflow.AgentAssignment{}, startOptions{manualDrain: true})
+	ag, _, err := o.startAgent(ctx, it.TaskID, mode, it.Prompt, it.IncludeTaskDescription, false, "", workflow.AgentAssignment{}, startOptions{
+		manualDrain:        true,
+		skipDispatchJitter: true,
+	})
 	return ag, err
 }
 
@@ -427,21 +525,30 @@ func (o *Orchestrator) logSandboxEscapeHatch(taskID string, t task.Task) {
 	if t.Sandbox == nil || *t.Sandbox {
 		return
 	}
-	o.logger.Warn("agent.sandbox.escape_hatch", "task_id", taskID)
+	// An empty reason is itself the signal: `"reason":""` in the audit line
+	// marks an unexplained bypass as plainly as a separate flag would.
+	reason := strings.TrimSpace(t.SandboxOffReason)
+	o.logger.Warn("agent.sandbox.escape_hatch", "task_id", taskID, "reason", reason)
 	o.LogAudit(audit.EventAgentSandboxDisabled, taskID, "", map[string]any{
 		"configured_default": o.cfg.DefaultSandboxMode(),
+		"reason":             reason,
 	})
 }
 
 // resolveDispatchDir prepares (or reuses) the working directory for a
-// project-backed task dispatch. When skipWT is true, dir is returned as
-// given (research-machine or chat tasks that don't isolate into a worktree).
+// project-backed task dispatch. When skipWT is true, dir is returned as given.
 // Otherwise it auto-assigns a project if needed, optionally resets the
 // worktree for a clean retry, and prepares the task's worktree, returning
 // the (possibly project-assigned) task and its worktree directory.
-func (o *Orchestrator) resolveDispatchDir(ctx context.Context, t task.Task, taskID, cleanRetryRef string, skipWT bool, dir string, claim *agent.DispatchClaim) (task.Task, string, error) {
+func (o *Orchestrator) resolveDispatchDir(ctx context.Context, t task.Task, taskID, cleanRetryRef string, skipWT bool, dir string, claim *agent.DispatchClaim, reservation *agent.CapacityReservation) (task.Task, string, error) {
 	if skipWT {
 		return t, dir, nil
+	}
+	if o.worktrees == nil {
+		return t, fallbackDispatchDir(dir), nil
+	}
+	if t.IsPRReview() {
+		return t, "", fmt.Errorf("task %s only reviews pull request %d: refusing a writable worktree", taskID, t.PRNumber)
 	}
 	var assignErr error
 	t, assignErr = o.AutoAssignProject(t)
@@ -472,12 +579,13 @@ func (o *Orchestrator) resolveDispatchDir(ctx context.Context, t task.Task, task
 		// o.conflictRecovery (wired to review.Handler.RecoverStaleBranchConflict)
 		// synchronously starts the branch-conflict-fix workflow, whose "fix"
 		// step dispatches a new agent for this SAME taskID through this same
-		// StartAgentWithAssignment choke point. Release the outer claim first
-		// — we are bailing out of this dispatch regardless of the recovery
-		// result — or that nested dispatch always observes the claim as still
-		// held and bails with ErrDispatchInFlight without ever starting an
-		// agent (the branch-conflict-fix workflow never actually dispatches).
+		// StartAgentWithAssignment choke point. Release the outer claim and the
+		// held pool slot first — we are bailing out of this dispatch regardless
+		// of the recovery result — or that nested dispatch can observe either
+		// the claim as still held (ErrDispatchInFlight) or the pool as still
+		// saturated (ErrAgentPoolBusy) without ever starting the fix agent.
 		claim.Release()
+		reservation.Release()
 		if _, recovered := MarkRebaseBlockedWithRecoveryResult(o.tasks, taskID, wtErr, o.logger, o.conflictRecovery); recovered {
 			return t, "", workflow.ErrDispatchInFlight
 		}
@@ -499,8 +607,11 @@ func (o *Orchestrator) resolveDispatchDir(ctx context.Context, t task.Task, task
 // generic "agent start failed" branch and writes a scary, non-suppressed
 // status_reason for a condition that resolves itself once a pool slot frees.
 func translatePoolBusy(err error) error {
-	if errors.Is(err, agent.ErrMaxConcurrentReached) {
+	if agent.IsCapacityError(err) {
 		return fmt.Errorf("%w: %w", workflow.ErrAgentPoolBusy, err)
+	}
+	if agent.IsAttemptConflict(err) {
+		return fmt.Errorf("%w: %w", workflow.ErrDispatchInFlight, err)
 	}
 	return err
 }
@@ -557,19 +668,37 @@ func (o *Orchestrator) startAgent(ctx context.Context, taskID, mode, prompt stri
 		researchDir = o.cfg.Agent.ResearchMachineDir
 	}
 	effMode, dir, requirePerm, skipWT := ResolveExecution(t, mode, researchDir, o.cfg)
-	ignoreConcurrencyLimit := effMode == "interactive"
-	if !ignoreConcurrencyLimit && o.pressureGate != nil {
+	// effMode is always headless (interactive is coerced away in
+	// ResolveExecution), so implementation dispatches never bypass the
+	// concurrency/pressure gate — legacy interactive tasks are treated as
+	// ordinary headless runs.
+	if o.pressureAdmission != nil {
+		if admit, reason := o.pressureAdmission(taskID); !admit {
+			o.LogAudit(audit.EventAgentDeferredPressure, taskID, "", map[string]any{"reason": reason})
+			return nil, "", fmt.Errorf("%w: %s", workflow.ErrResourcePressure, reason)
+		}
+	} else if o.pressureGate != nil {
 		if admit, reason := o.pressureGate.Admit(); !admit {
 			o.LogAudit(audit.EventAgentDeferredPressure, taskID, "", map[string]any{"reason": reason})
 			return nil, "", fmt.Errorf("%w: %s", workflow.ErrResourcePressure, reason)
 		}
 	}
 
-	if ag, baselineRef, err, handled := o.handleSaturatedDispatch(t, taskID, effMode, prompt, includeTaskDescription, skipWT, ignoreConcurrencyLimit, opts); handled {
-		return ag, baselineRef, err
+	reservation, ag, baselineRef, err, handled := o.handleSaturatedDispatch(t, taskID, effMode, prompt, includeTaskDescription, skipWT, opts)
+	if handled {
+		if ag != nil {
+			return ag, baselineRef, nil
+		}
+		if err != nil {
+			return nil, baselineRef, err
+		}
+		return nil, "", fmt.Errorf("task %s: saturated dispatch returned neither agent nor error", taskID)
+	}
+	if reservation != nil {
+		defer reservation.Release()
 	}
 
-	t, dir, dirErr := o.resolveDispatchDir(ctx, t, taskID, cleanRetryRef, skipWT, dir, claim)
+	t, dir, dirErr := o.resolveDispatchDir(ctx, t, taskID, cleanRetryRef, skipWT, dir, claim, reservation)
 	if dirErr != nil {
 		return nil, "", dirErr
 	}
@@ -577,7 +706,7 @@ func (o *Orchestrator) startAgent(ctx context.Context, taskID, mode, prompt stri
 		return nil, "", fmt.Errorf("task %s: no working dir resolved (skipWorktree=%v) — refusing to run agent in Sybra cwd", taskID, skipWT)
 	}
 
-	baselineRef := CurrentWorktreeHead(ctx, dir)
+	baselineRef = CurrentWorktreeHead(ctx, dir)
 
 	var workflowStart time.Time
 	if t.Workflow != nil {
@@ -591,28 +720,46 @@ func (o *Orchestrator) startAgent(ctx context.Context, taskID, mode, prompt stri
 	if postureErr != nil {
 		return nil, "", postureErr
 	}
-	return o.runImplementationAgent(taskID, prompt, includeTaskDescription, oneShot, skipWT, dir, effMode, requirePerm, posture, baselineRef, resumeSessionID, model, t, assignment, opts)
+	return o.runImplementationAgent(ctx, taskID, prompt, includeTaskDescription, oneShot, skipWT, dir, effMode, requirePerm, posture, baselineRef, resumeSessionID, dispatchProvider, model, t, assignment, opts, reservation)
 }
 
 // runImplementationAgent builds the RunConfig for an implementation dispatch,
 // launches it, and translates a launch failure through the same
 // capacity-race / provider-gate handling startAgent used inline before this
 // was split out to satisfy funlen.
-func (o *Orchestrator) runImplementationAgent(taskID, prompt string, includeTaskDescription, oneShot, skipWT bool, dir, effMode string, requirePerm bool, posture, baselineRef, resumeSessionID, model string, t task.Task, assignment workflow.AgentAssignment, opts startOptions) (*agent.Agent, string, error) {
-	ignoreConcurrencyLimit := effMode == "interactive"
+func (o *Orchestrator) runImplementationAgent(ctx context.Context, taskID, prompt string, includeTaskDescription, oneShot, skipWT bool, dir, effMode string, requirePerm bool, posture, baselineRef, resumeSessionID, resumeSessionProvider, model string, t task.Task, assignment workflow.AgentAssignment, opts startOptions, reservation *agent.CapacityReservation) (*agent.Agent, string, error) {
 	extraEnv := o.SandboxEnvIfRunning(taskID)
 	fullPrompt := BuildTaskStartPrompt(t, prompt, includeTaskDescription)
 	o.logSandboxEscapeHatch(taskID, t)
-	ag, err := o.agents.Run(o.implementationRunConfig(implementationRunParams{
+	runCfg := o.implementationRunConfig(implementationRunParams{
 		taskID: taskID, t: t, effMode: effMode, prompt: prompt, fullPrompt: fullPrompt, dir: dir,
 		assignment: assignment, model: model, requirePerm: requirePerm, posture: posture,
-		oneShot: oneShot, ignoreConcurrencyLimit: ignoreConcurrencyLimit,
-		resumeSessionID: resumeSessionID, extraEnv: extraEnv, opts: opts,
-	}))
+		oneShot:               oneShot,
+		resumeSessionID:       resumeSessionID,
+		resumeSessionProvider: resumeSessionProvider,
+		extraEnv:              extraEnv,
+		opts:                  opts,
+	})
+	var (
+		ag  *agent.Agent
+		err error
+	)
+	if reservation != nil {
+		ag, err = o.agents.RunWithCapacityReservation(runCfg, reservation)
+	} else {
+		ag, err = o.agents.Run(runCfg)
+	}
 	if err != nil {
+		o.invalidateRunEnvironmentOnStartError(taskID, err)
 		o.handleProviderGateStartError(taskID, err)
-		if ag, baselineRef, capErr, handled := o.handleCapacityRace(err, t, taskID, effMode, prompt, includeTaskDescription, skipWT, ignoreConcurrencyLimit, opts); handled {
-			return ag, baselineRef, capErr
+		if ag, baselineRef, capErr, handled := o.handleCapacityRace(err, t, taskID, effMode, prompt, includeTaskDescription, skipWT, opts); handled {
+			if ag != nil {
+				return ag, baselineRef, nil
+			}
+			if capErr != nil {
+				return nil, baselineRef, capErr
+			}
+			return nil, "", fmt.Errorf("task %s: capacity race handler returned neither agent nor error", taskID)
 		}
 		return nil, "", translatePoolBusy(err)
 	}
@@ -625,44 +772,50 @@ func (o *Orchestrator) runImplementationAgent(taskID, prompt string, includeTask
 // implementation-role dispatch. Kept as one struct rather than a long
 // positional parameter list — mirrors the shape of the RunConfig it feeds.
 type implementationRunParams struct {
-	taskID                 string
-	t                      task.Task
-	effMode                string
-	prompt                 string
-	fullPrompt             string
-	dir                    string
-	assignment             workflow.AgentAssignment
-	model                  string
-	requirePerm            bool
-	posture                string
-	oneShot                bool
-	ignoreConcurrencyLimit bool
-	resumeSessionID        string
-	extraEnv               []string
-	opts                   startOptions
+	taskID                string
+	t                     task.Task
+	effMode               string
+	prompt                string
+	fullPrompt            string
+	dir                   string
+	assignment            workflow.AgentAssignment
+	model                 string
+	requirePerm           bool
+	posture               string
+	oneShot               bool
+	resumeSessionID       string
+	resumeSessionProvider string
+	extraEnv              []string
+	opts                  startOptions
 }
 
 func (o *Orchestrator) implementationRunConfig(p implementationRunParams) agent.RunConfig {
 	return agent.RunConfig{
 		TaskID:                  p.taskID,
 		Name:                    p.t.Title,
+		Role:                    agent.RoleImplementation,
 		Mode:                    p.effMode,
 		Prompt:                  p.fullPrompt,
 		AllowedTools:            p.t.AllowedTools,
 		Dir:                     p.dir,
 		Provider:                p.assignment.Provider,
+		IntentID:                p.assignment.IntentID,
+		AdmissionTaskKey:        p.assignment.AdmissionTaskKey,
 		Model:                   p.model,
 		ExperimentID:            p.assignment.ExperimentID,
 		VariantID:               p.assignment.VariantID,
+		RoutingReason:           p.assignment.RoutingReason,
 		AssignmentUnit:          p.assignment.AssignmentUnit,
 		AssignmentKey:           p.assignment.AssignmentKey,
-		DisableProviderFailover: p.assignment.ExperimentID != "",
+		DecisionVersion:         p.assignment.DecisionVersion,
+		DisableProviderFailover: false, // Preserve availability after A/B assignment.
 		RequestedSkill:          requestedWorkflowSkill(p.prompt),
 		RequirePermissions:      p.requirePerm,
 		HeadlessPermissionMode:  p.posture,
+		SkipDispatchJitter:      p.opts.skipDispatchJitter,
 		OneShot:                 p.oneShot,
-		IgnoreConcurrencyLimit:  p.ignoreConcurrencyLimit,
 		ResumeSessionID:         p.resumeSessionID,
+		ResumeSessionProvider:   p.resumeSessionProvider,
 		ExtraEnv:                p.extraEnv,
 		MaxTurns:                p.t.MaxTurns,
 		// Always an implementation run (a code-author role, Role.AuthorsCode),
@@ -673,8 +826,10 @@ func (o *Orchestrator) implementationRunConfig(p implementationRunParams) agent.
 		SandboxMode:     ResolveSandboxMode(p.t, o.cfg),
 		ReasoningEffort: FirstNonEmpty(p.assignment.ReasoningEffort, p.t.ReasoningEffort, ResolveRoleEffort(agent.RoleImplementation, o.cfg)),
 		// Always an implementation run — prime it with the NOTES.md scratchpad.
-		SeedWorkingMemory: true,
-		OutputSchema:      p.opts.outputSchema,
+		SeedWorkingMemory:     true,
+		OutputSchema:          p.opts.outputSchema,
+		RemoteExpectedOutputs: append([]executioncontract.ExpectedOutput(nil), p.assignment.RemoteOutputs...),
+		SidecarDir:            p.assignment.RemoteSidecarDir,
 	}
 }
 
@@ -686,33 +841,102 @@ func requestedWorkflowSkill(prompt string) string {
 	return names[0]
 }
 
-func (o *Orchestrator) handleSaturatedDispatch(t task.Task, taskID, mode, prompt string, includeTaskDescription, skipWT, ignoreConcurrencyLimit bool, opts startOptions) (*agent.Agent, string, error, bool) {
+func (o *Orchestrator) handleSaturatedDispatch(t task.Task, taskID, mode, prompt string, includeTaskDescription, skipWT bool, opts startOptions) (*agent.CapacityReservation, *agent.Agent, string, error, bool) {
 	// Admission gate: workflow implementation dispatches park their token in
 	// the workflow-owned queue, while saturated manual headless starts persist
 	// their replay intent in the manual queue and return a synthetic queued
-	// agent. Interactive/chat starts bypass the cap entirely.
-	if ignoreConcurrencyLimit || o.queue == nil || o.agents.TryReserveSlot() {
-		return nil, "", nil, false
+	// agent.
+	// SLO throttle: only ever narrows opts.admissionGate dispatch (workflow
+	// implementation, StartAgentWithAssignment) — the one path that expands
+	// autonomous concurrency. StartAgent's manual/recovery entry point
+	// (App.StartAgent, recovery.RestartStaleInProgress) never sets
+	// admissionGate, so recovery and manual operator dispatch are exempt by
+	// construction, not by a special case here.
+	// Reserve capacity against the SLO-throttled ceiling (0 = no extra
+	// ceiling) so the reservation is reservation-aware and atomic: a burst of
+	// concurrent admission-gated dispatches can no longer each observe a stale
+	// live-only count and collectively overshoot the halved ceiling.
+	sloLimit := 0
+	if opts.admissionGate {
+		sloLimit = o.sloConcurrencyLimit()
+	}
+	if reservation, ok := o.agents.TryHoldCapacityWithLimit(sloLimit); ok {
+		return reservation, nil, "", nil, false
+	}
+	if o.queue == nil {
+		// The SLO throttle actively narrowed admission (sloLimit > 0) and the
+		// hold failed against the halved ceiling, but the raw pool may still
+		// have room. Without a queue to park in, falling through to unthrottled
+		// dispatch would let admission-gated work overshoot the halved ceiling
+		// straight up to the raw cap — defeating the throttle in exactly the
+		// degraded-startup mode (nil queue) where the system is already
+		// unhealthy. Reject instead of bypassing.
+		if opts.admissionGate && sloLimit > 0 {
+			return nil, nil, "", workflow.ErrAgentPoolBusy, true
+		}
+		return nil, nil, "", nil, false
 	}
 	switch {
 	case opts.admissionGate:
-		return nil, "", o.admitQueueFullOrEnqueue(t, taskID), true
+		return nil, nil, "", o.admitQueueFullOrEnqueue(t, taskID), true
 	case opts.manualDrain:
-		return nil, "", workflow.ErrAgentPoolBusy, true
+		return nil, nil, "", workflow.ErrAgentPoolBusy, true
 	default:
 		ag, baselineRef, err := o.enqueueManualStart(t, taskID, mode, prompt, includeTaskDescription, skipWT)
-		return ag, baselineRef, err, true
+		return nil, ag, baselineRef, err, true
 	}
 }
 
-func (o *Orchestrator) handleCapacityRace(runErr error, t task.Task, taskID, mode, prompt string, includeTaskDescription, skipWT, ignoreConcurrencyLimit bool, opts startOptions) (*agent.Agent, string, error, bool) {
-	// TryReserveSlot above is advisory only — a concurrent dispatch can win
-	// the last slot between that peek and this Run call. Close the race the
-	// same way as the preflight saturation path so durable work is not dropped.
-	if o.queue == nil || !errors.Is(runErr, agent.ErrMaxConcurrentReached) {
+// sloConcurrencyLimit returns the concurrency ceiling workflow-driven
+// implementation dispatch must be held to right now, or 0 when the SLO
+// throttle imposes no extra ceiling. The throttle engages only when the
+// operator has opted into agent.evaluation.slo.throttle_on_budget_exhausted
+// AND the autonomy SLO error budget is exhausted. Default-off: a nil
+// sloReport (SLO service disabled, or no tick has run yet) or the flag unset
+// returns 0. A caller passes the result to TryHoldCapacityWithLimit so the
+// halved ceiling is enforced reservation-aware and atomically, closing the
+// TOCTOU gap between a live-only precheck and the reservation-counting hold.
+func (o *Orchestrator) sloConcurrencyLimit() int {
+	if o.cfg == nil || !o.cfg.Evaluation.SLO.ThrottleOnBudgetExhausted {
+		return 0
+	}
+	report := o.sloReport.Load()
+	if report == nil || report.ErrorBudgetRemaining > 0 {
+		return 0
+	}
+	ceiling := effectiveMaxConcurrent(o.cfg.Agent.MaxConcurrent, true, true)
+	if ceiling <= 0 {
+		// Unlimited configured pool: nothing to narrow against.
+		return 0
+	}
+	return ceiling
+}
+
+// effectiveMaxConcurrent returns the concurrency ceiling workflow-driven
+// implementation dispatch may claim right now. configured is
+// agent.max_concurrent (<=0 means unlimited, returned unchanged — the
+// throttle only ever narrows a real cap, never invents one). When throttle is
+// enabled and the SLO error budget is exhausted, the ceiling is halved
+// (floor 1) so autonomous concurrency contracts instead of continuing to
+// expand into a regression. A pure function so the halving policy is
+// unit-testable without constructing an Orchestrator.
+func effectiveMaxConcurrent(configured int, throttle, budgetExhausted bool) int {
+	if configured <= 0 || !throttle || !budgetExhausted {
+		return configured
+	}
+	return max(configured/2, 1)
+}
+
+func (o *Orchestrator) handleCapacityRace(runErr error, t task.Task, taskID, mode, prompt string, includeTaskDescription, skipWT bool, opts startOptions) (*agent.Agent, string, error, bool) {
+	// Queue-nil degraded mode still relies on registerRunningAgent's final cap
+	// check, so a concurrent dispatch can steal the last slot after startAgent's
+	// earlier preflight. Re-enqueue the same way as the normal saturation path
+	// when the queue exists.
+	if o.queue == nil || !agent.IsCapacityError(runErr) {
 		return nil, "", nil, false
 	}
-	return o.handleSaturatedDispatch(t, taskID, mode, prompt, includeTaskDescription, skipWT, ignoreConcurrencyLimit, opts)
+	_, ag, baselineRef, err, handled := o.handleSaturatedDispatch(t, taskID, mode, prompt, includeTaskDescription, skipWT, opts)
+	return ag, baselineRef, err, handled
 }
 
 // admitQueueFullOrEnqueue offers taskID's implementation dispatch to the
@@ -741,6 +965,7 @@ func (o *Orchestrator) enqueueManualStart(t task.Task, taskID, mode, prompt stri
 	o.queue.Offer(agentqueue.Item{
 		TaskID:                 taskID,
 		Role:                   string(agent.RoleImplementation),
+		Class:                  string(agent.RoleImplementation.WorkloadClass()),
 		Priority:               t.Priority,
 		Status:                 t.Status,
 		Manual:                 true,
@@ -762,6 +987,9 @@ func (o *Orchestrator) ensureQueueableManualTask(t task.Task, taskID string, ski
 	if skipWT {
 		return t, nil
 	}
+	if o.worktrees == nil {
+		return t, nil
+	}
 	assigned, err := o.AutoAssignProject(t)
 	if err != nil {
 		return t, err
@@ -781,6 +1009,7 @@ func (o *Orchestrator) enqueueImplementation(t task.Task, taskID string) bool {
 	o.queue.Offer(agentqueue.Item{
 		TaskID:   taskID,
 		Role:     string(agent.RoleImplementation),
+		Class:    string(agent.RoleImplementation.WorkloadClass()),
 		Priority: t.Priority,
 		Status:   t.Status,
 	})
@@ -819,6 +1048,14 @@ func taskCumulativeCostUSD(runs []task.AgentRun) float64 {
 	return total
 }
 
+func taskRecordedCumulativeCostUSD(t task.Task) float64 {
+	total := taskCumulativeCostUSD(t.AgentRuns)
+	if t.DocumentCompaction != nil {
+		total += t.DocumentCompaction.DroppedRunCostUSD
+	}
+	return total
+}
+
 // CheckTaskCostBudget re-exports the cumulative task cost-budget check
 // (agent.max_task_cost_usd) for dispatch paths that bypass
 // StartAgentWithAssignment — e.g. workflow.execBestOfN, whose attempts and
@@ -837,42 +1074,76 @@ func (o *Orchestrator) enforceTaskCostBudget(t task.Task) error {
 	if o.cfg == nil || o.cfg.Agent.MaxTaskCostUSD <= 0 {
 		return nil
 	}
-	spent := taskCumulativeCostUSD(t.AgentRuns)
+	spent := taskRecordedCumulativeCostUSD(t)
 	if spent < o.cfg.Agent.MaxTaskCostUSD {
 		return nil
 	}
+	runs := len(t.AgentRuns)
+	if t.DocumentCompaction != nil {
+		runs += t.DocumentCompaction.DroppedAgentRuns
+	}
 	return fmt.Errorf("%w: $%.2f spent across %d run(s), limit $%.2f",
-		workflow.ErrTaskCostExceeded, spent, len(t.AgentRuns), o.cfg.Agent.MaxTaskCostUSD)
+		workflow.ErrTaskCostExceeded, spent, runs, o.cfg.Agent.MaxTaskCostUSD)
 }
 func (o *Orchestrator) handleProviderGateStartError(taskID string, err error) {
-	if !errors.Is(err, provider.ErrProviderUnhealthy) {
+	switch {
+	case errors.Is(err, provider.ErrProviderUnhealthy):
+		// Gate block leaves no running agent. Flip the task back to todo so
+		// watchdog / restart-stale loops don't chase a ghost in-progress row.
+		o.revertToTodoAfterGateBlock(taskID, "task.revert-on-gate")
+		o.LogAudit(audit.EventProviderGateBlocked, taskID, "", map[string]any{"err": err.Error()})
+		o.logger.Info("agent.start.gated", "task_id", taskID, "err", err)
+	case errors.Is(err, agent.ErrProviderModelIncompatible):
+		o.revertToTodoAfterGateBlock(taskID, "task.revert-on-model")
+		o.LogAudit(audit.EventProviderModelIncompatible, taskID, "", map[string]any{"err": err.Error()})
+		o.logger.Warn("agent.start.model_incompatible", "task_id", taskID, "err", err)
+	default:
 		return
 	}
-	// Gate block leaves no running agent. Flip the task back to todo so
-	// watchdog / restart-stale loops don't chase a ghost in-progress row.
-	if _, rerr := o.tasks.Update(taskID, task.Update{Status: task.Ptr(task.StatusTodo)}); rerr != nil {
-		o.logger.Error("task.revert-on-gate", "task_id", taskID, "err", rerr)
+}
+
+// revertToTodoAfterGateBlock flips taskID back to todo after a start attempt
+// was blocked before any agent process ran, so watchdog / restart-stale
+// loops don't chase a ghost in-progress row. It submits the revert as a
+// transition intent CAS'd on the task still being in-progress: if a
+// concurrent writer (retry, human action, another gate) already moved the
+// task somewhere else, that decision wins and this revert is a no-op rather
+// than clobbering it. logSuffix distinguishes the two call sites in error logs.
+func (o *Orchestrator) revertToTodoAfterGateBlock(taskID, logSuffix string) {
+	cur, err := o.tasks.Get(taskID)
+	if err != nil {
+		o.logger.Error(logSuffix, "task_id", taskID, "err", err)
+		return
 	}
-	o.LogAudit(audit.EventProviderGateBlocked, taskID, "", map[string]any{"err": err.Error()})
-	o.logger.Info("agent.start.gated", "task_id", taskID, "err", err)
+	if cur.Status != task.StatusInProgress {
+		return
+	}
+	expected := cur.Status
+	if _, err := o.tasks.Apply(task.TransitionIntent{
+		TaskID:         taskID,
+		ToStatus:       task.StatusTodo,
+		Actor:          "agentorch.provider_gate",
+		ExpectedStatus: &expected,
+	}); err != nil {
+		var conflict *task.ConflictError
+		if errors.As(err, &conflict) {
+			// Someone else already moved the task off in-progress between
+			// our read and this write — their decision wins.
+			return
+		}
+		o.logger.Error(logSuffix, "task_id", taskID, "err", err)
+	}
 }
 
 func (o *Orchestrator) resetWorktreeForCleanRetry(ctx context.Context, t task.Task, ref string) error {
-	resetDir := t.WorktreeDir
-	if resetDir == "" {
-		resetDir = o.worktrees.PathFor(t)
-	}
-	if _, statErr := os.Stat(resetDir); statErr != nil {
-		if os.IsNotExist(statErr) {
-			return nil
-		}
-		return fmt.Errorf("stat clean retry worktree: %w", statErr)
-	}
-	if err := project.ResetWorktreeForRetry(ctx, resetDir, ref); err != nil {
-		o.logger.Warn("worktree.clean-retry.reset", "task_id", t.ID, "path", resetDir, "ref", ref, "err", err)
+	target, reset, err := o.worktrees.ResetForRetry(ctx, t, "", ref)
+	if err != nil {
+		o.logger.Warn("worktree.clean-retry.reset", "task_id", t.ID, "path", target, "ref", ref, "err", err)
 		return err
 	}
-	o.logger.Info("worktree.clean-retry.reset", "task_id", t.ID, "path", resetDir, "ref", ref)
+	if reset {
+		o.logger.Info("worktree.clean-retry.reset", "task_id", t.ID, "path", target, "ref", ref)
+	}
 	return nil
 }
 
@@ -903,9 +1174,15 @@ func MarkRebaseBlocked(tasks *task.Manager, taskID string, err error, logger *sl
 	// same human-required park anyway. See #1856.
 	if worktreeerr.IsDiskSpaceError(err) {
 		logger.Warn("worktree.rebase-block.disk-space", "task_id", taskID)
-		if _, uerr := tasks.Update(taskID, task.Update{
-			Status:       task.Ptr(task.StatusHumanRequired),
-			StatusReason: task.Ptr(worktreeerr.DiskSpaceExhaustedReason),
+		if _, uerr := tasks.Apply(task.TransitionIntent{
+			TaskID:   taskID,
+			ToStatus: task.StatusBlocked,
+			Actor:    "agentorch.mark_rebase_blocked.disk_space",
+			Extra: task.Update{
+				StatusReason:    task.Ptr(worktreeerr.DiskSpaceExhaustedReason),
+				Escalation:      task.MachineFailure("runenv.disk_space_exhausted", worktreeerr.DiskSpaceExhaustedReason),
+				AutonomyOutcome: task.QuarantinedOutcome(),
+			},
 		}); uerr != nil {
 			logger.Error("worktree.rebase-block.status", "task_id", taskID, "err", uerr)
 		}
@@ -918,9 +1195,13 @@ func MarkRebaseBlocked(tasks *task.Manager, taskID string, err error, logger *sl
 		}
 	}
 	if reason, resolved := rebaseBlockedPRAlreadyResolved(tasks, taskID); resolved {
-		if _, uerr := tasks.Update(taskID, task.Update{
-			Status:       task.Ptr(task.StatusInReview),
-			StatusReason: task.Ptr(reason),
+		if _, uerr := tasks.Apply(task.TransitionIntent{
+			TaskID:   taskID,
+			ToStatus: task.StatusInReview,
+			Actor:    "agentorch.mark_rebase_blocked.pr_resolved",
+			Extra: task.Update{
+				StatusReason: task.Ptr(reason),
+			},
 		}); uerr != nil {
 			logger.Error("worktree.rebase-block.status", "task_id", taskID, "err", uerr)
 		}
@@ -936,13 +1217,20 @@ func MarkRebaseBlocked(tasks *task.Manager, taskID string, err error, logger *sl
 		// recovery loop apart from a fresh, first-time conflict. This must run
 		// after the remote PR re-probe above, because an externally resolved PR
 		// should still flip back to in-review instead of staying parked.
-		if t, err := tasks.Get(taskID); err == nil && t.Status == task.StatusHumanRequired && t.StatusReason != "" {
+		if t, err := tasks.Get(taskID); err == nil &&
+			(t.Status == task.StatusHumanRequired || t.Status == task.StatusBlocked) && t.StatusReason != "" {
 			return true
 		}
 	}
-	if _, uerr := tasks.Update(taskID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(worktreeerr.RebaseBlockedReason),
+	if _, uerr := tasks.Apply(task.TransitionIntent{
+		TaskID:   taskID,
+		ToStatus: task.StatusBlocked,
+		Actor:    "agentorch.mark_rebase_blocked.parked",
+		Extra: task.Update{
+			StatusReason:    task.Ptr(worktreeerr.RebaseBlockedReason),
+			Escalation:      task.MachineFailure("git.rebase_repair_exhausted", worktreeerr.RebaseBlockedReason),
+			AutonomyOutcome: task.QuarantinedOutcome(),
+		},
 	}); uerr != nil {
 		logger.Error("worktree.rebase-block.status", "task_id", taskID, "err", uerr)
 	}
@@ -1007,7 +1295,7 @@ func (o *Orchestrator) recordImplAgentStart(ag *agent.Agent, t task.Task, taskID
 	// invoke recordImplAgentStart on an agent built outside that path.
 	ag.SetPromptHash(skillattr.HashSourceID(ag.Prompt))
 	o.LogAudit(audit.EventAgentStarted, taskID, ag.ID, map[string]any{
-		"mode": effMode, "title": t.Title, "task_type": string(t.TaskType), "provider": ag.Provider,
+		"mode": effMode, "title": t.Title, "role": string(agent.RoleImplementation), "task_type": string(t.TaskType), "provider": ag.Provider,
 		"model": ag.Model, "experiment_id": ag.ExperimentID, "variant_id": ag.VariantID,
 		"allowed_tools": t.AllowedTools, "require_permissions": requirePerm, "skip_permissions": skipPerm,
 		"permission_posture": posture, "prompt_hash": ag.GetPromptHash(),
@@ -1016,7 +1304,7 @@ func (o *Orchestrator) recordImplAgentStart(ag *agent.Agent, t task.Task, taskID
 	if t.Status != task.StatusInProgress {
 		nextStatus = task.Ptr(task.StatusInProgress)
 	}
-	if err := o.tasks.AddRunWithStatus(taskID, task.AgentRun{
+	if err := o.tasks.AddRunWithStatusBy(taskID, "agentorch.record_impl_agent_start", task.AgentRun{
 		AgentID:                 ag.ID,
 		Role:                    string(agent.RoleImplementation),
 		Mode:                    effMode,
@@ -1024,8 +1312,10 @@ func (o *Orchestrator) recordImplAgentStart(ag *agent.Agent, t task.Task, taskID
 		Model:                   ag.Model,
 		ExperimentID:            ag.ExperimentID,
 		VariantID:               ag.VariantID,
+		RoutingReason:           ag.RoutingReason,
 		AssignmentUnit:          ag.AssignmentUnit,
 		AssignmentKey:           ag.AssignmentKey,
+		DecisionVersion:         ag.DecisionVersion,
 		ReasoningEffort:         ag.ReasoningEffort,
 		RequestedSkill:          ag.RequestedSkill,
 		SkillExecutionMode:      ag.SkillExecutionMode,
@@ -1046,82 +1336,18 @@ func BuildTaskStartPrompt(t task.Task, prompt string, includeTaskDescription boo
 		return prompt
 	}
 	base := fmt.Sprintf("# Task: %s\n\n%s", t.Title, t.Body)
+	if len(t.Attachments) > 0 {
+		lines := make([]string, 0, len(t.Attachments)+2)
+		lines = append(lines, "## Attachments")
+		for _, att := range t.Attachments {
+			lines = append(lines, fmt.Sprintf("- %s | %d bytes | %s | %s", att.FileName, att.SizeBytes, att.ContentType, att.Path))
+		}
+		base += "\n\n" + strings.Join(lines, "\n")
+	}
 	if prompt == "" {
 		return base
 	}
 	return base + "\n\n---\n\n" + prompt
-}
-
-// StartChat creates a synthetic chat task bound to projectID, prepares a
-// dedicated (local-only) worktree, and launches an interactive agent with
-// the requested provider. Rolls back on any failure so no orphans leak.
-func (o *Orchestrator) StartChat(projectID, providerName, prompt string) (*agent.Agent, error) {
-	prov := strings.ToLower(strings.TrimSpace(providerName))
-	if !providerid.IsKnown(prov) {
-		return nil, fmt.Errorf("invalid provider %q: must be one of %s", providerName, providerid.List())
-	}
-	if strings.TrimSpace(projectID) == "" {
-		return nil, errors.New("project_id is required")
-	}
-	if _, err := o.projects.Get(projectID); err != nil {
-		return nil, fmt.Errorf("project %s: %w", projectID, err)
-	}
-
-	t, err := o.tasks.CreateChat(projectID)
-	if err != nil {
-		return nil, fmt.Errorf("create chat task: %w", err)
-	}
-
-	opID, onPhase := o.startWorktreeOp("Preparing chat worktree", projectID, t.ID)
-	dir, err := o.worktrees.PrepareForChat(o.baseCtx(), t, onPhase)
-	if err != nil {
-		o.failWorktreeOp(opID, err)
-		if delErr := o.tasks.Delete(t.ID); delErr != nil {
-			o.logger.Error("chat.rollback.delete-task", "task_id", t.ID, "err", delErr)
-		}
-		return nil, fmt.Errorf("prepare chat worktree: %w", err)
-	}
-	o.completeWorktreeOp(opID)
-
-	requirePerm := ResolvePermission(t, o.cfg)
-	o.logSandboxEscapeHatch(t.ID, t)
-	ag, err := o.agents.Run(agent.RunConfig{
-		TaskID:             t.ID,
-		Name:               t.Title,
-		Mode:               "interactive",
-		Provider:           prov,
-		Prompt:             prompt,
-		Dir:                dir,
-		Model:              "sonnet",
-		RequirePermissions: requirePerm,
-		SandboxMode:        ResolveSandboxMode(t, o.cfg),
-	})
-	if err != nil {
-		// context.Background(): StartChat is a Wails-bound method with no ctx.
-		o.worktrees.Remove(context.Background(), t.ID)
-		if delErr := o.tasks.Delete(t.ID); delErr != nil {
-			o.logger.Error("chat.rollback.delete-task", "task_id", t.ID, "err", delErr)
-		}
-		return nil, err
-	}
-
-	o.LogAudit(audit.EventAgentStarted, t.ID, ag.ID, map[string]any{
-		"mode": "interactive", "title": t.Title, "role": "chat",
-		"task_type": string(t.TaskType), "provider": ag.Provider,
-		"require_permissions": requirePerm,
-	})
-	if err := o.tasks.AddRun(t.ID, task.AgentRun{
-		AgentID:   ag.ID,
-		Role:      "chat",
-		Mode:      "interactive",
-		Provider:  ag.Provider,
-		State:     string(agent.StateRunning),
-		StartedAt: ag.StartedAt,
-		Prompt:    prompt,
-	}); err != nil {
-		o.logger.Error("chat.add-run", "task_id", t.ID, "err", err)
-	}
-	return ag, nil
 }
 
 // AutoAssignProject assigns a project to a project-less task that needs one
@@ -1158,7 +1384,7 @@ func (o *Orchestrator) AutoAssignProject(t task.Task) (task.Task, error) {
 	}
 	assigned := t
 	assigned.ProjectID = projectID
-	if _, err := o.tasks.Update(t.ID, task.Update{ProjectID: task.Ptr(assigned.ProjectID)}); err != nil {
+	if _, err := o.tasks.UpdateBy(t.ID, "agentorch.assign_project", task.Update{ProjectID: task.Ptr(assigned.ProjectID)}); err != nil {
 		o.logger.Error("auto-assign-project", "task_id", t.ID, "err", err)
 		return t, fmt.Errorf("persist auto-assigned project %q for task %s: %w", projectID, t.ID, err)
 	} else {
@@ -1202,6 +1428,9 @@ func (o *Orchestrator) StartPRFixAgent(taskID string) error {
 	}
 	effMode, dir, requirePerm, skipWT := ResolveExecution(t, t.AgentMode, researchDir, o.cfg)
 	if !skipWT {
+		if o.worktrees == nil {
+			return fmt.Errorf("task %s: refusing to start pr-fix agent without isolated worktree manager: %w", taskID, workflow.ErrNoProjectAssigned)
+		}
 		t, err = o.AutoAssignProject(t)
 		if err != nil {
 			return err
@@ -1234,9 +1463,10 @@ func (o *Orchestrator) StartPRFixAgent(taskID string) error {
 		prompt = steered
 	}
 	o.logSandboxEscapeHatch(taskID, t)
-	ag, err := o.agents.Run(agent.RunConfig{
+	runCfg := agent.RunConfig{
 		TaskID:                 taskID,
 		Name:                   agent.RolePRFix.AgentName(t.Title),
+		Role:                   agent.RolePRFix,
 		Mode:                   effMode,
 		Prompt:                 prompt,
 		AllowedTools:           t.AllowedTools,
@@ -1248,8 +1478,10 @@ func (o *Orchestrator) StartPRFixAgent(taskID string) error {
 		// pr-fix is a code-author role — keep the NOTES.md contract airtight so
 		// an adopted (handoff) worktree's scratchpad carries through.
 		SeedWorkingMemory: agent.RolePRFix.AuthorsCode(),
-	})
+	}
+	ag, err := o.agents.Run(runCfg)
 	if err != nil {
+		o.invalidateRunEnvironmentOnStartError(taskID, err)
 		return translatePoolBusy(err)
 	}
 
@@ -1259,14 +1491,28 @@ func (o *Orchestrator) StartPRFixAgent(taskID string) error {
 		"allowed_tools": t.AllowedTools, "require_permissions": requirePerm, "skip_permissions": skipPerm,
 		"permission_posture": posture, "prompt_hash": ag.GetPromptHash(),
 	})
-	if err := o.tasks.AddRun(taskID, task.AgentRun{
+	if err := o.tasks.AddRunBy(taskID, "agentorch.start_pr_fix_agent", task.AgentRun{
 		AgentID: ag.ID, Role: string(agent.RolePRFix), Mode: effMode,
+		Provider: ag.Provider, Model: ag.Model, RoutingReason: ag.RoutingReason,
 		State: string(agent.StateRunning), StartedAt: ag.StartedAt,
 		Prompt: prompt,
 	}); err != nil {
 		o.logger.Error("task.add-run", "task_id", taskID, "err", err)
 	}
 	return nil
+}
+
+func (o *Orchestrator) invalidateRunEnvironmentOnStartError(taskID string, err error) {
+	if o.runenv != nil && runenv.IsEnvironmentFailure(err) {
+		o.runenv.InvalidateTask(taskID)
+	}
+}
+
+func fallbackDispatchDir(dir string) string {
+	if dir != "" {
+		return dir
+	}
+	return os.TempDir()
 }
 
 // BuildPRFixPrompt constructs the prompt for a PR fix agent.
@@ -1347,13 +1593,11 @@ func CurrentWorktreeHead(ctx context.Context, dir string) string {
 	if dir == "" {
 		return ""
 	}
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "HEAD")
-	cmd.Dir = dir
-	out, err := cmd.Output()
+	out, err := gitexec.Output(ctx, gitexec.Options{Dir: dir}, "rev-parse", "--verify", "HEAD")
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	return out
 }
 
 // FirstNonEmpty returns the first non-empty string among vals, or "" if all

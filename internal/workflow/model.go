@@ -1,10 +1,15 @@
 package workflow
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/Automaat/sybra/internal/providerid"
+	"gopkg.in/yaml.v3"
 )
 
 // Definition is a declarative workflow stored as YAML.
@@ -17,6 +22,20 @@ type Definition struct {
 	Builtin     bool      `yaml:"builtin,omitempty" json:"builtin"`
 	CreatedAt   time.Time `yaml:"created_at,omitempty" json:"createdAt"`
 	UpdatedAt   time.Time `yaml:"updated_at,omitempty" json:"updatedAt"`
+}
+
+// SemanticHash returns a deterministic content hash for the workflow
+// definition, ignoring storage-managed timestamps.
+func (d *Definition) SemanticHash() (string, error) {
+	normalized := *d
+	normalized.CreatedAt = time.Time{}
+	normalized.UpdatedAt = time.Time{}
+	data, err := yaml.Marshal(normalized)
+	if err != nil {
+		return "", fmt.Errorf("marshal workflow definition for hash: %w", err)
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 // StepByID returns the step with the given ID, or nil. Recurses into
@@ -84,6 +103,7 @@ const (
 	StepStampPRAttribution  StepType = "stamp_pr_attribution"
 	StepRerequestReview     StepType = "rerequest_review"
 	StepVerifyCommits       StepType = "verify_commits"
+	StepVerifyReviewThreads StepType = "verify_review_threads"
 	StepLinkPRAndReview     StepType = "link_pr_and_review"
 	StepEvaluate            StepType = "evaluate"
 	StepRequireSidecar      StepType = "require_sidecar"
@@ -128,6 +148,15 @@ const (
 	// pass → ready-pr, fail → in-progress (re-implement) until the attempt
 	// cap is hit, then human-required.
 	StepRouteTestResult StepType = "route_test_result"
+	// StepRouteReviewVerdict reads the review-role step's structured verdict
+	// (output_schema-enforced JSON, see ExtractReviewVerdict), stashed by
+	// engine_advance into the review_verdict workflow var. A valid CLEAN/
+	// NEEDS_FIXES verdict is a no-op pass-through — the YAML's own `next.when`
+	// clauses route on vars.review_verdict. A missing/malformed verdict is
+	// never treated as either outcome: it bounded-retries the review agent
+	// with a schema-conformance reask note, then escalates to human-required
+	// once the retry budget is spent.
+	StepRouteReviewVerdict StepType = "route_review_verdict"
 	// StepParallel runs its `Parallel` children concurrently as run_agent
 	// steps. The parent step advances only after every child has terminated;
 	// parent-level Next is evaluated against the parent step record (with the
@@ -182,7 +211,181 @@ const (
 	// session involved. Replaces a run_agent step that wrapped a full Sonnet
 	// agent invoking the /sybra-triage skill around this same classifier.
 	StepClassifyTask StepType = "classify_task"
+	// StepAdmissionPreflight runs deterministic pre-dispatch admission checks
+	// (plan contract schema/capability validation, oversize scope limits,
+	// push credential readiness) before any code-author agent is dispatched —
+	// see execAdmissionPreflight (engine_steps_admission.go). Scope/content
+	// problems (missing objective, unknown capability, oversize scope) and a
+	// non-transient credential failure both route through human-required —
+	// the former always blocker.KindOperatorDecision, the latter
+	// blocker.KindCredentialRequired — as terminal (no automatic re-attempts),
+	// matching blocker.AllowsHumanRequired. A transient/rate-limited
+	// credential-preflight error is NOT terminal: classifyAdmissionCredentialError
+	// parks the step for a bounded retry instead, mirroring push_branch/
+	// create_pr's identical classification of the same error. Resumable —
+	// see isResumableStepType — so a crash between persisting CurrentStep and
+	// executing it does not strand the task.
+	StepAdmissionPreflight StepType = "admission_preflight"
+	// StepRequireEvidence is the final deterministic completion gate: it
+	// asserts every criterion applicable to the task (verify_checks,
+	// detect_tampering, the test-runner verdict when testing ran, review when
+	// the task went through review) has a recorded CompletionEvidence entry
+	// that passed and is fresh for the task's current HEAD — see
+	// execRequireEvidence (engine_steps_evidence.go). A no-op when the
+	// require_evidence gate is disabled (config.EvidenceConfig.Enabled=false,
+	// the default) or when no evidence has ever been recorded for the task
+	// (an in-flight task from before evidence collection started). Otherwise,
+	// any missing, failed, or stale criterion flips the task to
+	// human-required with a terminal blocker.KindOperatorDecision — a human
+	// must re-run the missing proof, not retry the same dispatch.
+	StepRequireEvidence StepType = "require_evidence"
+	// StepParallelGates runs the three deterministic post-implement gates —
+	// detect_tampering, focused_checks, verify_checks — concurrently instead
+	// of serially, then routes on their joined outcome. Each gate still
+	// records its own evidence/verdict independently (see
+	// execParallelGates, engine_steps_parallel_gates.go); this only
+	// overlaps their wall-clock, it does not change what any individual gate
+	// decides. Synchronous (no run_agent children, unlike StepParallel).
+	StepParallelGates StepType = "parallel_gates"
 )
+
+type stepReducerKind uint8
+
+const (
+	stepReducerDispatch stepReducerKind = iota
+	stepReducerWaitHuman
+	stepReducerSetStatus
+	stepReducerCondition
+)
+
+type stepAsyncHandler func(*Engine, string, *Definition, *Step, *Execution, TemplateContext, EffectID) (bool, *CompletionInfo, error)
+type stepSyncHandler func(*Engine, string, *Step, *Execution, TemplateContext, TaskInfo) (StepOutput, error)
+
+type stepBoundaryKind uint8
+
+const (
+	stepBoundaryNone stepBoundaryKind = iota
+	stepBoundaryParallel
+	stepBoundaryBestOfN
+)
+
+type stepSpec struct {
+	async     stepAsyncHandler
+	sync      stepSyncHandler
+	reducer   stepReducerKind
+	boundary  stepBoundaryKind
+	resumable bool
+}
+
+var stepRegistry = map[StepType]stepSpec{}
+
+func init() {
+	stepRegistry = map[StepType]stepSpec{
+		StepRunAgent:             {async: execAsyncRunAgentStep, reducer: stepReducerDispatch, resumable: true},
+		StepWaitHuman:            {async: execAsyncWaitHumanStep, reducer: stepReducerWaitHuman},
+		StepSetStatus:            {sync: bindSyncTaskStep((*Engine).execSetStatus), reducer: stepReducerSetStatus},
+		StepCondition:            {sync: bindSyncExecTaskStep((*Engine).execCondition), reducer: stepReducerCondition},
+		StepShell:                {sync: bindSyncTemplateStep((*Engine).execShell), reducer: stepReducerDispatch},
+		StepEnsurePRClosesIssue:  {sync: bindSyncTaskInfoStep((*Engine).execEnsurePRClosesIssue), reducer: stepReducerDispatch},
+		StepStampPRAttribution:   {sync: bindSyncTaskInfoStep((*Engine).execStampPRAttribution), reducer: stepReducerDispatch},
+		StepRerequestReview:      {sync: bindSyncTaskInfoStep((*Engine).execRerequestReview), reducer: stepReducerDispatch},
+		StepVerifyCommits:        {sync: bindSyncExecTaskInfoStep((*Engine).execVerifyCommits), reducer: stepReducerDispatch},
+		StepVerifyReviewThreads:  {sync: bindSyncExecTaskInfoStep((*Engine).execVerifyReviewThreads), reducer: stepReducerDispatch},
+		StepLinkPRAndReview:      {sync: bindSyncExecTaskInfoStep((*Engine).execLinkPRAndReview), reducer: stepReducerDispatch},
+		StepEvaluate:             {sync: bindSyncExecTaskInfoStep((*Engine).execEvaluate), reducer: stepReducerDispatch},
+		StepRequireSidecar:       {sync: bindSyncExecTaskInfoStep((*Engine).execRequireSidecarWithExec), reducer: stepReducerDispatch},
+		StepClearPlanArtifacts:   {sync: bindSyncTaskInfoStep((*Engine).execClearPlanArtifacts), reducer: stepReducerDispatch},
+		StepValidatePlan:         {sync: bindSyncTaskInfoStep((*Engine).execValidatePlan), reducer: stepReducerDispatch},
+		StepValidatePlanContract: {sync: bindSyncTaskInfoStep((*Engine).execValidatePlanContract), reducer: stepReducerDispatch},
+		StepTriageReview:         {sync: bindSyncTaskInfoStep((*Engine).execTriageReview), reducer: stepReducerDispatch},
+		StepFlagPlanCritique:     {sync: bindSyncExecTaskInfoStep((*Engine).execFlagPlanCritique), reducer: stepReducerDispatch},
+		StepDetectTampering:      {sync: bindSyncTaskInfoStep((*Engine).execDetectTampering), reducer: stepReducerDispatch},
+		StepVerifyChecks:         {sync: bindSyncExecTaskInfoStep((*Engine).execVerifyChecks), reducer: stepReducerDispatch, resumable: true},
+		StepFocusedChecks:        {sync: bindSyncExecTaskInfoStep((*Engine).execFocusedChecks), reducer: stepReducerDispatch},
+		StepRoutePRFixResult:     {sync: bindSyncExecTaskInfoStep((*Engine).execRoutePRFixResult), reducer: stepReducerDispatch},
+		StepRouteTestResult:      {sync: bindSyncExecTaskInfoStep((*Engine).execRouteTestResult), reducer: stepReducerDispatch},
+		StepRouteReviewVerdict:   {sync: bindSyncExecTaskInfoStep((*Engine).execRouteReviewVerdict), reducer: stepReducerDispatch},
+		StepParallel:             {async: execAsyncParallelStep, reducer: stepReducerDispatch, boundary: stepBoundaryParallel, resumable: true},
+		StepSyncBranch:           {sync: bindSyncTaskStep((*Engine).execSyncBranch), reducer: stepReducerDispatch},
+		StepCodegenGate:          {sync: bindSyncTaskStep((*Engine).execCodegenGate), reducer: stepReducerDispatch},
+		StepResumeWorkflow:       {sync: bindSyncExecStep((*Engine).execResumeWorkflow), reducer: stepReducerDispatch},
+		StepBestOfN:              {async: execAsyncBestOfNStep, reducer: stepReducerDispatch, boundary: stepBoundaryBestOfN, resumable: true},
+		StepPromoteBestOfN:       {sync: bindSyncTaskStep((*Engine).execPromoteBestOfN), reducer: stepReducerDispatch, resumable: true},
+		StepPushBranch:           {sync: bindSyncExecTaskInfoStep((*Engine).execPushBranch), reducer: stepReducerDispatch, resumable: true},
+		StepCreatePR:             {sync: bindSyncExecTaskInfoStep((*Engine).execCreatePR), reducer: stepReducerDispatch, resumable: true},
+		StepClassifyTask:         {sync: bindSyncExecStep((*Engine).execClassifyTask), reducer: stepReducerDispatch, resumable: true},
+		StepAdmissionPreflight:   {sync: bindSyncExecTaskInfoStep((*Engine).execAdmissionPreflight), reducer: stepReducerDispatch, resumable: true},
+		StepRequireEvidence:      {sync: bindSyncTaskInfoStep((*Engine).execRequireEvidence), reducer: stepReducerDispatch},
+		// resumable: the coordinator parks itself on verify backpressure (see
+		// preflightVerifyChecks), so ResumeStalled must be able to re-enter it
+		// once a verify slot frees.
+		StepParallelGates: {sync: bindSyncExecTaskInfoStep((*Engine).execParallelGates), reducer: stepReducerDispatch, resumable: true},
+	}
+}
+
+func bindSyncTaskStep(fn func(*Engine, string, *Step) (StepOutput, error)) stepSyncHandler {
+	return func(e *Engine, taskID string, step *Step, _ *Execution, _ TemplateContext, _ TaskInfo) (StepOutput, error) {
+		return fn(e, taskID, step)
+	}
+}
+
+func bindSyncTaskInfoStep(fn func(*Engine, string, *Step, TaskInfo) (StepOutput, error)) stepSyncHandler {
+	return func(e *Engine, taskID string, step *Step, _ *Execution, _ TemplateContext, t TaskInfo) (StepOutput, error) {
+		return fn(e, taskID, step, t)
+	}
+}
+
+func bindSyncTemplateStep(fn func(*Engine, *Step, TemplateContext) (StepOutput, error)) stepSyncHandler {
+	return func(e *Engine, _ string, step *Step, _ *Execution, ctx TemplateContext, _ TaskInfo) (StepOutput, error) {
+		return fn(e, step, ctx)
+	}
+}
+
+func bindSyncExecStep(fn func(*Engine, string, *Step, *Execution) (StepOutput, error)) stepSyncHandler {
+	return func(e *Engine, taskID string, step *Step, wfExec *Execution, _ TemplateContext, _ TaskInfo) (StepOutput, error) {
+		return fn(e, taskID, step, wfExec)
+	}
+}
+
+func bindSyncExecTaskStep(fn func(*Engine, *Step, *Execution, TaskInfo) (StepOutput, error)) stepSyncHandler {
+	return func(e *Engine, _ string, step *Step, wfExec *Execution, _ TemplateContext, t TaskInfo) (StepOutput, error) {
+		return fn(e, step, wfExec, t)
+	}
+}
+
+func bindSyncExecTaskInfoStep(fn func(*Engine, string, *Step, *Execution, TaskInfo) (StepOutput, error)) stepSyncHandler {
+	return func(e *Engine, taskID string, step *Step, wfExec *Execution, _ TemplateContext, t TaskInfo) (StepOutput, error) {
+		return fn(e, taskID, step, wfExec, t)
+	}
+}
+
+func lookupStepSpec(stepType StepType) (stepSpec, bool) {
+	spec, ok := stepRegistry[stepType]
+	return spec, ok
+}
+
+func requireStepSpec(stepType StepType) (stepSpec, error) {
+	spec, ok := lookupStepSpec(stepType)
+	if !ok {
+		return stepSpec{}, fmt.Errorf("unknown step type %q", stepType)
+	}
+	return spec, nil
+}
+
+func stepIsAsync(stepType StepType) bool {
+	spec, ok := lookupStepSpec(stepType)
+	return ok && spec.async != nil
+}
+
+func stepReducerBehavior(stepType StepType) (stepReducerKind, bool) {
+	spec, ok := lookupStepSpec(stepType)
+	return spec.reducer, ok
+}
+
+func stepBoundary(stepType StepType) (stepBoundaryKind, bool) {
+	spec, ok := lookupStepSpec(stepType)
+	return spec.boundary, ok
+}
 
 // Best-of-N attempt count bounds enforced by Definition.Validate. A floor of
 // 2 makes "best-of-N" meaningful (a single attempt has nothing to judge); the
@@ -262,6 +465,14 @@ type StepConfig struct {
 	// AllowMissing turns require_sidecar into a soft gate: the step records a
 	// warning output instead of flipping the task to human-required.
 	AllowMissing bool `yaml:"allow_missing,omitempty" json:"allowMissing"`
+	// RetryStep identifies the run_agent step that produced a required sidecar.
+	// When the agent reports success without the artifact, require_sidecar
+	// rewinds there up to MaxRetries times before escalating.
+	RetryStep string `yaml:"retry_step,omitempty" json:"retryStep,omitempty"`
+	// RetryStepVar resolves the producer step from a workflow variable when
+	// several agent steps converge on one guard (for example simple/staff
+	// review). Mutually exclusive with RetryStep.
+	RetryStepVar string `yaml:"retry_step_var,omitempty" json:"retryStepVar,omitempty"`
 
 	// clear_plan_artifacts: which sidecars to clear before the cycle that
 	// follows. Same values as Sidecar.
@@ -368,14 +579,36 @@ func (d *Definition) Validate() error {
 	if err := d.ValidateFields(); err != nil {
 		return err
 	}
+	for i := range d.Steps {
+		s := &d.Steps[i]
+		if s.Type != StepRequireSidecar {
+			continue
+		}
+		if s.Config.RetryStep != "" && s.Config.RetryStepVar != "" {
+			return fmt.Errorf("step %q: retry_step and retry_step_var are mutually exclusive", s.ID)
+		}
+		if s.Config.RetryStep == "" && s.Config.RetryStepVar == "" {
+			continue
+		}
+		if s.Config.MaxRetries <= 0 {
+			return fmt.Errorf("step %q: sidecar retry requires max_retries > 0", s.ID)
+		}
+		if s.Config.RetryStep != "" {
+			producer := d.StepByID(s.Config.RetryStep)
+			if producer == nil || producer.Type != StepRunAgent {
+				return fmt.Errorf("step %q: retry_step %q must name a run_agent step", s.ID, s.Config.RetryStep)
+			}
+		}
+	}
 	return nil
 }
 
 // validateParallelStep enforces that a `parallel` step has at least two
-// run_agent children, no nested parallels, and globally-unique child IDs.
-// The constraints exist because the engine's step bookkeeping (agentRoutes
-// map, ImportSidecar lookup, retry counter) is keyed by step ID — duplicates
-// would cause cross-step state to clobber each other.
+// run_agent children without worktree preparation or nested parallels, and
+// globally-unique child IDs.
+// The constraints exist because the engine's step bookkeeping (persisted agent
+// routes, ImportSidecar lookup, retry counter) is keyed by step ID —
+// duplicates would cause cross-step state to clobber each other.
 func validateParallelStep(s *Step, seenIDs map[string]bool) error {
 	if s.Type != StepParallel {
 		if len(s.Parallel) > 0 {
@@ -395,6 +628,14 @@ func validateParallelStep(s *Step, seenIDs map[string]bool) error {
 		if len(c.Parallel) > 0 {
 			return fmt.Errorf("step %q: parallel child %q nests another parallel block (not supported)", s.ID, c.ID)
 		}
+		// Parallel children share the parent workflow directory. Preparing a
+		// worktree here can block StartAgent for minutes and, unlike a regular
+		// run_agent step, dispatch must keep the child route durable while the
+		// parent is still being established. Reject this unsupported shape rather
+		// than letting a user-authored workflow stall the engine.
+		if c.Config.NeedsWorktree {
+			return fmt.Errorf("step %q: parallel child %q cannot set needs_worktree", s.ID, c.ID)
+		}
 		if c.Config.MaxRetries > maxRetries {
 			return fmt.Errorf("step %q: child %q max_retries %d exceeds limit %d", s.ID, c.ID, c.Config.MaxRetries, maxRetries)
 		}
@@ -404,9 +645,24 @@ func validateParallelStep(s *Step, seenIDs map[string]bool) error {
 		if seenIDs[c.ID] {
 			return fmt.Errorf("step %q: parallel child id %q already used elsewhere in workflow", s.ID, c.ID)
 		}
+		if !parallelObserverRole(c.Config.Role) {
+			return fmt.Errorf("step %q: parallel child %q role %q is not read-only", s.ID, c.ID, c.Config.Role)
+		}
 		seenIDs[c.ID] = true
 	}
 	return nil
+}
+
+// parallelObserverRole is deliberately narrower than the full role set.
+// Parallel children share one canonical worktree, so only roles whose source
+// and task access is enforced read-only may overlap under observer leases.
+func parallelObserverRole(role string) bool {
+	switch strings.TrimSpace(role) {
+	case "plan", "plan-critic", "review", "eval":
+		return true
+	default:
+		return false
+	}
 }
 
 // validAttemptProviders lists the providers a best_of_n step may pin an
@@ -415,10 +671,10 @@ func validateParallelStep(s *Step, seenIDs map[string]bool) error {
 // history/A-B config, which is meaningless when picked per-attempt before any
 // attempt has run.
 var validAttemptProviders = map[string]bool{
-	"":        true,
-	"claude":  true,
-	"codex":   true,
-	"copilot": true,
+	"":                 true,
+	providerid.Claude:  true,
+	providerid.Codex:   true,
+	providerid.Copilot: true,
 }
 
 // validateBestOfNStep enforces the best_of_n step's attempt-count bounds and

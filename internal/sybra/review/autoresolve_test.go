@@ -65,6 +65,7 @@ type autoResolveHarness struct {
 	auditDir string
 	proj     project.Project
 	branch   string
+	src      string
 }
 
 func newAutoResolveHarness(t *testing.T, autoResolveEnabled bool) *autoResolveHarness {
@@ -85,8 +86,38 @@ func newAutoResolveHarness(t *testing.T, autoResolveEnabled bool) *autoResolveHa
 	if err := os.WriteFile(filepath.Join(wfStore.Dir(), "test-pr-fix.yaml"), []byte(mechanicalPRFixYAML), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := wfStore.Save(workflow.Definition{
+		ID:   branchConflictFixWorkflowID,
+		Name: "Branch conflict fix (test stand-in)",
+		Trigger: workflow.Trigger{On: "task.status_changed", Conditions: []workflow.Condition{{
+			Field: "task.tags", Operator: "contains", Value: "__never_dispatch_branch_conflict_fix_test__",
+		}}},
+		Steps: []workflow.Step{
+			{
+				ID:   "set_recovering",
+				Name: "Mark Recovering",
+				Type: workflow.StepSetStatus,
+				Config: workflow.StepConfig{
+					Status:       "in-progress",
+					StatusReason: "recovering from a branch conflict",
+				},
+				Next: []workflow.Transition{{GoTo: "await_fix"}},
+			},
+			{
+				ID:   "await_fix",
+				Name: "Await Fix",
+				Type: workflow.StepWaitHuman,
+				Config: workflow.StepConfig{
+					HumanActions: []string{"done"},
+				},
+				Next: []workflow.Transition{{GoTo: ""}},
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, filepath.Join(tmp, "logs"))
-	engine := workflow.NewEngine(
+	engine := workflow.NewTestEngine(
 		wfStore,
 		&taskAdapter{tasks: tasks},
 		&agentAdapter{agents: agentMgr, tasks: tasks},
@@ -148,6 +179,7 @@ func newAutoResolveHarness(t *testing.T, autoResolveEnabled bool) *autoResolveHa
 			AutoResolveCleanMerges: autoResolveEnabled,
 		}},
 		pushPreflightFn: stubPushPreflight(nil),
+		wtFailures:      make(map[string]int),
 	}
 	return &autoResolveHarness{
 		r:        r,
@@ -156,6 +188,7 @@ func newAutoResolveHarness(t *testing.T, autoResolveEnabled bool) *autoResolveHa
 		auditDir: auditDir,
 		proj:     proj,
 		branch:   branch,
+		src:      src,
 	}
 }
 
@@ -201,6 +234,28 @@ func currentHEAD(t *testing.T, dir string) string {
 		t.Fatalf("git rev-parse HEAD: %v: %s", err, out)
 	}
 	return strings.TrimSpace(string(out))
+}
+
+func configureGitIdentity(t *testing.T, dir string) {
+	t.Helper()
+	for _, args := range [][]string{
+		{"-C", dir, "config", "user.email", "test@test.com"},
+		{"-C", dir, "config", "user.name", "Test"},
+		{"-C", dir, "config", "commit.gpgsign", "false"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+}
+
+func emptyCommit(t *testing.T, dir, msg string) string {
+	t.Helper()
+	configureGitIdentity(t, dir)
+	if out, err := exec.Command("git", "-C", dir, "commit", "--allow-empty", "-m", msg).CombinedOutput(); err != nil {
+		t.Fatalf("git commit --allow-empty: %v: %s", err, out)
+	}
+	return currentHEAD(t, dir)
 }
 
 func TestDispatchFixIssues_PushPreflightFailureBlocksAgentDispatch(t *testing.T) {
@@ -365,6 +420,248 @@ func TestPrepareWorktree_ApprovedCIFailureUsesPRHeadCheckout(t *testing.T) {
 	}
 }
 
+func TestPrepareWorktree_SameBranchConflictDispatchesBranchRecovery(t *testing.T) {
+	h := newAutoResolveHarness(t, false)
+	tk, pr := h.newConflictTask(t)
+	issue := github.PRIssue{Kind: github.PRIssueComments, TaskID: tk.ID, PR: pr}
+
+	dir, ok := h.r.prepareWorktree(context.Background(), tk, issue)
+	if !ok {
+		t.Fatal("initial prepareWorktree rejected the PR-fix worktree")
+	}
+
+	configureGitIdentity(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, "shared.txt"), []byte("local-edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", dir, "add", "shared.txt").CombinedOutput(); err != nil {
+		t.Fatalf("git add local shared.txt: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", dir, "commit", "-m", "local edit").CombinedOutput(); err != nil {
+		t.Fatalf("git commit local edit: %v: %s", err, out)
+	}
+
+	configureGitIdentity(t, h.src)
+	if err := os.WriteFile(filepath.Join(h.src, "shared.txt"), []byte("remote-edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", h.src, "add", "shared.txt").CombinedOutput(); err != nil {
+		t.Fatalf("git add remote shared.txt: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", h.src, "commit", "-m", "remote edit").CombinedOutput(); err != nil {
+		t.Fatalf("git commit remote edit: %v: %s", err, out)
+	}
+
+	tk, err := h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := h.r.prepareWorktree(context.Background(), tk, issue); ok {
+		t.Fatal("prepareWorktree returned a ready worktree; want branch-conflict recovery to take over")
+	}
+
+	got, err := h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status == task.StatusHumanRequired {
+		t.Fatalf("status = %q, want branch-conflict recovery instead of human-required", got.Status)
+	}
+	if got.Workflow == nil || got.Workflow.WorkflowID != branchConflictFixWorkflowID {
+		t.Fatalf("workflow = %+v, want %s", got.Workflow, branchConflictFixWorkflowID)
+	}
+	if got.Workflow.CurrentStep != "await_fix" {
+		t.Fatalf("current step = %q, want await_fix", got.Workflow.CurrentStep)
+	}
+	if !strings.Contains(got.Workflow.Variables["prompt"], "Do NOT rebase, amend, or force-push") {
+		t.Fatalf("prompt missing same-branch safety guard:\n%s", got.Workflow.Variables["prompt"])
+	}
+	if n := h.r.wtFailures[tk.ID]; n != 0 {
+		t.Fatalf("wtFailures[%s] = %d, want 0 (same-branch conflicts must not burn the worktree circuit)", tk.ID, n)
+	}
+	if n := h.r.prTracker.Retries(tk.ID, sameBranchConflictRetryKind); n != 1 {
+		t.Fatalf("same-branch retry budget = %d, want 1", n)
+	}
+}
+
+func TestPrepareWorktree_SameBranchConflictUsesForkRemote(t *testing.T) {
+	h := newAutoResolveHarness(t, false)
+
+	forkBare := filepath.Join(t.TempDir(), "fork.git")
+	if out, err := exec.Command("git", "clone", "--bare", h.src, forkBare).CombinedOutput(); err != nil {
+		t.Fatalf("clone fork bare: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", h.proj.ClonePath, "remote", "add", "fork", forkBare).CombinedOutput(); err != nil {
+		t.Fatalf("add fork remote: %v: %s", err, out)
+	}
+
+	tk, pr := h.newConflictTask(t)
+	pr.HeadRepoOwner = "fork-owner"
+	issue := github.PRIssue{Kind: github.PRIssueComments, TaskID: tk.ID, PR: pr}
+
+	dir, ok := h.r.prepareWorktree(context.Background(), tk, issue)
+	if !ok {
+		t.Fatal("initial prepareWorktree rejected the PR-fix worktree")
+	}
+
+	configureGitIdentity(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, "shared.txt"), []byte("local-edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", dir, "add", "shared.txt").CombinedOutput(); err != nil {
+		t.Fatalf("git add local shared.txt: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", dir, "commit", "-m", "local edit").CombinedOutput(); err != nil {
+		t.Fatalf("git commit local edit: %v: %s", err, out)
+	}
+
+	forkSrc := filepath.Join(t.TempDir(), "fork-src")
+	if out, err := exec.Command("git", "clone", forkBare, forkSrc).CombinedOutput(); err != nil {
+		t.Fatalf("clone fork source: %v: %s", err, out)
+	}
+	configureGitIdentity(t, forkSrc)
+	if err := os.WriteFile(filepath.Join(forkSrc, "shared.txt"), []byte("fork-edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", forkSrc, "add", "shared.txt").CombinedOutput(); err != nil {
+		t.Fatalf("git add fork shared.txt: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", forkSrc, "commit", "-m", "fork edit").CombinedOutput(); err != nil {
+		t.Fatalf("git commit fork edit: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", forkSrc, "push", "origin", h.branch).CombinedOutput(); err != nil {
+		t.Fatalf("git push fork edit: %v: %s", err, out)
+	}
+
+	tk, err := h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := h.r.prepareWorktree(context.Background(), tk, issue); ok {
+		t.Fatal("prepareWorktree returned a ready worktree; want branch-conflict recovery to take over")
+	}
+
+	got, err := h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow == nil || got.Workflow.WorkflowID != branchConflictFixWorkflowID {
+		t.Fatalf("workflow = %+v, want %s", got.Workflow, branchConflictFixWorkflowID)
+	}
+	prompt := got.Workflow.Variables["prompt"]
+	if !strings.Contains(prompt, "git fetch fork +refs/heads/"+h.branch+":refs/remotes/fork/"+h.branch) {
+		t.Fatalf("prompt does not fetch the fork branch:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "git merge refs/remotes/fork/"+h.branch) {
+		t.Fatalf("prompt does not merge the fork branch:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "git merge refs/remotes/origin/"+h.branch) {
+		t.Fatalf("prompt merges origin instead of fork:\n%s", prompt)
+	}
+	if got.Workflow.Variables[workflow.WorkflowVarBranchConflictPushRemote] != "" || got.Workflow.Variables[workflow.WorkflowVarBranchConflictPushURL] != "" {
+		t.Fatalf("fork recovery unexpectedly received trusted origin push variables: %+v", got.Workflow.Variables)
+	}
+	if strings.Contains(prompt, "git push ") {
+		t.Fatalf("prompt still permits fork-backed recovery agent to push:\n%s", prompt)
+	}
+}
+
+func TestPrepareWorktree_SameBranchConflictKeepsOriginBackedPR(t *testing.T) {
+	h := newAutoResolveHarness(t, false)
+
+	forkBare := filepath.Join(t.TempDir(), "fork.git")
+	if out, err := exec.Command("git", "clone", "--bare", h.src, forkBare).CombinedOutput(); err != nil {
+		t.Fatalf("clone fork bare: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", h.proj.ClonePath, "remote", "add", "fork", forkBare).CombinedOutput(); err != nil {
+		t.Fatalf("add fork remote: %v: %s", err, out)
+	}
+
+	forkSrc := filepath.Join(t.TempDir(), "fork-src")
+	if out, err := exec.Command("git", "clone", forkBare, forkSrc).CombinedOutput(); err != nil {
+		t.Fatalf("clone fork source: %v: %s", err, out)
+	}
+	configureGitIdentity(t, forkSrc)
+	if err := os.WriteFile(filepath.Join(forkSrc, "shared.txt"), []byte("stale-fork-edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", forkSrc, "add", "shared.txt").CombinedOutput(); err != nil {
+		t.Fatalf("git add fork shared.txt: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", forkSrc, "commit", "-m", "stale fork edit").CombinedOutput(); err != nil {
+		t.Fatalf("git commit fork edit: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", forkSrc, "push", "origin", h.branch).CombinedOutput(); err != nil {
+		t.Fatalf("git push fork edit: %v: %s", err, out)
+	}
+
+	tk, pr := h.newConflictTask(t)
+	pr.HeadRepoOwner = h.proj.Owner
+	issue := github.PRIssue{Kind: github.PRIssueComments, TaskID: tk.ID, PR: pr}
+
+	dir, ok := h.r.prepareWorktree(context.Background(), tk, issue)
+	if !ok {
+		t.Fatal("initial prepareWorktree rejected the PR-fix worktree")
+	}
+
+	configureGitIdentity(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, "shared.txt"), []byte("local-edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", dir, "add", "shared.txt").CombinedOutput(); err != nil {
+		t.Fatalf("git add local shared.txt: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", dir, "commit", "-m", "local edit").CombinedOutput(); err != nil {
+		t.Fatalf("git commit local edit: %v: %s", err, out)
+	}
+
+	configureGitIdentity(t, h.src)
+	if err := os.WriteFile(filepath.Join(h.src, "shared.txt"), []byte("origin-edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", h.src, "add", "shared.txt").CombinedOutput(); err != nil {
+		t.Fatalf("git add origin shared.txt: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", h.src, "commit", "-m", "origin edit").CombinedOutput(); err != nil {
+		t.Fatalf("git commit origin edit: %v: %s", err, out)
+	}
+
+	tk, err := h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := h.r.prepareWorktree(context.Background(), tk, issue); ok {
+		t.Fatal("prepareWorktree returned a ready worktree; want branch-conflict recovery to take over")
+	}
+
+	got, err := h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow == nil || got.Workflow.WorkflowID != branchConflictFixWorkflowID {
+		t.Fatalf("workflow = %+v, want %s", got.Workflow, branchConflictFixWorkflowID)
+	}
+	prompt := got.Workflow.Variables["prompt"]
+	if !strings.Contains(prompt, "git fetch origin +refs/heads/"+h.branch+":refs/remotes/origin/"+h.branch) {
+		t.Fatalf("prompt does not fetch the origin branch:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "git merge refs/remotes/origin/"+h.branch) {
+		t.Fatalf("prompt does not merge the origin branch:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "refs/remotes/fork/"+h.branch) {
+		t.Fatalf("prompt uses stale fork branch for origin-backed PR:\n%s", prompt)
+	}
+	if got.Workflow.Variables[workflow.WorkflowVarBranchConflictPushRemote] != "origin" {
+		t.Fatalf("trusted recovery push remote = %q, want origin", got.Workflow.Variables[workflow.WorkflowVarBranchConflictPushRemote])
+	}
+	if got.Workflow.Variables[workflow.WorkflowVarBranchConflictPushURL] == "" {
+		t.Fatal("origin-backed recovery did not pin its source URL before agent dispatch")
+	}
+	if strings.Contains(prompt, "git push ") {
+		t.Fatalf("prompt still permits origin-backed recovery agent to push:\n%s", prompt)
+	}
+}
+
 // TestAutoResolveConflict_ConflictFallsThroughToAgent covers a merge that
 // genuinely reports conflicting hunks: the fast-path must not mark anything
 // handled and the normal pr-fix workflow must still be dispatched.
@@ -456,19 +753,23 @@ func TestAutoResolveConflict_ActiveWorkflowSkipsFastPath(t *testing.T) {
 	}
 }
 
-// TestAutoResolveConflict_CoalescedIssuesSkipFastPath verifies the fast-path
-// only ever applies to a single, conflict-only issue: a coalesced
-// conflict+comments dispatch must always go through the normal agent path,
-// regardless of what the merge would have done.
-func TestAutoResolveConflict_CoalescedIssuesSkipFastPath(t *testing.T) {
+// TestAutoResolveConflict_CoalescedIssuesSkipMerge verifies the clean-merge
+// fast-path only ever applies to a single, conflict-only issue: a coalesced
+// conflict+comments dispatch must always go through the normal agent path
+// without merging base just to refresh the branch.
+func TestAutoResolveConflict_CoalescedIssuesSkipMerge(t *testing.T) {
 	h := newAutoResolveHarness(t, true)
 	tk, pr := h.newConflictTask(t)
 	mergeCalled := false
-	h.r.tryCleanMergeFn = func(context.Context, string, string) (project.CleanMergeResult, error) {
+	h.r.tryCleanMergeFn = func(_ context.Context, dir, _ string) (project.CleanMergeResult, error) {
 		mergeCalled = true
 		return project.CleanMergeCreated, nil
 	}
-	h.r.pushSyncFn = stubPush(nil)
+	pushCalled := false
+	h.r.pushSyncFn = func(context.Context, string, string) error {
+		pushCalled = true
+		return nil
+	}
 
 	commentsPR := pr
 	ok := h.r.dispatchFixIssues(context.Background(), tk.ID, []github.PRIssue{
@@ -479,14 +780,17 @@ func TestAutoResolveConflict_CoalescedIssuesSkipFastPath(t *testing.T) {
 		t.Fatal("dispatchFixIssues = false, want true (agent dispatched)")
 	}
 	if mergeCalled {
-		t.Error("tryCleanMergeFn invoked for a coalesced (non-single) issue set")
+		t.Error("tryCleanMergeFn invoked for a coalesced issue set")
+	}
+	if pushCalled {
+		t.Error("pushSyncFn invoked for a coalesced issue set")
 	}
 	got, err := h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.Workflow == nil {
-		t.Fatal("no workflow dispatched for the coalesced issue set")
+		t.Fatal("no workflow dispatched for the coalesced issue set — sync must never skip the round")
 	}
 }
 
@@ -672,6 +976,46 @@ func TestAutoResolveConflict_EmptyBranchRollsBackMerge(t *testing.T) {
 	}
 }
 
+func TestAutoResolveConflict_DivergedBranchSkipsMergeRepair(t *testing.T) {
+	h := newAutoResolveHarness(t, true)
+	tk, pr := h.newConflictTask(t)
+	worktreeDir, err := h.r.worktrees.PrepareForFix(context.Background(), tk, pr.Number)
+	if err != nil {
+		t.Fatalf("PrepareForFix: %v", err)
+	}
+
+	localHead := emptyCommit(t, worktreeDir, "local diverged commit")
+
+	remoteHead := emptyCommit(t, h.src, "remote diverged commit")
+
+	mergeCalled := false
+	pushCalled := false
+	h.r.tryCleanMergeFn = func(context.Context, string, string) (project.CleanMergeResult, error) {
+		mergeCalled = true
+		return project.CleanMergeCreated, nil
+	}
+	h.r.pushSyncFn = func(context.Context, string, string) error {
+		pushCalled = true
+		return nil
+	}
+
+	if ok := h.r.autoResolveConflict(context.Background(), tk, pr, worktreeDir); ok {
+		t.Fatal("autoResolveConflict = true, want false for a branch diverged from its own remote")
+	}
+	if mergeCalled {
+		t.Fatal("tryCleanMergeFn called despite diverged branch preflight failure")
+	}
+	if pushCalled {
+		t.Fatal("pushSyncFn called despite diverged branch preflight failure")
+	}
+	if got := currentHEAD(t, worktreeDir); got != localHead {
+		t.Fatalf("HEAD after diverged-branch preflight = %s, want unchanged local head %s", got, localHead)
+	}
+	if got := currentHEAD(t, h.src); got != remoteHead {
+		t.Fatalf("remote clone HEAD after preflight = %s, want %s", got, remoteHead)
+	}
+}
+
 func TestRollbackAutoResolvedMerge_SurvivesCancelledContext(t *testing.T) {
 	h := newAutoResolveHarness(t, true)
 	tk, pr := h.newConflictTask(t)
@@ -701,5 +1045,193 @@ func TestRollbackAutoResolvedMerge_SurvivesCancelledContext(t *testing.T) {
 
 	if got := currentHEAD(t, worktreeDir); got != preMergeHead {
 		t.Fatalf("HEAD after rollback = %s, want %s", got, preMergeHead)
+	}
+}
+
+// TestNonConflictPRIssueSkipsStaleBranchMerge asserts the global policy:
+// comments/CI failures dispatch fix agents as-is and never merge base just to
+// refresh a stale branch.
+func TestNonConflictPRIssueSkipsStaleBranchMerge(t *testing.T) {
+	h := newAutoResolveHarness(t, true)
+	tk, pr := h.newConflictTask(t)
+	mergeCalled := false
+	h.r.tryCleanMergeFn = func(_ context.Context, dir, _ string) (project.CleanMergeResult, error) {
+		mergeCalled = true
+		return project.CleanMergeCreated, nil
+	}
+	pushCalled := false
+	h.r.pushSyncFn = func(context.Context, string, string) error {
+		pushCalled = true
+		return nil
+	}
+
+	ok := h.r.dispatchFixIssues(context.Background(), tk.ID, []github.PRIssue{
+		{Kind: github.PRIssueComments, TaskID: tk.ID, PR: pr},
+	})
+	if !ok {
+		t.Fatal("dispatchFixIssues = false, want true (agent dispatched)")
+	}
+	if mergeCalled {
+		t.Fatal("tryCleanMergeFn invoked for a non-conflict issue")
+	}
+	if pushCalled {
+		t.Fatal("pushSyncFn invoked for a non-conflict issue")
+	}
+	got, err := h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow == nil {
+		t.Fatal("no workflow dispatched for non-conflict issue")
+	}
+}
+
+// TestNonConflictPRIssueSkipsMergeEvenWhenNoop proves non-conflict issue
+// dispatch does not call the merge helper even if the helper would no-op.
+func TestNonConflictPRIssueSkipsMergeEvenWhenNoop(t *testing.T) {
+	h := newAutoResolveHarness(t, true)
+	tk, pr := h.newConflictTask(t)
+	mergeCalled := false
+	h.r.tryCleanMergeFn = func(context.Context, string, string) (project.CleanMergeResult, error) {
+		mergeCalled = true
+		return project.CleanMergeNoop, nil
+	}
+	pushCalled := false
+	h.r.pushSyncFn = func(context.Context, string, string) error {
+		pushCalled = true
+		return nil
+	}
+
+	ok := h.r.dispatchFixIssues(context.Background(), tk.ID, []github.PRIssue{
+		{Kind: github.PRIssueComments, TaskID: tk.ID, PR: pr},
+	})
+	if !ok {
+		t.Fatal("dispatchFixIssues = false, want true (agent dispatched)")
+	}
+	if mergeCalled {
+		t.Error("tryCleanMergeFn invoked for a non-conflict issue")
+	}
+	if pushCalled {
+		t.Error("pushSyncFn invoked for a no-op merge")
+	}
+	got, err := h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow == nil {
+		t.Fatal("no workflow dispatched for a no-op sync")
+	}
+}
+
+// TestNonConflictPRIssueSkipsConflictingMergeAttempt proves non-conflict issue
+// dispatch does not even probe a potential base conflict by merging.
+func TestNonConflictPRIssueSkipsConflictingMergeAttempt(t *testing.T) {
+	h := newAutoResolveHarness(t, true)
+	tk, pr := h.newConflictTask(t)
+	mergeCalled := false
+	h.r.tryCleanMergeFn = func(context.Context, string, string) (project.CleanMergeResult, error) {
+		mergeCalled = true
+		return project.CleanMergeConflict, nil
+	}
+	pushCalled := false
+	h.r.pushSyncFn = func(context.Context, string, string) error {
+		pushCalled = true
+		return nil
+	}
+
+	ok := h.r.dispatchFixIssues(context.Background(), tk.ID, []github.PRIssue{
+		{Kind: github.PRIssueComments, TaskID: tk.ID, PR: pr},
+	})
+	if !ok {
+		t.Fatal("dispatchFixIssues = false, want true (agent dispatched)")
+	}
+	if mergeCalled {
+		t.Error("tryCleanMergeFn invoked for a non-conflict issue")
+	}
+	if pushCalled {
+		t.Error("pushSyncFn invoked for a conflicting merge")
+	}
+	got, err := h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow == nil {
+		t.Fatal("no workflow dispatched after a sync conflict")
+	}
+}
+
+// TestNonConflictPRIssue_ApprovedPRSkipsMerge mirrors
+// TestAutoResolveConflict_ApprovedPRSkipsCleanMergeAndDispatchesAgent: merging
+// base in changes the merge-base and can dismiss an existing GitHub approval,
+// so an approved PR must never be auto-merged, regardless of issue kind.
+func TestNonConflictPRIssue_ApprovedPRSkipsMerge(t *testing.T) {
+	h := newAutoResolveHarness(t, true)
+	tk, pr := h.newConflictTask(t)
+	pr.ReviewDecision = "APPROVED"
+	mergeCalled := false
+	h.r.tryCleanMergeFn = func(context.Context, string, string) (project.CleanMergeResult, error) {
+		mergeCalled = true
+		return project.CleanMergeCreated, nil
+	}
+	h.r.pushSyncFn = stubPush(nil)
+
+	ok := h.r.dispatchFixIssues(context.Background(), tk.ID, []github.PRIssue{
+		{Kind: github.PRIssueComments, TaskID: tk.ID, PR: pr},
+	})
+	if !ok {
+		t.Fatal("dispatchFixIssues = false, want true (agent dispatched)")
+	}
+	if mergeCalled {
+		t.Fatal("tryCleanMergeFn called; approved non-conflict PR issue must not merge base")
+	}
+}
+
+// TestNonConflictPRIssue_ToggleOffSkipsMerge verifies the default-off
+// AutoResolveCleanMerges setting still dispatches without trying to merge.
+func TestNonConflictPRIssue_ToggleOffSkipsMerge(t *testing.T) {
+	h := newAutoResolveHarness(t, false)
+	tk, pr := h.newConflictTask(t)
+	mergeCalled := false
+	h.r.tryCleanMergeFn = func(context.Context, string, string) (project.CleanMergeResult, error) {
+		mergeCalled = true
+		return project.CleanMergeCreated, nil
+	}
+	h.r.pushSyncFn = stubPush(nil)
+
+	ok := h.r.dispatchFixIssues(context.Background(), tk.ID, []github.PRIssue{
+		{Kind: github.PRIssueComments, TaskID: tk.ID, PR: pr},
+	})
+	if !ok {
+		t.Fatal("dispatchFixIssues = false, want true (agent dispatched)")
+	}
+	if mergeCalled {
+		t.Error("tryCleanMergeFn invoked while AutoResolveCleanMerges is disabled")
+	}
+}
+
+// TestNonConflictPRIssue_WorkProjectSkipsMerge verifies work-typed projects
+// dispatch without trying to merge.
+func TestNonConflictPRIssue_WorkProjectSkipsMerge(t *testing.T) {
+	h := newAutoResolveHarness(t, true)
+	if _, err := h.projects.Update(h.proj.ID, project.ProjectTypeWork); err != nil {
+		t.Fatal(err)
+	}
+
+	tk, pr := h.newConflictTask(t)
+	mergeCalled := false
+	h.r.tryCleanMergeFn = func(context.Context, string, string) (project.CleanMergeResult, error) {
+		mergeCalled = true
+		return project.CleanMergeCreated, nil
+	}
+	h.r.pushSyncFn = stubPush(nil)
+
+	ok := h.r.dispatchFixIssues(context.Background(), tk.ID, []github.PRIssue{
+		{Kind: github.PRIssueComments, TaskID: tk.ID, PR: pr},
+	})
+	if !ok {
+		t.Fatal("dispatchFixIssues = false, want true (agent dispatched)")
+	}
+	if mergeCalled {
+		t.Error("tryCleanMergeFn invoked for a work-typed project")
 	}
 }

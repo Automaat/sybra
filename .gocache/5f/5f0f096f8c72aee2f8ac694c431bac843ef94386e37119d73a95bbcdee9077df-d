@@ -1,0 +1,8 @@
+./byte.go
+./doc.go
+./empty.go
+./int.go
+./int32.go
+./int64.go
+./set.go
+./string.go

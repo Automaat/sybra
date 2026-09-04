@@ -30,7 +30,7 @@ steps:
     config:
       role: implementation
       mode: "{{.Task.AgentMode}}"
-      model: sonnet
+      model: cheap
       attempts: 3
       max_retries: 1
       prompt: >-
@@ -54,11 +54,6 @@ steps:
         ```json
         {{plancontractjson .Task.PlanContract .Task.ID}}
         ```
-        {{- else if .Task.Plan}}
-
-        ## Plan
-
-        {{.Task.Plan}}
         {{- end}}
     next:
       - when:
@@ -187,6 +182,11 @@ steps:
           field: task.status
           operator: equals
           value: human-required
+        goto: ""
+      - when:
+          field: task.status
+          operator: equals
+          value: ready-pr
         goto: ""
       - goto: set_ready_review
 

@@ -20,6 +20,17 @@ import (
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
+func testGitHubConfig() config.GitHubConfig {
+	return config.GitHubConfig{
+		Enabled: true,
+		Polling: config.GitHubPollingConfig{
+			Issues:      config.GitHubPollingStreamConfig{Enabled: true},
+			SybraPRs:    config.GitHubPRPollingConfig{Enabled: true},
+			AssignedPRs: config.GitHubPRPollingConfig{Enabled: true},
+		},
+	}
+}
+
 func buildPRFixHandler(t *testing.T, tasks *task.Manager, fetchReviewsFn func() (github.ReviewSummary, error)) *Handler {
 	t.Helper()
 	logger := slog.New(slog.DiscardHandler)
@@ -36,7 +47,7 @@ func buildPRFixHandler(t *testing.T, tasks *task.Manager, fetchReviewsFn func() 
 		t.Fatal(err)
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
-	engine := workflow.NewEngine(
+	engine := workflow.NewTestEngine(
 		wfStore,
 		&taskAdapter{tasks: tasks},
 		&agentAdapter{agents: agentMgr, tasks: tasks},
@@ -50,6 +61,7 @@ func buildPRFixHandler(t *testing.T, tasks *task.Manager, fetchReviewsFn func() 
 		agents:          agentMgr,
 		prTracker:       github.NewIssueTracker(time.Minute),
 		WorkflowEngine:  engine,
+		cfg:             &config.Config{GitHub: testGitHubConfig()},
 		fetchReviewsFn:  fetchReviewsFn,
 		pushPreflightFn: stubPushPreflight(nil),
 	}
@@ -399,7 +411,9 @@ func TestPollAndMonitorPRs_FlakyCIFailureRerunsAndLogsFlakeEvent(t *testing.T) {
 		return github.ReviewSummary{CreatedByMe: []github.PullRequest{failingPR}}, nil
 	})
 	r.audit = auditLog
-	r.cfg = &config.Config{GitHub: config.GitHubConfig{FlakyDetection: true}}
+	gh := testGitHubConfig()
+	gh.FlakyDetection = true
+	r.cfg = &config.Config{GitHub: gh}
 	var classifiedRepo, classifiedSHA string
 	var classifiedThreshold float64
 	r.classifyFlakiness = func(repo, sha string, threshold float64) (bool, []string, error) {
@@ -511,7 +525,9 @@ func TestPollAndMonitorPRs_DeterministicCIFailureSkipsFlakeEventEvenWhenEnabled(
 		return github.ReviewSummary{CreatedByMe: []github.PullRequest{failingPR}}, nil
 	})
 	r.audit = auditLog
-	r.cfg = &config.Config{GitHub: config.GitHubConfig{FlakyDetection: true}}
+	gh := testGitHubConfig()
+	gh.FlakyDetection = true
+	r.cfg = &config.Config{GitHub: gh}
 	var classifyCalled bool
 	r.classifyFlakiness = func(repo, sha string, threshold float64) (bool, []string, error) {
 		classifyCalled = true
@@ -659,8 +675,8 @@ func TestEscalateExhaustedFix_DeterministicCIFailureStillEscalates(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want human-required (deterministic failures still escalate)", got.Status)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want blocked (deterministic failures still park without false human escalation)", got.Status)
 	}
 }
 
@@ -805,8 +821,8 @@ func TestPollAndMonitorPRs_FlakyCIFailureConsumesRerunBudgetOnSameSHA(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q after capped flaky CI, want human-required", got.Status)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q after capped flaky CI, want blocked", got.Status)
 	}
 	if got.StatusReason != persistentFlakyCIReason {
 		t.Fatalf("statusReason = %q, want %q", got.StatusReason, persistentFlakyCIReason)
@@ -873,8 +889,8 @@ func TestPollAndMonitorPRs_FlakyCIFailureEscalatesAfterRerunBudgetExhausted(t *t
 	if got.Workflow != nil {
 		t.Fatal("unexpected pr-fix workflow; a flaky ci_failure must never dispatch a fix agent")
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want human-required once the rerun budget is spent", got.Status)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want blocked once the rerun budget is spent", got.Status)
 	}
 	if got.StatusReason != persistentFlakyCIReason {
 		t.Fatalf("statusReason = %q, want %q", got.StatusReason, persistentFlakyCIReason)

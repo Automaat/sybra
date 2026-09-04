@@ -7,20 +7,29 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/attachment"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/task"
 )
+
+type importedAttachment struct {
+	taskID string
+	meta   task.Attachment
+	data   []byte
+}
 
 type followerRecorder struct {
 	mu       sync.Mutex
 	assigned []task.Task
 	stopped  []string
 	agents   []map[string]any
+	imported []importedAttachment
 }
 
 func (f *followerRecorder) server(t *testing.T) *httptest.Server {
@@ -36,6 +45,24 @@ func (f *followerRecorder) server(t *testing.T) *httptest.Server {
 		f.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`null`))
+	})
+	mux.HandleFunc("/api/ClusterAttachmentService/ImportAttachment", func(w http.ResponseWriter, r *http.Request) {
+		var raw []json.RawMessage
+		_ = json.NewDecoder(r.Body).Decode(&raw)
+		var taskID string
+		var meta task.Attachment
+		var data []byte
+		if len(raw) >= 3 {
+			_ = json.Unmarshal(raw[0], &taskID)
+			_ = json.Unmarshal(raw[1], &meta)
+			_ = json.Unmarshal(raw[2], &data)
+		}
+		meta.Path = "/follower/attachments/" + taskID + "/" + meta.ID + "/" + meta.FileName
+		f.mu.Lock()
+		f.imported = append(f.imported, importedAttachment{taskID: taskID, meta: meta, data: slices.Clone(data)})
+		f.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(meta)
 	})
 	mux.HandleFunc("/api/AgentService/ListAgents", func(w http.ResponseWriter, _ *http.Request) {
 		f.mu.Lock()
@@ -70,6 +97,12 @@ func (f *followerRecorder) stoppedAgents() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.stopped...)
+}
+
+func (f *followerRecorder) importedAttachments() []importedAttachment {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]importedAttachment(nil), f.imported...)
 }
 
 func newReassignFixture(t *testing.T, followers []config.Follower, isWork func(string) bool) (*Assigner, *task.Manager) {
@@ -134,6 +167,9 @@ func TestReassignRepushesToNewNodeAndClearsWorktree(t *testing.T) {
 	if got.AssignedNode != "new-box" {
 		t.Fatalf("assigned_node = %q, want new-box", got.AssignedNode)
 	}
+	if got.AssignmentRev != 1 {
+		t.Fatalf("assignment_rev = %d, want 1 after reassignment", got.AssignmentRev)
+	}
 	if got.WorktreeDir != "" {
 		t.Fatalf("worktree must be cleared (it is not transferable), got %q", got.WorktreeDir)
 	}
@@ -151,8 +187,129 @@ func TestReassignRepushesToNewNodeAndClearsWorktree(t *testing.T) {
 	if pushed[0].AssignedNode != "new-box" {
 		t.Fatalf("pushed task carries node %q, want new-box", pushed[0].AssignedNode)
 	}
+	if pushed[0].AssignmentRev != got.AssignmentRev {
+		t.Fatalf("pushed assignment_rev = %d, want %d", pushed[0].AssignmentRev, got.AssignmentRev)
+	}
 	if got := oldNode.assignedTasks(); len(got) != 0 {
 		t.Fatalf("task must not be re-pushed to the old node: %+v", got)
+	}
+}
+
+func TestRouteTransfersAttachmentsBeforeAssign(t *testing.T) {
+	node := &followerRecorder{}
+	srv := node.server(t)
+
+	a, tasks := newReassignFixture(t, []config.Follower{
+		{Name: "pet-box", Endpoints: []string{srv.URL}, Trusted: true, Homes: []string{"acme/x"}},
+	}, nil)
+	attachments, err := attachment.NewStore(t.TempDir(), 10<<20)
+	if err != nil {
+		t.Fatalf("attachment.NewStore: %v", err)
+	}
+	a.SetAttachments(attachments)
+
+	createdAt := time.Date(2026, 7, 19, 10, 0, 0, 0, time.UTC)
+	meta, err := attachments.Import("t-attach", task.Attachment{
+		ID:          "att_1",
+		FileName:    "source.txt",
+		ContentType: "text/plain",
+		CreatedAt:   createdAt,
+	}, []byte("payload"))
+	if err != nil {
+		t.Fatalf("attachments.Import: %v", err)
+	}
+	seed := seedTask(t, tasks, task.Task{
+		ID:          "t-attach",
+		Title:       "attached task",
+		ProjectID:   "acme/x",
+		Status:      task.StatusTodo,
+		AgentMode:   task.AgentModeHeadless,
+		Attachments: []task.Attachment{meta},
+	})
+
+	routed, err := a.Route(t.Context(), seed)
+	if err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if !routed {
+		t.Fatal("Route reported not routed")
+	}
+
+	imported := node.importedAttachments()
+	if len(imported) != 1 {
+		t.Fatalf("imported attachments = %+v, want one blob transfer", imported)
+	}
+	if imported[0].taskID != "t-attach" || imported[0].meta.ID != "att_1" || string(imported[0].data) != "payload" {
+		t.Fatalf("imported attachment = %+v, want t-attach/att_1 payload", imported[0])
+	}
+
+	assigned := node.assignedTasks()
+	if len(assigned) != 1 {
+		t.Fatalf("assigned tasks = %+v, want one", assigned)
+	}
+	if len(assigned[0].Attachments) != 1 {
+		t.Fatalf("assigned attachments = %+v, want transferred metadata", assigned[0].Attachments)
+	}
+	if assigned[0].Attachments[0].Path != "/follower/attachments/t-attach/att_1/source.txt" {
+		t.Fatalf("assigned attachment path = %q, want follower-local path", assigned[0].Attachments[0].Path)
+	}
+}
+
+func TestReassignTransfersAttachmentsBeforeAssign(t *testing.T) {
+	oldNode := &followerRecorder{}
+	newNode := &followerRecorder{}
+	oldSrv := oldNode.server(t)
+	newSrv := newNode.server(t)
+
+	a, tasks := newReassignFixture(t, []config.Follower{
+		{Name: "old-box", Endpoints: []string{oldSrv.URL}, Trusted: true, Homes: []string{"acme/x"}},
+		{Name: "new-box", Endpoints: []string{newSrv.URL}, Trusted: true},
+	}, nil)
+	attachments, err := attachment.NewStore(t.TempDir(), 10<<20)
+	if err != nil {
+		t.Fatalf("attachment.NewStore: %v", err)
+	}
+	a.SetAttachments(attachments)
+
+	createdAt := time.Date(2026, 7, 19, 11, 0, 0, 0, time.UTC)
+	meta, err := attachments.Import("t-reassign-attach", task.Attachment{
+		ID:          "att_1",
+		FileName:    "handoff.txt",
+		ContentType: "text/plain",
+		CreatedAt:   createdAt,
+	}, []byte("handoff payload"))
+	if err != nil {
+		t.Fatalf("attachments.Import: %v", err)
+	}
+	seedTask(t, tasks, task.Task{
+		ID:           "t-reassign-attach",
+		Title:        "attached move",
+		ProjectID:    "acme/x",
+		Status:       task.StatusInProgress,
+		AssignedNode: "old-box",
+		Attachments:  []task.Attachment{meta},
+	})
+
+	if err := a.Reassign(t.Context(), "t-reassign-attach", "new-box"); err != nil {
+		t.Fatalf("Reassign: %v", err)
+	}
+
+	imported := newNode.importedAttachments()
+	if len(imported) != 1 {
+		t.Fatalf("imported attachments = %+v, want one blob transfer", imported)
+	}
+	if imported[0].taskID != "t-reassign-attach" || imported[0].meta.ID != "att_1" || string(imported[0].data) != "handoff payload" {
+		t.Fatalf("imported attachment = %+v, want t-reassign-attach/att_1 handoff payload", imported[0])
+	}
+	assigned := newNode.assignedTasks()
+	if len(assigned) != 1 {
+		t.Fatalf("assigned tasks = %+v, want one", assigned)
+	}
+	if len(assigned[0].Attachments) != 1 {
+		t.Fatalf("assigned attachments = %+v, want transferred metadata", assigned[0].Attachments)
+	}
+	if assigned[0].Attachments[0].Path != "/follower/attachments/t-reassign-attach/att_1/handoff.txt" {
+		t.Fatalf("assigned attachment path = %q, want follower-local path", assigned[0].Attachments[0].Path)
 	}
 }
 

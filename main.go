@@ -31,8 +31,8 @@ import (
 	"github.com/Automaat/sybra/internal/autoupdate"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/logging"
-	"github.com/Automaat/sybra/internal/notification"
 	"github.com/Automaat/sybra/internal/skills"
+	"github.com/Automaat/sybra/internal/sse"
 	"github.com/Automaat/sybra/internal/sybra"
 )
 
@@ -45,7 +45,10 @@ var browserChromeJS string
 func main() {
 	code, err := run()
 	if err != nil {
-		log.Print(err)
+		// Stderr, not log: run redirects the standard logger into slog at
+		// DEBUG, below the shipped level, so a startup failure would exit
+		// non-zero having printed the operator nothing at all.
+		fmt.Fprintln(os.Stderr, err)
 		if code == 0 {
 			code = 1
 		}
@@ -74,16 +77,31 @@ func run() (int, error) {
 
 	logger.Info("browser.in_app", "enabled", cfg.InAppBrowserEnabled())
 
-	v3emit := func(string, any) {}
+	remote, attached, err := remoteBoard()
+	if err != nil {
+		return 1, err
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// A window attached to another machine's board must not start a second
+	// orchestrator against this machine's home: it would poll GitHub, reattach
+	// agents, and write the local board while the window shows none of it.
+	if attached {
+		return runAttached(ctx, cfg, logger, remote)
+	}
+
+	// The window is an HTTP client of this process, so events reach it over the
+	// same SSE stream the browser build subscribes to.
+	broker := sse.New()
+	v3emit := broker.Emit
 	v3openBrowser := func(string) {}
 	var restartRequested atomic.Bool
 	var v3app *application.App
 
 	opts := buildAppOptions(cfg, logger, &v3emit, &v3openBrowser, &restartRequested, &v3app)
 	sybraApp := sybra.NewApp(logger, levelVar, cfg, opts...)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	v3app = application.New(application.Options{
 		Name:        "Sybra",
@@ -95,28 +113,20 @@ func run() (int, error) {
 		},
 	})
 
-	desktopEvents := newDesktopEmitter(ctx, logger, func(event string, data any) {
-		v3app.Event.Emit(event, data)
-	})
-	// Surface a wedged UI thread via an OS-native notification (osascript),
-	// which does not depend on the frozen webview. Run async so the emit pump
-	// never blocks on the alert. The backend keeps running; only the window is
-	// frozen, so restart is the recovery — Wails main-thread APIs (Reload)
-	// route through the same blocked path and cannot self-heal.
-	desktopEvents.onStall = func(d time.Duration) {
-		go func() {
-			_ = notification.SendDesktop("Sybra UI stalled",
-				fmt.Sprintf("No UI updates for %s — the window is likely frozen. Restart Sybra to recover; the backend keeps running.", d.Round(time.Second)))
-		}()
-	}
-	desktopEvents.onRecovered = func(d time.Duration) {
-		go func() {
-			_ = notification.SendDesktop("Sybra UI recovered",
-				fmt.Sprintf("UI updates resumed after %s.", d.Round(time.Second)))
-		}()
-	}
-	v3emit = desktopEvents.Emit
 	v3openBrowser = func(url string) { openInAppBrowser(v3app, url) }
+
+	// Bound before Startup so the board can be named before Startup's recovery
+	// pass dispatches anything: an agent that starts unnamed spends a whole run
+	// on CLI calls that every one of them refuses. Nothing is served on this
+	// listener until openDesktopBoard mounts a handler on it below.
+	ln, err := listenDesktop(ctx, logger)
+	if err != nil {
+		return 1, err
+	}
+	// Agents reach task state through sybra-cli, which has no filesystem path
+	// to it and cannot discover this port from inside the process sandbox. The
+	// desktop board is always cleartext loopback, so it pins no certificate.
+	sybraApp.SetAgentBoard(ln.Addr().String(), cfg.Server.AuthToken, "")
 
 	if err := sybraApp.Startup(ctx); err != nil {
 		logger.Error("app.startup.fatal", "err", err)
@@ -127,13 +137,13 @@ func run() (int, error) {
 		return autoupdate.RestartExitCode, nil
 	}
 
-	v3app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Title:            "Sybra",
-		Width:            1280,
-		Height:           800,
-		StartState:       application.WindowStateMaximised,
-		BackgroundColour: application.RGBA{Red: 27, Green: 38, Blue: 54, Alpha: 1},
-	})
+	board, err := openDesktopBoard(ln, cfg, logger, broker, sybraApp)
+	if err != nil {
+		return 1, err
+	}
+	defer board.shutdown(ctx)
+
+	openMainWindow(v3app, board.url)
 
 	if err := v3app.Run(); err != nil {
 		return 1, err
@@ -142,6 +152,44 @@ func run() (int, error) {
 		return autoupdate.RestartExitCode, nil
 	}
 	return 0, nil
+}
+
+// runAttached serves the UI for a board on another machine.
+//
+// The bundle still comes from this process, because only a page it served can
+// be handed that board's bearer token. Nothing else of Sybra runs.
+func runAttached(ctx context.Context, cfg *config.Config, logger *slog.Logger, remote remoteTarget) (int, error) {
+	v3app := application.New(application.Options{
+		Name:        "Sybra",
+		Description: "Sybra orchestrator",
+		LogLevel:    slog.LevelInfo,
+		Assets: application.AssetOptions{
+			Handler: application.BundledAssetFileServer(assets),
+		},
+	})
+
+	board, err := openAttachedBoard(ctx, cfg, logger, remote, func(url string) { openInAppBrowser(v3app, url) })
+	if err != nil {
+		return 1, err
+	}
+	defer board.shutdown(ctx)
+
+	openMainWindow(v3app, board.url)
+	if err := v3app.Run(); err != nil {
+		return 1, err
+	}
+	return 0, nil
+}
+
+func openMainWindow(app *application.App, url string) {
+	app.Window.NewWithOptions(application.WebviewWindowOptions{
+		Title:            "Sybra",
+		URL:              url,
+		Width:            1280,
+		Height:           800,
+		StartState:       application.WindowStateMaximised,
+		BackgroundColour: application.RGBA{Red: 27, Green: 38, Blue: 54, Alpha: 1},
+	})
 }
 
 // buildAppOptions assembles the sybra.Option set for the desktop app.
@@ -179,9 +227,9 @@ func buildAppOptions(
 }
 
 // desktopBrowserOptions returns the sybra.Option(s) that wire the in-app
-// browser opener, or none when the config toggle disables it. When omitted,
-// BrowserService.Open keeps its nil-opener "unavailable" behavior, and the
-// frontend's existing catch handler falls back to the system browser.
+// browser opener, or none unless browser.in_app is explicitly enabled. When
+// omitted, BrowserService.Open keeps its nil-opener "unavailable" behavior,
+// and the frontend's existing catch handler falls back to the system browser.
 func desktopBrowserOptions(cfg *config.Config, opener func(string)) []sybra.Option {
 	if !cfg.InAppBrowserEnabled() {
 		return nil

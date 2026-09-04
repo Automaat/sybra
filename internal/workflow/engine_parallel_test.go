@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -40,7 +41,7 @@ func TestParallelValidation_Rejects(t *testing.T) {
 				Steps: []Step{{
 					ID: "p", Type: StepParallel,
 					Parallel: []Step{
-						{ID: "a", Type: StepRunAgent},
+						{ID: "a", Type: StepRunAgent, Config: StepConfig{Role: "plan"}},
 						{ID: "b", Type: StepSetStatus},
 					},
 				}},
@@ -54,7 +55,7 @@ func TestParallelValidation_Rejects(t *testing.T) {
 				Steps: []Step{{
 					ID: "p", Type: StepParallel,
 					Parallel: []Step{
-						{ID: "a", Type: StepRunAgent},
+						{ID: "a", Type: StepRunAgent, Config: StepConfig{Role: "plan"}},
 						{ID: "b", Type: StepRunAgent, Parallel: []Step{
 							{ID: "z", Type: StepRunAgent},
 						}},
@@ -64,13 +65,41 @@ func TestParallelValidation_Rejects(t *testing.T) {
 			errSub: "nests another parallel",
 		},
 		{
+			name: "child needs worktree",
+			def: Definition{
+				ID: "x",
+				Steps: []Step{{
+					ID: "p", Type: StepParallel,
+					Parallel: []Step{
+						{ID: "a", Type: StepRunAgent, Config: StepConfig{NeedsWorktree: true}},
+						{ID: "b", Type: StepRunAgent},
+					},
+				}},
+			},
+			errSub: "cannot set needs_worktree",
+		},
+		{
+			name: "writable child role",
+			def: Definition{
+				ID: "x",
+				Steps: []Step{{
+					ID: "p", Type: StepParallel,
+					Parallel: []Step{
+						{ID: "a", Type: StepRunAgent, Config: StepConfig{Role: "implementation"}},
+						{ID: "b", Type: StepRunAgent, Config: StepConfig{Role: "plan"}},
+					},
+				}},
+			},
+			errSub: "is not read-only",
+		},
+		{
 			name: "duplicate child id",
 			def: Definition{
 				ID: "x",
 				Steps: []Step{
 					{ID: "p", Type: StepParallel, Parallel: []Step{
-						{ID: "a", Type: StepRunAgent},
-						{ID: "a", Type: StepRunAgent},
+						{ID: "a", Type: StepRunAgent, Config: StepConfig{Role: "plan"}},
+						{ID: "a", Type: StepRunAgent, Config: StepConfig{Role: "plan"}},
 					}},
 				},
 			},
@@ -83,8 +112,8 @@ func TestParallelValidation_Rejects(t *testing.T) {
 				Steps: []Step{
 					{ID: "first", Type: StepRunAgent},
 					{ID: "p", Type: StepParallel, Parallel: []Step{
-						{ID: "first", Type: StepRunAgent},
-						{ID: "b", Type: StepRunAgent},
+						{ID: "first", Type: StepRunAgent, Config: StepConfig{Role: "plan"}},
+						{ID: "b", Type: StepRunAgent, Config: StepConfig{Role: "plan"}},
 					}},
 				},
 			},
@@ -163,7 +192,7 @@ func TestParallel_DispatchesAllChildren(t *testing.T) {
 	store := newTestStoreWith(t, "test-parallel.yaml")
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo"})
 
 	if err := engine.StartWorkflow("t1", "test-parallel"); err != nil {
@@ -205,7 +234,7 @@ func TestParallel_DispatchesAllChildren(t *testing.T) {
 	}
 }
 
-func TestParallel_AppliesABAssignmentToAuthorChildren(t *testing.T) {
+func TestParallel_AppliesABAssignmentToObserverChildren(t *testing.T) {
 	prev := providerAvailable
 	providerAvailable = func(string) bool { return true }
 	t.Cleanup(func() { providerAvailable = prev })
@@ -218,8 +247,8 @@ func TestParallel_AppliesABAssignmentToAuthorChildren(t *testing.T) {
 			ID:   "implement_both",
 			Type: StepParallel,
 			Parallel: []Step{
-				{ID: "impl_a", Type: StepRunAgent, Config: StepConfig{Role: "implementation", Mode: "headless", Prompt: "a"}},
-				{ID: "impl_b", Type: StepRunAgent, Config: StepConfig{Role: "implementation", Mode: "headless", Prompt: "b"}},
+				{ID: "impl_a", Type: StepRunAgent, Config: StepConfig{Role: "plan", Mode: "headless", Prompt: "a"}},
+				{ID: "impl_b", Type: StepRunAgent, Config: StepConfig{Role: "plan", Mode: "headless", Prompt: "b"}},
 			},
 		}},
 	}
@@ -228,12 +257,12 @@ func TestParallel_AppliesABAssignmentToAuthorChildren(t *testing.T) {
 	}
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	enabled := true
 	engine.SetABTestingConfig(abtest.Config{Enabled: &enabled, Experiments: []abtest.Experiment{{
 		ID:             "exp",
 		AssignmentUnit: "stage",
-		Roles:          []string{"implementation"},
+		Roles:          []string{"plan"},
 		Variants:       []abtest.Variant{{ID: "opus", Provider: "claude", Model: "opus", Weight: 1}},
 	}}})
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo"})
@@ -264,8 +293,8 @@ func TestParallel_AppliesPromptAndSkillVariantPayloads(t *testing.T) {
 			ID:   "implement_both",
 			Type: StepParallel,
 			Parallel: []Step{
-				{ID: "impl_a", Type: StepRunAgent, Config: StepConfig{Role: "implementation", Mode: "headless", Prompt: "control {{.Step.ID}} /sybra-test"}},
-				{ID: "impl_b", Type: StepRunAgent, Config: StepConfig{Role: "implementation", Mode: "headless", Prompt: "control {{.Step.ID}} /sybra-test"}},
+				{ID: "impl_a", Type: StepRunAgent, Config: StepConfig{Role: "plan", Mode: "headless", Prompt: "control {{.Step.ID}} /sybra-test"}},
+				{ID: "impl_b", Type: StepRunAgent, Config: StepConfig{Role: "plan", Mode: "headless", Prompt: "control {{.Step.ID}} /sybra-test"}},
 			},
 		}},
 	}
@@ -274,13 +303,13 @@ func TestParallel_AppliesPromptAndSkillVariantPayloads(t *testing.T) {
 	}
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	enabled := true
 	engine.SetABTestingConfig(abtest.Config{Enabled: &enabled, Experiments: []abtest.Experiment{{
 		ID:             "payload-exp",
 		Kind:           "compound",
 		AssignmentUnit: "stage",
-		Roles:          []string{"implementation"},
+		Roles:          []string{"plan"},
 		Variants: []abtest.Variant{{
 			ID: "payload", Provider: "claude", Model: "sonnet", Weight: 1,
 			PromptTransform: &abtest.PromptTransform{Op: "prepend", Text: "variant {{.Step.ID}}: "},
@@ -313,7 +342,7 @@ func TestParallel_AllCompleteAdvancesParent(t *testing.T) {
 	store := newTestStoreWith(t, "test-parallel.yaml")
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo"})
 
 	if err := engine.StartWorkflow("t1", "test-parallel"); err != nil {
@@ -363,7 +392,7 @@ func TestParallel_ChildFailRetryThenSucceed(t *testing.T) {
 	store := newTestStoreWith(t, "test-parallel.yaml")
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo"})
 
 	if err := engine.StartWorkflow("t1", "test-parallel"); err != nil {
@@ -416,7 +445,7 @@ func TestParallel_ChildFailExhaustedFailsParent(t *testing.T) {
 	store := newTestStoreWith(t, "test-parallel.yaml")
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo"})
 
 	if err := engine.StartWorkflow("t1", "test-parallel"); err != nil {
@@ -453,7 +482,7 @@ func TestParallel_AllSpawnsFail_AdvancesParent(t *testing.T) {
 	store := newTestStoreWith(t, "test-parallel-terminal.yaml")
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo"})
 
 	agents.SetFailSpawn(errors.New("project not registered locally"))
@@ -496,7 +525,7 @@ func TestParallel_ShutdownCancellationDuringSpawnDoesNotFailParent(t *testing.T)
 	store := newTestStoreWith(t, "test-parallel-terminal.yaml")
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo"})
 
 	shutdownCtx, cancel := context.WithCancel(context.Background())
@@ -530,7 +559,9 @@ func TestParallel_PlanDraftSidecarKeyedByStepID(t *testing.T) {
 	store := newTestStoreWith(t, "test-parallel.yaml")
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
+	dir := t.TempDir()
+	engine.setSidecarDirResolverForTest(func(string) (string, error) { return dir, nil })
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo"})
 
 	if err := engine.StartWorkflow("t1", "test-parallel"); err != nil {
@@ -540,10 +571,8 @@ func TestParallel_PlanDraftSidecarKeyedByStepID(t *testing.T) {
 	// Set up sidecar files for both children. importSidecarIfConfigured
 	// reads from disk; write the per-child draft files using the path
 	// pattern from test-parallel.yaml.
-	dir := t.TempDir()
-	t.Setenv("TMPDIR", dir) // not strictly necessary; paths are absolute /tmp
 	for _, child := range []string{"plan_a", "plan_b"} {
-		path := "/tmp/sybra-plan-draft-" + child + "-t1.md"
+		path := filepath.Join(dir, "sybra-plan-draft-"+child+"-t1.md")
 		if err := writeFile(path, "draft for "+child); err != nil {
 			t.Fatalf("write fixture %s: %v", path, err)
 		}
@@ -564,6 +593,76 @@ func TestParallel_PlanDraftSidecarKeyedByStepID(t *testing.T) {
 	}
 	if got := ti.PlanDrafts["plan_b"]; got != "draft for plan_b" {
 		t.Errorf("plan_b draft not stored under plan_draft.plan_b: got %q", got)
+	}
+}
+
+func TestParallel_CompletionRoutesViaPendingAgentStepAfterPersistFailure(t *testing.T) {
+	prev := providerAvailable
+	providerAvailable = func(string) bool { return true }
+	t.Cleanup(func() { providerAvailable = prev })
+
+	store := newTestStoreWith(t, "test-parallel.yaml")
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
+
+	wfExec := &Execution{
+		WorkflowID:  "test-parallel",
+		CurrentStep: "plan",
+		State:       ExecWaiting,
+		Variables:   map[string]string{},
+		ParallelInflight: map[string]*ParallelChildren{
+			"plan": {
+				ParentStepID: "plan",
+				Children: map[string]*ChildStatus{
+					"plan_a": {Status: "pending"},
+					"plan_b": {Status: "pending"},
+				},
+			},
+		},
+	}
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo", Workflow: wfExec})
+
+	def, err := store.Get("test-parallel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := def.StepByID("plan")
+	child := def.StepByID("plan_a")
+	if parent == nil || child == nil {
+		t.Fatal("test-parallel definition missing expected steps")
+	}
+	rec := wfExec.ParallelInflight["plan"]
+	if rec == nil {
+		t.Fatal("parallel inflight record missing")
+	}
+	status := rec.Children["plan_a"]
+	if status == nil {
+		t.Fatal("parallel child status missing")
+	}
+	ctx := TemplateContext{Task: TaskInfo{ID: "t1", Status: "todo", Workflow: wfExec}, Step: *parent, Vars: wfExec.Variables, Workflow: wfExec}
+
+	tasks.failSetWorkflowN = 1
+	err = engine.spawnParallelChild("t1", parent, child, wfExec, ctx, "", status)
+	if !errors.Is(err, errWorkflowYield) {
+		t.Fatalf("spawnParallelChild err = %v, want errWorkflowYield", err)
+	}
+	if stepID, tracked := lookupWorkflowAgentRoute(t, engine, "t1", "agent-1"); !tracked || stepID != "plan_a" {
+		t.Fatalf("pending route = (%q,%v), want plan_a,true", stepID, tracked)
+	}
+
+	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "agent-1", Success: true, Result: "done", Provider: "claude"})
+
+	got := mustWorkflow(t, tasks, "t1")
+	rec = got.ParallelInflight["plan"]
+	if rec == nil || rec.Children["plan_a"] == nil {
+		t.Fatal("parallel inflight child missing after completion")
+	}
+	if rec.Children["plan_a"].Status != "completed" {
+		t.Fatalf("plan_a status = %q, want completed", rec.Children["plan_a"].Status)
+	}
+	if _, tracked := lookupWorkflowAgentRoute(t, engine, "t1", "agent-1"); tracked {
+		t.Fatal("pending route still tracked after child completion")
 	}
 }
 

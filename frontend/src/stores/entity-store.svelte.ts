@@ -21,6 +21,14 @@ export class EntityStore<T extends { id: string }> {
     return [...this.items.values()].sort(this.sortFn)
   }
 
+  // A store may load a lightweight collection projection while separately
+  // hydrating one entity with detail-only fields. Let that store preserve the
+  // hydrated fields when a poll replaces the collection; ordinary stores keep
+  // the fresh item unchanged.
+  protected mergeLoadedItem(item: T, _previous: T | undefined): T {
+    return item
+  }
+
   protected set(id: string, item: T): void {
     this.items = new Map(this.items).set(id, item)
   }
@@ -65,13 +73,18 @@ export class EntityStore<T extends { id: string }> {
 
   private runLoad(isInitial: boolean): Promise<void> {
     if (isInitial) this.loading = true
-    this.error = ''
     this.inFlight = (async () => {
       try {
         const result = await this.loadFn()
         const map = new Map<string, T>()
-        for (const item of result ?? []) map.set(item.id, item)
+        for (const item of result ?? []) {
+          map.set(item.id, this.mergeLoadedItem(item, this.items.get(item.id)))
+        }
         this.items = map
+        // Keep a prior refresh error visible until data has actually become
+        // fresh again. Clearing it at request start exposed stale cards for
+        // the whole duration of every doomed retry.
+        this.error = ''
       } catch (e) {
         this.error = String(e)
       } finally {

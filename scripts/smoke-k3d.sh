@@ -110,8 +110,33 @@ k3d cluster create "$CLUSTER" --agents 0 --wait \
   --kubeconfig-update-default=false --kubeconfig-switch-context=false
 k3d kubeconfig get "$CLUSTER" > "$KUBECONFIG"
 
+# `k3d cluster create --wait` returns once the server container reports ready,
+# which is earlier than k3s having containerd listening and the API server
+# serving its openapi document. Importing then fails with "cannot access socket
+# /run/k3s/containerd/containerd.sock", and the next kubectl fails validation
+# against an API server that is "currently unable to handle the request" — an
+# intermittent red on a job that has nothing to do with the change under test.
+log "Waiting for the node to be ready"
+kubectl wait --for=condition=Ready node --all --timeout=180s
+# A deadline from the clock, not $SECONDS: that counts from shell start and the
+# image build already ran, so the guard would fire before the first attempt.
+openapi_deadline=$(( $(date +%s) + 180 ))
+until kubectl get --raw /openapi/v2 >/dev/null 2>&1; do
+  [ "$(date +%s)" -lt "$openapi_deadline" ] || fail "the API server never served its openapi document"
+  sleep 2
+done
+
 log "Importing $IMAGE"
-k3d image import "$IMAGE" -c "$CLUSTER"
+# Retried: the socket can still be a moment behind a Ready node, and re-importing
+# an image already present is a no-op.
+for attempt in 1 2 3; do
+  if k3d image import "$IMAGE" -c "$CLUSTER"; then
+    break
+  fi
+  [ "$attempt" -lt 3 ] || fail "could not import $IMAGE into $CLUSTER"
+  log "import attempt $attempt failed; retrying"
+  sleep 10
+done
 
 # Resolve the config BEFORE anything is applied. The old order applied the
 # kustomization (starting a pod on the default config), swapped the ConfigMap,
@@ -176,7 +201,7 @@ SRC=/tmp/k8s-testbed-src
 BARE="$HOME_DIR/clones/$OWNER/$REPO.git"
 
 rm -rf "$SRC" "$BARE"
-mkdir -p "$HOME_DIR/clones/$OWNER" "$HOME_DIR/projects"
+mkdir -p "$HOME_DIR/clones/$OWNER"
 git init -b main "$SRC"
 git -C "$SRC" config user.email fake-repo@example.invalid
 git -C "$SRC" config user.name "Fake Repo"
@@ -188,19 +213,7 @@ git --git-dir="$BARE" config remote.origin.url "$BARE"
 git --git-dir="$BARE" config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
 git --git-dir="$BARE" config receive.denyCurrentBranch updateInstead
 git --git-dir="$BARE" update-ref refs/remotes/origin/main "$(git --git-dir="$BARE" rev-parse refs/heads/main)"
-cat > "$HOME_DIR/projects/$OWNER--$REPO.yaml" <<YAML
-id: $OWNER/$REPO
-name: $REPO
-owner: $OWNER
-repo: $REPO
-url: https://github.com/$OWNER/$REPO.git
-clone_path: $BARE
-type: pet
-status: ready
-worktree_base_ref: fresh
-created_at: "2026-07-14T00:00:00Z"
-updated_at: "2026-07-14T00:00:00Z"
-YAML
+sybra-cli project adopt --url "https://github.com/$OWNER/$REPO.git" --clone-path "$BARE" --type pet
 '
 fi
 
@@ -271,6 +284,13 @@ while :; do
   sleep 2
 done
 [ "$AGENT" != "null" ] && [ -n "$AGENT" ] || fail "no agent recorded for task $TASK_ID"
+
+# ListAgents is intentionally a compact collection snapshot. Hydrate the one
+# selected agent before asserting detail-only fields such as the Job command.
+AGENT_ID=$(echo "$AGENT" | jq -r '.id')
+AGENT=$(in_pod curl -sS -X POST 'http://127.0.0.1:8080/api/AgentService/GetAgent' \
+  -H 'Authorization: Bearer poc-token' -H 'Content-Type: application/json' \
+  --data "[\"$AGENT_ID\"]")
 
 log "Asserting"
 echo "$AGENT" | jq .

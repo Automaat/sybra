@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -167,7 +168,7 @@ func TestSyncTaskBranch_Noop(t *testing.T) {
 	}
 }
 
-func TestSyncTaskBranch_Synced(t *testing.T) {
+func TestSyncTaskBranch_PushedBranchSkipsBaseMerge(t *testing.T) {
 	h := prepareHarness(t, nil, 30*time.Second)
 
 	tk, err := h.tasks.Store().Create("synced task", "", "headless")
@@ -191,8 +192,11 @@ func TestSyncTaskBranch_Synced(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Upstream gains a new commit unrelated to anything the branch touched —
-	// a clean fast-forward-able sync.
+	preHEAD := strings.TrimSpace(mustOutputInDir(t, wtPath, "git", "rev-parse", "HEAD"))
+
+	// Upstream gains a new commit unrelated to anything the branch touched.
+	// The task branch was already pushed by PrepareForTask, so SyncTaskBranch
+	// must not merge base just to refresh it.
 	if err := os.WriteFile(filepath.Join(h.src, "NEWFILE.md"), []byte("new\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -203,19 +207,22 @@ func TestSyncTaskBranch_Synced(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result != SyncSynced {
-		t.Errorf("result = %q, want %q", result, SyncSynced)
+	if result != SyncNoop {
+		t.Errorf("result = %q, want %q", result, SyncNoop)
 	}
 	assertWorktreeClean(t, wtPath)
-	if _, err := os.Stat(filepath.Join(wtPath, "NEWFILE.md")); err != nil {
-		t.Errorf("expected NEWFILE.md to be present after sync: %v", err)
+	if got := strings.TrimSpace(mustOutputInDir(t, wtPath, "git", "rev-parse", "HEAD")); got != preHEAD {
+		t.Fatalf("HEAD moved after non-conflict base advance: got %s want %s", got, preHEAD)
+	}
+	if _, err := os.Stat(filepath.Join(wtPath, "NEWFILE.md")); !os.IsNotExist(err) {
+		t.Errorf("NEWFILE.md should not be merged into pushed task branch, stat err=%v", err)
 	}
 	if got, _ := h.tasks.Get(tk.ID); got.Status != task.StatusTodo {
 		t.Errorf("task status = %q, want unchanged %q", got.Status, task.StatusTodo)
 	}
 }
 
-func TestSyncTaskBranch_Conflict(t *testing.T) {
+func TestSyncTaskBranch_PushedBranchSkipsBaseConflict(t *testing.T) {
 	h := prepareHarness(t, nil, 30*time.Second)
 
 	tk, err := h.tasks.Store().Create("conflicting task", "", "headless")
@@ -253,14 +260,18 @@ func TestSyncTaskBranch_Conflict(t *testing.T) {
 	mustRunInDir(t, h.src, "git", "add", "README.md")
 	mustRunInDir(t, h.src, "git", "commit", "-m", "upstream edit")
 
+	preHEAD := strings.TrimSpace(mustOutputInDir(t, wtPath, "git", "rev-parse", "HEAD"))
 	result, err := h.m.SyncTaskBranch(context.Background(), tk)
-	if !errors.Is(err, ErrRebaseFailed) {
-		t.Fatalf("err = %v, want ErrRebaseFailed", err)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if result != SyncConflict {
-		t.Errorf("result = %q, want %q", result, SyncConflict)
+	if result != SyncNoop {
+		t.Errorf("result = %q, want %q", result, SyncNoop)
 	}
 	assertWorktreeClean(t, wtPath)
+	if got := strings.TrimSpace(mustOutputInDir(t, wtPath, "git", "rev-parse", "HEAD")); got != preHEAD {
+		t.Fatalf("HEAD moved after conflicting base advance: got %s want %s", got, preHEAD)
+	}
 	if got, _ := h.tasks.Get(tk.ID); got.Status != task.StatusTodo {
 		t.Errorf("task status = %q, want unchanged (sync never escalates status)", got.Status)
 	}

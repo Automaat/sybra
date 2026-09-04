@@ -12,8 +12,15 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func TestSelectDeterministic(t *testing.T) {
+func enabledDefaultConfig() Config {
 	cfg := DefaultConfig()
+	enabled := true
+	cfg.Enabled = &enabled
+	return cfg
+}
+
+func TestSelectDeterministic(t *testing.T) {
+	cfg := enabledDefaultConfig()
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("DefaultConfig().Validate: %v", err)
 	}
@@ -32,6 +39,27 @@ func TestSelectDeterministic(t *testing.T) {
 		if !reflect.DeepEqual(got, a) {
 			t.Fatalf("assignment changed: got %+v want %+v", got, a)
 		}
+	}
+}
+
+func TestSelectStampsDecisionVersionFromConfigWeightsVersion(t *testing.T) {
+	cfg := enabledDefaultConfig()
+	a, ok, err := Select(cfg, "task-1", "implementation", "implement")
+	if err != nil || !ok {
+		t.Fatalf("Select: ok=%v err=%v", ok, err)
+	}
+	if a.DecisionVersion != 0 {
+		t.Fatalf("DecisionVersion = %d, want 0 for a config with no WeightsVersion", a.DecisionVersion)
+	}
+
+	version := 42
+	cfg.WeightsVersion = &version
+	a, ok, err = Select(cfg, "task-1", "implementation", "implement")
+	if err != nil || !ok {
+		t.Fatalf("Select: ok=%v err=%v", ok, err)
+	}
+	if a.DecisionVersion != 42 {
+		t.Fatalf("DecisionVersion = %d, want 42", a.DecisionVersion)
 	}
 }
 
@@ -87,7 +115,7 @@ func TestSelectSkipsNonMatchingRole(t *testing.T) {
 }
 
 func TestDefaultConfigUsesCheapBracketForCodeAuthorRoles(t *testing.T) {
-	cfg := DefaultConfig()
+	cfg := enabledDefaultConfig()
 	cases := []struct {
 		role         string
 		experimentID string
@@ -120,7 +148,7 @@ func TestDefaultConfigUsesCheapBracketForCodeAuthorRoles(t *testing.T) {
 // 1 so no role is shut out of any provider and the scorecard sees balanced
 // samples.
 func TestDefaultConfigEnrollsEveryProviderUniformly(t *testing.T) {
-	cfg := DefaultConfig()
+	cfg := enabledDefaultConfig()
 	for _, exp := range cfg.Experiments {
 		providers := map[string]bool{}
 		for _, v := range exp.Variants {
@@ -138,7 +166,7 @@ func TestDefaultConfigEnrollsEveryProviderUniformly(t *testing.T) {
 }
 
 func TestDefaultConfigUsesExpensiveBracketForFixReview(t *testing.T) {
-	cfg := DefaultConfig()
+	cfg := enabledDefaultConfig()
 	for i := range 100 {
 		a, ok, err := Select(cfg, fmt.Sprintf("task-%d", i), "fix-review", "step")
 		if err != nil || !ok {
@@ -156,7 +184,7 @@ func TestDefaultConfigUsesExpensiveBracketForFixReview(t *testing.T) {
 }
 
 func TestDefaultConfigUsesExpensiveBracketForReviewRoles(t *testing.T) {
-	cfg := DefaultConfig()
+	cfg := enabledDefaultConfig()
 	for _, role := range []string{"review", "plan"} {
 		t.Run(role, func(t *testing.T) {
 			for i := range 100 {
@@ -182,7 +210,7 @@ func TestDefaultConfigUsesExpensiveBracketForReviewRoles(t *testing.T) {
 }
 
 func TestDefaultConfigReviewTightenVariantIsDigestedPromptTransform(t *testing.T) {
-	cfg := DefaultConfig()
+	cfg := enabledDefaultConfig()
 	var found *Variant
 	for i := range cfg.Experiments {
 		if cfg.Experiments[i].ID != "review-tighten-instructions-pl-a2d853b2c1d9" {
@@ -688,6 +716,7 @@ func TestConfigValidatePromptSkillAllowsEmptyReasoningEffortAsDefault(t *testing
 		ID:      "prompt-default-effort",
 		Kind:    "prompt",
 		Subject: &Subject{StepID: "implement"},
+		Roles:   []string{"implementation"},
 		Variants: []Variant{
 			{ID: "explicit-medium", Provider: "claude", Model: "sonnet", ReasoningEffort: "medium", Weight: 1},
 			{ID: "omitted-effort", Provider: "claude", Model: "sonnet", ReasoningEffort: "", Weight: 1},
@@ -695,6 +724,108 @@ func TestConfigValidatePromptSkillAllowsEmptyReasoningEffortAsDefault(t *testing
 	}}}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
+	}
+}
+
+// TestConfigValidatePromptSkillRejectsRolelessMixedEffort covers the ambiguous
+// case: an experiment declaring no role matches every role (see roleMatches),
+// so an omitted reasoning_effort dispatches at whatever baseline the step it
+// lands on carries. Mixing it with an explicit level would silently confound
+// the prompt comparison with an effort change, so it must be rejected until the
+// operator declares the role.
+func TestConfigValidatePromptSkillRejectsRolelessMixedEffort(t *testing.T) {
+	for _, effort := range []string{"medium", "high"} {
+		t.Run(effort, func(t *testing.T) {
+			cfg := Config{Experiments: []Experiment{{
+				ID:      "prompt-roleless-effort",
+				Kind:    "prompt",
+				Subject: &Subject{StepID: "implement"},
+				Variants: []Variant{
+					{ID: "omitted-effort", Provider: "claude", Model: "sonnet", Weight: 1},
+					{ID: "explicit-effort", Provider: "claude", Model: "sonnet", ReasoningEffort: effort, Weight: 1},
+				},
+			}}}
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatal("Validate should reject a roleless mix of omitted and explicit reasoning_effort")
+			}
+			if !strings.Contains(err.Error(), "reasoning_effort") {
+				t.Fatalf("error %q does not mention reasoning_effort", err)
+			}
+		})
+	}
+}
+
+// TestConfigValidatePromptSkillAllowsRolelessOmittedEffort proves the
+// ambiguity only bites a mix: leaving the level off every arm stays valid, so
+// the common roleless prompt experiment is unaffected.
+func TestConfigValidatePromptSkillAllowsRolelessOmittedEffort(t *testing.T) {
+	cfg := Config{Experiments: []Experiment{{
+		ID:      "prompt-roleless-omitted",
+		Kind:    "prompt",
+		Subject: &Subject{StepID: "implement"},
+		Variants: []Variant{
+			{ID: "a", Provider: "claude", Model: "sonnet", Weight: 1},
+			{ID: "b", Provider: "claude", Model: "sonnet", Weight: 1},
+		},
+	}}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+}
+
+// TestConfigValidatePromptSkillResolvesEmptyEffortAgainstRoleBaseline covers
+// roles whose built-in baseline is not the global default: on a review
+// experiment an omitted reasoning_effort dispatches at "high", so pinning
+// "high" explicitly on one arm is homogeneous with omitting it on another,
+// while pinning the global "medium" is a genuine mismatch.
+func TestConfigValidatePromptSkillResolvesEmptyEffortAgainstRoleBaseline(t *testing.T) {
+	tests := []struct {
+		name       string
+		roles      []string
+		effort     string
+		wantReject bool
+	}{
+		{name: "review omitted vs explicit baseline", roles: []string{"review"}, effort: "high"},
+		{name: "review omitted vs global default", roles: []string{"review"}, effort: "medium", wantReject: true},
+		{name: "implementation omitted vs global default", roles: []string{"implementation"}, effort: "medium"},
+		{name: "implementation omitted vs explicit high", roles: []string{"implementation"}, effort: "high", wantReject: true},
+		{
+			// plan resolves "high", test-runner resolves "medium": an
+			// omitted effort is ambiguous, so it only matches another
+			// omitted one.
+			name:       "roles with disagreeing baselines stay ambiguous",
+			roles:      []string{"plan", "test-runner"},
+			effort:     "high",
+			wantReject: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Config{Experiments: []Experiment{{
+				ID:      "prompt-role-effort",
+				Kind:    "prompt",
+				Subject: &Subject{StepID: "implement"},
+				Roles:   tt.roles,
+				Variants: []Variant{
+					{ID: "omitted-effort", Provider: "claude", Model: "sonnet", Weight: 1},
+					{ID: "explicit-effort", Provider: "claude", Model: "sonnet", ReasoningEffort: tt.effort, Weight: 1},
+				},
+			}}}
+			err := cfg.Validate()
+			if tt.wantReject {
+				if err == nil {
+					t.Fatal("Validate should reject a reasoning_effort mismatch")
+				}
+				if !strings.Contains(err.Error(), "reasoning_effort") {
+					t.Fatalf("error %q does not mention reasoning_effort", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Validate: %v", err)
+			}
+		})
 	}
 }
 
@@ -884,7 +1015,7 @@ func TestSelectEligibleEvalPassedSeam(t *testing.T) {
 }
 
 func TestSelectEligibleNilEvalPassedUnchanged(t *testing.T) {
-	cfg := DefaultConfig()
+	cfg := enabledDefaultConfig()
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("DefaultConfig().Validate: %v", err)
 	}
@@ -918,5 +1049,236 @@ func TestEligibleVariantsSkipsOnlyDigestedFailures(t *testing.T) {
 	}
 	if !ids["no-digest"] || !ids["has-digest-pass"] || ids["has-digest-fail"] {
 		t.Fatalf("eligible = %+v", eligible)
+	}
+}
+
+func canaryConfig(canary CanaryPolicy) Config {
+	enabled := true
+	return Config{
+		Enabled: &enabled,
+		Experiments: []Experiment{{
+			ID:             "canary-exp",
+			Enabled:        &enabled,
+			AssignmentUnit: "stage",
+			Roles:          []string{"implementation"},
+			Canary:         &canary,
+			Variants: []Variant{
+				{ID: "baseline", Provider: "claude", Model: "sonnet", Weight: 1},
+				{ID: "candidate", Provider: "codex", Model: "gpt", Weight: 1},
+			},
+		}},
+	}
+}
+
+func TestSelectCanary_InsufficientCohortForcesBaseline(t *testing.T) {
+	cfg := canaryConfig(CanaryPolicy{BaselineVariantID: "baseline", PercentBound: 100, MinCohort: 20})
+	cohortObserved := func(string) (int, bool) { return 5, true } // fresh but below MinCohort
+
+	for _, taskID := range []string{"task-1", "task-2", "task-3"} {
+		a, ok, err := SelectEligibleForContextWithCohort(cfg, SelectionContext{TaskID: taskID, Role: "implementation"}, nil, nil, cohortObserved)
+		if err != nil || !ok {
+			t.Fatalf("Select: ok=%v err=%v", ok, err)
+		}
+		if a.VariantID != "baseline" || a.Provider != "claude" {
+			t.Fatalf("VariantID/Provider = %q/%q, want baseline/claude (insufficient cohort must force baseline)", a.VariantID, a.Provider)
+		}
+		if a.RoutingReason != "canary_baseline" {
+			t.Fatalf("RoutingReason = %q, want canary_baseline", a.RoutingReason)
+		}
+	}
+}
+
+func TestSelectCanary_StaleCohortForcesBaseline(t *testing.T) {
+	cfg := canaryConfig(CanaryPolicy{BaselineVariantID: "baseline", PercentBound: 100, MinCohort: 0})
+	cohortObserved := func(string) (int, bool) { return 1000, false } // plenty of data, but stale
+
+	a, ok, err := SelectEligibleForContextWithCohort(cfg, SelectionContext{TaskID: "task-1", Role: "implementation"}, nil, nil, cohortObserved)
+	if err != nil || !ok {
+		t.Fatalf("Select: ok=%v err=%v", ok, err)
+	}
+	if a.VariantID != "baseline" {
+		t.Fatalf("VariantID = %q, want baseline (stale cohort must force baseline even with data)", a.VariantID)
+	}
+}
+
+func TestSelectCanary_NilCohortObservedFailsClosedToBaseline(t *testing.T) {
+	cfg := canaryConfig(CanaryPolicy{BaselineVariantID: "baseline", PercentBound: 100, MinCohort: 0})
+
+	a, ok, err := SelectEligibleForContextWithCohort(cfg, SelectionContext{TaskID: "task-1", Role: "implementation"}, nil, nil, nil)
+	if err != nil || !ok {
+		t.Fatalf("Select: ok=%v err=%v", ok, err)
+	}
+	if a.VariantID != "baseline" {
+		t.Fatalf("VariantID = %q, want baseline (nil cohortObserved must fail closed)", a.VariantID)
+	}
+
+	// SelectEligibleForContext (no cohort awareness at all) must behave
+	// identically — a canary experiment is never silently treated as a
+	// plain, uncapped A/B experiment by the existing entry point.
+	a2, ok2, err2 := SelectEligibleForContext(cfg, SelectionContext{TaskID: "task-1", Role: "implementation"}, nil, nil)
+	if err2 != nil || !ok2 || a2.VariantID != "baseline" {
+		t.Fatalf("SelectEligibleForContext: a=%+v ok=%v err=%v, want baseline/true/nil", a2, ok2, err2)
+	}
+}
+
+func TestSelectCanary_PercentBoundIsBoundedAndReproducible(t *testing.T) {
+	cfg := canaryConfig(CanaryPolicy{BaselineVariantID: "baseline", PercentBound: 20, MinCohort: 0})
+	cohortObserved := func(string) (int, bool) { return 100, true }
+
+	nonBaseline := 0
+	const n = 2000
+	firstPass := make(map[string]string, n)
+	for i := range n {
+		taskID := fmt.Sprintf("task-%d", i)
+		a, ok, err := SelectEligibleForContextWithCohort(cfg, SelectionContext{TaskID: taskID, Role: "implementation"}, nil, nil, cohortObserved)
+		if err != nil || !ok {
+			t.Fatalf("Select: ok=%v err=%v", ok, err)
+		}
+		firstPass[taskID] = a.VariantID
+		if a.VariantID == "candidate" {
+			nonBaseline++
+		}
+	}
+	// PercentBound=20 caps the eligible-for-non-baseline slice at 20% of
+	// keys; within that slice the normal 50/50 weighted draw between
+	// baseline/candidate applies, so candidate's share should land well
+	// under 20% and well above 0%.
+	if nonBaseline == 0 || nonBaseline > n/4 {
+		t.Fatalf("candidate assignments = %d/%d, want roughly bounded near PercentBound/2 (%%), got outside (0, %d]", nonBaseline, n, n/4)
+	}
+
+	// Reproducible: same keys, repeated, must select identically.
+	for i := range n {
+		taskID := fmt.Sprintf("task-%d", i)
+		a, ok, err := SelectEligibleForContextWithCohort(cfg, SelectionContext{TaskID: taskID, Role: "implementation"}, nil, nil, cohortObserved)
+		if err != nil || !ok {
+			t.Fatalf("Select: ok=%v err=%v", ok, err)
+		}
+		if a.VariantID != firstPass[taskID] {
+			t.Fatalf("task %s selected %q then %q, want reproducible/stable assignment", taskID, firstPass[taskID], a.VariantID)
+		}
+	}
+}
+
+func TestSelectCanary_ZeroPercentBoundAlwaysBaseline(t *testing.T) {
+	cfg := canaryConfig(CanaryPolicy{BaselineVariantID: "baseline", PercentBound: 0, MinCohort: 0})
+	cohortObserved := func(string) (int, bool) { return 1000, true }
+
+	for i := range 200 {
+		taskID := fmt.Sprintf("task-%d", i)
+		a, ok, err := SelectEligibleForContextWithCohort(cfg, SelectionContext{TaskID: taskID, Role: "implementation"}, nil, nil, cohortObserved)
+		if err != nil || !ok {
+			t.Fatalf("Select: ok=%v err=%v", ok, err)
+		}
+		if a.VariantID != "baseline" {
+			t.Fatalf("task %s selected %q, want baseline (percent_bound=0 must forbid all canary traffic)", taskID, a.VariantID)
+		}
+	}
+}
+
+func TestSelectCanary_BaselineProviderIneligibleDefersToPlainSelection(t *testing.T) {
+	cfg := canaryConfig(CanaryPolicy{BaselineVariantID: "baseline", PercentBound: 100, MinCohort: 0})
+	providerAllowed := func(p string) bool { return p != "claude" } // baseline's provider is unavailable
+
+	a, ok, err := SelectEligibleForContextWithCohort(cfg, SelectionContext{TaskID: "task-1", Role: "implementation"}, providerAllowed, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ok {
+		t.Fatalf("Select ok=true a=%+v, want ok=false (defer to plain provider selection/failover)", a)
+	}
+}
+
+func TestValidateExperiment_CanaryRequiresKnownBaselineVariant(t *testing.T) {
+	cfg := canaryConfig(CanaryPolicy{BaselineVariantID: "does-not-exist", PercentBound: 50, MinCohort: 0})
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() = nil, want error for unknown canary baseline_variant_id")
+	}
+}
+
+func TestValidateExperiment_CanaryRejectsZeroWeightBaseline(t *testing.T) {
+	cfg := canaryConfig(CanaryPolicy{BaselineVariantID: "baseline", PercentBound: 50, MinCohort: 0})
+	cfg.Experiments[0].Variants[0].Weight = 0 // baseline retired via zero weight
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() = nil, want error: a zero-weight (disabled) variant must not be a canary baseline")
+	}
+}
+
+func TestValidateExperiment_CanaryPercentBoundOutOfRange(t *testing.T) {
+	cfg := canaryConfig(CanaryPolicy{BaselineVariantID: "baseline", PercentBound: 101, MinCohort: 0})
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() = nil, want error for percent_bound > 100")
+	}
+}
+
+func TestValidateExperiment_CanaryNegativeMinCohort(t *testing.T) {
+	cfg := canaryConfig(CanaryPolicy{BaselineVariantID: "baseline", PercentBound: 50, MinCohort: -1})
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() = nil, want error for negative min_cohort")
+	}
+}
+
+func TestCloneConfig_DeepCopiesCanary(t *testing.T) {
+	cfg := canaryConfig(CanaryPolicy{BaselineVariantID: "baseline", PercentBound: 50, MinCohort: 10})
+	cp := CloneConfig(cfg)
+	cp.Experiments[0].Canary.PercentBound = 99
+	if cfg.Experiments[0].Canary.PercentBound != 50 {
+		t.Fatalf("original Canary mutated via clone: %d, want unchanged 50", cfg.Experiments[0].Canary.PercentBound)
+	}
+}
+
+// TestWithoutInvalidExperimentsKeepsDispatchAlive covers the migration path for
+// a config a code change retroactively invalidated: selection validates each
+// experiment as it matches and propagates the error to the dispatcher, so an
+// invalid experiment must be dropped (and reported) at load rather than left to
+// wedge every role it targets.
+func TestWithoutInvalidExperimentsKeepsDispatchAlive(t *testing.T) {
+	good := Experiment{
+		ID:       "good",
+		Roles:    []string{"review"},
+		Variants: []Variant{{ID: "a", Provider: "claude", Model: "opus", Weight: 1}},
+	}
+	// Roleless prompt experiment mixing an omitted and an explicit effort:
+	// valid before the per-role baselines were retuned, ambiguous after.
+	bad := Experiment{
+		ID:      "bad",
+		Kind:    "prompt",
+		Subject: &Subject{StepID: "implement"},
+		Variants: []Variant{
+			{ID: "a", Provider: "claude", Model: "sonnet", Weight: 1},
+			{ID: "b", Provider: "claude", Model: "sonnet", ReasoningEffort: "medium", Weight: 1},
+		},
+	}
+	cfg := Config{Experiments: []Experiment{good, bad}}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("precondition: the bad experiment should fail validation")
+	}
+
+	var dropped []string
+	got := cfg.WithoutInvalidExperiments(func(id string, err error) {
+		if err == nil {
+			t.Errorf("report called with nil error for %q", id)
+		}
+		dropped = append(dropped, id)
+	})
+
+	if len(dropped) != 1 || dropped[0] != "bad" {
+		t.Fatalf("dropped = %v, want [bad]", dropped)
+	}
+	if len(got.Experiments) != 1 || got.Experiments[0].ID != "good" {
+		t.Fatalf("kept experiments = %+v, want just the good one", got.Experiments)
+	}
+	if err := got.Validate(); err != nil {
+		t.Fatalf("survivors must validate: %v", err)
+	}
+	if len(cfg.Experiments) != 2 {
+		t.Fatalf("receiver mutated: len = %d, want 2", len(cfg.Experiments))
+	}
+
+	// A selection that previously errored out now routes normally.
+	enabled := true
+	got.Enabled = &enabled
+	if _, _, err := Select(got, "task-1", "review", "review"); err != nil {
+		t.Fatalf("Select after drop: %v", err)
 	}
 }

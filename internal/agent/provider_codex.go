@@ -3,10 +3,10 @@ package agent
 import (
 	"os"
 	"strings"
-	"time"
 
 	"github.com/Automaat/sybra/internal/modeltier"
 	providerpkg "github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 type codexProvider struct{}
@@ -15,7 +15,7 @@ func init() {
 	registerAgentProvider(codexProvider{})
 }
 
-func (codexProvider) Name() string { return "codex" }
+func (codexProvider) Name() string { return providerid.Codex }
 
 // HonorsAllowedTools is false: the codex CLI has no per-tool allowlist. Its
 // only containment is -s/--sandbox, which is filesystem-level and unrelated to
@@ -33,8 +33,25 @@ func (codexProvider) EnforcesOutputSchema() bool { return true }
 func (codexProvider) NormalizeModel(model string) string {
 	// Codex models come from `codex debug models` and never carry a [1m]
 	// suffix — a stray suffix stays untouched and is rejected by safeArgRe.
-	if resolved, ok := modeltier.NormalizeAlias("codex", model); ok {
+	if resolved, ok := modeltier.NormalizeAlias(providerid.Codex, model); ok {
 		return resolved
+	}
+	// Unlike copilot/opencode, codex is not a multi-vendor gateway — it only
+	// ever understands its own OpenAI model IDs. A literal Claude model ID
+	// (e.g. "claude-haiku-4-5-20251001", the role default a hand-built
+	// RunConfig can carry — see #2639) reaches the CLI verbatim otherwise and
+	// is rejected outright. Cross-provider failover already resolves this via
+	// modeltier.InferTier's fuzzy match (model_resolution.go); reuse it here
+	// too for the same-provider path, but gated on the model literal actually
+	// naming the "claude" vendor — InferTier's Contains-based matching is too
+	// permissive to run unconditionally (e.g. it would fuzzy-match, and thus
+	// silently truncate, codex's own "gpt-5.4[1m]" down to "gpt-5.4").
+	if strings.Contains(strings.ToLower(model), "claude") {
+		if tier, ok := modeltier.InferTier(model); ok {
+			if mapped := modeltier.Model(tier, providerid.Codex); mapped != "" {
+				return mapped
+			}
+		}
 	}
 	return model
 }
@@ -77,9 +94,9 @@ func (p codexProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (headles
 	}
 	args = append(args, prompt)
 	return headlessInvocation{
-		name:    "codex",
+		name:    providerid.Codex,
 		args:    args,
-		command: "codex " + strings.Join(args, " "),
+		command: providerid.Codex + " " + strings.Join(args, " "),
 	}, nil
 }
 
@@ -116,31 +133,17 @@ func (codexProvider) SandboxArgs(requirePerms, headless bool) []string {
 
 func (codexProvider) OutputSchemaAsFile() bool { return true }
 
-func (codexProvider) UsesPerTurnConvo() bool { return true }
-
-func (p codexProvider) BuildPerTurnConvoInvocation(a *Agent, cfg RunConfig, prompt string) perTurnConvoInvocation {
-	return perTurnConvoInvocation{bin: "codex", args: buildCodexConvoArgsWithProvider(a, cfg, prompt, p)}
-}
-
-func (codexProvider) ParseConvoLine(line []byte) (ConvoEvent, error) {
-	ce, err := ParseCodexLine(line)
-	if err != nil {
-		return ConvoEvent{}, err
-	}
-	return codexEventToConvoEvent(ce), nil
-}
-
 func (codexProvider) SessionFilePath(sessionID string) string {
 	return resolveCodexSessionFile(sessionID)
 }
 
-func (codexProvider) ClassifyError(sample providerpkg.ErrorSample) (providerpkg.Signal, string, time.Duration) {
+func (codexProvider) ClassifyError(sample providerpkg.ErrorSample) providerpkg.Classification {
 	return providerpkg.ClassifyCodexError(sample)
 }
 
 // buildCodexCommand builds the display command string for a Codex agent.
 func buildCodexCommand(model, effort string, requirePerms, headless bool, p Provider) string {
-	parts := []string{"codex", "exec", "--json", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules"}
+	parts := []string{providerid.Codex, "exec", "--json", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules"}
 	parts = append(parts, p.SandboxArgs(requirePerms, headless)...)
 	if model != "" {
 		parts = append(parts, "--model", model)
@@ -179,5 +182,5 @@ func codexReasoningArgs(effort string) []string {
 // is no UI to serve those approval prompts, so they auto-reject and the run
 // fails. Bypass mode is used instead.
 func codexSandboxArgs(requirePerms, headless bool) []string {
-	return providerByName("codex").SandboxArgs(requirePerms, headless)
+	return providerByName(providerid.Codex).SandboxArgs(requirePerms, headless)
 }

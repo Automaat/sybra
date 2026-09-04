@@ -43,7 +43,7 @@ func TestExecResumeWorkflow_ResumesCapturedTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 
 	wf := &Execution{
 		WorkflowID:  "branch-conflict-fix",
@@ -98,7 +98,7 @@ func TestExecResumeWorkflow_NoTargetCompletesNormally(t *testing.T) {
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 
 	wf := &Execution{
 		WorkflowID:  "branch-conflict-fix",
@@ -155,7 +155,7 @@ func TestExecResumeWorkflow_SkipsStaleRebaseHumanRequired(t *testing.T) {
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 
 	wf := &Execution{
 		WorkflowID:  "branch-conflict-fix",
@@ -169,7 +169,7 @@ func TestExecResumeWorkflow_SkipsStaleRebaseHumanRequired(t *testing.T) {
 	tasks.Put(TaskInfo{
 		ID:           "t3",
 		Status:       "in-progress", // set by branch-conflict-fix's own set_recovering step
-		StatusReason: "recovering from a branch conflict (no PR yet)",
+		StatusReason: "recovering from a branch conflict",
 		Workflow:     wf,
 	})
 
@@ -191,7 +191,7 @@ func TestExecResumeWorkflow_SkipsStaleRebaseHumanRequired(t *testing.T) {
 	if got.Status != "in-progress" {
 		t.Fatalf("status = %q, want unchanged in-progress (set by set_recovering)", got.Status)
 	}
-	if got.StatusReason != "recovering from a branch conflict (no PR yet)" {
+	if got.StatusReason != "recovering from a branch conflict" {
 		t.Fatalf("status_reason = %q, want unchanged", got.StatusReason)
 	}
 }
@@ -206,7 +206,7 @@ func TestExecResumeWorkflow_RestoresUnrelatedHumanRequired(t *testing.T) {
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 
 	wf := &Execution{
 		WorkflowID:  "branch-conflict-fix",
@@ -220,7 +220,7 @@ func TestExecResumeWorkflow_RestoresUnrelatedHumanRequired(t *testing.T) {
 	tasks.Put(TaskInfo{
 		ID:           "t4",
 		Status:       "in-progress",
-		StatusReason: "recovering from a branch conflict (no PR yet)",
+		StatusReason: "recovering from a branch conflict",
 		Workflow:     wf,
 	})
 
@@ -272,7 +272,7 @@ func TestExecResumeWorkflow_SkipsStaleRebaseHumanRequiredWithResumeTarget(t *tes
 		t.Fatal(err)
 	}
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 
 	wf := &Execution{
 		WorkflowID:  "branch-conflict-fix",
@@ -288,7 +288,7 @@ func TestExecResumeWorkflow_SkipsStaleRebaseHumanRequiredWithResumeTarget(t *tes
 	tasks.Put(TaskInfo{
 		ID:           "t5",
 		Status:       "in-progress",
-		StatusReason: "recovering from a branch conflict (no PR yet)",
+		StatusReason: "recovering from a branch conflict",
 		Workflow:     wf,
 	})
 

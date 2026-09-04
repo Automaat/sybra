@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/autonomy"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
@@ -22,7 +24,7 @@ func TestTaskFrontmatterMappingRoundTrip(t *testing.T) {
 		Slug:                   "task-slug",
 		Title:                  "Task title",
 		Status:                 StatusTesting,
-		TaskType:               TaskTypeResearch,
+		TaskType:               TaskTypeUmbrella,
 		AgentMode:              AgentModeHeadless,
 		AllowedTools:           []string{"Read", "Write"},
 		Tags:                   []string{"backend", "refactor"},
@@ -37,12 +39,15 @@ func TestTaskFrontmatterMappingRoundTrip(t *testing.T) {
 		BlockedByIssue:         "https://github.com/owner/repo/issues/2",
 		UmbrellaIssue:          "owner/repo#3",
 		DependsOn:              []string{"owner/repo#4"},
+		DependsOnConditions:    []DepCondition{{Ref: "owner/repo#4", Kind: DepConditionKindNote, Value: "confirm permutation coverage"}},
 		Reviewed:               true,
+		CodeReviewVerdict:      "NEEDS_FIXES",
 		RunRole:                "pr-fix",
 		SupervisorSteer:        "read the failure",
 		ReviewPhase:            "awaiting-author",
 		ReviewedHeadSHA:        "e57e4b5db72c55ba7610140631a80946a7edddf0",
 		ReviewedHeadAttempts:   2,
+		ReconcileFailures:      3,
 		PRPhase:                "fixing",
 		Priority:               PriorityHigh,
 		DueDate:                &dueDate,
@@ -54,8 +59,17 @@ func TestTaskFrontmatterMappingRoundTrip(t *testing.T) {
 		HeadlessPermissionMode: "auto",
 		ForkSubagent:           true,
 		Sandbox:                &sandbox,
+		SandboxOffReason:       "host mounts required for docker-in-docker e2e",
 		ReasoningEffort:        "xhigh",
 		TestingCycleStartedAt:  &testingCycleStartedAt,
+		Attachments: []Attachment{{
+			ID:          "att-1",
+			FileName:    "evidence.txt",
+			ContentType: "text/plain",
+			SizeBytes:   5,
+			Path:        "/tmp/attachments/task1234/att-1/evidence.txt",
+			CreatedAt:   now.Add(-30 * time.Minute),
+		}},
 		AgentRuns: []AgentRun{{
 			AgentID:                 "agent-1",
 			Role:                    "test-runner",
@@ -66,6 +80,7 @@ func TestTaskFrontmatterMappingRoundTrip(t *testing.T) {
 			VariantID:               "variant",
 			AssignmentUnit:          "task",
 			AssignmentKey:           "task1234",
+			DecisionVersion:         7,
 			ReasoningEffort:         "high",
 			RequestedSkill:          "sybra-test",
 			SkillExecutionMode:      "native",
@@ -89,6 +104,19 @@ func TestTaskFrontmatterMappingRoundTrip(t *testing.T) {
 			HeadSHA:                 "def456",
 			SubagentCallCount:       2,
 		}},
+		EffectLog: []workflow.EffectRecord{{
+			ID: workflow.EffectID{
+				Generation: 2,
+				StepSeq:    4,
+				StepID:     "external:review_pr_monitor:deadbeef",
+				Pos:        0,
+			},
+			IntentAt: now.Add(-15 * time.Minute),
+			CompletedAt: func() *time.Time {
+				t := now.Add(-14 * time.Minute)
+				return &t
+			}(),
+		}},
 		Workflow: &workflow.Execution{
 			WorkflowID:  "workflow-1",
 			CurrentStep: "step-1",
@@ -101,6 +129,8 @@ func TestTaskFrontmatterMappingRoundTrip(t *testing.T) {
 		UpdatedAt:       now,
 		AssignedNode:    "pet-box",
 		NodeOverride:    "gpu-box",
+		AssignmentRev:   3,
+		Generation:      2,
 		MirrorRev:       7,
 		MirrorUpdatedAt: &completedAt,
 		Body:            "body",
@@ -109,6 +139,30 @@ func TestTaskFrontmatterMappingRoundTrip(t *testing.T) {
 	got := taskFromFrontmatter(frontmatterFromTask(original), original.Body)
 	if !reflect.DeepEqual(got, original) {
 		t.Fatalf("frontmatter mapping mismatch\n got: %#v\nwant: %#v", got, original)
+	}
+}
+
+func TestTaskFrontmatterMappingBackfillsLegacyTamperBlocker(t *testing.T) {
+	t.Parallel()
+
+	got := taskFromFrontmatter(taskFrontmatter{
+		ID:           "task-legacy-tamper",
+		Title:        "Legacy tamper task",
+		Status:       StatusHumanRequired,
+		StatusReason: workflow.TamperFlaggedReasonPrefix + " internal/foo_test.go: added-skip",
+	}, "")
+
+	if got.Blocker.Kind != blocker.KindTamperDetected {
+		t.Fatalf("Blocker.Kind = %q, want %q", got.Blocker.Kind, blocker.KindTamperDetected)
+	}
+	if got.Blocker.Actor != blocker.ActorWorkflow {
+		t.Fatalf("Blocker.Actor = %q, want %q", got.Blocker.Actor, blocker.ActorWorkflow)
+	}
+	if got.Blocker.NextAction != "bless_tampering" {
+		t.Fatalf("Blocker.NextAction = %q, want bless_tampering", got.Blocker.NextAction)
+	}
+	if !got.TamperFlagged {
+		t.Fatal("TamperFlagged = false, want true")
 	}
 }
 
@@ -172,7 +226,7 @@ func TestTaskFrontmatterMappingPreservesEachPersistedField(t *testing.T) {
 
 func TestPersistenceTypesHaveYAMLTags(t *testing.T) {
 	t.Parallel()
-	for _, typ := range []reflect.Type{reflect.TypeFor[taskFrontmatter](), reflect.TypeFor[agentRunRecord]()} {
+	for _, typ := range []reflect.Type{reflect.TypeFor[taskFrontmatter](), reflect.TypeFor[agentRunRecord](), reflect.TypeFor[documentCompactionRecord]()} {
 		for field := range typ.Fields() {
 			if tag := field.Tag.Get("yaml"); tag == "" {
 				t.Errorf("%s.%s is missing a yaml tag", typ.Name(), field.Name)
@@ -183,7 +237,7 @@ func TestPersistenceTypesHaveYAMLTags(t *testing.T) {
 
 func taskSidecarField(name string) bool {
 	switch name {
-	case "Body", "Plan", "PlanContract", "PlanCritique", "PlanResearch", "PlanDecisions", "PlanBrief", "CodeReview", "PlanDrafts", "FilePath", "TamperFlagged":
+	case "Body", "Plan", "PlanContract", "PlanCritique", "PlanResearch", "PlanDecisions", "PlanBrief", "CodeReview", "CurrentTestFailures", "AcceptanceLedger", "SpecDecision", "PlanDrafts", "FilePath", "TamperFlagged", "Degraded", "ParseError":
 		return true
 	default:
 		return false
@@ -207,7 +261,7 @@ func setTaskFieldForPersistenceTest(t *testing.T, task *Task, name string) {
 	case "Status":
 		task.Status = StatusTesting
 	case "TaskType":
-		task.TaskType = TaskTypeResearch
+		task.TaskType = TaskTypeUmbrella
 	case "AgentMode":
 		task.AgentMode = AgentModeHeadless
 	case "AllowedTools":
@@ -228,6 +282,24 @@ func setTaskFieldForPersistenceTest(t *testing.T, task *Task, name string) {
 		task.RefIssue = "owner/repo#999"
 	case "StatusReason":
 		task.StatusReason = "testing"
+	case "Escalation":
+		task.Escalation = autonomy.EscalationReason{
+			Code:       "operator.decision",
+			Owner:      autonomy.FailureOwnerOperatorDecision,
+			Provenance: autonomy.ProvenanceOperator,
+			ObservedAt: now,
+			Message:    "choose an option",
+		}
+	case "AutonomyOutcome":
+		task.AutonomyOutcome = autonomy.OutcomeHumanRequired
+	case "Blocker":
+		task.Blocker = blocker.State{
+			Kind:       blocker.KindWorktreeRepair,
+			Actor:      blocker.ActorWorkflow,
+			Code:       "rebase_failed",
+			NextAction: "repair_worktree",
+			Exhausted:  true,
+		}
 	case "HandoffSourceProvider":
 		task.HandoffSourceProvider = "codex"
 	case "BlockedByIssue":
@@ -236,8 +308,12 @@ func setTaskFieldForPersistenceTest(t *testing.T, task *Task, name string) {
 		task.UmbrellaIssue = "owner/repo#789"
 	case "DependsOn":
 		task.DependsOn = []string{"owner/repo#321"}
+	case "DependsOnConditions":
+		task.DependsOnConditions = []DepCondition{{Ref: "owner/repo#321", Kind: DepConditionKindLabel, Value: "scope-confirmed"}}
 	case "Reviewed":
 		task.Reviewed = true
+	case "CodeReviewVerdict":
+		task.CodeReviewVerdict = "NEEDS_FIXES"
 	case "RunRole":
 		task.RunRole = "pr-fix"
 	case "SupervisorSteer":
@@ -248,6 +324,8 @@ func setTaskFieldForPersistenceTest(t *testing.T, task *Task, name string) {
 		task.ReviewedHeadSHA = "e57e4b5db72c55ba7610140631a80946a7edddf0"
 	case "ReviewedHeadAttempts":
 		task.ReviewedHeadAttempts = 2
+	case "ReconcileFailures":
+		task.ReconcileFailures = 3
 	case "PRPhase":
 		task.PRPhase = "fixing"
 	case "Priority":
@@ -270,10 +348,21 @@ func setTaskFieldForPersistenceTest(t *testing.T, task *Task, name string) {
 		task.ForkSubagent = true
 	case "Sandbox":
 		task.Sandbox = &falseValue
+	case "SandboxOffReason":
+		task.SandboxOffReason = "host mounts required for docker-in-docker e2e"
 	case "ReasoningEffort":
 		task.ReasoningEffort = "xhigh"
 	case "TestingCycleStartedAt":
 		task.TestingCycleStartedAt = &later
+	case "Attachments":
+		task.Attachments = []Attachment{{
+			ID:          "att-1",
+			FileName:    "log.txt",
+			ContentType: "text/plain",
+			SizeBytes:   123,
+			Path:        "/tmp/attachments/task-persist/att-1/log.txt",
+			CreatedAt:   later,
+		}}
 	case "AgentRuns":
 		task.AgentRuns = []AgentRun{{
 			AgentID:                 "agent-1",
@@ -308,6 +397,25 @@ func setTaskFieldForPersistenceTest(t *testing.T, task *Task, name string) {
 			HeadSHA:                 "def456",
 			SubagentCallCount:       2,
 		}}
+	case "DocumentCompaction":
+		task.DocumentCompaction = &DocumentCompaction{
+			LastCompactedAt: now, LargestBytesSeen: 4 << 20, DroppedAgentRuns: 3,
+			DroppedRunCostUSD: 12.5, TrimmedRunFields: 7, TrimmedWorkflow: 2, BodyTruncated: true,
+		}
+	case "EffectLog":
+		task.EffectLog = []workflow.EffectRecord{{
+			ID: workflow.EffectID{
+				Generation: 3,
+				StepSeq:    9,
+				StepID:     "external:test:deadbeef",
+				Pos:        0,
+			},
+			IntentAt: now,
+			CompletedAt: func() *time.Time {
+				t := now.Add(time.Minute)
+				return &t
+			}(),
+		}}
 	case "Workflow":
 		task.Workflow = &workflow.Execution{
 			WorkflowID:  "workflow-1",
@@ -327,6 +435,10 @@ func setTaskFieldForPersistenceTest(t *testing.T, task *Task, name string) {
 		task.AssignedNode = "pet-box"
 	case "NodeOverride":
 		task.NodeOverride = "gpu-box"
+	case "AssignmentRev":
+		task.AssignmentRev = 3
+	case "Generation":
+		task.Generation = 2
 	case "MirrorRev":
 		task.MirrorRev = 7
 	case "MirrorUpdatedAt":

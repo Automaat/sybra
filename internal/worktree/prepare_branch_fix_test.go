@@ -10,8 +10,105 @@ import (
 	"testing"
 
 	"github.com/Automaat/sybra/internal/notes"
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 )
+
+// TestReconcileAndRebase_PushedBranchSkipsBaseSync is the regression guard for
+// Sybra's no-proactive-base-merge policy: a branch that already exists on its
+// push remote must not be merged with base just to refresh it. Unpushed branches
+// are still rebased before first publication.
+func TestReconcileAndRebase_PushedBranchSkipsBaseSync(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		push               bool
+		wantBaseIntegrated bool
+		wantOrigPresent    bool
+	}{
+		{name: "pushed branch skips base sync", push: true, wantBaseIntegrated: false, wantOrigPresent: true},
+		{name: "unpushed branch rebases", push: false, wantBaseIntegrated: true, wantOrigPresent: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			root := t.TempDir()
+			remote := filepath.Join(root, "remote.git")
+			wt := filepath.Join(root, "wt")
+
+			git := func(dir string, args ...string) string {
+				t.Helper()
+				out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput()
+				if err != nil {
+					t.Fatalf("git %v: %v: %s", args, err, out)
+				}
+				return strings.TrimSpace(string(out))
+			}
+			mustRun := func(name string, args ...string) {
+				t.Helper()
+				if out, err := exec.Command(name, args...).CombinedOutput(); err != nil {
+					t.Fatalf("%s %v: %v: %s", name, args, err, out)
+				}
+			}
+
+			mustRun("git", "init", "--bare", "-b", "main", remote)
+			mustRun("git", "clone", remote, wt)
+			git(wt, "config", "user.email", "t@t")
+			git(wt, "config", "user.name", "t")
+
+			write := func(name, body string) {
+				if err := os.WriteFile(filepath.Join(wt, name), []byte(body), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			write("main.txt", "base")
+			git(wt, "add", ".")
+			git(wt, "commit", "-m", "init main")
+			git(wt, "push", "origin", "main")
+
+			// Feature branch with a commit; push it only in the "pushed" case.
+			git(wt, "checkout", "-b", "feat")
+			write("feat.txt", "work")
+			git(wt, "add", ".")
+			git(wt, "commit", "-m", "feat work")
+			featSHA := git(wt, "rev-parse", "HEAD")
+			if tc.push {
+				git(wt, "push", "-u", "origin", "feat")
+			}
+
+			// Base advances on a different file (no conflict), pushed to remote.
+			git(wt, "checkout", "main")
+			write("base2.txt", "more base")
+			git(wt, "add", ".")
+			git(wt, "commit", "-m", "advance main")
+			baseSHA := git(wt, "rev-parse", "HEAD")
+			git(wt, "push", "origin", "main")
+			git(wt, "checkout", "feat")
+
+			m := New(Config{Logger: discardLogger()})
+			if err := m.reconcileAndRebase(ctx, wt, "feat", "origin/main", nil); err != nil {
+				t.Fatalf("reconcileAndRebase: %v", err)
+			}
+			head := git(wt, "rev-parse", "HEAD")
+
+			isAncestor := func(a, b string) bool {
+				return exec.Command("git", "-C", wt, "merge-base", "--is-ancestor", a, b).Run() == nil
+			}
+			if got := isAncestor(baseSHA, head); got != tc.wantBaseIntegrated {
+				t.Fatalf("base %s integrated into feat HEAD %s = %v, want %v", baseSHA, head, got, tc.wantBaseIntegrated)
+			}
+			if got := isAncestor(featSHA, head); got != tc.wantOrigPresent {
+				t.Fatalf("pre-reconcile commit %s ancestor-of-HEAD = %v, want %v (pushed=%v)", featSHA, got, tc.wantOrigPresent, tc.push)
+			}
+			if tc.push {
+				if head != featSHA {
+					t.Fatalf("pushed branch HEAD moved from %s to %s", featSHA, head)
+				}
+				if err := project.PushSync(ctx, wt, "feat"); err != nil {
+					t.Fatalf("PushSync after skipped base sync = %v, want nil", err)
+				}
+			}
+		})
+	}
+}
 
 // TestPrepareForBranchFix_ExistingBranch verifies the happy path: a task
 // whose branch already exists (locally or on origin) gets a worktree checked
@@ -162,6 +259,129 @@ func TestPrepareForBranchFix_ReusesHealthyWorktree(t *testing.T) {
 	}
 	if _, err := os.Stat(hookPath); err != nil {
 		t.Errorf("signoff hook was not restored on reuse: %v", err)
+	}
+}
+
+func TestPrepareForBranchConflict_CheckpointsDirtyReusedWorktree(t *testing.T) {
+	h := prepareHarness(t, nil, 0)
+
+	const branch = "fix/conflict-checkpoint"
+	srcGit := func(args ...string) string {
+		t.Helper()
+		full := append([]string{"-C", h.src}, args...)
+		out, err := exec.Command("git", full...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	srcGit("checkout", "-b", branch)
+	if err := os.WriteFile(filepath.Join(h.src, "feature.txt"), []byte("base"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srcGit("add", ".")
+	srcGit("commit", "-m", "initial branch commit")
+	srcGit("checkout", "main")
+
+	tk, err := h.tasks.Create("checkpoint conflict worktree", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	tk, err = h.tasks.UpdateMap(tk.ID, map[string]any{
+		"project_id": h.proj.ID,
+		"branch":     branch,
+	})
+	if err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+
+	wtPath, err := h.m.PrepareForBranchConflict(context.Background(), tk)
+	if err != nil {
+		t.Fatalf("PrepareForBranchConflict (initial): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wtPath, "partial-resolution.txt"), []byte("preserve me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := h.m.PrepareForBranchConflict(context.Background(), tk)
+	if err != nil {
+		t.Fatalf("PrepareForBranchConflict (reuse): %v", err)
+	}
+	if got != wtPath {
+		t.Fatalf("reused path = %q, want %q", got, wtPath)
+	}
+	wtGit := func(args ...string) string {
+		t.Helper()
+		full := append([]string{"-C", wtPath}, args...)
+		out, err := exec.Command("git", full...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	if status := wtGit("status", "--porcelain"); status != "" {
+		t.Fatalf("reused worktree remained dirty: %s", status)
+	}
+	if gotSubject := wtGit("log", "-1", "--format=%s"); gotSubject != "wip: checkpoint before branch conflict recovery" {
+		t.Fatalf("checkpoint subject = %q", gotSubject)
+	}
+	if gotBody := wtGit("show", "HEAD:partial-resolution.txt"); gotBody != "preserve me" {
+		t.Fatalf("checkpointed content = %q", gotBody)
+	}
+}
+
+func TestPrepareForBranchConflict_QuarantinesDetachedDirtyWorktree(t *testing.T) {
+	h := prepareHarness(t, nil, 0)
+
+	const branch = "fix/conflict-detached-dirty"
+	srcGit := func(args ...string) {
+		t.Helper()
+		full := append([]string{"-C", h.src}, args...)
+		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	srcGit("checkout", "-b", branch)
+	if err := os.WriteFile(filepath.Join(h.src, "feature.txt"), []byte("base"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srcGit("add", ".")
+	srcGit("commit", "-m", "initial branch commit")
+	srcGit("checkout", "main")
+
+	tk, err := h.tasks.Create("quarantine detached dirty conflict worktree", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	tk, err = h.tasks.UpdateMap(tk.ID, map[string]any{
+		"project_id": h.proj.ID,
+		"branch":     branch,
+	})
+	if err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+
+	wtPath, err := h.m.PrepareForBranchConflict(context.Background(), tk)
+	if err != nil {
+		t.Fatalf("PrepareForBranchConflict (initial): %v", err)
+	}
+	if out, err := exec.Command("git", "-C", wtPath, "checkout", "--detach").CombinedOutput(); err != nil {
+		t.Fatalf("detach worktree: %v: %s", err, out)
+	}
+	partialPath := filepath.Join(wtPath, "partial-resolution.txt")
+	if err := os.WriteFile(partialPath, []byte("preserve me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = h.m.PrepareForBranchConflict(context.Background(), tk)
+	if err == nil || !strings.Contains(err.Error(), "uncommitted work") {
+		t.Fatalf("PrepareForBranchConflict error = %v, want uncommitted-work quarantine", err)
+	}
+	if got, readErr := os.ReadFile(partialPath); readErr != nil || string(got) != "preserve me" {
+		t.Fatalf("quarantined work changed or disappeared: body=%q err=%v", got, readErr)
+	}
+	if branchOut, branchErr := exec.Command("git", "-C", wtPath, "branch", "--show-current").CombinedOutput(); branchErr != nil || strings.TrimSpace(string(branchOut)) != "" {
+		t.Fatalf("worktree was recreated instead of quarantined: branch=%q err=%v", branchOut, branchErr)
 	}
 }
 

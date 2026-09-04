@@ -2,13 +2,13 @@ package agent
 
 import (
 	"strings"
-	"time"
 
 	"github.com/Automaat/sybra/internal/modeltier"
 	providerpkg "github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
-var opencodeDefaultModel = modeltier.Model(modeltier.Cheap, "opencode")
+var opencodeDefaultModel = modeltier.Model(modeltier.Cheap, providerid.OpenCode)
 
 type opencodeProvider struct {
 	baseProvider
@@ -18,10 +18,10 @@ func init() {
 	registerAgentProvider(opencodeProvider{})
 }
 
-func (opencodeProvider) Name() string { return "opencode" }
+func (opencodeProvider) Name() string { return providerid.OpenCode }
 
 func (opencodeProvider) NormalizeModel(model string) string {
-	if resolved, ok := modeltier.NormalizeAlias("opencode", model); ok {
+	if resolved, ok := modeltier.NormalizeAlias(providerid.OpenCode, model); ok {
 		return resolved
 	}
 	return model
@@ -42,9 +42,9 @@ func (p opencodeProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (head
 	a.SetPromptRender("slash-stripped", rendered, unrendered)
 	args := buildOpenCodeRunArgs(a, cfg, prompt)
 	return headlessInvocation{
-		name:    "opencode",
+		name:    providerid.OpenCode,
 		args:    args,
-		command: "opencode " + strings.Join(args, " "),
+		command: providerid.OpenCode + " " + strings.Join(args, " "),
 	}, nil
 }
 
@@ -56,25 +56,7 @@ func (opencodeProvider) ParseHeadlessLine(line []byte) (StreamEvent, error) {
 	return opencodeEventToStreamEvent(oe), nil
 }
 
-func (opencodeProvider) UsesPerTurnConvo() bool { return true }
-
-func (p opencodeProvider) BuildPerTurnConvoInvocation(a *Agent, cfg RunConfig, prompt string) perTurnConvoInvocation {
-	skillNames := discoverOpencodeSkills()
-	rendered, unrendered := computeSkillRender(prompt, skillNames)
-	a.SetPromptRender("slash-stripped", rendered, unrendered)
-	prompt = stripSkillInvocations(prompt, skillNames)
-	return perTurnConvoInvocation{bin: "opencode", args: buildOpenCodeRunArgs(a, cfg, prompt)}
-}
-
-func (opencodeProvider) ParseConvoLine(line []byte) (ConvoEvent, error) {
-	oe, err := ParseOpenCodeLine(line)
-	if err != nil {
-		return ConvoEvent{}, err
-	}
-	return opencodeEventToConvoEvent(oe), nil
-}
-
-func (opencodeProvider) ClassifyError(sample providerpkg.ErrorSample) (providerpkg.Signal, string, time.Duration) {
+func (opencodeProvider) ClassifyError(sample providerpkg.ErrorSample) providerpkg.Classification {
 	return providerpkg.ClassifyOpenCodeError(sample)
 }
 
@@ -97,7 +79,7 @@ func buildOpenCodeRunArgs(a *Agent, cfg RunConfig, prompt string) []string {
 }
 
 func buildOpenCodeCommand(model, effort, dir string, includePrompt bool) string {
-	parts := []string{"opencode", "run", "--format", "json", "--auto"}
+	parts := []string{providerid.OpenCode, "run", "--format", "json", "--auto"}
 	if model != "" {
 		parts = append(parts, "--model", model)
 	}

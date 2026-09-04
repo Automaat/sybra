@@ -7,6 +7,18 @@ import { Create as $Create } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as attachment$0 from "../attachment/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as autonomy$0 from "../autonomy/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as blocker$0 from "../blocker/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as taskstatus$0 from "../taskstatus/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as workflow$0 from "../workflow/models.js";
 
 /**
@@ -20,7 +32,7 @@ export class AgentRun {
     "agentId": string;
 
     /**
-     * triage, plan, eval, pr-fix, or "" for implementation
+     * explicit run role; legacy empty still means implementation
      */
     "role": string;
     "mode": string;
@@ -33,8 +45,10 @@ export class AgentRun {
      */
     "experimentId"?: string;
     "variantId"?: string;
+    "routingReason"?: string;
     "assignmentUnit"?: string;
     "assignmentKey"?: string;
+    "decisionVersion"?: number;
     "reasoningEffort"?: string;
     "requestedSkill"?: string;
 
@@ -72,12 +86,22 @@ export class AgentRun {
     "outcome"?: string;
 
     /**
+     * ReviewSalvaged marks a review run that left a usable review behind even
+     * though it did not finish — the cost guardrail stops one mid-flight and
+     * its partial transcript is written to the task. The review budget counts
+     * rounds that reviewed something, and Outcome alone cannot tell this run
+     * apart from one that produced nothing.
+     */
+    "reviewSalvaged"?: boolean;
+
+    /**
      * EscalationReason records the guardrail reason that stopped the run
      * ("cost" or "turns"). Empty for ordinary completions.
      */
     "escalationReason"?: string;
     "startedAt": string;
     "costUsd": number;
+    "toolFailures"?: number;
     "premiumRequests"?: number;
     "prompt"?: string;
     "result": string;
@@ -97,6 +121,13 @@ export class AgentRun {
      * instead of body-text patterns which can collide with user content.
      */
     "verdictRendered"?: boolean;
+
+    /**
+     * RecoveryReplayRejected records that startup replay evaluated this exact
+     * unblocked verdict and permanently rejected it. It is keyed to the run so
+     * a newer verdict with identical wording still gets its own evaluation.
+     */
+    "recoveryReplayRejected"?: boolean;
     "logFile": string;
     "sessionId"?: string;
 
@@ -129,11 +160,32 @@ export class AgentRun {
     "headSha"?: string;
 
     /**
+     * FinalCommitSource records who owned the branch head that verify_commits
+     * settled on: "agent" when the final head came from the agent-pushed remote
+     * commit, "fallback" when verify_commits had to auto-commit recovered work.
+     */
+    "finalCommitSource"?: string;
+
+    /**
      * SubagentCallCount is the number of distinct forked-Claude subagent calls
      * observed in the run. Zero for non-Claude runs and runs recorded before
      * fan-out counting existed.
      */
     "subagentCallCount"?: number;
+
+    /**
+     * ResumeZeroOutputStall marks a run whose zero-output watchdog stall fired
+     * (errorKind "silent_hang" + errorMsg watchdogreason.ZeroOutputBeforeStartup).
+     * It is the durable poison signal agentorch.PickImplementationResumeSession
+     * counts to detect a session stuck in a resume-stall loop.
+     */
+    "zeroOutputStall"?: boolean;
+
+    /**
+     * TurnCount is zero when the child produced nothing, so the run holds no
+     * evidence about its instructions and must not spend a conformance budget.
+     */
+    "turnCount"?: number;
 
     /** Creates a new AgentRun instance. */
     constructor($$source: Partial<AgentRun> = {}) {
@@ -171,6 +223,132 @@ export class AgentRun {
     static createFrom($$source: any = {}): AgentRun {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new AgentRun($$parsedSource as Partial<AgentRun>);
+    }
+}
+
+/**
+ * Attachment re-exports the persisted task attachment metadata type.
+ */
+export const Attachment = attachment$0.Attachment;
+
+/**
+ * Attachment re-exports the persisted task attachment metadata type.
+ */
+export type Attachment = attachment$0.Attachment;
+
+/**
+ * DepCondition attaches a completion condition to one Task.DependsOn ref.
+ * Ref must match a current DependsOn entry (by the same ref-matching rules
+ * the gate uses elsewhere, e.g. matchesDepRef) or the condition is inert.
+ * 
+ * Kind "label" mechanically checks the referenced closing issue's GitHub
+ * labels (via cached github.FetchIssue) for Value's label name; it holds the
+ * child while absent and self-heals the next time the gate ticks after the
+ * label is applied — no escalation.
+ * 
+ * Kind "note" never auto-satisfies: it holds the child and escalates to
+ * human-required, naming Value as the free-text acceptance note a human must
+ * confirm. Clearing the resulting blocker (blocker.KindDependencyConditionUnmet)
+ * alone does not release the child — as long as this condition still names a
+ * current DependsOn ref, the gate re-escalates on the next tick it becomes
+ * ready again. A human must remove or edit the condition itself (once the
+ * scope it names is confirmed to exist) to actually release the child; this
+ * mirrors blocker.KindDependencyScopeUnmet's existing require-explicit-
+ * human-confirmation design and is an accepted limitation, not a bug.
+ */
+export class DepCondition {
+    "ref": string;
+    "kind": string;
+    "value": string;
+
+    /** Creates a new DepCondition instance. */
+    constructor($$source: Partial<DepCondition> = {}) {
+        if (!("ref" in $$source)) {
+            this["ref"] = "";
+        }
+        if (!("kind" in $$source)) {
+            this["kind"] = "";
+        }
+        if (!("value" in $$source)) {
+            this["value"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new DepCondition instance from a string or object.
+     */
+    static createFrom($$source: any = {}): DepCondition {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new DepCondition($$parsedSource as Partial<DepCondition>);
+    }
+}
+
+/**
+ * DocumentCompaction is the durable operator-visible receipt left when Sybra
+ * has to discard historical text to keep a task document within its storage
+ * bound. The counters are cumulative: a later write may compact the task
+ * again, but it must never make an earlier loss invisible.
+ */
+export class DocumentCompaction {
+    "lastCompactedAt": string;
+    "largestBytesSeen": number;
+    "droppedAgentRuns"?: number;
+    "droppedRunCostUsd"?: number;
+    "trimmedRunFields"?: number;
+    "trimmedWorkflow"?: number;
+    "bodyTruncated"?: boolean;
+
+    /** Creates a new DocumentCompaction instance. */
+    constructor($$source: Partial<DocumentCompaction> = {}) {
+        if (!("lastCompactedAt" in $$source)) {
+            this["lastCompactedAt"] = "0001-01-01T00:00:00.000Z";
+        }
+        if (!("largestBytesSeen" in $$source)) {
+            this["largestBytesSeen"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new DocumentCompaction instance from a string or object.
+     */
+    static createFrom($$source: any = {}): DocumentCompaction {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new DocumentCompaction($$parsedSource as Partial<DocumentCompaction>);
+    }
+}
+
+/**
+ * PlanDraftEntry names the one plan draft PlanDraftWrite sets. Unlike every
+ * other sidecar field, PlanDrafts is a map (one entry per parallel planner),
+ * so a single Update can only ever add or replace one named entry, never
+ * express the whole map at once.
+ */
+export class PlanDraftEntry {
+    "Name": string;
+    "Content": string;
+
+    /** Creates a new PlanDraftEntry instance. */
+    constructor($$source: Partial<PlanDraftEntry> = {}) {
+        if (!("Name" in $$source)) {
+            this["Name"] = "";
+        }
+        if (!("Content" in $$source)) {
+            this["Content"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PlanDraftEntry instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PlanDraftEntry {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PlanDraftEntry($$parsedSource as Partial<PlanDraftEntry>);
     }
 }
 
@@ -236,31 +414,12 @@ export class ReviewComment {
 }
 
 /**
- * Status is a task's position in its lifecycle (see the pipeline diagram in
- * the root CLAUDE.md). Transitions are enforced by the workflow engine and
- * callers should validate untrusted input with ValidateStatus rather than
- * casting a string directly.
+ * Status re-exports the task status vocabulary from internal/taskstatus.
+ * The type and constants live in a leaf package so internal/workflow can use
+ * them too; internal/task imports internal/workflow, so they cannot live here.
+ * These aliases keep every existing caller and the Wails bindings unchanged.
  */
-export enum Status {
-    /**
-     * The Go zero value for the underlying type of the enum.
-     */
-    $zero = "",
-
-    StatusNew = "new",
-    StatusTodo = "todo",
-    StatusInProgress = "in-progress",
-    StatusReadyReview = "ready-review",
-    StatusInReview = "in-review",
-    StatusPlanning = "planning",
-    StatusPlanReview = "plan-review",
-    StatusTesting = "testing",
-    StatusReadyPR = "ready-pr",
-    StatusHumanRequired = "human-required",
-    StatusBlocked = "blocked",
-    StatusDone = "done",
-    StatusCancelled = "cancelled",
-};
+export type Status = taskstatus$0.Status;
 
 /**
  * Task is the in-memory representation of a task markdown file: YAML
@@ -304,6 +463,16 @@ export class Task {
     "statusReason": string;
 
     /**
+     * Escalation is the policy authority for the current human-required state.
+     * StatusReason remains display text and must never be parsed back into a
+     * failure owner or recovery decision. Legacy files load with an explicit
+     * unknown/legacy adapter (see taskFromFrontmatter).
+     */
+    "escalation"?: autonomy$0.EscalationReason;
+    "autonomyOutcome"?: autonomy$0.Outcome;
+    "blocker"?: blocker$0.State;
+
+    /**
      * HandoffSourceProvider records which local agent provider produced the
      * work before a handoff skipped directly into review/testing/PR. Workflow
      * steps with provider=cross use it when there is no Sybra-authored run
@@ -339,9 +508,29 @@ export class Task {
      * owner/repo#n shorthand) this task waits on — resolved by issue ref only,
      * not task IDs. While the task is `blocked`, the gate holds it until every
      * referenced task has reached `done`; an empty list releases immediately.
-     * Used only by umbrella child tasks.
+     * Used only by umbrella child tasks. Not exclusively planner-authored: the
+     * gate also folds in a ref it parses out of the body as a free-text
+     * "after #N" precondition on a different program's issue — one the
+     * planner's own schema can never emit, since it only allows refs among an
+     * umbrella's own sub-issues (see umbrella.ExternalBlockers) — and persists
+     * it here so it survives as structured state instead of being re-derived
+     * from prose every gate tick.
      */
     "dependsOn"?: string[];
+
+    /**
+     * DependsOnConditions attaches an optional completion condition to one of
+     * DependsOn's refs, beyond that task simply reaching Done — the umbrella
+     * dependency gate (holdUnmetConditions in
+     * internal/sybra/app_umbrella_gate.go) enforces it before releasing a
+     * child. A condition whose Ref no longer names a current DependsOn entry
+     * is inert (never enforced), the same rule the gate already applies to a
+     * stale blocker.KindDependencyScopeUnmet verdict. See DepCondition for the
+     * supported Kind values (sybra#2649: a prior run closed a dependency
+     * issue via a narrower PR than the scope this task actually needed, and
+     * nothing structural caught it before a wasted implementation cycle).
+     */
+    "dependsOnConditions"?: DepCondition[];
     "reviewed": boolean;
 
     /**
@@ -374,6 +563,14 @@ export class Task {
      */
     "reviewedHeadSha"?: string;
     "reviewedHeadAttempts"?: number;
+
+    /**
+     * ReconcileFailures counts consecutive non-transient review-phase reconcile
+     * failures (#2199); recordReconcileFailure escalates to human-required once
+     * it reaches reconcileFailureLimit. Durable so a process restart never
+     * hands a permanently-failing task a fresh free budget.
+     */
+    "reconcileFailures"?: number;
 
     /**
      * PRPhase tracks where an outbound own-PR task (status in-review/ready-review,
@@ -438,6 +635,14 @@ export class Task {
     "sandbox"?: boolean | null;
 
     /**
+     * SandboxOffReason explains why Sandbox is false. Disabling the sandbox
+     * hands a task's agents unrestricted write access to the host, so the
+     * audit trail needs to say why rather than only that it happened.
+     * Meaningful only alongside Sandbox=false; ignored otherwise.
+     */
+    "sandboxOffReason"?: string;
+
+    /**
      * ReasoningEffort sets the reasoning level for this task's agents
      * (low/medium/high/xhigh). Empty = model default. Applied across providers:
      * codex via -c model_reasoning_effort=<v>, claude and copilot via --effort.
@@ -453,7 +658,16 @@ export class Task {
      * and all test-runner runs count (correct for first-ever cycles).
      */
     "testingCycleStartedAt"?: string | null;
+    "attachments": Attachment[];
     "agentRuns": AgentRun[];
+    "documentCompaction"?: DocumentCompaction | null;
+
+    /**
+     * EffectLog records durable intent/completion for observer-owned task
+     * status effects (pollers, monitor, recovery) that operate outside a live
+     * workflow execution.
+     */
+    "effectLog"?: workflow$0.EffectRecord[];
     "workflow"?: workflow$0.Execution | null;
     "createdAt": string;
     "updatedAt": string;
@@ -469,6 +683,8 @@ export class Task {
     "statusChangedAt": string;
     "assignedNode"?: string;
     "nodeOverride"?: string;
+    "assignmentRev"?: number;
+    "generation"?: number;
     "mirrorRev"?: number;
     "mirrorUpdatedAt"?: string | null;
     "body": string;
@@ -487,6 +703,19 @@ export class Task {
     "codeReview"?: string;
 
     /**
+     * CodeReviewVerdict is the last review-role step's structured verdict
+     * ("CLEAN"/"NEEDS_FIXES"), extracted from the agent's schema-enforced
+     * output rather than the CodeReview sidecar markdown (see
+     * workflow.ExtractReviewVerdict). Persisted so a re-triggered workflow run
+     * can tell a genuine NEEDS_FIXES review from Reviewed=true without
+     * re-parsing the sidecar for a literal-prefix marker.
+     */
+    "codeReviewVerdict"?: string;
+    "currentTestFailures"?: string;
+    "acceptanceLedger"?: string;
+    "specDecision"?: string;
+
+    /**
      * PlanDrafts holds per-provider raw plan outputs during dual- (or N-)
      * provider planning. Keys are typically the parallel child step ID
      * (e.g. "plan_claude", "plan_codex"). Populated from PlanDraftStore on
@@ -497,12 +726,20 @@ export class Task {
     "filePath": string;
 
     /**
+     * Degraded marks a synthetic, read-only board entry created for a task file
+     * that could not be parsed. It is never persisted and must never be
+     * dispatched or mirrored; fixing the source file makes the entry disappear
+     * on the next List.
+     */
+    "degraded"?: boolean;
+    "parseError"?: string;
+
+    /**
      * TamperFlagged reports whether this task is parked at human-required
-     * pending a tamper bless. Derived from Status/StatusReason (never
-     * persisted) so the frontend doesn't need to duplicate
-     * workflow.TamperFlaggedReasonPrefix to decide whether to show the bless
-     * action. Recomputed on every load/update — see taskFromFrontmatter and
-     * Store.UpdateWithPrev.
+     * pending a tamper bless. Derived from Status/Blocker (never persisted) so
+     * the frontend doesn't need to duplicate the latch logic to decide whether
+     * to show the bless action. Recomputed on every load/update — see
+     * taskFromFrontmatter and Store.UpdateWithPrev.
      */
     "tamperFlagged": boolean;
 
@@ -518,7 +755,7 @@ export class Task {
             this["title"] = "";
         }
         if (!("status" in $$source)) {
-            this["status"] = Status.$zero;
+            this["status"] = taskstatus$0.Status.$zero;
         }
         if (!("taskType" in $$source)) {
             this["taskType"] = TaskType.$zero;
@@ -553,6 +790,9 @@ export class Task {
         if (!("runRole" in $$source)) {
             this["runRole"] = "";
         }
+        if (!("attachments" in $$source)) {
+            this["attachments"] = [];
+        }
         if (!("agentRuns" in $$source)) {
             this["agentRuns"] = [];
         }
@@ -584,10 +824,16 @@ export class Task {
     static createFrom($$source: any = {}): Task {
         const $$createField6_0 = $$createType0;
         const $$createField7_0 = $$createType0;
-        const $$createField18_0 = $$createType0;
-        const $$createField38_0 = $$createType2;
-        const $$createField39_0 = $$createType4;
-        const $$createField55_0 = $$createType5;
+        const $$createField14_0 = $$createType1;
+        const $$createField16_0 = $$createType2;
+        const $$createField21_0 = $$createType0;
+        const $$createField22_0 = $$createType4;
+        const $$createField44_0 = $$createType6;
+        const $$createField45_0 = $$createType8;
+        const $$createField46_0 = $$createType10;
+        const $$createField47_0 = $$createType12;
+        const $$createField48_0 = $$createType14;
+        const $$createField70_0 = $$createType15;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("allowedTools" in $$parsedSource) {
             $$parsedSource["allowedTools"] = $$createField6_0($$parsedSource["allowedTools"]);
@@ -595,42 +841,48 @@ export class Task {
         if ("tags" in $$parsedSource) {
             $$parsedSource["tags"] = $$createField7_0($$parsedSource["tags"]);
         }
+        if ("escalation" in $$parsedSource) {
+            $$parsedSource["escalation"] = $$createField14_0($$parsedSource["escalation"]);
+        }
+        if ("blocker" in $$parsedSource) {
+            $$parsedSource["blocker"] = $$createField16_0($$parsedSource["blocker"]);
+        }
         if ("dependsOn" in $$parsedSource) {
-            $$parsedSource["dependsOn"] = $$createField18_0($$parsedSource["dependsOn"]);
+            $$parsedSource["dependsOn"] = $$createField21_0($$parsedSource["dependsOn"]);
+        }
+        if ("dependsOnConditions" in $$parsedSource) {
+            $$parsedSource["dependsOnConditions"] = $$createField22_0($$parsedSource["dependsOnConditions"]);
+        }
+        if ("attachments" in $$parsedSource) {
+            $$parsedSource["attachments"] = $$createField44_0($$parsedSource["attachments"]);
         }
         if ("agentRuns" in $$parsedSource) {
-            $$parsedSource["agentRuns"] = $$createField38_0($$parsedSource["agentRuns"]);
+            $$parsedSource["agentRuns"] = $$createField45_0($$parsedSource["agentRuns"]);
+        }
+        if ("documentCompaction" in $$parsedSource) {
+            $$parsedSource["documentCompaction"] = $$createField46_0($$parsedSource["documentCompaction"]);
+        }
+        if ("effectLog" in $$parsedSource) {
+            $$parsedSource["effectLog"] = $$createField47_0($$parsedSource["effectLog"]);
         }
         if ("workflow" in $$parsedSource) {
-            $$parsedSource["workflow"] = $$createField39_0($$parsedSource["workflow"]);
+            $$parsedSource["workflow"] = $$createField48_0($$parsedSource["workflow"]);
         }
         if ("planDrafts" in $$parsedSource) {
-            $$parsedSource["planDrafts"] = $$createField55_0($$parsedSource["planDrafts"]);
+            $$parsedSource["planDrafts"] = $$createField70_0($$parsedSource["planDrafts"]);
         }
         return new Task($$parsedSource as Partial<Task>);
     }
 }
 
 /**
- * TaskType distinguishes a task's role for agents beyond its lifecycle
- * Status — e.g. TaskTypeChat and TaskTypeUmbrella are synthetic types that
- * run no agent of their own and are excluded from normal dispatch.
+ * TaskType is an internal marker for umbrella tracker tasks.
  */
 export enum TaskType {
     /**
      * The Go zero value for the underlying type of the enum.
      */
     $zero = "",
-
-    TaskTypeNormal = "normal",
-    TaskTypeDebug = "debug",
-    TaskTypeResearch = "research",
-
-    /**
-     * TaskTypeChat is a synthetic task created for interactive chat sessions.
-     * Hidden from the task list UI and skipped by restart-stale/watchdog.
-     */
-    TaskTypeChat = "chat",
 
     /**
      * TaskTypeUmbrella is the tracker task for an expanded ☂️ umbrella issue.
@@ -641,18 +893,223 @@ export enum TaskType {
 };
 
 /**
+ * TransitionIntent is a request to move a task to ToStatus through the
+ * single sanctioned status-mutation entrypoint, Manager.Apply. It is the
+ * narrow command object every production status writer (workflow, review,
+ * monitor, watchdog, recovery, service code) should submit instead of
+ * calling Manager.Update/UpdateFn with a Status field directly — see #2726.
+ */
+export class TransitionIntent {
+    /**
+     * TaskID is the task to transition. Required.
+     */
+    "TaskID": string;
+
+    /**
+     * ToStatus is the target status. Required.
+     */
+    "ToStatus": Status;
+
+    /**
+     * Actor identifies the subsystem submitting the intent (e.g.
+     * "workflow.engine", "agentorch.gate") for audit and idempotency-key
+     * scoping. Required.
+     */
+    "Actor": string;
+
+    /**
+     * Extra carries additional field mutations applied atomically with the
+     * status change (StatusReason, Blocker, Tags, PRNumber, ...). Its Status
+     * field must be nil — set ToStatus instead; Apply rejects intents that
+     * set both to avoid two conflicting sources of truth for the same write.
+     */
+    "Extra": Update;
+
+    /**
+     * ExpectedGeneration, given, is an optimistic-concurrency precondition:
+     * Apply returns a *ConflictError instead of mutating the task if the
+     * task's current Generation does not match. Nil skips the check.
+     */
+    "ExpectedGeneration": number | null;
+
+    /**
+     * ExpectedStatus, given, is a precondition on the task's current Status,
+     * checked the same way as ExpectedGeneration. Nil skips the check.
+     */
+    "ExpectedStatus": Status | null;
+
+    /**
+     * IdempotencyKey, given, makes replaying the identical intent against a
+     * task that has not changed generation since it was applied a no-op
+     * instead of reapplying — the safe way to retry after a crash or a
+     * timeout between commit and the caller observing success. Empty means
+     * every call applies unconditionally (bare unconditional writes, e.g.
+     * funneling an existing scattered caller through Apply for the first
+     * time without changing its replay semantics).
+     */
+    "IdempotencyKey": string;
+
+    /**
+     * OperatorOverride bypasses the allowed-transition table (see
+     * transitions.go): set this only at a human-initiated entry point (a
+     * button click or CLI command a person invoked directly), never at an
+     * automated call site. It exists for the narrow set of moves that are
+     * legitimate only as a deliberate human action — e.g. reopening a
+     * terminal task — and must never happen automatically.
+     */
+    "OperatorOverride": boolean;
+
+    /** Creates a new TransitionIntent instance. */
+    constructor($$source: Partial<TransitionIntent> = {}) {
+        if (!("TaskID" in $$source)) {
+            this["TaskID"] = "";
+        }
+        if (!("ToStatus" in $$source)) {
+            this["ToStatus"] = taskstatus$0.Status.$zero;
+        }
+        if (!("Actor" in $$source)) {
+            this["Actor"] = "";
+        }
+        if (!("Extra" in $$source)) {
+            this["Extra"] = (new Update());
+        }
+        if (!("ExpectedGeneration" in $$source)) {
+            this["ExpectedGeneration"] = null;
+        }
+        if (!("ExpectedStatus" in $$source)) {
+            this["ExpectedStatus"] = null;
+        }
+        if (!("IdempotencyKey" in $$source)) {
+            this["IdempotencyKey"] = "";
+        }
+        if (!("OperatorOverride" in $$source)) {
+            this["OperatorOverride"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TransitionIntent instance from a string or object.
+     */
+    static createFrom($$source: any = {}): TransitionIntent {
+        const $$createField3_0 = $$createType16;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("Extra" in $$parsedSource) {
+            $$parsedSource["Extra"] = $$createField3_0($$parsedSource["Extra"]);
+        }
+        return new TransitionIntent($$parsedSource as Partial<TransitionIntent>);
+    }
+}
+
+/**
+ * TransitionResult is the outcome of a successful Apply call.
+ */
+export class TransitionResult {
+    /**
+     * Task is the task as it stands after Apply returns — either freshly
+     * mutated, or (when Applied is false) the unchanged current task.
+     */
+    "Task": Task;
+
+    /**
+     * Applied is false when Apply short-circuited on an idempotent replay:
+     * a prior call already consumed this exact IdempotencyKey at the
+     * generation this call would have consumed it at, so no audit, dispatch,
+     * review, or notification effect fired a second time.
+     */
+    "Applied": boolean;
+
+    /** Creates a new TransitionResult instance. */
+    constructor($$source: Partial<TransitionResult> = {}) {
+        if (!("Task" in $$source)) {
+            this["Task"] = (new Task());
+        }
+        if (!("Applied" in $$source)) {
+            this["Applied"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TransitionResult instance from a string or object.
+     */
+    static createFrom($$source: any = {}): TransitionResult {
+        const $$createField0_0 = $$createType17;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("Task" in $$parsedSource) {
+            $$parsedSource["Task"] = $$createField0_0($$parsedSource["Task"]);
+        }
+        return new TransitionResult($$parsedSource as Partial<TransitionResult>);
+    }
+}
+
+/**
+ * TrashEntry describes one soft-deleted task generation for ListTrash and
+ * PruneTrash callers (CLI table/JSON output, prune logging).
+ */
+export class TrashEntry {
+    "id": string;
+    "generation": string;
+    "deleted_date": string;
+    "deleted_at": string;
+    "title": string;
+
+    /** Creates a new TrashEntry instance. */
+    constructor($$source: Partial<TrashEntry> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("generation" in $$source)) {
+            this["generation"] = "";
+        }
+        if (!("deleted_date" in $$source)) {
+            this["deleted_date"] = "";
+        }
+        if (!("deleted_at" in $$source)) {
+            this["deleted_at"] = "0001-01-01T00:00:00.000Z";
+        }
+        if (!("title" in $$source)) {
+            this["title"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TrashEntry instance from a string or object.
+     */
+    static createFrom($$source: any = {}): TrashEntry {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new TrashEntry($$parsedSource as Partial<TrashEntry>);
+    }
+}
+
+/**
  * Update carries optional field changes for Store.Update.
  * A nil pointer means "leave unchanged"; a non-nil pointer applies the new value.
- * For Workflow: nil = unchanged; non-nil = overwrite (even if pointed-to value is nil).
+ * For Workflow: nil = unchanged; non-nil = overwrite. A clear goes through ClearWorkflow instead: a non-nil Workflow holding a nil inner pointer works in-process but not over the API, so it is never the right encoding.
  */
 export class Update {
     "Title": string | null;
     "Slug": string | null;
     "Status": Status | null;
     "StatusReason": string | null;
+    "ClearStatusReason": boolean | null;
+    "Escalation": autonomy$0.EscalationReason | null;
+    "AutonomyOutcome": autonomy$0.Outcome | null;
+    "Blocker": blocker$0.State | null;
+    "ClearBlocker": boolean | null;
+
+    /**
+     * ClearWorkflow removes the task's workflow execution, and is the only encoding of a clear that survives JSON. Workflow is a **Execution: a non-nil outer pointer holding a nil inner one marshals to null, and unmarshal then nils the outer pointer, so a clear sent over the API read back as "leave unchanged".
+     */
+    "ClearWorkflow": boolean | null;
     "BlockedByIssue": string | null;
     "UmbrellaIssue": string | null;
     "DependsOn": string[] | null;
+    "DependsOnConditions": DepCondition[] | null;
     "AgentMode": string | null;
     "TaskType": TaskType | null;
     "Body": string | null;
@@ -670,6 +1127,7 @@ export class Update {
     "ReviewPhase": string | null;
     "ReviewedHeadSHA": string | null;
     "ReviewedHeadAttempts": number | null;
+    "ReconcileFailures": number | null;
     "PRPhase": string | null;
     "Priority": Priority | null;
     "DueDate": string | null;
@@ -681,13 +1139,21 @@ export class Update {
     "PlanDecisions": string | null;
     "PlanBrief": string | null;
     "CodeReview": string | null;
+    "CurrentTestFailures": string | null;
+    "AcceptanceLedger": string | null;
+    "SpecDecision": string | null;
+    "PlanDraftWrite": PlanDraftEntry | null;
+    "CodeReviewVerdict": string | null;
     "MaxTurns": number | null;
     "ForkSubagent": boolean | null;
     "Sandbox": boolean | null;
+    "SandboxOffReason": string | null;
     "ReasoningEffort": string | null;
     "Outcome": string | null;
     "MergeCommit": string | null;
     "TestingCycleStartedAt": string | null;
+    "Attachments": Attachment[] | null;
+    "EffectLog": workflow$0.EffectRecord[] | null;
 
     /** Creates a new Update instance. */
     constructor($$source: Partial<Update> = {}) {
@@ -703,6 +1169,24 @@ export class Update {
         if (!("StatusReason" in $$source)) {
             this["StatusReason"] = null;
         }
+        if (!("ClearStatusReason" in $$source)) {
+            this["ClearStatusReason"] = null;
+        }
+        if (!("Escalation" in $$source)) {
+            this["Escalation"] = null;
+        }
+        if (!("AutonomyOutcome" in $$source)) {
+            this["AutonomyOutcome"] = null;
+        }
+        if (!("Blocker" in $$source)) {
+            this["Blocker"] = null;
+        }
+        if (!("ClearBlocker" in $$source)) {
+            this["ClearBlocker"] = null;
+        }
+        if (!("ClearWorkflow" in $$source)) {
+            this["ClearWorkflow"] = null;
+        }
         if (!("BlockedByIssue" in $$source)) {
             this["BlockedByIssue"] = null;
         }
@@ -711,6 +1195,9 @@ export class Update {
         }
         if (!("DependsOn" in $$source)) {
             this["DependsOn"] = null;
+        }
+        if (!("DependsOnConditions" in $$source)) {
+            this["DependsOnConditions"] = null;
         }
         if (!("AgentMode" in $$source)) {
             this["AgentMode"] = null;
@@ -763,6 +1250,9 @@ export class Update {
         if (!("ReviewedHeadAttempts" in $$source)) {
             this["ReviewedHeadAttempts"] = null;
         }
+        if (!("ReconcileFailures" in $$source)) {
+            this["ReconcileFailures"] = null;
+        }
         if (!("PRPhase" in $$source)) {
             this["PRPhase"] = null;
         }
@@ -796,6 +1286,21 @@ export class Update {
         if (!("CodeReview" in $$source)) {
             this["CodeReview"] = null;
         }
+        if (!("CurrentTestFailures" in $$source)) {
+            this["CurrentTestFailures"] = null;
+        }
+        if (!("AcceptanceLedger" in $$source)) {
+            this["AcceptanceLedger"] = null;
+        }
+        if (!("SpecDecision" in $$source)) {
+            this["SpecDecision"] = null;
+        }
+        if (!("PlanDraftWrite" in $$source)) {
+            this["PlanDraftWrite"] = null;
+        }
+        if (!("CodeReviewVerdict" in $$source)) {
+            this["CodeReviewVerdict"] = null;
+        }
         if (!("MaxTurns" in $$source)) {
             this["MaxTurns"] = null;
         }
@@ -804,6 +1309,9 @@ export class Update {
         }
         if (!("Sandbox" in $$source)) {
             this["Sandbox"] = null;
+        }
+        if (!("SandboxOffReason" in $$source)) {
+            this["SandboxOffReason"] = null;
         }
         if (!("ReasoningEffort" in $$source)) {
             this["ReasoningEffort"] = null;
@@ -817,6 +1325,12 @@ export class Update {
         if (!("TestingCycleStartedAt" in $$source)) {
             this["TestingCycleStartedAt"] = null;
         }
+        if (!("Attachments" in $$source)) {
+            this["Attachments"] = null;
+        }
+        if (!("EffectLog" in $$source)) {
+            this["EffectLog"] = null;
+        }
 
         Object.assign(this, $$source);
     }
@@ -825,18 +1339,42 @@ export class Update {
      * Creates a new Update instance from a string or object.
      */
     static createFrom($$source: any = {}): Update {
-        const $$createField6_0 = $$createType6;
-        const $$createField10_0 = $$createType6;
-        const $$createField27_0 = $$createType7;
+        const $$createField5_0 = $$createType18;
+        const $$createField7_0 = $$createType19;
+        const $$createField12_0 = $$createType20;
+        const $$createField13_0 = $$createType21;
+        const $$createField17_0 = $$createType20;
+        const $$createField35_0 = $$createType22;
+        const $$createField46_0 = $$createType24;
+        const $$createField56_0 = $$createType25;
+        const $$createField57_0 = $$createType26;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("Escalation" in $$parsedSource) {
+            $$parsedSource["Escalation"] = $$createField5_0($$parsedSource["Escalation"]);
+        }
+        if ("Blocker" in $$parsedSource) {
+            $$parsedSource["Blocker"] = $$createField7_0($$parsedSource["Blocker"]);
+        }
         if ("DependsOn" in $$parsedSource) {
-            $$parsedSource["DependsOn"] = $$createField6_0($$parsedSource["DependsOn"]);
+            $$parsedSource["DependsOn"] = $$createField12_0($$parsedSource["DependsOn"]);
+        }
+        if ("DependsOnConditions" in $$parsedSource) {
+            $$parsedSource["DependsOnConditions"] = $$createField13_0($$parsedSource["DependsOnConditions"]);
         }
         if ("Tags" in $$parsedSource) {
-            $$parsedSource["Tags"] = $$createField10_0($$parsedSource["Tags"]);
+            $$parsedSource["Tags"] = $$createField17_0($$parsedSource["Tags"]);
         }
         if ("Workflow" in $$parsedSource) {
-            $$parsedSource["Workflow"] = $$createField27_0($$parsedSource["Workflow"]);
+            $$parsedSource["Workflow"] = $$createField35_0($$parsedSource["Workflow"]);
+        }
+        if ("PlanDraftWrite" in $$parsedSource) {
+            $$parsedSource["PlanDraftWrite"] = $$createField46_0($$parsedSource["PlanDraftWrite"]);
+        }
+        if ("Attachments" in $$parsedSource) {
+            $$parsedSource["Attachments"] = $$createField56_0($$parsedSource["Attachments"]);
+        }
+        if ("EffectLog" in $$parsedSource) {
+            $$parsedSource["EffectLog"] = $$createField57_0($$parsedSource["EffectLog"]);
         }
         return new Update($$parsedSource as Partial<Update>);
     }
@@ -844,10 +1382,29 @@ export class Update {
 
 // Private type creation functions
 const $$createType0 = $Create.Array($Create.Any);
-const $$createType1 = AgentRun.createFrom;
-const $$createType2 = $Create.Array($$createType1);
-const $$createType3 = workflow$0.Execution.createFrom;
-const $$createType4 = $Create.Nullable($$createType3);
-const $$createType5 = $Create.Map($Create.Any, $Create.Any);
-const $$createType6 = $Create.Nullable($$createType0);
-const $$createType7 = $Create.Nullable($$createType4);
+const $$createType1 = autonomy$0.EscalationReason.createFrom;
+const $$createType2 = blocker$0.State.createFrom;
+const $$createType3 = DepCondition.createFrom;
+const $$createType4 = $Create.Array($$createType3);
+const $$createType5 = attachment$0.Attachment.createFrom;
+const $$createType6 = $Create.Array($$createType5);
+const $$createType7 = AgentRun.createFrom;
+const $$createType8 = $Create.Array($$createType7);
+const $$createType9 = DocumentCompaction.createFrom;
+const $$createType10 = $Create.Nullable($$createType9);
+const $$createType11 = workflow$0.EffectRecord.createFrom;
+const $$createType12 = $Create.Array($$createType11);
+const $$createType13 = workflow$0.Execution.createFrom;
+const $$createType14 = $Create.Nullable($$createType13);
+const $$createType15 = $Create.Map($Create.Any, $Create.Any);
+const $$createType16 = Update.createFrom;
+const $$createType17 = Task.createFrom;
+const $$createType18 = $Create.Nullable($$createType1);
+const $$createType19 = $Create.Nullable($$createType2);
+const $$createType20 = $Create.Nullable($$createType0);
+const $$createType21 = $Create.Nullable($$createType4);
+const $$createType22 = $Create.Nullable($$createType14);
+const $$createType23 = PlanDraftEntry.createFrom;
+const $$createType24 = $Create.Nullable($$createType23);
+const $$createType25 = $Create.Nullable($$createType6);
+const $$createType26 = $Create.Nullable($$createType12);

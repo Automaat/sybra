@@ -8,6 +8,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 // fakeGate lets a test control what Manager sees from the health gate without
@@ -27,7 +28,7 @@ func (f *fakeGate) RateLimited(p string) bool     { return !f.healthy[p] }
 func (f *fakeGate) Failover(p string) string      { return f.failover[p] }
 func (f *fakeGate) Reason(p string) string        { return f.reasons[p] }
 func (f *fakeGate) ReportAuthFailure(p, _ string) { f.reportedAuth = append(f.reportedAuth, p) }
-func (f *fakeGate) ReportRateLimit(p string, d time.Duration, _ string) {
+func (f *fakeGate) ReportRateLimit(p string, d time.Duration, _ string, _ provider.CooldownSource) {
 	f.reportedRLName = append(f.reportedRLName, p)
 	f.reportedRLDelay = append(f.reportedRLDelay, d)
 }
@@ -57,6 +58,59 @@ func TestGateProvider_UnhealthyWithFailover(t *testing.T) {
 	}
 	if got != "codex" {
 		t.Errorf("expected failover to codex, got %q", got)
+	}
+}
+
+func TestGateProvider_SkipsDisabledHealthFailoverTarget(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.SetHealthGate(&fakeGate{
+		healthy:  map[string]bool{"claude": false, "codex": true, "copilot": true},
+		failover: map[string]string{"claude": "copilot"},
+		reasons:  map[string]string{"claude": "rate_limited"},
+	})
+	if err := m.ReplaceRuntimeConfig(ManagerRuntimeConfig{
+		DefaultProvider: "claude",
+		LimitPolicy: limits.Policy{
+			ProviderEnabled: map[string]bool{
+				limits.ProviderClaude:  true,
+				limits.ProviderCodex:   true,
+				limits.ProviderCopilot: false,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("ReplaceRuntimeConfig: %v", err)
+	}
+
+	got, err := m.gateProvider(RunConfig{Provider: "claude"})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if got != "codex" {
+		t.Fatalf("provider = %q, want codex", got)
+	}
+}
+
+func TestGateProvider_ConfigDisabledRequestedProviderFailsOver(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.SetHealthGate(&fakeGate{healthy: map[string]bool{"codex": true, "copilot": true}})
+	if err := m.ReplaceRuntimeConfig(ManagerRuntimeConfig{
+		DefaultProvider: "copilot",
+		LimitPolicy: limits.Policy{
+			ProviderEnabled: map[string]bool{
+				limits.ProviderCodex:   true,
+				limits.ProviderCopilot: false,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("ReplaceRuntimeConfig: %v", err)
+	}
+
+	got, err := m.gateProvider(RunConfig{Provider: "copilot"})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if got != "codex" {
+		t.Fatalf("provider = %q, want codex", got)
 	}
 }
 
@@ -139,6 +193,159 @@ func TestPrepareRunConfig_ExplicitModelOverridesRuntimeDefault(t *testing.T) {
 	}
 }
 
+func TestPrepareRunConfig_FailoverRemapsKnownConcreteModel(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.SetHealthGate(&fakeGate{
+		healthy:  map[string]bool{"codex": false, "copilot": true},
+		failover: map[string]string{"codex": "copilot"},
+		reasons:  map[string]string{"codex": "rate_limited"},
+	})
+
+	cfg, prov, err := m.prepareRunConfig(RunConfig{
+		Provider: "codex",
+		Model:    "gpt-5.6-sol",
+		Mode:     "headless",
+		Dir:      t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+	if prov.Name() != "copilot" {
+		t.Fatalf("provider = %q, want copilot", prov.Name())
+	}
+	if cfg.Model != "opus" {
+		t.Fatalf("requested model = %q, want neutral alias opus", cfg.Model)
+	}
+	if cfg.resolvedModel != "gemini-3.1-pro-preview" {
+		t.Fatalf("resolved model = %q, want copilot expensive tier", cfg.resolvedModel)
+	}
+}
+
+func TestPrepareRunConfig_FailoverDropsProviderLocalResumeSession(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.SetHealthGate(&fakeGate{
+		healthy:  map[string]bool{providerid.Claude: false, providerid.Codex: true},
+		failover: map[string]string{providerid.Claude: providerid.Codex},
+		reasons:  map[string]string{providerid.Claude: "logged_out"},
+	})
+
+	cfg, prov, err := m.prepareRunConfig(RunConfig{
+		Provider:              providerid.Claude,
+		ResumeSessionID:       "claude-session",
+		ResumeSessionProvider: providerid.Claude,
+		Mode:                  "headless",
+		Dir:                   t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+	if prov.Name() != providerid.Codex {
+		t.Fatalf("provider = %q, want codex", prov.Name())
+	}
+	if cfg.ResumeSessionID != "" {
+		t.Fatalf("ResumeSessionID = %q, want empty after cross-provider failover", cfg.ResumeSessionID)
+	}
+}
+
+func TestPrepareRunConfig_SameProviderKeepsResumeSession(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.SetHealthGate(&fakeGate{healthy: map[string]bool{providerid.Claude: true}})
+
+	cfg, prov, err := m.prepareRunConfig(RunConfig{
+		Provider:              providerid.Claude,
+		ResumeSessionID:       "claude-session",
+		ResumeSessionProvider: providerid.Claude,
+		Mode:                  "headless",
+		Dir:                   t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+	if prov.Name() != providerid.Claude {
+		t.Fatalf("provider = %q, want claude", prov.Name())
+	}
+	if cfg.ResumeSessionID != "claude-session" {
+		t.Fatalf("ResumeSessionID = %q, want matching session preserved", cfg.ResumeSessionID)
+	}
+}
+
+func TestPrepareRunConfig_PredictedFailoverSessionKeepsOriginalRouting(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.SetHealthGate(&fakeGate{
+		healthy:  map[string]bool{providerid.Codex: false, providerid.Claude: true},
+		failover: map[string]string{providerid.Codex: providerid.Claude},
+		reasons:  map[string]string{providerid.Codex: "logged_out"},
+	})
+
+	cfg, prov, err := m.prepareRunConfig(RunConfig{
+		Provider:              providerid.Codex,
+		Model:                 "gpt-5.6-terra",
+		RoutingReason:         "ab",
+		ResumeSessionID:       "claude-session",
+		ResumeSessionProvider: providerid.Claude,
+		Mode:                  "headless",
+		Dir:                   t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+	if prov.Name() != providerid.Claude {
+		t.Fatalf("provider = %q, want claude", prov.Name())
+	}
+	if cfg.ResumeSessionID != "claude-session" {
+		t.Fatalf("ResumeSessionID = %q, want predicted provider's session preserved", cfg.ResumeSessionID)
+	}
+	if cfg.resolvedModel != "sonnet" {
+		t.Fatalf("resolved model = %q, want codex cheap tier remapped to claude sonnet", cfg.resolvedModel)
+	}
+	if cfg.RoutingReason != "failover" {
+		t.Fatalf("RoutingReason = %q, want failover", cfg.RoutingReason)
+	}
+}
+
+func TestPrepareRunConfig_FailoverRejectsUnknownConcreteModel(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.SetHealthGate(&fakeGate{
+		healthy:  map[string]bool{"claude": false, "codex": true},
+		failover: map[string]string{"claude": "codex"},
+		reasons:  map[string]string{"claude": "rate_limited"},
+	})
+
+	_, _, err := m.prepareRunConfig(RunConfig{
+		Provider: "claude",
+		Model:    "claude-fable-5",
+		Mode:     "headless",
+		Dir:      t.TempDir(),
+	})
+	if !errors.Is(err, ErrProviderModelIncompatible) {
+		t.Fatalf("prepareRunConfig error = %v, want ErrProviderModelIncompatible", err)
+	}
+}
+
+func TestPrepareRunConfig_CodexRemapsClaudeModelLiteral(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.SetHealthGate(&fakeGate{healthy: map[string]bool{"codex": true}})
+
+	cfg, prov, err := m.prepareRunConfig(RunConfig{
+		Provider: "codex",
+		Model:    "claude-haiku-4-5-20251001",
+		Mode:     "headless",
+		Dir:      t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+	if prov.Name() != "codex" {
+		t.Fatalf("provider = %q, want codex", prov.Name())
+	}
+	if cfg.Model != "claude-haiku-4-5-20251001" {
+		t.Fatalf("requested model = %q, want original literal preserved for metadata", cfg.Model)
+	}
+	if cfg.resolvedModel != "gpt-5.6-luna" {
+		t.Fatalf("resolved model = %q, want gpt-5.6-luna", cfg.resolvedModel)
+	}
+}
+
 // TestPrepareRunConfig_AppendsBackgroundTaskGuardrailForHeadlessCodeAuthor
 // locks in that prepareRunConfig — the single chokepoint every headless and
 // interactive run passes through — wires the background-task guardrail into
@@ -197,7 +404,9 @@ func TestPrepareRunConfig_HeadlessSteerableGatedByRole(t *testing.T) {
 		{RoleImplementation.AgentName("Impl"), true},
 		{"", true}, // legacy unprefixed name maps to implementation
 		{RolePlan.AgentName("Plan"), true},
-		{RolePRFix.AgentName("PR Fix"), true},
+		// PR fixes are dispatched by the PR monitor; nobody is attached to
+		// steer their initial turn, so they must use the one-shot transport.
+		{RolePRFix.AgentName("PR Fix"), false},
 		{RoleReview.AgentName("Review"), false},
 		{RoleFixReview.AgentName("Fix"), false},
 		{RoleHumanReview.AgentName("Diagnose"), false},
@@ -482,8 +691,8 @@ func TestReportProviderSignal_DispatchesByKind(t *testing.T) {
 	m, _ := newTestManager(t)
 	fg := &fakeGate{healthy: map[string]bool{"claude": true}}
 	m.SetHealthGate(fg)
-	m.ReportProviderSignal("claude", provider.SignalAuthFailure, "logged_out", 0)
-	m.ReportProviderSignal("codex", provider.SignalRateLimit, "rate_limit_error", 30*time.Minute)
+	m.ReportProviderSignal("claude", provider.Classification{Signal: provider.SignalAuthFailure, Reason: "logged_out", Source: provider.CooldownFromConfig})
+	m.ReportProviderSignal("codex", provider.Classification{Signal: provider.SignalRateLimit, Reason: "rate_limit_error", RetryAfter: 30 * time.Minute, Source: provider.CooldownFromConfig})
 	if len(fg.reportedAuth) != 1 || fg.reportedAuth[0] != "claude" {
 		t.Errorf("auth report missing: %+v", fg.reportedAuth)
 	}
@@ -498,7 +707,7 @@ func TestReportProviderSignal_DispatchesByKind(t *testing.T) {
 func TestReportProviderSignal_NilGateSafe(t *testing.T) {
 	m, _ := newTestManager(t)
 	// Do not call SetHealthGate.
-	m.ReportProviderSignal("claude", provider.SignalAuthFailure, "", 0)
+	m.ReportProviderSignal("claude", provider.Classification{Signal: provider.SignalAuthFailure, Reason: "", RetryAfter: 0, Source: provider.CooldownFromConfig})
 }
 
 func TestReportProviderHealthSignal_CleanLimitResultMarksRateLimit(t *testing.T) {

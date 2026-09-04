@@ -105,6 +105,30 @@ func TestClientListTasks(t *testing.T) {
 	}
 }
 
+func TestClientListTasksRejectsInvalidSnapshotEntry(t *testing.T) {
+	stub := &stubFollower{tasks: []task.Task{{ID: "valid"}, {}}}
+	srv := stub.server(t)
+	client := mustClient(t, Node{Name: "n1", Endpoints: []string{srv.URL}})
+	if _, err := client.ListTasks(context.Background()); err == nil || !strings.Contains(err.Error(), "invalid task at index 1") {
+		t.Fatalf("ListTasks error = %v, want invalid snapshot rejection", err)
+	}
+}
+
+func TestDecodeRejectsEmptySuccessBody(t *testing.T) {
+	if _, err := decode[task.Task](nil); err == nil || !strings.Contains(err.Error(), "empty response body") {
+		t.Fatalf("decode error = %v, want empty response rejection", err)
+	}
+}
+
+func TestClientGetTaskRejectsMismatchedValidID(t *testing.T) {
+	stub := &stubFollower{tasks: []task.Task{{ID: "bbbb2222"}}}
+	srv := stub.server(t)
+	client := mustClient(t, Node{Name: "n1", Endpoints: []string{srv.URL}})
+	if _, err := client.GetTask(context.Background(), "aaaa1111"); err == nil || !strings.Contains(err.Error(), "returned task \"bbbb2222\"") {
+		t.Fatalf("GetTask error = %v, want mismatched task rejection", err)
+	}
+}
+
 // TestClientListTasksFallsBackToLegacyWhenNodeFilteredEndpointMissing covers
 // the rolling-deploy window: a follower that hasn't picked up
 // ListTasksForNode yet (auto-update lag, or a leader built ahead of it)

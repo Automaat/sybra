@@ -218,6 +218,82 @@ export class Definition {
 }
 
 /**
+ * EffectID identifies one reducer-emitted effect within a task generation.
+ * Generation scopes ids across retries/resets, StepSeq orders steps within that
+ * generation, StepID anchors the originating workflow step, and Pos
+ * distinguishes sibling effects from the same reducer decision.
+ */
+export class EffectID {
+    "generation": number;
+    "stepSeq": number;
+    "stepID": string;
+    "pos": number;
+
+    /** Creates a new EffectID instance. */
+    constructor($$source: Partial<EffectID> = {}) {
+        if (!("generation" in $$source)) {
+            this["generation"] = 0;
+        }
+        if (!("stepSeq" in $$source)) {
+            this["stepSeq"] = 0;
+        }
+        if (!("stepID" in $$source)) {
+            this["stepID"] = "";
+        }
+        if (!("pos" in $$source)) {
+            this["pos"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new EffectID instance from a string or object.
+     */
+    static createFrom($$source: any = {}): EffectID {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new EffectID($$parsedSource as Partial<EffectID>);
+    }
+}
+
+/**
+ * EffectRecord pairs an EffectID with intent and completion timestamps.
+ * It is stored on Execution.EffectLog so retried effects can reuse their
+ * original EffectID as an idempotency key.
+ */
+export class EffectRecord {
+    "id": EffectID;
+    "intentAt": string;
+    "owner"?: string;
+    "leaseExpiresAt"?: string | null;
+    "completedAt"?: string | null;
+
+    /** Creates a new EffectRecord instance. */
+    constructor($$source: Partial<EffectRecord> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = (new EffectID());
+        }
+        if (!("intentAt" in $$source)) {
+            this["intentAt"] = "0001-01-01T00:00:00.000Z";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new EffectRecord instance from a string or object.
+     */
+    static createFrom($$source: any = {}): EffectRecord {
+        const $$createField0_0 = $$createType6;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("id" in $$parsedSource) {
+            $$parsedSource["id"] = $$createField0_0($$parsedSource["id"]);
+        }
+        return new EffectRecord($$parsedSource as Partial<EffectRecord>);
+    }
+}
+
+/**
  * ExecState tracks the overall execution state.
  */
 export enum ExecState {
@@ -237,10 +313,25 @@ export enum ExecState {
  */
 export class Execution {
     "workflowId": string;
+
+    /**
+     * DefinitionHash pins this execution to the semantic hash of the workflow
+     * definition it started under. Empty means a legacy execution created
+     * before pinning existed and should continue using the live definition.
+     */
+    "definitionHash"?: string;
     "currentStep": string;
     "state": ExecState;
     "stepHistory": StepRecord[];
     "variables": { [_ in string]?: string };
+
+    /**
+     * AgentRoutes durably records which async workflow step each still-live
+     * agent was spawned for. This replaces the process-local engine map so
+     * duplicate or late completions keep routing to the step they actually
+     * belong to across restarts and resume races.
+     */
+    "agentRoutes"?: { [_ in string]?: string };
     "startedAt": string;
     "completedAt": string | null;
 
@@ -283,6 +374,13 @@ export class Execution {
      */
     "bestOfNInflight"?: { [_ in string]?: BestOfNInflight | null };
 
+    /**
+     * EffectLog records intent-before and completion-after for each effect so
+     * retried effects can reuse their original EffectID as an idempotency key.
+     * Trimmed to maxEffectLog oldest-first. Not wired into the engine yet.
+     */
+    "effectLog"?: EffectRecord[];
+
     /** Creates a new Execution instance. */
     constructor($$source: Partial<Execution> = {}) {
         if (!("workflowId" in $$source)) {
@@ -314,26 +412,34 @@ export class Execution {
      * Creates a new Execution instance from a string or object.
      */
     static createFrom($$source: any = {}): Execution {
-        const $$createField3_0 = $$createType7;
         const $$createField4_0 = $$createType8;
-        const $$createField8_0 = $$createType11;
-        const $$createField9_0 = $$createType12;
-        const $$createField10_0 = $$createType15;
+        const $$createField5_0 = $$createType9;
+        const $$createField6_0 = $$createType9;
+        const $$createField10_0 = $$createType12;
+        const $$createField11_0 = $$createType13;
+        const $$createField12_0 = $$createType16;
+        const $$createField13_0 = $$createType18;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("stepHistory" in $$parsedSource) {
-            $$parsedSource["stepHistory"] = $$createField3_0($$parsedSource["stepHistory"]);
+            $$parsedSource["stepHistory"] = $$createField4_0($$parsedSource["stepHistory"]);
         }
         if ("variables" in $$parsedSource) {
-            $$parsedSource["variables"] = $$createField4_0($$parsedSource["variables"]);
+            $$parsedSource["variables"] = $$createField5_0($$parsedSource["variables"]);
+        }
+        if ("agentRoutes" in $$parsedSource) {
+            $$parsedSource["agentRoutes"] = $$createField6_0($$parsedSource["agentRoutes"]);
         }
         if ("parallelInflight" in $$parsedSource) {
-            $$parsedSource["parallelInflight"] = $$createField8_0($$parsedSource["parallelInflight"]);
+            $$parsedSource["parallelInflight"] = $$createField10_0($$parsedSource["parallelInflight"]);
         }
         if ("stepCounts" in $$parsedSource) {
-            $$parsedSource["stepCounts"] = $$createField9_0($$parsedSource["stepCounts"]);
+            $$parsedSource["stepCounts"] = $$createField11_0($$parsedSource["stepCounts"]);
         }
         if ("bestOfNInflight" in $$parsedSource) {
-            $$parsedSource["bestOfNInflight"] = $$createField10_0($$parsedSource["bestOfNInflight"]);
+            $$parsedSource["bestOfNInflight"] = $$createField12_0($$parsedSource["bestOfNInflight"]);
+        }
+        if ("effectLog" in $$parsedSource) {
+            $$parsedSource["effectLog"] = $$createField13_0($$parsedSource["effectLog"]);
         }
         return new Execution($$parsedSource as Partial<Execution>);
     }
@@ -411,7 +517,7 @@ export class ParallelChildren {
      * Creates a new ParallelChildren instance from a string or object.
      */
     static createFrom($$source: any = {}): ParallelChildren {
-        const $$createField2_0 = $$createType18;
+        const $$createField2_0 = $$createType21;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("children" in $$parsedSource) {
             $$parsedSource["children"] = $$createField2_0($$parsedSource["children"]);
@@ -495,10 +601,10 @@ export class Step {
      * Creates a new Step instance from a string or object.
      */
     static createFrom($$source: any = {}): Step {
-        const $$createField3_0 = $$createType19;
-        const $$createField4_0 = $$createType21;
+        const $$createField3_0 = $$createType22;
+        const $$createField4_0 = $$createType24;
         const $$createField5_0 = $$createType5;
-        const $$createField6_0 = $$createType23;
+        const $$createField6_0 = $$createType26;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("config" in $$parsedSource) {
             $$parsedSource["config"] = $$createField3_0($$parsedSource["config"]);
@@ -595,6 +701,20 @@ export class StepConfig {
      * warning output instead of flipping the task to human-required.
      */
     "allowMissing": boolean;
+
+    /**
+     * RetryStep identifies the run_agent step that produced a required sidecar.
+     * When the agent reports success without the artifact, require_sidecar
+     * rewinds there up to MaxRetries times before escalating.
+     */
+    "retryStep"?: string;
+
+    /**
+     * RetryStepVar resolves the producer step from a workflow variable when
+     * several agent steps converge on one guard (for example simple/staff
+     * review). Mutually exclusive with RetryStep.
+     */
+    "retryStepVar"?: string;
 
     /**
      * clear_plan_artifacts: which sidecars to clear before the cycle that
@@ -746,14 +866,14 @@ export class StepConfig {
      * Creates a new StepConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): StepConfig {
-        const $$createField5_0 = $$createType24;
-        const $$createField7_0 = $$createType24;
-        const $$createField10_0 = $$createType26;
-        const $$createField18_0 = $$createType24;
-        const $$createField19_0 = $$createType24;
-        const $$createField20_0 = $$createType28;
-        const $$createField21_0 = $$createType29;
-        const $$createField24_0 = $$createType24;
+        const $$createField5_0 = $$createType27;
+        const $$createField7_0 = $$createType27;
+        const $$createField10_0 = $$createType29;
+        const $$createField20_0 = $$createType27;
+        const $$createField21_0 = $$createType27;
+        const $$createField22_0 = $$createType31;
+        const $$createField23_0 = $$createType32;
+        const $$createField26_0 = $$createType27;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("allowedTools" in $$parsedSource) {
             $$parsedSource["allowedTools"] = $$createField5_0($$parsedSource["allowedTools"]);
@@ -765,19 +885,19 @@ export class StepConfig {
             $$parsedSource["check"] = $$createField10_0($$parsedSource["check"]);
         }
         if ("clearSidecars" in $$parsedSource) {
-            $$parsedSource["clearSidecars"] = $$createField18_0($$parsedSource["clearSidecars"]);
+            $$parsedSource["clearSidecars"] = $$createField20_0($$parsedSource["clearSidecars"]);
         }
         if ("clearWorktreeGlobs" in $$parsedSource) {
-            $$parsedSource["clearWorktreeGlobs"] = $$createField19_0($$parsedSource["clearWorktreeGlobs"]);
+            $$parsedSource["clearWorktreeGlobs"] = $$createField21_0($$parsedSource["clearWorktreeGlobs"]);
         }
         if ("importSidecar" in $$parsedSource) {
-            $$parsedSource["importSidecar"] = $$createField20_0($$parsedSource["importSidecar"]);
+            $$parsedSource["importSidecar"] = $$createField22_0($$parsedSource["importSidecar"]);
         }
         if ("importSidecars" in $$parsedSource) {
-            $$parsedSource["importSidecars"] = $$createField21_0($$parsedSource["importSidecars"]);
+            $$parsedSource["importSidecars"] = $$createField23_0($$parsedSource["importSidecars"]);
         }
         if ("attemptProviders" in $$parsedSource) {
-            $$parsedSource["attemptProviders"] = $$createField24_0($$parsedSource["attemptProviders"]);
+            $$parsedSource["attemptProviders"] = $$createField26_0($$parsedSource["attemptProviders"]);
         }
         return new StepConfig($$parsedSource as Partial<StepConfig>);
     }
@@ -850,6 +970,7 @@ export enum StepType {
     StepStampPRAttribution = "stamp_pr_attribution",
     StepRerequestReview = "rerequest_review",
     StepVerifyCommits = "verify_commits",
+    StepVerifyReviewThreads = "verify_review_threads",
     StepLinkPRAndReview = "link_pr_and_review",
     StepEvaluate = "evaluate",
     StepRequireSidecar = "require_sidecar",
@@ -915,6 +1036,18 @@ export enum StepType {
      * cap is hit, then human-required.
      */
     StepRouteTestResult = "route_test_result",
+
+    /**
+     * StepRouteReviewVerdict reads the review-role step's structured verdict
+     * (output_schema-enforced JSON, see ExtractReviewVerdict), stashed by
+     * engine_advance into the review_verdict workflow var. A valid CLEAN/
+     * NEEDS_FIXES verdict is a no-op pass-through — the YAML's own `next.when`
+     * clauses route on vars.review_verdict. A missing/malformed verdict is
+     * never treated as either outcome: it bounded-retries the review agent
+     * with a schema-conformance reask note, then escalates to human-required
+     * once the retry budget is spent.
+     */
+    StepRouteReviewVerdict = "route_review_verdict",
 
     /**
      * StepParallel runs its `Parallel` children concurrently as run_agent
@@ -996,6 +1129,51 @@ export enum StepType {
      * agent invoking the /sybra-triage skill around this same classifier.
      */
     StepClassifyTask = "classify_task",
+
+    /**
+     * StepAdmissionPreflight runs deterministic pre-dispatch admission checks
+     * (plan contract schema/capability validation, oversize scope limits,
+     * push credential readiness) before any code-author agent is dispatched —
+     * see execAdmissionPreflight (engine_steps_admission.go). Scope/content
+     * problems (missing objective, unknown capability, oversize scope) and a
+     * non-transient credential failure both route through human-required —
+     * the former always blocker.KindOperatorDecision, the latter
+     * blocker.KindCredentialRequired — as terminal (no automatic re-attempts),
+     * matching blocker.AllowsHumanRequired. A transient/rate-limited
+     * credential-preflight error is NOT terminal: classifyAdmissionCredentialError
+     * parks the step for a bounded retry instead, mirroring push_branch/
+     * create_pr's identical classification of the same error. Resumable —
+     * see isResumableStepType — so a crash between persisting CurrentStep and
+     * executing it does not strand the task.
+     */
+    StepAdmissionPreflight = "admission_preflight",
+
+    /**
+     * StepRequireEvidence is the final deterministic completion gate: it
+     * asserts every criterion applicable to the task (verify_checks,
+     * detect_tampering, the test-runner verdict when testing ran, review when
+     * the task went through review) has a recorded CompletionEvidence entry
+     * that passed and is fresh for the task's current HEAD — see
+     * execRequireEvidence (engine_steps_evidence.go). A no-op when the
+     * require_evidence gate is disabled (config.EvidenceConfig.Enabled=false,
+     * the default) or when no evidence has ever been recorded for the task
+     * (an in-flight task from before evidence collection started). Otherwise,
+     * any missing, failed, or stale criterion flips the task to
+     * human-required with a terminal blocker.KindOperatorDecision — a human
+     * must re-run the missing proof, not retry the same dispatch.
+     */
+    StepRequireEvidence = "require_evidence",
+
+    /**
+     * StepParallelGates runs the three deterministic post-implement gates —
+     * detect_tampering, focused_checks, verify_checks — concurrently instead
+     * of serially, then routes on their joined outcome. Each gate still
+     * records its own evidence/verdict independently (see
+     * execParallelGates, engine_steps_parallel_gates.go); this only
+     * overlaps their wall-clock, it does not change what any individual gate
+     * decides. Synchronous (no run_agent children, unlike StepParallel).
+     */
+    StepParallelGates = "parallel_gates",
 };
 
 /**
@@ -1028,7 +1206,7 @@ export class Transition {
      * Creates a new Transition instance from a string or object.
      */
     static createFrom($$source: any = {}): Transition {
-        const $$createField0_0 = $$createType26;
+        const $$createField0_0 = $$createType29;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("when" in $$parsedSource) {
             $$parsedSource["when"] = $$createField0_0($$parsedSource["when"]);
@@ -1078,8 +1256,8 @@ export class Trigger {
      * Creates a new Trigger instance from a string or object.
      */
     static createFrom($$source: any = {}): Trigger {
-        const $$createField2_0 = $$createType30;
-        const $$createField3_0 = $$createType23;
+        const $$createField2_0 = $$createType33;
+        const $$createField3_0 = $$createType26;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("conditions" in $$parsedSource) {
             $$parsedSource["conditions"] = $$createField2_0($$parsedSource["conditions"]);
@@ -1098,28 +1276,31 @@ const $$createType2 = $Create.Map($Create.Any, $$createType1);
 const $$createType3 = Trigger.createFrom;
 const $$createType4 = Step.createFrom;
 const $$createType5 = $Create.Array($$createType4);
-const $$createType6 = StepRecord.createFrom;
-const $$createType7 = $Create.Array($$createType6);
-const $$createType8 = $Create.Map($Create.Any, $Create.Any);
-const $$createType9 = ParallelChildren.createFrom;
-const $$createType10 = $Create.Nullable($$createType9);
-const $$createType11 = $Create.Map($Create.Any, $$createType10);
-const $$createType12 = $Create.Map($Create.Any, $Create.Any);
-const $$createType13 = BestOfNInflight.createFrom;
-const $$createType14 = $Create.Nullable($$createType13);
-const $$createType15 = $Create.Map($Create.Any, $$createType14);
-const $$createType16 = ChildStatus.createFrom;
-const $$createType17 = $Create.Nullable($$createType16);
-const $$createType18 = $Create.Map($Create.Any, $$createType17);
-const $$createType19 = StepConfig.createFrom;
-const $$createType20 = Transition.createFrom;
-const $$createType21 = $Create.Array($$createType20);
-const $$createType22 = Position.createFrom;
-const $$createType23 = $Create.Nullable($$createType22);
-const $$createType24 = $Create.Array($Create.Any);
-const $$createType25 = Condition.createFrom;
+const $$createType6 = EffectID.createFrom;
+const $$createType7 = StepRecord.createFrom;
+const $$createType8 = $Create.Array($$createType7);
+const $$createType9 = $Create.Map($Create.Any, $Create.Any);
+const $$createType10 = ParallelChildren.createFrom;
+const $$createType11 = $Create.Nullable($$createType10);
+const $$createType12 = $Create.Map($Create.Any, $$createType11);
+const $$createType13 = $Create.Map($Create.Any, $Create.Any);
+const $$createType14 = BestOfNInflight.createFrom;
+const $$createType15 = $Create.Nullable($$createType14);
+const $$createType16 = $Create.Map($Create.Any, $$createType15);
+const $$createType17 = EffectRecord.createFrom;
+const $$createType18 = $Create.Array($$createType17);
+const $$createType19 = ChildStatus.createFrom;
+const $$createType20 = $Create.Nullable($$createType19);
+const $$createType21 = $Create.Map($Create.Any, $$createType20);
+const $$createType22 = StepConfig.createFrom;
+const $$createType23 = Transition.createFrom;
+const $$createType24 = $Create.Array($$createType23);
+const $$createType25 = Position.createFrom;
 const $$createType26 = $Create.Nullable($$createType25);
-const $$createType27 = ImportSidecar.createFrom;
-const $$createType28 = $Create.Nullable($$createType27);
-const $$createType29 = $Create.Array($$createType27);
-const $$createType30 = $Create.Array($$createType25);
+const $$createType27 = $Create.Array($Create.Any);
+const $$createType28 = Condition.createFrom;
+const $$createType29 = $Create.Nullable($$createType28);
+const $$createType30 = ImportSidecar.createFrom;
+const $$createType31 = $Create.Nullable($$createType30);
+const $$createType32 = $Create.Array($$createType30);
+const $$createType33 = $Create.Array($$createType28);

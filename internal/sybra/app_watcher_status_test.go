@@ -55,7 +55,7 @@ func TestApp_WatcherStatusHook_AdvancesWorkflow(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(wfDir, "test-status-hook.yaml"), []byte(waitForStatusWorkflowYAML), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	engine := workflow.NewEngine(
+	engine := workflow.NewTestEngine(
 		wfStore,
 		&taskAdapter{tasks: app.tasks},
 		&agentAdapter{agents: app.agents, agentOrch: app.agentOrch, tasks: app.tasks},
@@ -85,7 +85,7 @@ func TestApp_WatcherStatusHook_AdvancesWorkflow(t *testing.T) {
 	}
 	<-w.Ready()
 
-	created, err := app.tasks.Create("watcher status hook task", "", "interactive")
+	created, err := app.tasks.Create("watcher status hook task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +190,7 @@ steps:
 		t.Fatal(err)
 	}
 
-	engine := workflow.NewEngine(
+	engine := workflow.NewTestEngine(
 		wfStore,
 		&taskAdapter{tasks: a.tasks},
 		&fakeAgentLauncher{tasks: a.tasks},
@@ -227,8 +227,10 @@ steps:
 	}
 
 	if _, err := a.tasks.Update(created.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr("manual verification blocker: no current open PR could be verified as allFlaky for the required live pr-monitor proof"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr("manual verification blocker: no current open PR could be verified as allFlaky for the required live pr-monitor proof"),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -343,7 +345,12 @@ func TestApp_StatusHook_ReleasesTaskAgentsOnHandoffAndTerminal(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			if _, err := a.tasks.Update(created.ID, task.Update{Status: task.Ptr(target)}); err != nil {
+			update := task.Update{Status: task.Ptr(target)}
+			if target == task.StatusHumanRequired {
+				update.Escalation = task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture")
+				update.AutonomyOutcome = task.HumanRequiredOutcome()
+			}
+			if _, err := a.tasks.Update(created.ID, update); err != nil {
 				t.Fatal(err)
 			}
 
@@ -393,7 +400,7 @@ steps:
 
 	ta := &taskAdapter{tasks: a.tasks}
 	aa := &agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks}
-	a.workflowEngine = workflow.NewEngine(wfStore, ta, aa, a.logger)
+	a.workflowEngine = workflow.NewTestEngine(wfStore, ta, aa, a.logger)
 	a.initStatusHook()
 
 	created, err := a.tasks.Create("ready-review dispatch", "", "headless")
@@ -467,7 +474,7 @@ steps:
 
 	ta := &taskAdapter{tasks: a.tasks}
 	aa := &agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks}
-	a.workflowEngine = workflow.NewEngine(wfStore, ta, aa, a.logger)
+	a.workflowEngine = workflow.NewTestEngine(wfStore, ta, aa, a.logger)
 	a.initStatusHook()
 
 	created, err := a.tasks.Create("testing dispatch", "", "headless")
@@ -543,7 +550,7 @@ steps:
 
 	ta := &taskAdapter{tasks: a.tasks}
 	aa := &agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks}
-	a.workflowEngine = workflow.NewEngine(wfStore, ta, aa, a.logger)
+	a.workflowEngine = workflow.NewTestEngine(wfStore, ta, aa, a.logger)
 	a.initStatusHook()
 
 	created, err := a.tasks.Create("ready-pr dispatch", "", "headless")
@@ -621,7 +628,7 @@ steps:
 
 	ta := &taskAdapter{tasks: a.tasks}
 	aa := &agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks}
-	a.workflowEngine = workflow.NewEngine(wfStore, ta, aa, a.logger)
+	a.workflowEngine = workflow.NewTestEngine(wfStore, ta, aa, a.logger)
 	a.initStatusHook()
 
 	created, err := a.tasks.Create("umbrella tracker", "", "headless")

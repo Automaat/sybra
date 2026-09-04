@@ -1,19 +1,28 @@
 id: simple-task-plan
 name: Simple Task — Plan
-description: Triage a new task and (when planning is required) drive the plan / critique / human-review loop. Hands off to simple-task-implement via task.status=in-progress on completion.
+description: Triage a new task and (when planning is required) drive the plan / critique / human-review loop. Human approval hands the task directly to implementation.
 builtin: true
 trigger:
   on: task.created
   conditions:
-    - field: task.tags
-      operator: not_contains
-      value: review
+    # The review tag is also a normal category tag for tasks that change the
+    # review subsystem. PR context, not that overloaded tag, owns the inbound
+    # review lane. Without this inverse of pr-review's pr_number guard, a task
+    # tagged review with no PR matches neither workflow and remains in todo
+    # forever while every scheduler reconciliation is a no-op.
+    - field: task.pr_number
+      operator: equals
+      value: ""
     # Handoff tasks arrive with a finished plan from an external tool (e.g.
     # Orca) and are driven by simple-task-handoff straight to implementation.
     # Excluding them here keeps triage/planning from also firing on create.
     - field: task.tags
       operator: not_contains
       value: handoff
+    # Legacy handoff-pr records may not also carry the generic handoff tag.
+    - field: task.tags
+      operator: not_contains
+      value: handoff-pr
     # renovate-fix tasks are driven by pr.event (pr-fix workflow) and must
     # never enter the plan/implement/review pipeline — that would open a
     # duplicate PR and burn ~$7 + ~70 min on a trivial CI fix.
@@ -119,6 +128,10 @@ steps:
         `<type>/<other-slug>-<other-id>`, IGNORE them — they belong to
         other concurrent tasks against the same project repo and have
         nothing to do with you.
+        {{- if getvar .Vars "watchdog_reask_note"}}
+
+        {{getvar .Vars "watchdog_reask_note"}}
+        {{- end}}
 
         Process:
           1. Run: sybra-cli --json get {{.Task.ID}}
@@ -153,13 +166,13 @@ steps:
              Name at least one alternative you rejected, and why.
           4. Write these FIVE files:
 
-             A. .sybra-plan-research-{{.Task.ID}}.md
+             A. {{sidecardir .Vars}}/.sybra-plan-research-{{.Task.ID}}.md
                 Raw research/evidence. Put file/symbol notes, your answers to
                 the step-3 scrutiny questions, rejected alternatives,
                 assumptions, and detailed rationale here. This can be long.
                 It is for audit/debug, not implementation.
 
-             B. .sybra-plan-decisions-{{.Task.ID}}.md
+             B. {{sidecardir .Vars}}/.sybra-plan-decisions-{{.Task.ID}}.md
                 Human decision brief. Keep it short. Use this exact shape for
                 each decision that needs or may benefit from human choice:
 
@@ -179,7 +192,7 @@ steps:
                 No open decisions. The recommended execution contract is fully
                 specified.
 
-             C. .sybra-plan-{{.Task.ID}}.md
+             C. {{sidecardir .Vars}}/.sybra-plan-{{.Task.ID}}.md
                 The human-readable compact execution plan. Target 60-120 lines, hard
                 max 180 lines unless the task truly cannot fit. Use only:
 
@@ -215,23 +228,31 @@ steps:
                 risk matrices in this file — those belong in the research
                 artifact.
 
-             D. .sybra-plan-brief-{{.Task.ID}}.md
+             D. {{sidecardir .Vars}}/.sybra-plan-brief-{{.Task.ID}}.md
                 Human approval brief. Keep it under ~40 lines. Summarize final
                 shape, important decisions, unresolved choices (if any), and why
                 the execution contract is safe to approve.
 
-             E. .sybra-plan-contract-{{.Task.ID}}.json
+             E. {{sidecardir .Vars}}/.sybra-plan-contract-{{.Task.ID}}.json
                 Executable plan contract consumed by implementation agents and
                 validated mechanically. Write valid JSON with exactly this shape:
 
                 {
                   "task_id": "{{.Task.ID}}",
+                  "schema_version": "2",
+                  "objective": "one-line statement of what 'done' means for this task",
                   "branch": "<current branch>",
                   "worktree": "<current working directory>",
                   "files": [
                     {"path": "repo/relative/path.go", "purpose": "inspect|edit", "symbols": ["optionalSymbol"]}
                   ],
                   "steps": ["ordered implementation step"],
+                  "expected_deletions": [
+                    "internal/foo/legacy_test.go",
+                    "testdata/*.golden"
+                  ],
+                  "dependencies": ["other-task-id-or-external-resource-this-depends-on"],
+                  "required_capabilities": ["repo_write"],
                   "verification": [
                     {"command": "go test ./...", "expected": "tests pass"},
                     {"manual": "manual inspection or smoke test", "expected": "observable result"}
@@ -243,18 +264,29 @@ steps:
                 }
 
                 File paths MUST be repository-relative clean paths, not absolute
-                paths and not ../ escapes. Verification and acceptance arrays
-                must be non-empty. Each verification item needs command and/or
-                manual plus expected. Supplemental fields are accepted only for
-                forward compatibility, are not instructions, and are stripped
-                before implementation agents see the contract. Keep the full
-                contract under 64 KiB. If the task body has a "## Acceptance
-                Criteria" section, copy every criterion from that section into
-                acceptance_criteria verbatim (wrapped lines joined). Do not
-                silently drop, narrow, defer, or mark any source criterion out
-                of scope; if a source criterion needs a human scope decision,
-                record that in .sybra-plan-decisions and keep it in the
-                contract.
+                paths and not ../ escapes. `expected_deletions` is optional:
+                omit it or write `[]` when no verification-file deletions are planned;
+                otherwise list clean repo-relative paths or slash-separated
+                conservative glob patterns only. Verification and acceptance
+                arrays must be non-empty. Each verification item needs command
+                and/or manual plus expected. Supplemental fields are accepted
+                only for forward compatibility, are not instructions, and are
+                stripped before implementation agents see the contract. Keep
+                the full contract under 64 KiB. If the task body has a
+                "## Acceptance Criteria" section, copy every criterion from
+                that section into acceptance_criteria verbatim (wrapped lines
+                joined). Do not silently drop, narrow, defer, or mark any
+                source criterion out of scope; if a source criterion needs a
+                human scope decision, record that in {{sidecardir .Vars}}/.sybra-plan-decisions-{{.Task.ID}}.md and
+                keep it in the contract.
+
+                Always set schema_version to "2" and objective is required.
+                `dependencies` is optional: omit it or write `[]` when this
+                task has none. `required_capabilities` must be a subset of
+                this closed set: `repo_write`, `network`, `provider`,
+                `git_push` — omit it or write `[]` when the task needs none
+                beyond ordinary repo edits; do not invent new capability
+                names, admission_preflight rejects anything outside this set.
 
         Do NOT call sybra-cli update — Sybra will ingest your file as the
         task sidecars after you exit. Do NOT modify task fields directly.
@@ -278,15 +310,15 @@ steps:
         - Write
       import_sidecars:
         - kind: plan_research
-          from: '{{getvar .Vars "_dir"}}/.sybra-plan-research-{{.Task.ID}}.md'
+          from: '{{sidecardir .Vars}}/.sybra-plan-research-{{.Task.ID}}.md'
         - kind: plan_decisions
-          from: '{{getvar .Vars "_dir"}}/.sybra-plan-decisions-{{.Task.ID}}.md'
+          from: '{{sidecardir .Vars}}/.sybra-plan-decisions-{{.Task.ID}}.md'
         - kind: plan
-          from: '{{getvar .Vars "_dir"}}/.sybra-plan-{{.Task.ID}}.md'
+          from: '{{sidecardir .Vars}}/.sybra-plan-{{.Task.ID}}.md'
         - kind: plan_brief
-          from: '{{getvar .Vars "_dir"}}/.sybra-plan-brief-{{.Task.ID}}.md'
+          from: '{{sidecardir .Vars}}/.sybra-plan-brief-{{.Task.ID}}.md'
         - kind: plan_contract
-          from: '{{getvar .Vars "_dir"}}/.sybra-plan-contract-{{.Task.ID}}.json'
+          from: '{{sidecardir .Vars}}/.sybra-plan-contract-{{.Task.ID}}.json'
           required: true
     next:
       - goto: require_plan
@@ -300,6 +332,8 @@ steps:
     type: require_sidecar
     config:
       sidecar: plan
+      retry_step: plan
+      max_retries: 2
     next:
       - when:
           field: task.status
@@ -313,6 +347,8 @@ steps:
     type: require_sidecar
     config:
       sidecar: plan_decisions
+      retry_step: plan
+      max_retries: 2
     next:
       - when:
           field: task.status
@@ -326,6 +362,8 @@ steps:
     type: require_sidecar
     config:
       sidecar: plan_brief
+      retry_step: plan
+      max_retries: 2
     next:
       - when:
           field: task.status
@@ -339,6 +377,8 @@ steps:
     type: require_sidecar
     config:
       sidecar: plan_research
+      retry_step: plan
+      max_retries: 2
     next:
       - when:
           field: task.status
@@ -412,37 +452,52 @@ steps:
     config:
       role: plan-critic
       mode: headless
-      model: sonnet
+      model: supercheap
       provider: cross
       needs_worktree: true
       max_retries: 2
+      output_schema: >-
+        {"type":"object","properties":{"verdict":{"type":"string","enum":["APPROVE","REFINE","REJECT"]}},"required":["verdict"],"additionalProperties":false}
       prompt: >-
         Critique the execution contract for task {{.Task.ID}} using the
         /plan-critic skill. Use the planning research, decisions, and brief as
         context, but judge whether the compact execution contract is safe to
         implement.
+        {{- if getvar .Vars "plan_critique_reask_note"}}
+
+        RETRY GUIDANCE — your previous final message was invalid:
+        {{getvar .Vars "plan_critique_reask_note"}}
+        {{- end}}
+        {{- if getvar .Vars "watchdog_reask_note"}}
+
+        {{getvar .Vars "watchdog_reask_note"}}
+        {{- end}}
 
         Steps:
           1. Run: sybra-cli --json get {{.Task.ID}}
           2. Read .planContract, .plan, .planResearch, .planDecisions, and .planBrief.
-          3. Write .sybra-plan-contract-review-{{.Task.ID}}.md with the
+          3. Write {{sidecardir .Vars}}/.sybra-plan-contract-review-{{.Task.ID}}.md with the
              executable JSON contract FIRST, followed by the human-readable
              .plan as secondary context. The contract is the artifact
              implementation consumes, so critique it directly for missing files,
              weak verification, acceptance gaps, risk, permission posture, and
              rollback/recovery coverage.
-          4. Invoke: /plan-critic .sybra-plan-contract-review-{{.Task.ID}}.md
+          4. Invoke: /plan-critic {{sidecardir .Vars}}/.sybra-plan-contract-review-{{.Task.ID}}.md
           5. As soon as each persona/result is available, append a concise
-             grounded finding summary to .sybra-critique-{{.Task.ID}}.md.
+             grounded finding summary to {{sidecardir .Vars}}/.sybra-critique-{{.Task.ID}}.md.
              Do not wait for the final synthesis before writing the first
              useful content.
           6. Capture the final markdown Plan Review report you produce and
-             overwrite .sybra-critique-{{.Task.ID}}.md with it.
+             overwrite {{sidecardir .Vars}}/.sybra-critique-{{.Task.ID}}.md with it.
 
         Do NOT modify the plan. Do NOT change the task status. Sybra
-        will ingest .sybra-critique-{{.Task.ID}}.md as the task's
+        will ingest {{sidecardir .Vars}}/.sybra-critique-{{.Task.ID}}.md as the task's
         plan_critique sidecar after you exit — you do not need to call
         sybra-cli yourself.
+
+        Your FINAL message of the turn must be ONLY the schema-valid JSON
+        verdict object: `{"verdict":"APPROVE"}`,
+        `{"verdict":"REFINE"}`, or `{"verdict":"REJECT"}`.
       allowed_tools:
         - Bash
         - Read
@@ -453,7 +508,7 @@ steps:
         - Agent
       import_sidecar:
         kind: plan_critique
-        from: '{{getvar .Vars "_dir"}}/.sybra-critique-{{.Task.ID}}.md'
+        from: '{{sidecardir .Vars}}/.sybra-critique-{{.Task.ID}}.md'
     next:
       - goto: require_plan_critique
 
@@ -555,7 +610,7 @@ steps:
     next:
       - goto: clear_plan_artifacts
 
-  # A replan reuses the same worktree, and .sybra-plan-* is git-excluded rather
+  # A replan reuses the same worktree, and {{sidecardir .Vars}}/.sybra-plan-* is git-excluded rather
   # than deleted, so without this cycle 2 re-imports cycle 1's bytes as though
   # the current planner had just written them. The require_sidecar guards can't
   # catch that — they assert non-empty, and stale content is non-empty. Worst

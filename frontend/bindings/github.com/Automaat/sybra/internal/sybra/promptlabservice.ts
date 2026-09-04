@@ -30,6 +30,10 @@ import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Cr
 // @ts-ignore: Unused imports
 import * as task$0 from "../task/models.js";
 
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as $models from "./models.js";
+
 /**
  * ApproveProposal greenlights a pending prompt-lab proposal: moves it to
  * in-progress, drops the requires-human tag, and starts the dedicated
@@ -59,5 +63,21 @@ export function RejectProposal(id: string, feedback: string): $CancellablePromis
     });
 }
 
+/**
+ * RunPromptLab mines the instance's own run history for prompt proposals, and
+ * files the accepted ones when asked.
+ * 
+ * Mining and filing are one call because both ends are this instance's: the
+ * stats file the evidence comes from and the board the tasks land on. Split
+ * across the wire, a client would derive proposals from its own run history
+ * and file them against a board that never produced those runs.
+ */
+export function RunPromptLab(lookbackSeconds: number, minSamples: number, fileTasks: boolean): $CancellablePromise<$models.PromptLabRunDTO> {
+    return $Call.ByID(3883582608, lookbackSeconds, minSamples, fileTasks).then(($result: any) => {
+        return $$createType1($result);
+    });
+}
+
 // Private type creation functions
 const $$createType0 = task$0.Task.createFrom;
+const $$createType1 = $models.PromptLabRunDTO.createFrom;

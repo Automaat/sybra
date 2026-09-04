@@ -7,14 +7,18 @@ import (
 	"maps"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/Automaat/sybra/internal/abtest"
+	"github.com/Automaat/sybra/internal/autonomy"
+	"github.com/Automaat/sybra/internal/executioncontract"
 	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/skillinvoke"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 // importSidecarIfConfigured reads the file the agent produced (template
@@ -28,7 +32,7 @@ func (e *Engine) importSidecarIfConfigured(taskID, stepID string, info TaskInfo)
 	if info.Workflow == nil {
 		return
 	}
-	def, err := e.store.Get(info.Workflow.WorkflowID)
+	def, err := e.resolveExecutionDefinition(taskID, info)
 	if err != nil {
 		return
 	}
@@ -46,6 +50,87 @@ func (e *Engine) importSidecarIfConfiguredFromDef(taskID, stepID string, info Ta
 	for _, cfg := range step.Config.sidecarImports() {
 		e.importOneSidecar(taskID, stepID, step, info, cfg)
 	}
+}
+
+// adoptSidecarsFromFailedRun checks whether a run_agent step that just ended
+// in failure (e.g. aborted_streaming, denied-tool noise) nonetheless left a
+// complete, valid set of sidecar artifacts on disk — the case where the
+// agent finished writing everything it was asked for and only died
+// afterwards. A step's declared import_sidecars are treated as a single set:
+// downstream guard steps (require_plan, require_sidecar, ...) already fail
+// the task to human-required if any individual sidecar turns out missing, so
+// adoption only pays off when every declared sidecar — not just the ones
+// marked required at the import step — is present and non-empty, and a
+// plan_contract among them validates. On success it adopts them exactly as a
+// successful run would and reports true so the caller can treat the step as
+// completed instead of burning a retry attempt re-doing already-finished
+// work. Reports false (no adoption, no side effects) on any missing/empty
+// artifact or invalid contract, leaving the ordinary failed/retry path
+// untouched.
+func (e *Engine) adoptSidecarsFromFailedRun(taskID, stepID string, info TaskInfo, def *Definition) bool {
+	if info.Workflow == nil || def == nil {
+		return false
+	}
+	step := def.StepByID(stepID)
+	if step == nil || step.Type != StepRunAgent {
+		return false
+	}
+	imports := step.Config.sidecarImports()
+	if len(imports) == 0 {
+		return false
+	}
+	var contract string
+	hasContract := false
+	for _, cfg := range imports {
+		content, ok := e.probeSidecarContent(taskID, stepID, step, info, cfg)
+		if !ok {
+			return false
+		}
+		if cfg.Kind == "plan_contract" {
+			contract, hasContract = content, true
+		}
+	}
+	if hasContract {
+		if problems := ValidatePlanContractForTask(contract, taskID, info.Body); len(problems) > 0 {
+			e.logger.Info("workflow.adopt-sidecars.invalid-contract",
+				"task_id", taskID, "step", stepID, "problems", strings.Join(problems, "; "))
+			return false
+		}
+	}
+	e.importSidecarIfConfiguredFromDef(taskID, stepID, info, def)
+	e.logger.Info("workflow.adopt-sidecars.recovered", "task_id", taskID, "step", stepID)
+	return true
+}
+
+// probeSidecarContent renders and reads a single sidecar import's source
+// file without writing anything or mutating task status — used to check
+// completeness before committing to adoptSidecarsFromFailedRun's write path.
+func (e *Engine) probeSidecarContent(taskID, stepID string, step *Step, info TaskInfo, cfg ImportSidecar) (string, bool) {
+	path, rErr := RenderTemplate(cfg.From, TemplateContext{
+		Task:     info,
+		Step:     *step,
+		Vars:     info.Workflow.Variables,
+		Workflow: info.Workflow,
+	})
+	if rErr != nil {
+		return "", false
+	}
+	content, readErr := os.ReadFile(path)
+	if readErr != nil {
+		dirVarUnresolved := worktreeDirTemplatePattern.MatchString(cfg.From) && strings.TrimSpace(info.Workflow.Variables[WorkflowVarDir]) == ""
+		if dirVarUnresolved {
+			if _, recovered, ok := e.recoverSidecarFromTaskWorktree(taskID, stepID, step, info, cfg); ok {
+				content, readErr = recovered, nil
+			}
+		}
+		if readErr != nil {
+			return "", false
+		}
+	}
+	if strings.TrimSpace(string(content)) == "" {
+		return "", false
+	}
+	return string(content), true
 }
 
 func (c StepConfig) sidecarImports() []ImportSidecar {
@@ -70,7 +155,14 @@ func (e *Engine) importOneSidecar(taskID, stepID string, step *Step, info TaskIn
 		e.logger.Warn("workflow.import-sidecar.render", "task_id", taskID, "step", stepID, "err", rErr)
 		return
 	}
-	content, readErr := os.ReadFile(path)
+	var content []byte
+	var readErr error
+	receipt := fmt.Sprintf("remote-sidecar:%s:%s:%d:%s", info.Workflow.WorkflowID, stepID, info.Generation, cfg.Kind)
+	if slices.Contains(info.Tags, receipt) {
+		content = []byte(taskSidecarContent(info, cfg.Kind))
+	} else {
+		content, readErr = os.ReadFile(path)
+	}
 	if readErr != nil {
 		dirVarUnresolved := worktreeDirTemplatePattern.MatchString(cfg.From) && strings.TrimSpace(info.Workflow.Variables[WorkflowVarDir]) == ""
 		if dirVarUnresolved {
@@ -145,10 +237,10 @@ func (e *Engine) importOneSidecar(taskID, stepID string, step *Step, info TaskIn
 // or the file still doesn't exist at the recovered path — callers fall
 // through to the ordinary escalation path in that case.
 func (e *Engine) recoverSidecarFromTaskWorktree(taskID, stepID string, step *Step, info TaskInfo, cfg ImportSidecar) (path string, content []byte, ok bool) {
-	if e.worktrees == nil {
+	if e.execution.Worktrees == nil {
 		return "", nil, false
 	}
-	wtPath, found := e.worktrees.GetWorktreePath(taskID)
+	wtPath, found := e.execution.Worktrees.GetWorktreePath(taskID)
 	if !found || strings.TrimSpace(wtPath) == "" {
 		return "", nil, false
 	}
@@ -157,6 +249,9 @@ func (e *Engine) recoverSidecarFromTaskWorktree(taskID, stepID string, step *Ste
 		vars = map[string]string{}
 	}
 	vars[WorkflowVarDir] = wtPath
+	if sidecar := e.resolveSidecarDir(taskID); sidecar != "" {
+		vars[WorkflowVarSidecarDir] = sidecar
+	}
 	recoveredPath, rErr := RenderTemplate(cfg.From, TemplateContext{
 		Task:     info,
 		Step:     *step,
@@ -171,6 +266,9 @@ func (e *Engine) recoverSidecarFromTaskWorktree(taskID, stepID string, step *Ste
 		return "", nil, false
 	}
 	info.Workflow.SetVar(WorkflowVarDir, wtPath)
+	if sidecar := e.resolveSidecarDir(taskID); sidecar != "" {
+		info.Workflow.SetVar(WorkflowVarSidecarDir, sidecar)
+	}
 	if setErr := e.tasks.SetWorkflow(taskID, info.Workflow); setErr != nil {
 		e.logger.Warn("workflow.import-sidecar.recover.persist", "task_id", taskID, "step", stepID, "err", setErr)
 	}
@@ -183,36 +281,108 @@ func (e *Engine) failRequiredImport(taskID, stepID, kind, state string) {
 	if stepID != "" {
 		reason += " after step " + stepID
 	}
-	if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
+	if statusErr := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); statusErr != nil {
 		e.logger.Error("workflow.import-sidecar.required.status", "task_id", taskID, "step", stepID, "kind", kind, "err", statusErr)
 	}
 }
 
-func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx TemplateContext) error {
+func resolveRunAgentDir(step *Step, wfExec *Execution, ctx TemplateContext) (string, error) {
+	dir := ""
+	if wfExec != nil {
+		dir = wfExec.Variables[WorkflowVarDir]
+	}
+	if step.Config.Dir == "" {
+		return dir, nil
+	}
+	renderedDir, err := RenderTemplate(step.Config.Dir, ctx)
+	if err != nil {
+		return "", fmt.Errorf("render dir: %w", err)
+	}
+	if strings.TrimSpace(renderedDir) == "" {
+		return "", errors.New("render dir: resolved to empty path")
+	}
+	return renderedDir, nil
+}
+
+func (e *Engine) releaseRunAgentClaimOnAbort(taskID string, claimedEffectID EffectID, agentStarted bool, runErr error, recovered any) error {
+	releaseClaim := func(current error) error {
+		if claimedEffectID.IsZero() || agentStarted {
+			return current
+		}
+		if _, relErr := e.releaseClaimedEffect(taskID, claimedEffectID); relErr != nil {
+			if effectClaimFence(relErr) {
+				return current
+			}
+			if current == nil {
+				return fmt.Errorf("release claimed effect: %w", relErr)
+			}
+			return errors.Join(current, fmt.Errorf("release claimed effect: %w", relErr))
+		}
+		return current
+	}
+	if recovered != nil {
+		_ = releaseClaim(runErr)
+		panic(recovered)
+	}
+	if runErr != nil {
+		return releaseClaim(runErr)
+	}
+	return nil
+}
+
+func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx TemplateContext, effectIDs ...EffectID) (runErr error) {
+	if wfExec == nil {
+		wfExec = &Execution{Variables: maps.Clone(ctx.Vars)}
+	}
 	prepareTestVerdictAttemptVars(wfExec, step.ID, ctx.Task.Body)
+	prepareReviewVerdictAttemptVars(wfExec, step)
+	// Seed the sidecar dir before anything renders a template. Setting it only
+	// after dispatch would leave the first run of a verifier role resolving
+	// {{sidecardir .Vars}} to the worktree — which that role cannot write —
+	// and the sandbox denial surfaces as an empty sidecar rather than an
+	// error. ctx carries its own copy of the vars, so both must be updated.
+	if sidecar := e.resolveSidecarDir(taskID); sidecar != "" {
+		wfExec.SetVar(WorkflowVarSidecarDir, sidecar)
+		if ctx.Vars == nil {
+			ctx.Vars = map[string]string{}
+		}
+		ctx.Vars[WorkflowVarSidecarDir] = sidecar
+	}
+	unlockRoute := e.routeLocks.LockLocal(taskID)
+	defer unlockRoute()
+
+	claimedEffectID := EffectID{}
+	if len(effectIDs) > 0 {
+		claimedEffectID = effectIDs[0]
+	}
+	agentStarted := false
+	defer func() {
+		runErr = e.releaseRunAgentClaimOnAbort(taskID, claimedEffectID, agentStarted, runErr, recover())
+	}()
 
 	mode := resolveRunAgentMode(step.Config.Mode, ctx)
 	if admit, reason := e.agents.AdmitDispatch(taskID, step.Config.Role, mode); !admit {
 		err := fmt.Errorf("%w: %s", ErrResourcePressure, reason)
-		classifiedReason, _ := ClassifyAgentStartError(err)
-		if err := e.tasks.UpdateTaskStatus(taskID, ctx.Task.Status, classifiedReason); err != nil {
-			return err
-		}
+		failure := ClassifyAgentStartFailure(err)
 		wfExec.State = ExecWaiting
 		e.logger.Info("workflow.run-agent.resource-pressure", "task_id", taskID, "step", step.ID, "reason", reason)
-		return e.tasks.SetWorkflow(taskID, wfExec)
+		return e.tasks.SetStatusAndWorkflow(taskID, string(ctx.Task.Status), failure.Reason, wfExec)
 	}
 
-	model := step.Config.Model
-	if model == "" {
-		model = "sonnet"
-	}
+	model := resolveRunAgentModel(step.Config.Model, ctx)
 
 	provider, model, assignment, err := e.resolveAgentVariant(ctx.Task, step, wfExec, model, "workflow.cross-provider.fallback")
 	if err != nil {
 		return err
 	}
 	applySkillReceiptRecoveryAssignment(step.ID, wfExec, &assignment)
+	if !claimedEffectID.IsZero() {
+		assignment.IntentID = taskID + ":" + wfExec.WorkflowID + ":" + claimedEffectID.String()
+	}
+	if step.Config.Role == "review" && wfExec.Variables["bestofn.attempts.manifest"] != "" {
+		assignment.ReadOnlyPaths = bestOfNAttemptReadRoots(wfExec)
+		assignment.GitRoots = slices.Clone(assignment.ReadOnlyPaths)
+	}
 
 	prompt, err := e.renderAssignedPrompt(taskID, step, ctx, assignment, "workflow.consume-steer")
 	if err != nil {
@@ -227,13 +397,26 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 				e.agents.StopAgentsForTask(taskID, step.Config.Role)
 			} else {
 				wfExec.State = ExecWaiting
+				wfExec.SetVar(watchdogReaskDeliveredKey(step.ID), "1")
 				e.logger.Info("workflow.reuse-agent", "task_id", taskID, "step", step.ID, "agent_id", agentID)
 				return e.tasks.SetWorkflow(taskID, wfExec)
 			}
 		}
 	}
 
-	dir := wfExec.Variables[WorkflowVarDir]
+	dir, err := resolveRunAgentDir(step, wfExec, ctx)
+	if err != nil {
+		return err
+	}
+	for _, output := range step.Config.sidecarImports() {
+		from, renderErr := RenderTemplate(output.From, ctx)
+		if renderErr != nil {
+			return renderErr
+		}
+		assignment.RemoteOutputs = append(assignment.RemoteOutputs, executioncontract.ExpectedOutput{Name: output.Kind, Kind: output.Kind,
+			Root: executioncontract.RootSidecar, Path: filepath.Base(from), Required: output.Required, Sensitivity: executioncontract.SensitivityInternal})
+	}
+	assignment.RemoteSidecarDir = ctx.Vars[WorkflowVarSidecarDir]
 	cleanRetryKey := watchdogHangCleanRetryKey(step.ID)
 	cleanRetryRef := wfExec.Variables[cleanRetryKey]
 	captureTamperDeletionAllowlist(wfExec, step.ID, step.Config.Role, ctx.Task)
@@ -247,37 +430,18 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	// treated as untracked and dropped rather than counted against the step's
 	// retry budget. The agent spawned just below becomes the only tracked one.
 	e.clearAgentStepsForTask(taskID)
+	wfExec.ClearAgentRoutes()
 
-	// Interactive agents that aren't meant to persist across turns (no
-	// reuse_agent, no wait_for_status) must signal completion via process
-	// exit. OneShot tells the runner to close stdin after the first result
-	// event so claude exits and onComplete fires, unblocking the next step
-	// (e.g. evaluate). Without this, the workflow stalls on implement forever.
-	oneShot := mode == "interactive" && !step.Config.ReuseAgent && step.Config.WaitForStatus == ""
+	// mode is coerced to headless in resolveRunAgentMode, so no run_agent step
+	// dispatches an interactive one-shot anymore — a steerable headless run
+	// finalizes on its first completed turn on its own (drainOrCloseHeadlessSteer).
+	oneShot := false
 
-	// The step-starting marker below brackets the (potentially multi-second,
-	// worktree-prep-bound) StartAgent call, so a stale/untracked agent
-	// completion arriving mid-start (e.g. a reattached agent from a prior
-	// step) sees this step as claimed instead of falling through to the
-	// "nothing tracked yet, credit the current step" fallback in
-	// HandleAgentComplete. The deferred unmark clears it once this function
-	// is done, at which point either agentRoutes (success) or the
-	// parked/failed step state takes over.
-	//
-	// A completion for this very start can also beat the agentRoutes write a
-	// few lines down. Unlike spawnParallelChild and startBestOfNAttempt,
-	// e.mu is not held across the StartAgent call here on purpose: this is
-	// the hot path and worktree prep can be slow. HandleAgentComplete
-	// buffers a completion that arrives in that window instead of dropping
-	// it (#2176's hang was exactly that silent drop). The deferred replay
-	// hands it back once this function's outcome — route registered, or
-	// parked/failed — is settled.
-	e.markStepStarting(taskID, step.ID)
-	defer func() {
-		for _, buffered := range e.unmarkStepStartingAndTakePending(taskID, step.ID) {
-			e.HandleAgentComplete(taskID, buffered)
-		}
-	}()
+	// The step-action effect intent is already persisted before execRunAgent is
+	// entered, so an untracked completion that lands while StartAgent is
+	// blocking still sees a durable "dispatch in progress" claim via
+	// routeStepPending. Do not hold e.mu across StartAgent: review recovery can
+	// legitimately try to queue another workflow while the launcher is blocked.
 	agentID, startedDir, baselineRef, err := e.agents.StartAgent(taskID, step.Config.Role, mode, model, provider, prompt, dir, step.Config.AllowedTools, step.Config.NeedsWorktree, oneShot, step.Config.OutputSchema, cleanRetryRef, assignment)
 	if err != nil {
 		if parked, parkErr := e.parkRunAgentStartError(taskID, step.ID, wfExec, err); parked {
@@ -285,26 +449,36 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 		}
 		return fmt.Errorf("start agent: %w", err)
 	}
-	if startedDir != "" && (step.Config.NeedsWorktree || dir != "") {
-		wfExec.SetVar(WorkflowVarDir, startedDir)
-	}
-	if baselineRef != "" {
-		wfExec.SetVar(tamperBaselineVar(step.ID), baselineRef)
-	}
-	if cleanRetryRef != "" {
-		delete(wfExec.Variables, cleanRetryKey)
-	}
+	agentStarted = true
+	return e.persistStartedAgent(taskID, step, wfExec, agentID, provider, startedDir, baselineRef, cleanRetryKey, cleanRetryRef, dir)
+}
 
-	// Track which task+step this agent was spawned for so HandleAgentComplete
-	// can detect stale completions (e.g. duplicate agent from a ResumeStalled
-	// race) rather than blindly crediting the current step.
-	e.mu.Lock()
-	e.agentRoutes[agentID] = agentRoute{taskID: taskID, stepID: step.ID}
-	e.mu.Unlock()
-
-	wfExec.State = ExecWaiting
-	e.logger.Info("workflow.run-agent", "task_id", taskID, "step", step.ID, "role", step.Config.Role, "agent_id", agentID, "provider", provider)
-	return e.tasks.SetWorkflow(taskID, wfExec)
+func bestOfNAttemptReadRoots(wfExec *Execution) []string {
+	if wfExec == nil {
+		return nil
+	}
+	var roots []string
+	seen := make(map[string]struct{})
+	for _, parent := range wfExec.BestOfNInflight {
+		if parent == nil {
+			continue
+		}
+		for _, attempt := range parent.Attempts {
+			if attempt == nil || attempt.Status != "completed" {
+				continue
+			}
+			dir := strings.TrimSpace(attempt.Dir)
+			if dir == "" {
+				continue
+			}
+			if _, ok := seen[dir]; !ok {
+				seen[dir] = struct{}{}
+				roots = append(roots, dir)
+			}
+		}
+	}
+	slices.Sort(roots)
+	return roots
 }
 
 func resolveRunAgentMode(mode string, ctx TemplateContext) string {
@@ -314,10 +488,55 @@ func resolveRunAgentMode(mode string, ctx TemplateContext) string {
 			mode = rendered
 		}
 	}
-	if mode == "" {
+	// A legacy task file can still carry agent_mode: interactive (kept as a
+	// load-only value), which the implement step templates straight through
+	// {{.Task.AgentMode}}. Interactive dispatch no longer exists — coerce it
+	// to headless here so AdmitDispatch and StartAgent both see the real mode,
+	// matching spawnBestOfNAttempt/spawnParallelChild.
+	if mode == "" || mode == "interactive" {
 		return "headless"
 	}
 	return mode
+}
+
+func resolveRunAgentModel(model string, ctx TemplateContext) string {
+	if strings.Contains(model, "{{") {
+		rendered, err := RenderTemplate(model, ctx)
+		if err == nil {
+			model = rendered
+		}
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return "sonnet"
+	}
+	return model
+}
+
+func (e *Engine) persistStartedAgent(taskID string, step *Step, wfExec *Execution, agentID, provider, startedDir, baselineRef, cleanRetryKey, cleanRetryRef, dir string) error {
+	if startedDir != "" && (step.Config.NeedsWorktree || dir != "") {
+		wfExec.SetVar(WorkflowVarDir, startedDir)
+	}
+	// Sidecar imports run on completion for planner/reviewer roles that may not
+	// own a worktree-backed _dir at all. Persist the writable sidecar dir
+	// independently so {{sidecardir .Vars}} still resolves after the start path.
+	if sidecar := e.resolveSidecarDir(taskID); sidecar != "" {
+		wfExec.SetVar(WorkflowVarSidecarDir, sidecar)
+	}
+	if baselineRef != "" {
+		wfExec.SetVar(tamperBaselineVar(step.ID), baselineRef)
+	}
+	if cleanRetryRef != "" {
+		delete(wfExec.Variables, cleanRetryKey)
+	}
+	wfExec.SetAgentRoute(agentID, step.ID)
+	wfExec.State = ExecWaiting
+	e.logger.Info("workflow.run-agent", "task_id", taskID, "step", step.ID, "role", step.Config.Role, "agent_id", agentID, "provider", provider)
+	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+		return e.deferStartedAgentRoute(taskID, step.ID, agentID, err)
+	}
+	e.clearPendingAgentStep(taskID, agentID)
+	return nil
 }
 
 func (e *Engine) parkRunAgentStartError(taskID, stepID string, wfExec *Execution, err error) (bool, error) {
@@ -340,7 +559,11 @@ func (e *Engine) parkRunAgentStartError(taskID, stepID string, wfExec *Execution
 }
 
 func (e *Engine) selectABVariant(ctx abtest.SelectionContext) (AgentAssignment, bool, error) {
-	eligibility := e.providerEligibilitySnapshot(ctx)
+	// Snapshot the A/B config once so a concurrent SetABTestingConfig swap by
+	// the routing ticker cannot race this selection or split it across two
+	// generations mid-flight.
+	cfg := e.abTestingConfig()
+	eligibility := e.providerEligibilitySnapshot(cfg)
 	providerAllowed := func(provider string) bool {
 		status, ok := eligibility[provider]
 		if !ok {
@@ -360,18 +583,19 @@ func (e *Engine) selectABVariant(ctx abtest.SelectionContext) (AgentAssignment, 
 			return allow
 		}
 	}
-	a, ok, err := abtest.SelectEligibleForContext(e.abTesting, ctx, providerAllowed, evalPassed)
+	a, ok, err := abtest.SelectEligibleForContextWithCohort(cfg, ctx, providerAllowed, evalPassed, e.cohortObserved)
 	if err != nil || !ok {
 		if err == nil && !ok {
-			e.reportProviderShutout(ctx, eligibility, evalPassed)
+			e.reportProviderShutout(cfg, ctx, eligibility, evalPassed)
 		}
 		return AgentAssignment{}, ok, err
 	}
-	e.reportProviderDemotion(ctx, a, eligibility, evalPassed)
+	e.reportProviderDemotion(cfg, ctx, a, eligibility, evalPassed)
 	return AgentAssignment{
 		ExperimentID:    a.ExperimentID,
 		Kind:            a.Kind,
 		VariantID:       a.VariantID,
+		RoutingReason:   a.RoutingReason,
 		Provider:        a.Provider,
 		Model:           a.Model,
 		AssignmentUnit:  a.AssignmentUnit,
@@ -379,6 +603,7 @@ func (e *Engine) selectABVariant(ctx abtest.SelectionContext) (AgentAssignment, 
 		ReasoningEffort: a.ReasoningEffort,
 		PromptTransform: workflowPromptTransform(a.PromptTransform),
 		SkillAliases:    cloneWorkflowSkillAliases(a.SkillAliases),
+		DecisionVersion: a.DecisionVersion,
 	}, true, nil
 }
 
@@ -400,10 +625,10 @@ func (e *Engine) providerEligibility(provider string) providerEligibilityStatus 
 	}
 }
 
-func (e *Engine) providerEligibilitySnapshot(_ abtest.SelectionContext) map[string]providerEligibilityStatus {
+func (e *Engine) providerEligibilitySnapshot(cfg abtest.Config) map[string]providerEligibilityStatus {
 	statuses := map[string]providerEligibilityStatus{}
-	for i := range e.abTesting.Experiments {
-		exp := e.abTesting.Experiments[i]
+	for i := range cfg.Experiments {
+		exp := cfg.Experiments[i]
 		if !exp.EnabledValue() {
 			continue
 		}
@@ -425,8 +650,12 @@ func (e *Engine) providerEligibilitySnapshot(_ abtest.SelectionContext) map[stri
 // assignment, then logs the captured selection-time reason. Throttling is
 // fleet-wide per routing context + demotion tuple so a sustained outage does
 // not emit one ERROR per task.
-func (e *Engine) reportProviderDemotion(ctx abtest.SelectionContext, actual abtest.Assignment, eligibility map[string]providerEligibilityStatus, evalPassed abtest.EvalPassed) {
-	wanted, ok, err := abtest.SelectEligibleForContext(e.abTesting, ctx, nil, evalPassed)
+func (e *Engine) reportProviderDemotion(cfg abtest.Config, ctx abtest.SelectionContext, actual abtest.Assignment, eligibility map[string]providerEligibilityStatus, evalPassed abtest.EvalPassed) {
+	// Cohort-aware (e.cohortObserved), same as the actual selection: a
+	// canary-gated experiment's unfiltered "wanted" pick must apply the same
+	// cohort gate the real dispatch used, or a legitimately-enrolled canary
+	// candidate would be misreported as a demotion from its own baseline.
+	wanted, ok, err := abtest.SelectEligibleForContextWithCohort(cfg, ctx, nil, evalPassed, e.cohortObserved)
 	if err != nil || !ok || wanted.Provider == actual.Provider {
 		return
 	}
@@ -454,8 +683,8 @@ func (e *Engine) reportProviderDemotion(ctx abtest.SelectionContext, actual abte
 // this signal the total shutout is indistinguishable from A/B being disabled or
 // no experiment matching the role. Throttled per routing context + experiment +
 // provider + reason so a sustained outage does not emit one ERROR per task.
-func (e *Engine) reportProviderShutout(ctx abtest.SelectionContext, eligibility map[string]providerEligibilityStatus, evalPassed abtest.EvalPassed) {
-	wanted, ok, err := abtest.SelectEligibleForContext(e.abTesting, ctx, nil, evalPassed)
+func (e *Engine) reportProviderShutout(cfg abtest.Config, ctx abtest.SelectionContext, eligibility map[string]providerEligibilityStatus, evalPassed abtest.EvalPassed) {
+	wanted, ok, err := abtest.SelectEligibleForContextWithCohort(cfg, ctx, nil, evalPassed, e.cohortObserved)
 	if err != nil || !ok {
 		return
 	}
@@ -535,11 +764,49 @@ func (e *Engine) resolveAgentVariant(t TaskInfo, step *Step, wfExec *Execution, 
 			}
 		}
 	}
+	if routed, ok := e.routeAroundSilentHang(t, step, wfExec, provider); ok {
+		provider = routed
+		assignment.RoutingReason = "silent_hang_avoid"
+	}
 	if provider != "" && !providerAvailable(provider) {
 		e.logger.Warn(fallbackLog, "wanted", provider, "reason", "CLI not found")
 		return "", defaultModel, AgentAssignment{}, nil
 	}
+	if assignment.RoutingReason == "" && step.Config.Provider == "cross" {
+		assignment.RoutingReason = "cross"
+	}
 	return provider, resolvedModel, assignment, nil
+}
+
+// routeAroundSilentHang moves this one dispatch off the provider whose last run
+// on this step went silent, and consumes the hint so the step returns to normal
+// routing afterwards. The provider stays healthy for every other task, which is
+// the whole point of not reporting a silent child to the health gate — but the
+// run that just watched it produce nothing should not be handed straight back
+// to it.
+func (e *Engine) routeAroundSilentHang(t TaskInfo, step *Step, wfExec *Execution, provider string) (string, bool) {
+	if wfExec == nil || step == nil {
+		return "", false
+	}
+	avoid := wfExec.Variables[watchdogSilentHangAvoidKey(step.ID)]
+	if avoid == "" {
+		return "", false
+	}
+	wfExec.SetVar(watchdogSilentHangAvoidKey(step.ID), "")
+	effective := provider
+	if effective == "" {
+		effective = e.agents.DefaultProvider()
+	}
+	if effective != avoid {
+		return "", false
+	}
+	alt := crossProvider(effective)
+	if alt == "" || alt == avoid || !providerAvailable(alt) {
+		return "", false
+	}
+	e.logger.Info("workflow.silent-hang.reroute",
+		"task_id", t.ID, "step", step.ID, "from", avoid, "to", alt)
+	return alt, true
 }
 
 // resolveProvider resolves the step-level provider string.
@@ -603,7 +870,7 @@ func crossProvider(provider string) string {
 	order := providerid.All()
 	start := slices.Index(order, author)
 	if start < 0 {
-		start = slices.Index(order, "claude")
+		start = slices.Index(order, providerid.Claude)
 	}
 	firstDifferent := ""
 	for i := 1; i <= len(order); i++ {
@@ -623,14 +890,14 @@ func crossProvider(provider string) string {
 
 func normalizeWorkflowProvider(provider string) string {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case "", "claude":
-		return "claude"
-	case "codex":
-		return "codex"
-	case "copilot":
-		return "copilot"
-	case "opencode":
-		return "opencode"
+	case "", providerid.Claude:
+		return providerid.Claude
+	case providerid.Codex:
+		return providerid.Codex
+	case providerid.Copilot:
+		return providerid.Copilot
+	case providerid.OpenCode:
+		return providerid.OpenCode
 	default:
 		return ""
 	}
@@ -655,15 +922,24 @@ var providerAvailable = func(provider string) bool {
 }
 
 func (e *Engine) execWaitHuman(taskID string, step *Step, wfExec *Execution) error {
-	if step.Config.Status != "" {
-		if err := e.tasks.UpdateTaskStatus(taskID, step.Config.Status, step.Config.StatusReason); err != nil {
-			return err
-		}
-	}
-
 	wfExec.State = ExecWaiting
 	e.logger.Info("workflow.wait-human", "task_id", taskID, "step", step.ID, "actions", step.Config.HumanActions)
-	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+	if step.Config.Status != "" {
+		var err error
+		if taskstatus.Status(step.Config.Status) == taskstatus.HumanRequired {
+			reason := strings.TrimSpace(step.Config.StatusReason)
+			if reason == "" {
+				reason = "workflow is waiting for an operator action"
+			}
+			escalation := autonomy.NewEscalation("workflow.wait_human", autonomy.FailureOwnerOperatorDecision, autonomy.ProvenanceControlPlane, reason)
+			err = e.tasks.SetEscalationAndWorkflow(taskID, step.Config.Status, reason, escalation, autonomy.OutcomeHumanRequired, wfExec)
+		} else {
+			err = e.tasks.SetStatusAndWorkflow(taskID, step.Config.Status, step.Config.StatusReason, wfExec)
+		}
+		if err != nil {
+			return err
+		}
+	} else if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
 		return err
 	}
 	e.maybeAutoApprovePlanReview(taskID, step)
@@ -711,13 +987,23 @@ func (e *Engine) maybeAutoApprovePlanReview(taskID string, step *Step) {
 }
 
 func (e *Engine) shouldAutoApprovePlanReview(t TaskInfo) bool {
-	if t.Status != "plan-review" || t.Workflow == nil ||
+	if t.Status != taskstatus.PlanReview || t.Workflow == nil ||
 		t.Workflow.WorkflowID != "simple-task-plan" ||
 		t.Workflow.State != ExecWaiting ||
 		t.Workflow.CurrentStep != "review_plan" {
 		return false
 	}
 	if PlanHasOpenDecisions(t.PlanDecisions) {
+		return false
+	}
+	// "No open decisions" only means nothing needs a human's judgment call —
+	// it says nothing about whether the plan-critic found the contract itself
+	// unsafe to execute. A REFINE/REJECT verdict names concrete blockers (e.g.
+	// a compile-breaking gap in the file list) that execFlagPlanCritique's own
+	// doc comment says review_plan is supposed to require an explicit human
+	// look at, regardless of open decisions. Auto-approving through that flag
+	// silently discarded every REFINE finding straight into implementation.
+	if verdict := planCritiqueVerdict(t); verdict == planCritiqueVerdictRefine || verdict == planCritiqueVerdictReject {
 		return false
 	}
 	if strings.TrimSpace(t.PlanContract) == "" {
@@ -727,7 +1013,7 @@ func (e *Engine) shouldAutoApprovePlanReview(t TaskInfo) bool {
 }
 
 func (e *Engine) execSetStatus(taskID string, step *Step) (StepOutput, error) {
-	if err := e.tasks.UpdateTaskStatus(taskID, step.Config.Status, step.Config.StatusReason); err != nil {
+	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.Status(step.Config.Status), step.Config.StatusReason); err != nil {
 		return StepOutput{}, err
 	}
 
@@ -771,7 +1057,7 @@ func (e *Engine) execShell(step *Step, ctx TemplateContext) (StepOutput, error) 
 	cmd.Env = append(cmd.Environ(),
 		"SYBRA_TASK_ID="+ti.ID,
 		"SYBRA_TASK_TITLE="+ti.Title,
-		"SYBRA_TASK_STATUS="+ti.Status,
+		"SYBRA_TASK_STATUS="+string(ti.Status),
 		"SYBRA_TASK_PROJECT="+ti.ProjectID,
 		"SYBRA_TASK_BRANCH="+ti.Branch,
 		fmt.Sprintf("SYBRA_TASK_PR=%d", ti.PRNumber),

@@ -122,9 +122,10 @@ func effectiveCheckState(c gqlCheckContext) string {
 		if c.Status != "" && c.Status != "COMPLETED" {
 			return "PENDING"
 		}
-		switch strings.ToUpper(c.Conclusion) {
-		case "FAILURE", "TIMED_OUT", "STARTUP_FAILURE", "ACTION_REQUIRED":
+		if isBlockingCheckRunConclusion(c.Conclusion) {
 			return "FAILURE"
+		}
+		switch strings.ToUpper(c.Conclusion) {
 		case "", "SUCCESS", "NEUTRAL", "SKIPPED", "CANCELLED", "STALE":
 			return "SUCCESS"
 		default:
@@ -153,6 +154,15 @@ func effectiveCheckState(c gqlCheckContext) string {
 			return effectiveCheckState(c)
 		}
 		return ""
+	}
+}
+
+func isBlockingCheckRunConclusion(conclusion string) bool {
+	switch strings.ToUpper(conclusion) {
+	case "FAILURE", "TIMED_OUT", "STARTUP_FAILURE", "ACTION_REQUIRED":
+		return true
+	default:
+		return false
 	}
 }
 

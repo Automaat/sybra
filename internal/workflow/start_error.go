@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/textutil"
 	"github.com/Automaat/sybra/internal/worktreeerr"
 )
 
@@ -70,42 +72,73 @@ var ErrNoProjectAssigned = errors.New("no project_id: refusing to start agent wi
 // instead of burning the circuit breaker's retry budget on identical checks.
 var ErrTaskCostExceeded = errors.New("task cumulative cost exceeds agent.max_task_cost_usd")
 
+type AgentStartFailure struct {
+	Reason    string
+	Permanent bool
+	Blocker   blocker.State
+}
+
 // ClassifyAgentStartError translates an agent-start error into a UI-safe
 // status_reason and a "permanent" flag.
 //
 // permanent=true means retrying without human action will not help — the
-// caller should flip the task to human-required and stop the resume loop
-// from hammering it once a minute.
+// caller should park the task and stop the resume loop from hammering it
+// once a minute.
 //
 // Reason is a single line, capped at startReasonMaxLen. Empty err yields
 // ("", false) so callers don't have to guard.
 func ClassifyAgentStartError(err error) (reason string, permanent bool) {
+	out := ClassifyAgentStartFailure(err)
+	return out.Reason, out.Permanent
+}
+
+func ClassifyAgentStartFailure(err error) AgentStartFailure {
+	var out AgentStartFailure
 	if err == nil {
-		return "", false
+		return out
 	}
+	if typed, ok := classifyOwnedMachineFailure(err); ok {
+		return typed
+	}
+	var machineFailure interface{ MachineFailureCode() string }
 	switch {
+	case errors.As(err, &machineFailure):
+		out.Permanent = true
+		out.Reason = textutil.TruncateBytesTotal("agent start blocked: machine run environment unavailable ("+machineFailure.MachineFailureCode()+")", startReasonMaxLen, "...")
+		out.Blocker = blocker.State{
+			Kind:       blocker.KindRunEnvironment,
+			Actor:      blocker.ActorWorkflow,
+			Code:       machineFailure.MachineFailureCode(),
+			NextAction: "repair_run_environment",
+		}
+		return out
 	case errors.Is(err, ErrDispatchInFlight):
 		// Transient and self-healing: another dispatcher holds the claim and
 		// will start the agent. Suppress the reason entirely.
-		return "", false
+		return out
 	case errors.Is(err, ErrTestRunnerBusy):
 		// Transient: the testing slot frees and ResumeStalled retries. No reason.
-		return "", false
+		return out
 	case errors.Is(err, ErrAgentPoolBusy):
-		return "", false
+		return out
 	case errors.Is(err, ErrResourcePressure):
 		// Transient and self-healing once load drops — but unlike the benign
 		// dispatch-plumbing sentinels above, this names an operator-visible
 		// machine condition, so it DOES surface a status_reason (see
 		// isDeferredNotFailed for why it still never feeds the breaker).
-		reason = "work paused: machine under resource pressure — " + resourcePressureDetail(err)
-		return truncateReason(reason), false
+		out.Reason = textutil.TruncateBytesTotal("work paused: machine under resource pressure — "+resourcePressureDetail(err), startReasonMaxLen, "...")
+		return out
+	case errors.Is(err, worktreeerr.ErrPreparationInFlight):
+		// Transient: another mutating worktree operation owns this path. It
+		// releases when it finishes and the next ResumeStalled tick redispatches
+		// — same treatment as ErrAgentRunning below, no reason, no escalation.
+		return out
 	case errors.Is(err, worktreeerr.ErrAgentRunning):
 		// Transient: PrepareForTask refused to rebase a worktree a tracked
 		// agent is still live in. The agent's own completion (or a later
 		// ResumeStalled tick once it's genuinely idle) drives the workflow
 		// forward — no reason, no escalation.
-		return "", false
+		return out
 	case worktreeerr.IsDiskSpaceError(err):
 		// Checked ahead of every other case (including ErrRebaseFailed and
 		// the generic default below) because ENOSPC surfaces through many
@@ -117,31 +150,118 @@ func ClassifyAgentStartError(err error) (reason string, permanent bool) {
 		// longer mentions disk space at all — see #1856. Escalating
 		// immediately with the real cause also stops the resume loop from
 		// hammering a full disk.
-		permanent = true
-		reason = worktreeerr.DiskSpaceExhaustedReason
+		out.Permanent = true
+		out.Reason = worktreeerr.DiskSpaceExhaustedReason
+		out.Blocker = blocker.State{
+			Kind:       blocker.KindWorktreeRepair,
+			Actor:      blocker.ActorWorkflow,
+			Code:       "disk_space",
+			NextAction: "repair_worktree",
+			// Not Exhausted: the pressure gate's automatic reclaimer may free
+			// space before the next resume tick, and the disk-repair retry
+			// budget in engine_events.go (canRetryWorktreeRepair) is what
+			// decides when this genuinely stops being retryable, not the
+			// first classification of the failure.
+		}
 	case errors.Is(err, project.ErrProjectNotRegistered):
-		permanent = true
-		reason = "agent start blocked: project not registered locally — create the project to resume"
+		out.Permanent = true
+		out.Reason = "agent start blocked: project not registered locally — create the project to resume"
+		out.Blocker = blocker.State{
+			Kind:       blocker.KindOperatorDecision,
+			Actor:      blocker.ActorWorkflow,
+			Code:       "project_not_registered",
+			NextAction: "register_project",
+			Exhausted:  true,
+		}
 	case errors.Is(err, ErrNoProjectAssigned):
-		permanent = true
-		reason = "agent start blocked: no project could be assigned — set agent.default_project_id in config or assign a project to this task manually to resume"
+		out.Permanent = true
+		out.Reason = "agent start blocked: no project could be assigned — set agent.default_project_id in config or assign a project to this task manually to resume"
+		out.Blocker = blocker.State{
+			Kind:       blocker.KindOperatorDecision,
+			Actor:      blocker.ActorWorkflow,
+			Code:       "no_project_assigned",
+			NextAction: "assign_project",
+			Exhausted:  true,
+		}
 	case errors.Is(err, ErrTaskCostExceeded):
-		permanent = true
-		reason = "agent start blocked: " + err.Error()
+		out.Permanent = true
+		out.Reason = "agent start blocked: " + err.Error()
+		out.Blocker = blocker.State{
+			Kind:       blocker.KindOperatorDecision,
+			Actor:      blocker.ActorWorkflow,
+			Code:       "task_cost_exceeded",
+			NextAction: "raise_budget",
+			Exhausted:  true,
+		}
 	case errors.Is(err, worktreeerr.ErrRebaseFailed):
-		permanent = true
-		reason = worktreeerr.RebaseBlockedReason
+		out.Permanent = true
+		out.Reason = worktreeerr.RebaseBlockedReason
+		out.Blocker = blocker.State{
+			Kind:       blocker.KindWorktreeRepair,
+			Actor:      blocker.ActorWorkflow,
+			Code:       "rebase_failed",
+			NextAction: "repair_worktree",
+			// Not Exhausted: see the disk-space case above — retry budget is
+			// tracked and enforced by canRetryWorktreeRepair, not here.
+		}
 	case errors.Is(err, worktreeerr.ErrTransientFetch):
 		// Transient: a network blip during the remote fetch/ls-remote, not a
 		// genuine content conflict. Never escalate — let the resume loop retry
 		// once connectivity recovers.
-		reason = transientFetchStatusReason
+		out.Reason = transientFetchStatusReason
 	case errors.Is(err, provider.ErrProviderUnhealthy):
-		reason = "agent start blocked: " + err.Error()
+		out.Reason = "agent start blocked: " + err.Error()
+		if !isTransientCapacityError(err) {
+			out.Permanent = true
+			out.Blocker = blocker.State{
+				Kind:       blocker.KindCredentialRequired,
+				Actor:      blocker.ActorWorkflow,
+				Code:       "provider_unhealthy",
+				NextAction: "refresh_credentials",
+				Exhausted:  true,
+			}
+		}
 	default:
-		reason = "agent start failed: " + err.Error()
+		out.Reason = "agent start failed: " + err.Error()
 	}
-	return truncateReason(reason), permanent
+	out.Reason = textutil.TruncateBytesTotal(out.Reason, startReasonMaxLen, "...")
+	return out
+}
+
+func classifyOwnedMachineFailure(err error) (AgentStartFailure, bool) {
+	if isCredentialMachineFailure(err) {
+		return classifyCredentialMachineFailure(err), true
+	}
+	if isTransientMachineFailure(err) {
+		return classifyTransientMachineFailure(err), true
+	}
+	return AgentStartFailure{}, false
+}
+
+func classifyTransientMachineFailure(err error) AgentStartFailure {
+	var failure interface{ MachineFailureCode() string }
+	if !errors.As(err, &failure) {
+		return AgentStartFailure{}
+	}
+	return AgentStartFailure{Reason: textutil.TruncateBytesTotal("agent start delayed: transient run environment unavailable ("+failure.MachineFailureCode()+")", startReasonMaxLen, "...")}
+}
+
+func classifyCredentialMachineFailure(err error) AgentStartFailure {
+	var failure interface{ MachineFailureCode() string }
+	if !errors.As(err, &failure) {
+		return AgentStartFailure{}
+	}
+	return AgentStartFailure{
+		Reason:    textutil.TruncateBytesTotal("agent start blocked: credentials unavailable ("+failure.MachineFailureCode()+")", startReasonMaxLen, "..."),
+		Permanent: true,
+		Blocker: blocker.State{
+			Kind:       blocker.KindCredentialRequired,
+			Actor:      blocker.ActorWorkflow,
+			Code:       failure.MachineFailureCode(),
+			NextAction: "refresh_credentials",
+			Exhausted:  true,
+		},
+	}
 }
 
 // isTransientCapacityError reports whether err is a provider-capacity throttle
@@ -169,7 +289,19 @@ func transientAgentStartError(err error) bool {
 		errors.Is(err, ErrResourcePressure) ||
 		errors.Is(err, worktreeerr.ErrTransientFetch) ||
 		errors.Is(err, worktreeerr.ErrAgentRunning) ||
-		errors.Is(err, provider.ErrProviderUnhealthy)
+		errors.Is(err, worktreeerr.ErrPreparationInFlight) ||
+		errors.Is(err, provider.ErrProviderUnhealthy) ||
+		isTransientMachineFailure(err)
+}
+
+func isTransientMachineFailure(err error) bool {
+	var transient interface{ MachineFailureTransient() bool }
+	return errors.As(err, &transient) && transient.MachineFailureTransient()
+}
+
+func isCredentialMachineFailure(err error) bool {
+	var credential interface{ MachineFailureRequiresCredentials() bool }
+	return errors.As(err, &credential) && credential.MachineFailureRequiresCredentials()
 }
 
 // isDeferredNotFailed reports whether err represents a benign defer that must
@@ -180,7 +312,7 @@ func transientAgentStartError(err error) bool {
 // dispatch attempt and wrongly escalate to human-required for a condition
 // that self-heals once load drops.
 func isDeferredNotFailed(err error) bool {
-	return errors.Is(err, ErrResourcePressure)
+	return errors.Is(err, ErrResourcePressure) || isTransientMachineFailure(err)
 }
 
 func isTransientFetchReason(reason string) bool {
@@ -204,21 +336,8 @@ func resourcePressureDetail(err error) string {
 	return detail
 }
 
-// truncateReason caps a status_reason to startReasonMaxLen bytes with an
-// ASCII ellipsis so the UI banner stays one line. Byte (not rune) bound so
-// the caller can compare against len(reason) without surprises from
-// multi-byte runes.
-func truncateReason(s string) string {
-	if len(s) <= startReasonMaxLen {
-		return s
-	}
-	const tail = "..."
-	return s[:startReasonMaxLen-len(tail)] + tail
-}
-
 // FormatStartFailure is a tiny helper for callers that want to log the same
 // classified text. Keeps the log line and the on-task reason consistent.
 func FormatStartFailure(taskID string, err error) string {
-	reason, _ := ClassifyAgentStartError(err)
-	return fmt.Sprintf("task %s: %s", taskID, reason)
+	return fmt.Sprintf("task %s: %s", taskID, ClassifyAgentStartFailure(err).Reason)
 }

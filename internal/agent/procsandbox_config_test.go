@@ -2,7 +2,11 @@
 
 package agent
 
-import "testing"
+import (
+	"os"
+	"strings"
+	"testing"
+)
 
 // TestPrepareRunConfig_Sandbox_DefaultModeResolvesReport pins that a run with
 // no explicit SandboxMode (a fresh install with no agent.sandbox_mode
@@ -50,11 +54,14 @@ func TestPrepareRunConfig_Sandbox_OffModeSkipsResolution(t *testing.T) {
 }
 
 // TestPrepareRunConfig_Sandbox_EnforceResolvesRoots pins that enforce mode
-// actually computes a wrappable spec: canonicalized worktree/sandbox-home/tmp
-// roots plus a materialized profile path, ready for wrapInvocation.
+// actually computes a wrappable spec with canonicalized
+// worktree/sandbox-home/tmp roots, ready for wrapInvocation. The empty profile
+// path selects Darwin's embedded base profile rather than a reclaimable temp
+// file; read enforcement replaces it with a generated profile when needed.
 func TestPrepareRunConfig_Sandbox_EnforceResolvesRoots(t *testing.T) {
 	sandboxDir := t.TempDir()
 	worktreeDir := t.TempDir()
+	sidecarDir := t.TempDir()
 	m, _ := newTestManager(t, ManagerConfig{
 		SandboxHome: func(string) (string, error) { return sandboxDir, nil },
 	})
@@ -63,6 +70,7 @@ func TestPrepareRunConfig_Sandbox_EnforceResolvesRoots(t *testing.T) {
 		TaskID:      "task-1",
 		Mode:        "headless",
 		Dir:         worktreeDir,
+		SidecarDir:  sidecarDir,
 		SandboxMode: "enforce",
 	})
 	if err != nil {
@@ -71,8 +79,45 @@ func TestPrepareRunConfig_Sandbox_EnforceResolvesRoots(t *testing.T) {
 	if cfg.sandbox.mode != "enforce" {
 		t.Fatalf("cfg.sandbox.mode = %q, want enforce", cfg.sandbox.mode)
 	}
-	if cfg.sandbox.worktree == "" || cfg.sandbox.sandboxHome == "" || cfg.sandbox.tmp == "" || cfg.sandbox.profilePath == "" {
+	if cfg.sandbox.worktree == "" || cfg.sandbox.sandboxHome == "" || cfg.sandbox.tmp == "" {
 		t.Fatalf("cfg.sandbox incomplete: %+v", cfg.sandbox)
+	}
+	if cfg.sandbox.profilePath != "" {
+		t.Fatalf("cfg.sandbox.profilePath = %q, want embedded base profile", cfg.sandbox.profilePath)
+	}
+	wantSidecarDir, err := canonicalizeRoot(sidecarDir)
+	if err != nil {
+		t.Fatalf("canonicalize sidecar dir: %v", err)
+	}
+	if cfg.sandbox.sidecarDir != wantSidecarDir {
+		t.Fatalf("cfg.sandbox.sidecarDir = %q, want %q", cfg.sandbox.sidecarDir, wantSidecarDir)
+	}
+}
+
+// TestInjectProcessSandbox_TasklessRunDoesNotMaterializeProfile pins the
+// system-run case where injectSandboxHome intentionally leaves
+// resolvedSandboxHome empty. The write sandbox falls back to Dir as an
+// allowlist root, but the embedded base profile must not be materialized
+// there: monitor runs often point Dir at the checkout used by auto-update.
+func TestInjectProcessSandbox_TasklessRunDoesNotMaterializeProfile(t *testing.T) {
+	dir := t.TempDir()
+	m, _ := newTestManager(t)
+	cfg := RunConfig{Dir: dir, SandboxMode: "enforce"}
+
+	if err := m.injectProcessSandbox(&cfg); err != nil {
+		t.Fatalf("injectProcessSandbox: %v", err)
+	}
+	if cfg.sandbox.profilePath != "" {
+		t.Fatalf("cfg.sandbox.profilePath = %q, want embedded base profile", cfg.sandbox.profilePath)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read taskless checkout: %v", err)
+	}
+	for _, entry := range entries {
+		if entry.Name() == "agent-sandbox.sb" || strings.HasPrefix(entry.Name(), "sybra-agent-sandbox-") {
+			t.Fatalf("taskless sandbox setup materialized profile in checkout: %v", entries)
+		}
 	}
 }
 

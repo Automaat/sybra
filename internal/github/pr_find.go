@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -14,6 +15,22 @@ import (
 // installation-token identity as the CreatePR call it guards.
 var findPRRunner = ghRunCtx
 
+// PRExists reports whether PR #number resolves against repo, guarding
+// link_pr_and_review against trusting a pr_number that was set for the wrong
+// repo — e.g. an agent that ran a bare `gh pr create` inside a fork-remote
+// worktree and got the PR opened against the fork itself instead of
+// upstream. A non-nil err means the check itself failed (gh
+// unavailable/unauthenticated, network, or the PR genuinely not existing in
+// repo) — callers must not read err as proof the PR doesn't exist, only that
+// its presence could not be confirmed.
+func PRExists(ctx context.Context, repo string, number int) (bool, error) {
+	out, err := findPRRunner(ctx, "pr", "view", strconv.Itoa(number), "--repo", repo, "--json", "number")
+	if err != nil {
+		return false, fmt.Errorf("gh pr view %d --repo %s: %s: %w", number, repo, sanitizeGHOutput(out), err)
+	}
+	return true, nil
+}
+
 // FindPRForBranch returns the number of an open PR whose head is branch, if
 // one exists. head may be a bare branch name or "fork-owner:branch"; since
 // `gh pr list --head` matches only the bare branch, the owner (when present)
@@ -23,7 +40,7 @@ var findPRRunner = ghRunCtx
 // signals the lookup itself failed and the caller cannot distinguish "no PR"
 // from "could not check".
 func FindPRForBranch(ctx context.Context, repo, head string) (number int, found bool, err error) {
-	owner, branch := splitHead(head)
+	owner, branch := SplitHead(head)
 	out, runErr := findPRRunner(ctx, "pr", "list",
 		"--repo", repo, "--head", branch, "--state", "open",
 		"--json", "number,headRepositoryOwner", "--limit", "20")
@@ -58,7 +75,7 @@ func FindPRForBranch(ctx context.Context, repo, head string) (number int, found 
 // when no unambiguous PR matches — several open PRs, or only closed-unmerged
 // ones, leave the caller to make no change.
 func FindPRForBranchAnyState(ctx context.Context, repo, head string) (number int, state string, found bool, err error) {
-	owner, branch := splitHead(head)
+	owner, branch := SplitHead(head)
 	out, runErr := findPRRunner(ctx, "pr", "list",
 		"--repo", repo, "--head", branch, "--state", "all",
 		"--json", "number,state,headRepositoryOwner", "--limit", "20")
@@ -102,7 +119,8 @@ func FindPRForBranchAnyState(ctx context.Context, repo, head string) (number int
 	return 0, "", false, nil
 }
 
-func splitHead(head string) (owner, branch string) {
+// SplitHead splits an owner:branch head ref; a bare branch has no owner.
+func SplitHead(head string) (owner, branch string) {
 	if o, b, found := strings.Cut(head, ":"); found {
 		return o, b
 	}

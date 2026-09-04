@@ -10,14 +10,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/abtest"
+	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
-// preventFetchTTLLeak guards against Startup's project.FetchTTL = 60s
+// preventFetchTTLLeak guards against Startup's project fetch/health TTL
 // mutation leaking into other tests sharing this package's test binary — the
 // same discipline internal/project/git_test.go's TestFetchOriginTTLSkipsRepeatFetch
 // applies when it mutates that global directly. Without this, a Startup call
@@ -26,8 +29,10 @@ import (
 // rely on FetchOrigin always doing a real fetch.
 func preventFetchTTLLeak(t *testing.T) {
 	t.Helper()
-	orig := project.FetchTTL
-	t.Cleanup(func() { project.FetchTTL = orig })
+	origFetch, origHealth := project.FetchTTL, project.CloneHealthTTL
+	t.Cleanup(func() {
+		project.FetchTTL, project.CloneHealthTTL = origFetch, origHealth
+	})
 }
 
 func TestAppStartupWiresSubsystemsAndServices(t *testing.T) {
@@ -69,6 +74,67 @@ func TestAppStartupWiresSubsystemsAndServices(t *testing.T) {
 		if event == events.StartupDegraded {
 			t.Fatalf("isolated startup emitted degraded event: %v", emittedEvents)
 		}
+	}
+}
+
+func TestAppStartup_PrimesRoutingBeforeReturning(t *testing.T) {
+	preventFetchTTLLeak(t)
+	home := t.TempDir()
+	t.Setenv("SYBRA_HOME", home)
+	t.Setenv("SYBRA_DISABLE_WORKFLOWS", "0")
+
+	cfg := startupTestConfig(home)
+	cfg.Routing.Enabled = true
+	cfg.ABTesting = abtest.Config{
+		Experiments: []abtest.Experiment{{
+			ID:    "exp",
+			Roles: []string{"fix-review"},
+			Variants: []abtest.Variant{
+				{ID: "claude-opus", Provider: "claude", Model: "opus", Weight: 1},
+			},
+		}},
+	}
+
+	app := NewApp(slog.New(slog.DiscardHandler), &slog.LevelVar{}, cfg)
+	if err := app.Startup(context.Background()); err != nil {
+		t.Fatalf("Startup: %v", err)
+	}
+	t.Cleanup(func() {
+		if app.agentSvc != nil && app.agentSvc.approval != nil {
+			_ = app.agentSvc.approval.Shutdown(context.Background())
+		}
+		app.Shutdown(context.Background())
+	})
+
+	if app.routingSvc == nil {
+		t.Fatal("routingSvc = nil, want initialized during Startup")
+	}
+	got := app.abTestingConfig()
+	if got.WeightsVersion == nil || *got.WeightsVersion != 1 {
+		t.Fatalf("live ABTesting.WeightsVersion = %+v, want 1 before Startup returns", got.WeightsVersion)
+	}
+	overlay, ok := app.routingSvc.LastOverlay()
+	if !ok {
+		t.Fatal("routing overlay missing after Startup, want bootstrapped version 1")
+	}
+	if overlay.Version != 1 {
+		t.Fatalf("routing overlay version = %d, want 1", overlay.Version)
+	}
+
+	// Through the store the app actually writes to, not the audit directory: the default backend is a database, so reading the files asserts against a location nothing writes to and the check passes vacuously or fails for the wrong reason.
+	if app.audit == nil {
+		t.Fatal("audit store = nil after Startup, want one to read the bootstrap event from")
+	}
+	auditEvents, err := app.audit.Read(audit.Query{
+		Since: time.Now().Add(-time.Minute),
+		Until: time.Now().Add(time.Minute),
+		Type:  audit.EventRoutingReweighted,
+	})
+	if err != nil {
+		t.Fatalf("audit.Read: %v", err)
+	}
+	if len(auditEvents) != 1 {
+		t.Fatalf("routing audit events = %d, want 1 bootstrap event", len(auditEvents))
 	}
 }
 
@@ -191,6 +257,94 @@ func TestAppStartup_QueueInitFailureDegradesGracefully(t *testing.T) {
 	}
 }
 
+func TestQueueDrainPass_ReplaysPersistedEffectsBeforeResumeFallback(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SYBRA_HOME", home)
+
+	store, err := task.NewStore(filepath.Join(home, "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskMgr := task.NewManager(store, nil)
+
+	created, err := taskMgr.Create("queue replay", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := taskMgr.UpdateMap(created.ID, map[string]any{
+		"status": string(task.StatusInProgress),
+		"workflow": &workflow.Execution{
+			WorkflowID:  "replay-set-status",
+			CurrentStep: "mark_testing",
+			State:       workflow.ExecWaiting,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err = taskMgr.UpdateMap(created.ID, map[string]any{
+		"workflow": &workflow.Execution{
+			WorkflowID:  "replay-set-status",
+			CurrentStep: "mark_testing",
+			State:       workflow.ExecWaiting,
+			EffectLog: []workflow.EffectRecord{{
+				ID: workflow.EffectID{
+					Generation: updated.Generation + 1,
+					StepSeq:    0,
+					StepID:     "mark_testing",
+					Pos:        0,
+				},
+				IntentAt: time.Now().UTC(),
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wfDir := filepath.Join(home, "workflows")
+	if err := os.MkdirAll(wfDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const yaml = `id: replay-set-status
+name: Replay Set Status
+steps:
+  - id: mark_testing
+    type: set_status
+    config:
+      status: testing
+`
+	if err := os.WriteFile(filepath.Join(wfDir, "replay-set-status.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wfStore, err := workflow.NewStore(wfDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	engine := workflow.NewTestEngine(wfStore, &taskAdapter{tasks: taskMgr}, &recordingAgentLauncher{}, discardLogger())
+	app := &App{
+		cfg:            config.DefaultConfig(),
+		workflowEngine: engine,
+	}
+
+	app.queueDrainPass(context.Background())
+
+	got, err := taskMgr.Get(updated.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusTesting {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusTesting)
+	}
+	if got.Workflow == nil {
+		t.Fatal("workflow = nil, want completed workflow after replay")
+	}
+	if got.Workflow.State != workflow.ExecCompleted || got.Workflow.CurrentStep != "" {
+		t.Fatalf("workflow = %+v, want completed with empty current step", got.Workflow)
+	}
+}
+
 func TestAppShutdownBeforeStartupDoesNotPanic(t *testing.T) {
 	app := NewApp(slog.New(slog.DiscardHandler), &slog.LevelVar{}, startupTestConfig(t.TempDir()))
 
@@ -253,7 +407,7 @@ func TestInitSandboxes_AppliesRetentionWindow(t *testing.T) {
 		ID:              "task-done",
 		Status:          task.StatusDone,
 		StatusChangedAt: time.Now(),
-	}}, nil)
+	}}, nil, nil)
 
 	if _, err := os.Stat(filepath.Dir(dir)); err != nil {
 		t.Fatalf("recent done sandbox removed despite positive retention: %v", err)
@@ -302,8 +456,18 @@ func assertStartupCoreWiring(t *testing.T, app *App, logger *slog.Logger, cfg *c
 	if app.agentCompletion == nil || app.recovery == nil {
 		t.Fatal("completion/recovery handlers were not initialized")
 	}
-	if app.watcher == nil || app.configWatcher == nil {
-		t.Fatal("file/config watchers were not started")
+	if app.recovery.WorkflowEngine != app.workflowEngine {
+		t.Fatal("recovery was not wired to the workflow engine")
+	}
+	if app.evaluationSvc == nil || app.routingSvc == nil {
+		t.Fatal("evaluation/routing services were not initialized before Startup returned")
+	}
+	if app.configWatcher == nil {
+		t.Fatal("config watcher was not started")
+	}
+	wantTaskWatcher := !cfg.DatabaseEnabled()
+	if (app.watcher != nil) != wantTaskWatcher {
+		t.Fatalf("task watcher started = %v, want %v (database.backend = %q)", app.watcher != nil, wantTaskWatcher, cfg.DatabaseBackend())
 	}
 	if app.notifier == nil || app.artifacts == nil || app.experience == nil || app.stats == nil || app.limits == nil {
 		t.Fatal("support stores were not initialized")

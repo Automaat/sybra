@@ -2,14 +2,17 @@ package monitor
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"testing"
 
+	"github.com/Automaat/sybra/internal/blocker"
+	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
-func TestRemediator_LostAgent_MarksRunningRunStopped(t *testing.T) {
+func TestRemediator_LostAgent_DefersRunMutationToReconciliation(t *testing.T) {
 	t.Parallel()
 	withRun := func(t *task.Task) {
 		t.AgentRuns = []task.AgentRun{
@@ -21,7 +24,7 @@ func TestRemediator_LostAgent_MarksRunningRunStopped(t *testing.T) {
 		mkTask("task1", task.StatusInProgress, withRun),
 	}}
 	var recoverCalls int
-	rem := newRemediator(ft, func(context.Context, string) { recoverCalls++ })
+	rem := newRemediator(ft, func(context.Context, string) { recoverCalls++ }, nil, nil)
 	a := Anomaly{Kind: KindLostAgent, TaskID: "task1"}
 
 	label, err := rem.Apply(context.Background(), a)
@@ -48,19 +51,10 @@ func TestRemediator_LostAgent_MarksRunningRunStopped(t *testing.T) {
 		t.Error("status_reason should explain recovery handoff")
 	}
 
-	// Running agent run must be marked stopped before the task update.
-	if len(ft.runUpdates) != 1 {
-		t.Fatalf("want 1 run update, got %d", len(ft.runUpdates))
-	}
-	ru := ft.runUpdates[0]
-	if ru.taskID != "task1" {
-		t.Errorf("runUpdate taskID = %q, want task1", ru.taskID)
-	}
-	if ru.agentID != "lost-agent" {
-		t.Errorf("runUpdate agentID = %q, want lost-agent", ru.agentID)
-	}
-	if ru.patch.State == nil || *ru.patch.State != "stopped" {
-		t.Errorf("runUpdate state = %v, want stopped", ru.patch.State)
+	// The monitor is only a recovery-intent producer. Mutating the run before
+	// admission re-observes it could fence a live detached process.
+	if len(ft.runUpdates) != 0 {
+		t.Fatalf("want reconciliation to own run updates, got %d", len(ft.runUpdates))
 	}
 }
 
@@ -69,7 +63,7 @@ func TestRemediator_LostAgent_NoRunningRun_SkipsRunUpdate(t *testing.T) {
 	ft := &fakeTasks{tasks: []task.Task{
 		mkTask("task2", task.StatusInProgress),
 	}}
-	rem := newRemediator(ft, nil)
+	rem := newRemediator(ft, nil, nil, nil)
 	a := Anomaly{Kind: KindLostAgent, TaskID: "task2"}
 
 	_, err := rem.Apply(context.Background(), a)
@@ -89,7 +83,7 @@ func TestRemediator_PlanReviewStuck_NotRemediated(t *testing.T) {
 	ft := &fakeTasks{tasks: []task.Task{
 		mkTask("pr1", task.StatusPlanReview),
 	}}
-	rem := newRemediator(ft, nil)
+	rem := newRemediator(ft, nil, nil, nil)
 	a := Anomaly{
 		Kind:   KindStuckHumanBlocked,
 		TaskID: "pr1",
@@ -111,7 +105,7 @@ func TestRemediator_StuckHumanBlocked_HumanRequired_PreservesStatusReason(t *tes
 		t.StatusReason = "waiting for credentials from ops team"
 	})
 	ft := &fakeTasks{tasks: []task.Task{existing}}
-	rem := newRemediator(ft, nil)
+	rem := newRemediator(ft, nil, nil, nil)
 	a := Anomaly{
 		Kind:   KindStuckHumanBlocked,
 		TaskID: "hr1",
@@ -141,6 +135,108 @@ func TestRemediator_StuckHumanBlocked_HumanRequired_PreservesStatusReason(t *tes
 	}
 }
 
+func TestRemediator_StuckHumanBlocked_MergedPRUsesLandingPipeline(t *testing.T) {
+	t.Parallel()
+	existing := mkTask("hr-merged", task.StatusHumanRequired, func(tk *task.Task) {
+		tk.StatusReason = "waiting for human approval"
+		tk.ProjectID = "o/r"
+		tk.PRNumber = 42
+		tk.Workflow = &workflow.Execution{
+			WorkflowID:  "simple-task-review",
+			CurrentStep: "wait_human",
+			State:       workflow.ExecWaiting,
+			Variables:   map[string]string{},
+		}
+	})
+	ft := &fakeTasks{tasks: []task.Task{existing}}
+	var landed []struct {
+		taskID   string
+		prNumber int
+		state    string
+	}
+	rem := newRemediator(
+		ft,
+		nil,
+		func(repo string, number int) (github.PRState, error) {
+			if repo != "o/r" || number != 42 {
+				t.Fatalf("fetchPRState(%q, %d)", repo, number)
+			}
+			return github.PRState{State: "MERGED"}, nil
+		},
+		func(_ context.Context, taskID string, prNumber int, state string) error {
+			landed = append(landed, struct {
+				taskID   string
+				prNumber int
+				state    string
+			}{taskID: taskID, prNumber: prNumber, state: state})
+			return nil
+		},
+	)
+	a := Anomaly{
+		Kind:   KindStuckHumanBlocked,
+		TaskID: "hr-merged",
+		Evidence: map[string]any{
+			"status": "human-required",
+		},
+	}
+
+	label, err := rem.Apply(context.Background(), a)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if label != "stuck_human_blocked:merged:hr-merged" {
+		t.Fatalf("label = %q, want merged label", label)
+	}
+	if len(ft.updates) != 0 {
+		t.Fatalf("remediator must not update task directly, got %d updates", len(ft.updates))
+	}
+	if len(landed) != 1 {
+		t.Fatalf("want 1 landing callback, got %d", len(landed))
+	}
+	if landed[0].taskID != "hr-merged" || landed[0].prNumber != 42 || landed[0].state != "MERGED" {
+		t.Fatalf("landing callback = %+v, want hr-merged #42 MERGED", landed[0])
+	}
+}
+
+func TestRemediator_StuckHumanBlocked_PRStateErrorReturnsError(t *testing.T) {
+	t.Parallel()
+	existing := mkTask("hr-pr-error", task.StatusHumanRequired, func(tk *task.Task) {
+		tk.StatusReason = "waiting for human approval"
+		tk.ProjectID = "o/r"
+		tk.PRNumber = 42
+	})
+	ft := &fakeTasks{tasks: []task.Task{existing}}
+	rem := newRemediator(
+		ft,
+		nil,
+		func(repo string, number int) (github.PRState, error) {
+			if repo != "o/r" || number != 42 {
+				t.Fatalf("fetchPRState(%q, %d)", repo, number)
+			}
+			return github.PRState{}, errors.New("gh auth unavailable")
+		},
+		nil,
+	)
+	a := Anomaly{
+		Kind:   KindStuckHumanBlocked,
+		TaskID: "hr-pr-error",
+		Evidence: map[string]any{
+			"status": "human-required",
+		},
+	}
+
+	label, err := rem.Apply(context.Background(), a)
+	if err == nil || err.Error() != "gh auth unavailable" {
+		t.Fatalf("Apply error = %v, want gh auth unavailable", err)
+	}
+	if label != "" {
+		t.Fatalf("label = %q, want empty", label)
+	}
+	if len(ft.updates) != 0 {
+		t.Fatalf("want 0 refresh updates, got %d", len(ft.updates))
+	}
+}
+
 func TestRemediator_StuckHumanBlocked_KnownLostAgentCause_AutoRetries(t *testing.T) {
 	t.Parallel()
 	existing := mkTask("hr2", task.StatusHumanRequired, func(t *task.Task) {
@@ -148,7 +244,7 @@ func TestRemediator_StuckHumanBlocked_KnownLostAgentCause_AutoRetries(t *testing
 		t.Tags = []string{"medium"}
 	})
 	ft := &fakeTasks{tasks: []task.Task{existing}}
-	rem := newRemediator(ft, nil)
+	rem := newRemediator(ft, nil, nil, nil)
 	a := Anomaly{
 		Kind:   KindStuckHumanBlocked,
 		TaskID: "hr2",
@@ -202,7 +298,7 @@ func TestRemediator_StuckHumanBlocked_KnownLostAgentCause_HumanVerdictDoesNotRet
 		t.Tags = []string{"medium"}
 	})
 	ft := &fakeTasks{tasks: []task.Task{existing}}
-	rem := newRemediator(ft, nil)
+	rem := newRemediator(ft, nil, nil, nil)
 	a := Anomaly{
 		Kind:   KindStuckHumanBlocked,
 		TaskID: "hr3",
@@ -232,14 +328,52 @@ func TestRemediator_StuckHumanBlocked_KnownLostAgentCause_HumanVerdictDoesNotRet
 	}
 }
 
+func TestRemediator_StuckHumanBlocked_KnownLostAgentCause_UmbrellaDoesNotRetry(t *testing.T) {
+	t.Parallel()
+	existing := mkTask("hr5", task.StatusHumanRequired, func(t *task.Task) {
+		t.StatusReason = "watchdog: stop"
+		t.Tags = []string{"medium"}
+		t.TaskType = task.TaskTypeUmbrella
+	})
+	ft := &fakeTasks{tasks: []task.Task{existing}}
+	rem := newRemediator(ft, nil, nil, nil)
+	a := Anomaly{
+		Kind:   KindStuckHumanBlocked,
+		TaskID: "hr5",
+		Evidence: map[string]any{
+			"status":                         "human-required",
+			"known_lost_agent_investigation": true,
+		},
+	}
+
+	label, err := rem.Apply(context.Background(), a)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if label == "" {
+		t.Fatal("expected non-empty label")
+	}
+	if len(ft.updates) != 1 {
+		t.Fatalf("want 1 update, got %d", len(ft.updates))
+	}
+	u := ft.updates[0]
+	if u.u.Status != nil {
+		t.Fatalf("status must not change for umbrella tracker, got %v", u.u.Status)
+	}
+	if u.u.Tags != nil {
+		t.Fatalf("tags must not change for umbrella tracker, got %v", *u.u.Tags)
+	}
+}
+
 func TestRemediator_StuckHumanBlocked_KnownLostAgentCause_TamperFlagDoesNotRetry(t *testing.T) {
 	t.Parallel()
 	existing := mkTask("hr4", task.StatusHumanRequired, func(t *task.Task) {
 		t.StatusReason = workflow.TamperFlaggedReasonPrefix + " removed coverage in internal/foo_test.go"
+		t.Blocker = blocker.State{Kind: blocker.KindTamperDetected, Actor: blocker.ActorWorkflow}
 		t.Tags = []string{"medium"}
 	})
 	ft := &fakeTasks{tasks: []task.Task{existing}}
-	rem := newRemediator(ft, nil)
+	rem := newRemediator(ft, nil, nil, nil)
 	a := Anomaly{
 		Kind:   KindStuckHumanBlocked,
 		TaskID: "hr4",
@@ -272,7 +406,7 @@ func TestRemediator_StuckHumanBlocked_UnknownStatus_Errors(t *testing.T) {
 	ft := &fakeTasks{tasks: []task.Task{
 		mkTask("other1", task.StatusInProgress),
 	}}
-	rem := newRemediator(ft, nil)
+	rem := newRemediator(ft, nil, nil, nil)
 	a := Anomaly{
 		Kind:   KindStuckHumanBlocked,
 		TaskID: "other1",

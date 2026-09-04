@@ -5,18 +5,31 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os/exec"
 	"path"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 
+	"github.com/Automaat/sybra/internal/errclass"
+	"github.com/Automaat/sybra/internal/prepstate"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 var prFixSentinelRe = regexp.MustCompile(`(?im)^SYBRA_PR_FIX_RESULT:\s*([a-z_-]+)\s*$`)
-var prFixReasonRe = regexp.MustCompile(`(?im)^SYBRA_PR_FIX_REASON:\s*(.+?)\s*$`)
+
+// prFixReasonLineRe locates where a SYBRA_PR_FIX_REASON: value begins. It is
+// intentionally a prefix match, not a single-line capture: a real diagnosis
+// is routinely more than one line, and `$` in (?m) mode ends at the next
+// newline, so a capturing group here would silently drop everything past
+// line 1 — see sentinelReason for how the value's end is actually found.
+var prFixReasonLineRe = regexp.MustCompile(`(?im)^SYBRA_PR_FIX_REASON:\s*`)
+
+// prFixSentinelKeyRe matches the start of any SYBRA_PR_FIX_* sentinel line,
+// used to find where a multi-line REASON value ends: at the next sentinel
+// line, or end of output if there is none.
+var prFixSentinelKeyRe = regexp.MustCompile(`(?im)^SYBRA_PR_FIX_(?:RESULT|REASON|FAILING_TEST):`)
 
 // prFixFailingTestRe matches each repeated SYBRA_PR_FIX_FAILING_TEST: line a
 // pr-fix agent emits alongside a human-required verdict for non-merge test
@@ -59,6 +72,9 @@ const PRFixContinue PRFixVerdict = "continue"
 // PRFixFlake means the diff is correct and CI failed for unrelated reasons.
 const PRFixFlake PRFixVerdict = "flake"
 
+// PRFixNoop means the live PR no longer has an issue for this run to fix.
+const PRFixNoop PRFixVerdict = "no-op"
+
 // PRFixHuman means the agent intentionally stopped for a human.
 const PRFixHuman PRFixVerdict = "human-required"
 
@@ -75,7 +91,19 @@ func (e *Engine) execRoutePRFixResult(taskID string, step *Step, wfExec *Executi
 		reviewHoldForced = true
 	}
 	if verdict == PRFixContinue {
+		e.recordPreparedWorktreeState(taskID, wfExec, t)
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "continue"}, nil
+	}
+	if verdict == PRFixNoop {
+		msg := "pr-fix: live PR no longer requires changes"
+		if reason != "" {
+			msg += ": " + reason
+		}
+		if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.InReview, msg); err != nil {
+			return StepOutput{}, fmt.Errorf("route pr-fix result: set in-review after no-op: %w", err)
+		}
+		e.logger.Info("workflow.pr-fix.no-op", "task_id", taskID, "pr", t.PRNumber, "reason", reason)
+		return StepOutput{StepID: step.ID, Status: "completed", Output: msg}, nil
 	}
 	// A flake has no commit to verify, so parking or verify_commits would punish the honest answer. EXC:FILE011:load-bearing-invariant
 	if verdict == PRFixFlake {
@@ -83,7 +111,7 @@ func (e *Engine) execRoutePRFixResult(taskID string, step *Step, wfExec *Executi
 		if reason != "" {
 			msg += ": " + reason
 		}
-		if err := e.tasks.UpdateTaskStatus(taskID, "in-review", msg); err != nil {
+		if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.InReview, msg); err != nil {
 			return StepOutput{}, fmt.Errorf("route pr-fix result: set in-review after flake: %w", err)
 		}
 		e.logger.Info("workflow.pr-fix.flake", "task_id", taskID, "pr", t.PRNumber, "reason", reason)
@@ -94,7 +122,7 @@ func (e *Engine) execRoutePRFixResult(taskID string, step *Step, wfExec *Executi
 	// state, so it must never be waved through by the re-probe below.
 	if !reviewHoldForced {
 		if msg, resolved := e.checkPRAlreadyResolved(taskID, t, reason); resolved {
-			if err := e.tasks.UpdateTaskStatus(taskID, "in-review", msg); err != nil {
+			if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.InReview, msg); err != nil {
 				return StepOutput{}, fmt.Errorf("route pr-fix result: resolved-on-remote: set in-review: %w", err)
 			}
 			e.logger.Info("workflow.pr-fix.resolved-on-remote", "task_id", taskID, "pr", t.PRNumber, "agent_reason", reason)
@@ -122,7 +150,17 @@ func (e *Engine) execRoutePRFixResult(taskID string, step *Step, wfExec *Executi
 			return out, err
 		}
 	}
-	if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+	if !reviewHoldForced && prFixShouldResumeNoPRRecovery(t, reason) {
+		msg := "retryable no-PR remote outage; resuming original workflow: " + reason
+		workflowID := ""
+		if wfExec != nil {
+			workflowID = wfExec.WorkflowID
+		}
+		e.logger.Warn("workflow.pr-fix.no-pr-retryable-remote",
+			"task_id", taskID, "workflow", workflowID, "reason", reason)
+		return StepOutput{StepID: step.ID, Status: "completed", Output: msg}, nil
+	}
+	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 		return StepOutput{}, fmt.Errorf("route pr-fix result: set human-required: %w", err)
 	}
 	e.logger.Warn("workflow.pr-fix.human-required", "task_id", taskID, "reason", reason)
@@ -144,6 +182,39 @@ func (e *Engine) execRoutePRFixResult(taskID string, step *Step, wfExec *Executi
 	return StepOutput{StepID: step.ID, Status: "completed", Output: reason}, nil
 }
 
+func prFixShouldResumeNoPRRecovery(t TaskInfo, reason string) bool {
+	if t.PRNumber > 0 {
+		return false
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return false
+	}
+	return errclass.Classify(reason, errclass.PRFixProseRetryBiased) == errclass.Transient
+}
+
+func (e *Engine) recordPreparedWorktreeState(taskID string, wfExec *Execution, t TaskInfo) {
+	if wfExec == nil || wfExec.WorkflowID != "branch-conflict-fix" {
+		return
+	}
+	dir := wfExec.Variables[WorkflowVarDir]
+	if dir == "" {
+		return
+	}
+	branch := t.Branch
+	if branch == "" {
+		branch = strings.TrimSpace(t.Branch)
+	}
+	wrote, err := prepstate.WriteVerified(e.ctx, dir, branch)
+	if err != nil {
+		e.logger.Warn("workflow.pr-fix.prep-state-write", "task_id", taskID, "workflow", wfExec.WorkflowID, "dir", dir, "branch", branch, "err", err)
+		return
+	}
+	if wrote {
+		e.logger.Info("workflow.pr-fix.prep-state-written", "task_id", taskID, "workflow", wfExec.WorkflowID, "dir", dir, "branch", branch)
+	}
+}
+
 func prFixAllowsResolvedMergeRecovery(reason string) bool {
 	reason = strings.ToLower(strings.TrimSpace(reason))
 	if reason == "" {
@@ -163,20 +234,16 @@ func prFixAllowsResolvedMergeRecovery(reason string) bool {
 }
 
 func (e *Engine) tryRecoverResolvedMerge(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error, bool) {
-	if e.worktrees == nil {
+	if e.execution.Worktrees == nil {
 		return StepOutput{}, nil, false
 	}
-	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	wtPath, ok := e.execution.Worktrees.GetWorktreePath(taskID)
 	if !ok {
 		return StepOutput{}, nil, false
 	}
 	if wfExec != nil && wfExec.Variables[resolvedMergeCheckpointVar(step.ID)] == "true" {
 		return e.pushRecoveredResolvedMergeCommit(taskID, step, wfExec, t, wtPath)
 	}
-	if e.checks == nil {
-		return StepOutput{}, nil, false
-	}
-
 	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
 	defer cancel()
 	resolved, err := project.ResolvedUnmergedPaths(ctx, wtPath)
@@ -272,7 +339,7 @@ func (e *Engine) pushRecoveredResolvedMergeCommit(taskID string, step *Step, wfE
 	if out, err, ok := e.pushTaskBranch(taskID, step, wfExec, t, wtPath, branch); !ok {
 		return out, err, true
 	}
-	if e.prHeads != nil && t.PRNumber > 0 && t.ProjectID != "" {
+	if e.pr.HeadFetcher != nil && t.PRNumber > 0 && t.ProjectID != "" {
 		e.verifyPushedHead(taskID, wtPath, t)
 	}
 	e.logger.Info("workflow.pr-fix.recovered-resolved-merge", "task_id", taskID, "branch", branch)
@@ -308,7 +375,7 @@ func (e *Engine) resolvedMergeFocusedCommands(ctx context.Context, taskID, wtPat
 			files = append(files, file)
 		}
 	}
-	_, commands = selectFocusedChecks(e.checks.FocusedChecks(ctx, taskID), files)
+	_, commands = selectFocusedChecks(e.execution.Checks.FocusedChecks(ctx, taskID), files)
 	return commands, files, nil
 }
 
@@ -340,15 +407,9 @@ func resolvedMergeUnexpectedDirtyPaths(ctx context.Context, wtPath string, allow
 }
 
 func gitStatusPorcelainPaths(ctx context.Context, wtPath string) ([]string, error) {
-	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain", "-z")
-	cmd.Dir = wtPath
-	out, err := cmd.CombinedOutput()
+	out, err := gitCombinedOutput(ctx, wtPath, "status", "--porcelain", "-z")
 	if err != nil {
-		detail := strings.TrimSpace(string(out))
-		if detail == "" {
-			return nil, fmt.Errorf("git status --porcelain -z: %w", err)
-		}
-		return nil, fmt.Errorf("git status --porcelain -z: %w: %s", err, detail)
+		return nil, err
 	}
 
 	var paths []string
@@ -387,10 +448,10 @@ func cleanGitRelPath(file string) (string, bool) {
 // must never count as resolved, so any fetch error falls through to the
 // normal human-required park.
 func (e *Engine) checkPRAlreadyResolved(taskID string, t TaskInfo, agentReason string) (msg string, resolved bool) {
-	if e.prStates == nil || t.ProjectID == "" || t.PRNumber <= 0 {
+	if e.pr.StateFetcher == nil || t.ProjectID == "" || t.PRNumber <= 0 {
 		return "", false
 	}
-	state, err := e.prStates.FetchPRState(t.ProjectID, t.PRNumber)
+	state, err := e.pr.StateFetcher.FetchPRState(t.ProjectID, t.PRNumber)
 	if err != nil {
 		e.logger.Warn("workflow.pr-fix.resolved-probe-failed", "task_id", taskID, "pr", t.PRNumber, "err", err)
 		return "", false
@@ -435,7 +496,7 @@ func prFixVerdict(wfExec *Execution) (verdict PRFixVerdict, reason string) {
 	if wfExec.Variables != nil {
 		if v := wfExec.Variables["step."+stepID+"."+PRFixVerdictVar]; v != "" {
 			switch PRFixVerdict(v) {
-			case PRFixHuman, PRFixFlake:
+			case PRFixHuman, PRFixFlake, PRFixNoop:
 				return PRFixVerdict(v), wfExec.Variables["step."+stepID+".pr_fix_reason"]
 			case PRFixContinue:
 				return PRFixContinue, ""
@@ -454,10 +515,10 @@ func prFixVerdict(wfExec *Execution) (verdict PRFixVerdict, reason string) {
 
 // prFixFailingTests returns the specific failing tests a pr-fix agent named
 // via repeated SYBRA_PR_FIX_FAILING_TEST: lines alongside a human-required
-// verdict — the concrete repro info a human (or a future scoped test-fix
-// follow-up) needs, instead of just the free-text reason, which truncate()s
-// to 200 chars and would otherwise drop it. Mirrors prFixVerdict's own
-// var-first-then-reclassify lookup so both stay consistent across a resume.
+// verdict — structured repro info a human (or a future scoped test-fix
+// follow-up) can consume directly, instead of re-parsing it out of the
+// free-text reason. Mirrors prFixVerdict's own var-first-then-reclassify
+// lookup so both stay consistent across a resume.
 func prFixFailingTests(wfExec *Execution) []string {
 	if wfExec == nil {
 		return nil
@@ -500,8 +561,10 @@ func classifyPRFixResult(output string) (verdict PRFixVerdict, reason string) {
 		switch strings.ToLower(strings.TrimSpace(m[1])) {
 		case "human-required", "human_required", "human":
 			return PRFixHuman, extractPRFixReason(output)
-		case "flake", "no-op", "no_op", "noop":
+		case "flake":
 			return PRFixFlake, sentinelReason(output)
+		case "no-op", "no_op", "noop":
+			return PRFixNoop, sentinelReason(output)
 		case "continue", "ok", "done":
 			return PRFixContinue, ""
 		}
@@ -538,20 +601,29 @@ func classifyPRFixResult(output string) (verdict PRFixVerdict, reason string) {
 	}
 	for _, phrase := range humanPhrases {
 		if strings.Contains(lower, phrase) {
-			return PRFixHuman, "pr-fix agent requested human review: " + truncate(firstNonEmptyLine(output), 200)
+			return PRFixHuman, "pr-fix agent requested human review: " + strings.TrimSpace(output)
 		}
 	}
 	return PRFixContinue, ""
 }
 
 // Empty when the agent gave no reason; only human-required defaults its text. EXC:FILE011:load-bearing-invariant
+// sentinelReason returns the last SYBRA_PR_FIX_REASON: value, spanning as
+// many lines as the agent wrote — the value ends at the next SYBRA_PR_FIX_*
+// sentinel line, or at the end of output if there is none. RE2 has no
+// lookahead, so the end boundary is found with a second, separate search
+// rather than a single capturing regex.
 func sentinelReason(output string) string {
-	matches := prFixReasonRe.FindAllStringSubmatch(output, -1)
-	if len(matches) == 0 {
+	starts := prFixReasonLineRe.FindAllStringIndex(output, -1)
+	if len(starts) == 0 {
 		return ""
 	}
-	m := matches[len(matches)-1]
-	return truncate(strings.TrimSpace(m[1]), 200)
+	valueStart := starts[len(starts)-1][1]
+	value := output[valueStart:]
+	if end := prFixSentinelKeyRe.FindStringIndex(value); end != nil {
+		value = value[:end[0]]
+	}
+	return strings.TrimSpace(value)
 }
 
 func extractPRFixReason(output string) string {
@@ -572,14 +644,4 @@ func extractPRFixFailingTests(output string) []string {
 		}
 	}
 	return tests
-}
-
-func firstNonEmptyLine(s string) string {
-	for line := range strings.Lines(s) {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			return line
-		}
-	}
-	return ""
 }

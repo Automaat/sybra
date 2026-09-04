@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Hermetic stand-in for mise in deploy/tests: `install` no-ops, `exec -- cmd
+# args...` just runs cmd directly off PATH (real go/git, stub npm below).
+set -euo pipefail
+case "${1:-}" in
+  install) exit 0 ;;
+  exec)
+    shift
+    [[ "${1:-}" == "--" ]] && shift
+    exec "$@"
+    ;;
+  *) exit 0 ;;
+esac

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/fsutil"
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 const (
@@ -107,7 +108,7 @@ func (m *Manager) reconcile(sessions []RawSession) []*Agent {
 }
 
 func externalAgentID(s *RawSession) string {
-	if s.Provider == "codex" {
+	if s.Provider == providerid.Codex {
 		shortID := s.SessionID
 		if len(shortID) > 8 {
 			shortID = shortID[:8]
@@ -149,7 +150,7 @@ func (m *Manager) refreshTracked() {
 
 	for _, s := range snaps {
 		var next State
-		if s.provider == "codex" {
+		if s.provider == providerid.Codex {
 			next = refreshCodexAgent(s.pid, s.filePath)
 		} else {
 			if !processAlive(s.pid) {

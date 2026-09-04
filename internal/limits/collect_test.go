@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/Automaat/sybra/internal/clock"
 )
 
 func TestParseCodexLine_RateLimitsAndUsage(t *testing.T) {
@@ -86,7 +88,7 @@ func TestStoreProviderAvailableAndChooseProvider(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	s.now = func() time.Time { return now }
+	s.clock = clock.NewFake(now)
 	policy := DefaultPolicy()
 
 	if err := s.UpdateSnapshot(Snapshot{
@@ -124,7 +126,7 @@ func TestSummary_DowngradesStaleExactSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
-	s.now = func() time.Time { return now }
+	s.clock = clock.NewFake(now)
 	if err := s.UpdateSnapshot(Snapshot{
 		Provider:   ProviderCodex,
 		Source:     SourceSessionFiles,
@@ -161,7 +163,7 @@ func TestSummary_RateLimitReachedTypeLimitsProvider(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
-	s.now = func() time.Time { return now }
+	s.clock = clock.NewFake(now)
 	if err := s.UpdateSnapshot(Snapshot{
 		Provider:             ProviderCodex,
 		Source:               SourceLivePoll,
@@ -186,7 +188,7 @@ func TestStoreProviderAvailable_IgnoresExpiredQuotaCycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	s.now = func() time.Time { return now }
+	s.clock = clock.NewFake(now)
 	if err := s.UpdateSnapshot(Snapshot{
 		Provider:   ProviderCodex,
 		Source:     SourceStream,
@@ -222,7 +224,7 @@ func TestChooseProvider_SkipsPolicyDisabledCandidates(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	s.now = func() time.Time { return now }
+	s.clock = clock.NewFake(now)
 	if err := s.UpdateSnapshot(Snapshot{
 		Provider:   ProviderClaude,
 		Source:     SourceStream,
@@ -267,7 +269,7 @@ func TestChooseProvider_DistributesAcrossEligiblePeers(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
-	s.now = func() time.Time { return now }
+	s.clock = clock.NewFake(now)
 	if err := s.UpdateSnapshot(Snapshot{
 		Provider:             ProviderClaude,
 		Source:               SourceStream,
@@ -304,7 +306,7 @@ func TestChooseSoftLimitedPeer_PicksPeerOnlySoftLimited(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
-	s.now = func() time.Time { return now }
+	s.clock = clock.NewFake(now)
 	if err := s.UpdateSnapshot(Snapshot{
 		Provider:   ProviderClaude,
 		Source:     SourceStream,
@@ -335,7 +337,7 @@ func TestChooseSoftLimitedPeer_SkipsHardBlockedPeer(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
-	s.now = func() time.Time { return now }
+	s.clock = clock.NewFake(now)
 	if err := s.UpdateSnapshot(Snapshot{
 		Provider:             ProviderClaude,
 		Source:               SourceStream,
@@ -362,7 +364,7 @@ func TestChooseSoftLimitedPeer_DistributesAcrossEligiblePeers(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
-	s.now = func() time.Time { return now }
+	s.clock = clock.NewFake(now)
 	for _, p := range []string{ProviderCodex, ProviderCopilot} {
 		if err := s.UpdateSnapshot(Snapshot{
 			Provider:   p,
@@ -395,7 +397,7 @@ func TestSummary_PrefersSessionFileUsageCountersButKeepsRunSpend(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	s.now = func() time.Time { return now }
+	s.clock = clock.NewFake(now)
 
 	if err := s.RecordUsage(UsageEvent{
 		ID:                   "session-file",
@@ -459,7 +461,7 @@ func TestStoreImport_DedupesAndPersistsBatch(t *testing.T) {
 	// pruned as stale on reload. Anchor to the real clock instead so the
 	// fixture stays valid indefinitely.
 	now := time.Now().UTC()
-	s.now = func() time.Time { return now }
+	s.clock = clock.NewFake(now)
 
 	if err := s.Import(
 		[]UsageEvent{
@@ -490,7 +492,7 @@ func TestStoreImport_DedupesAndPersistsBatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reopened.now = func() time.Time { return now }
+	reopened.clock = clock.NewFake(now)
 	if err := reopened.reloadLocked(); err != nil {
 		t.Fatal(err)
 	}

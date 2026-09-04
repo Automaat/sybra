@@ -15,10 +15,18 @@ import (
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/stats"
+
+	"github.com/Automaat/sybra/internal/fsutil"
 )
 
 // EmitFunc emits a Wails event to the frontend.
 type EmitFunc func(event string, data any)
+
+// SLOReportFunc receives the freshly computed SLOReport at the end of every
+// tick — wired to internal/sybra/agentorch.Orchestrator.SetSLOReport so the
+// default-off concurrency throttle sees the current error budget without the
+// orchestrator needing its own audit/stats readers.
+type SLOReportFunc func(SLOReport)
 
 type statsReader interface{ All() []stats.RunRecord }
 
@@ -45,19 +53,23 @@ type Deps struct {
 	Logger     *slog.Logger
 	Now        func() time.Time
 	ReportPath string
+	// OnSLOReport, when set, is invoked at the end of every tick with the
+	// freshly computed SLOReport. Optional — nil is a no-op.
+	OnSLOReport SLOReportFunc
 }
 
 // Service periodically computes a fleet scorecard from stats + audit data.
 // Read-only: it never dispatches agents or files issues.
 type Service struct {
-	cfg        config.EvaluationConfig
-	abTesting  abtest.Config
-	stats      statsReader
-	audit      auditReader
-	emit       EmitFunc
-	logger     *slog.Logger
-	now        func() time.Time
-	reportPath string
+	cfg         config.EvaluationConfig
+	abTesting   abtest.Config
+	stats       statsReader
+	audit       auditReader
+	emit        EmitFunc
+	logger      *slog.Logger
+	now         func() time.Time
+	reportPath  string
+	onSLOReport SLOReportFunc
 
 	mu   sync.RWMutex
 	last *Report
@@ -75,14 +87,15 @@ func NewService(d Deps) *Service {
 		d.Emit = func(string, any) {}
 	}
 	return &Service{
-		cfg:        d.Cfg,
-		abTesting:  d.ABTesting,
-		stats:      d.Stats,
-		audit:      d.Audit,
-		emit:       d.Emit,
-		logger:     d.Logger,
-		now:        d.Now,
-		reportPath: d.ReportPath,
+		cfg:         d.Cfg,
+		abTesting:   d.ABTesting,
+		stats:       d.Stats,
+		audit:       d.Audit,
+		emit:        d.Emit,
+		logger:      d.Logger,
+		now:         d.Now,
+		reportPath:  d.ReportPath,
+		onSLOReport: d.OnSLOReport,
 	}
 }
 
@@ -125,7 +138,11 @@ func (s *Service) tickAndLog(ctx context.Context) {
 		s.logger.Warn("evaluation.persist", "err", err)
 	}
 	s.emit(events.EvaluationReport, rep)
-	s.logger.Info("evaluation.tick", "landed", rep.Overall.TasksLanded, "autonomy_rate", rep.Overall.AutonomyRate)
+	s.logger.Info("evaluation.tick", "landed", rep.Overall.TasksLanded, "autonomy_rate", rep.Overall.AutonomyRate,
+		"slo_compliant", rep.SLO.Compliant, "slo_error_budget", rep.SLO.ErrorBudgetRemaining)
+	if s.onSLOReport != nil {
+		s.onSLOReport(rep.SLO)
+	}
 }
 
 // Scan computes a fresh report over the configured window without side effects.
@@ -151,31 +168,62 @@ func (s *Service) Scan(_ context.Context) (Report, error) {
 	if s.stats != nil {
 		recs = s.stats.All()
 	}
+	abTesting := s.abTestingSnapshot()
 	byVariant := compareVariantsByAttribution(recs, evts, since, now, CompareOptions{
-		MinSamples:  s.abTesting.MinSamplesPerVariant,
-		Experiments: s.abTesting.Experiments,
+		MinSamples:  abTesting.MinSamplesPerVariant,
+		Experiments: abTesting.Experiments,
 	}, ComparisonAttributionLatestAuthor)
 	byVariantContribution := compareVariantsByAttribution(recs, evts, since, now, CompareOptions{
-		MinSamples:  s.abTesting.MinSamplesPerVariant,
-		Experiments: s.abTesting.Experiments,
+		MinSamples:  abTesting.MinSamplesPerVariant,
+		Experiments: abTesting.Experiments,
 	}, ComparisonAttributionAnyContribution)
+	overall := Compute(recs, evts, since, now)
 	rep := Report{
-		GeneratedAt: now,
-		Since:       since,
-		Until:       now,
-		Overall:     Compute(recs, evts, since, now),
-		ByProvider:  BreakdownBy(recs, since, now, func(r stats.RunRecord) string { return r.Provider }),
-		ByRole:      BreakdownBy(recs, since, now, func(r stats.RunRecord) string { return r.Role }),
+		SchemaVersion: ScorecardSchemaVersion,
+		GeneratedAt:   now,
+		Since:         since,
+		Until:         now,
+		Overall:       overall,
+		ByProvider:    BreakdownBy(recs, since, now, func(r stats.RunRecord) string { return r.Provider }),
+		ByRole:        BreakdownBy(recs, since, now, func(r stats.RunRecord) string { return r.Role }),
 		BySkillExecutionMode: BreakdownBy(recs, since, now, func(r stats.RunRecord) string {
 			return skillattr.NormalizeExecutionMode(r.SkillExecutionMode)
 		}),
 		ByAgentModel:             CompareByLatestAuthor(recs, evts, since, now, 20, agentModelCohortKey),
 		ByAgentModelContribution: CompareByContribution(recs, evts, since, now, 20, agentModelCohortKey),
-		ByExperimentKind:         GroupByKind(byVariant, byVariantContribution, s.abTesting.Experiments),
-		Notes:                    reportNotes(recs, since, now),
+		ByCostTier:               CompareByLatestAuthor(recs, evts, since, now, 20, costTierCohortKey),
+		ByExperimentKind:         GroupByKind(byVariant, byVariantContribution, abTesting.Experiments),
+		Notes:                    reportNotes(recs, since, now, overall),
 	}
-	rep.Weaknesses = Weaknesses(rep)
+	rep.CostPerMergedBaseline = costPerMergedBaseline(recs, evts, since, wd)
+	sloTargets := s.cfg.SLO
+	if sloTargets == (config.SLOTargets{}) {
+		sloTargets = DefaultSLOTargets()
+	}
+	rep.SLO = EvaluateSLOs(rep.Overall, ComputeSLOSignals(evts, since, now), sloTargets)
+	rep.AutonomySLOs = ComputeAutonomySLOs(rep.Overall, evts, since, now)
+	rep.Weaknesses = Weaknesses(rep, sloTargets)
 	return rep, nil
+}
+
+// costPerMergedBaseline computes the cost-efficiency north star over the
+// equal-length window immediately preceding [since, since+wd) — i.e. the
+// window Scan just scored — so Weaknesses can detect a cost regression
+// current-vs-prior. Returns nil when that prior window landed too few merges
+// to trust (< minMergedForSignal), rather than a baseline of zero that would
+// read as "cost dropped to nothing."
+func costPerMergedBaseline(recs []stats.RunRecord, evts []audit.Event, since time.Time, wd int) *CostBaseline {
+	priorUntil := since.Add(-time.Nanosecond)
+	priorSince := since.AddDate(0, 0, -wd)
+	prior := Compute(recs, evts, priorSince, priorUntil)
+	if merged := prior.Merged + prior.MergedWithEdits; merged >= minMergedForSignal {
+		return &CostBaseline{
+			CostPerMergedUSD:  prior.CostPerMergedUSD,
+			TokensPerMergedPR: prior.TokensPerMergedPR,
+			MergedPRs:         merged,
+		}
+	}
+	return nil
 }
 
 // GetEvaluationReport computes a fresh report for the dashboard. Refresh must
@@ -213,6 +261,48 @@ func (s *Service) PhaseReport(_ context.Context) (PhaseReport, error) {
 	return ComputePhaseDurations(evts, since, now, 10), nil
 }
 
+// AutonomyTrend returns all-time / last-week / last-month autonomy plus a
+// week-by-week series. Reads full audit history (not just the scorecard
+// window) since "all-time" and week buckets further back than the configured
+// window need it. Read-only.
+func (s *Service) AutonomyTrend(_ context.Context) (AutonomyTrend, error) {
+	now := s.now()
+	var evts []audit.Event
+	if s.audit != nil {
+		var err error
+		evts, err = s.audit.Read(audit.Query{Since: autonomyAllTimeAnchor, Until: now})
+		if err != nil {
+			return AutonomyTrend{}, err
+		}
+	}
+	var recs []stats.RunRecord
+	if s.stats != nil {
+		recs = s.stats.All()
+	}
+	return ComputeAutonomyTrend(recs, evts, now, autonomyTrendWeeks), nil
+}
+
+// SetABTesting swaps the A/B config used by CompareVariants/GroupByKind on
+// the next Scan — wired from internal/routing's WeightApplier so a routing
+// overlay tick updates the evaluation report's variant readiness/min-sample
+// view without waiting for a process restart. Config.yaml edits made through
+// the settings UI do not call this today (see the ab_testing hot-reload gap
+// noted in internal/sybra/config_registry.go); it exists for the routing
+// push path specifically.
+func (s *Service) SetABTesting(cfg abtest.Config) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.abTesting = cfg
+}
+
+// abTestingSnapshot reads the current A/B config under s.mu so a concurrent
+// SetABTesting cannot race Scan's read of the Experiments slice.
+func (s *Service) abTestingSnapshot() abtest.Config {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.abTesting
+}
+
 // LastReport returns the cached report and whether one exists.
 func (s *Service) LastReport() (Report, bool) {
 	s.mu.RLock()
@@ -241,5 +331,21 @@ func (s *Service) persist(r Report) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.reportPath, data, 0o644)
+	return fsutil.AtomicWrite(s.reportPath, data)
+}
+
+// AuditStoreReader adapts the board's audit store into a reader.
+//
+// The directory-backed reader above only sees what a file-backed trail wrote.
+// Under a database backend the day-files stop growing, so a consumer left on
+// the directory reads an empty trail and reports the fleet as idle.
+func AuditStoreReader(store interface {
+	Read(audit.Query) ([]audit.Event, error)
+}) auditReader {
+	return auditFunc(func(q audit.Query) ([]audit.Event, error) {
+		if store == nil {
+			return nil, nil
+		}
+		return store.Read(q)
+	})
 }

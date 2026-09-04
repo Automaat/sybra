@@ -16,7 +16,7 @@ import (
 type triageCoordinator struct {
 	tasks          *task.Manager
 	projects       *project.Store
-	auditLog       *audit.Logger
+	auditLog       audit.Store
 	logger         *slog.Logger
 	cfg            *config.Config
 	providerHealth *provider.Checker
@@ -26,7 +26,7 @@ type triageCoordinator struct {
 func newTriageCoordinator(
 	tasks *task.Manager,
 	projects *project.Store,
-	auditLog *audit.Logger,
+	auditLog audit.Store,
 	logger *slog.Logger,
 	cfg *config.Config,
 	providerHealth *provider.Checker,
@@ -47,6 +47,7 @@ func (c *triageCoordinator) init() {
 	}
 	c.handler = poll.NewTriageHandler(c.tasks, c.projects, c.auditLog, c.logger, &c.cfg.Triage)
 	c.handler.SetProviderGate(c.providerHealth)
+	c.handler.SetSybraBugProjectID(c.cfg.HumanReviewRepo())
 	c.logger.Info("triage.enabled", "poll_seconds", c.cfg.Triage.PollSeconds, "model", c.cfg.Triage.Model)
 }
 

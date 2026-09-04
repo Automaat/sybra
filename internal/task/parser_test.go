@@ -101,6 +101,25 @@ agent_mode: supervised
 			wantErr: true,
 		},
 		{
+			// Legacy task files predating the interactive-runner removal
+			// (#2561) still carry agent_mode: interactive on disk. No code
+			// assigns this value anymore, but validAgentModes must keep
+			// accepting it so these pre-existing files still load.
+			name: "legacy interactive agent_mode still parses",
+			input: `---
+id: legacy1
+title: Legacy interactive task
+status: todo
+agent_mode: interactive
+---`,
+			want: Task{
+				ID:        "legacy1",
+				Title:     "Legacy interactive task",
+				Status:    StatusTodo,
+				AgentMode: "interactive",
+			},
+		},
+		{
 			name: "path traversal slug rejected",
 			input: `---
 id: bad2
@@ -422,6 +441,7 @@ func TestMarshalRoundTripAgentRunOperationalFields(t *testing.T) {
 			SessionID:         "session-001",
 			ProtocolViolation: "missing-contract",
 			HeadSHA:           "abcdef123456",
+			FinalCommitSource: "agent",
 		}},
 	}
 
@@ -453,6 +473,9 @@ func TestMarshalRoundTripAgentRunOperationalFields(t *testing.T) {
 	}
 	if got.HeadSHA != original.AgentRuns[0].HeadSHA {
 		t.Errorf("HeadSHA = %q, want %q", got.HeadSHA, original.AgentRuns[0].HeadSHA)
+	}
+	if got.FinalCommitSource != original.AgentRuns[0].FinalCommitSource {
+		t.Errorf("FinalCommitSource = %q, want %q", got.FinalCommitSource, original.AgentRuns[0].FinalCommitSource)
 	}
 }
 

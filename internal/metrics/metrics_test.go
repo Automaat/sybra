@@ -28,12 +28,15 @@ func TestMetricsPipeline(t *testing.T) {
 	MonitorTick(context.Background())
 	MonitorAnomaly(context.Background(), "lost_agent")
 	OrchestratorTick(context.Background())
+	OrchestratorEffectReplay(context.Background(), "replayed")
+	OrchestratorResumeStalledFallback(context.Background())
 	ProviderProbe(context.Background(), "claude", true)
 	ProviderHealthFlip(context.Background(), "claude", false)
 	ProviderAuthFailure("claude")
 	ProviderRateLimit("codex")
 	AgentFailover("claude", "codex")
 	AgentGated("claude", "logged_out")
+	DatabaseTransaction(context.Background(), "sqlite", "ok", time.Second, 100*time.Millisecond)
 
 	if err := Init(config.MetricsConfig{Enabled: true}); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -60,6 +63,9 @@ func TestMetricsPipeline(t *testing.T) {
 	OrchestratorTick(context.Background())
 	OrchestratorStaleRestart(context.Background(), true)
 	OrchestratorStaleRestart(context.Background(), false)
+	OrchestratorEffectReplay(context.Background(), "replayed")
+	OrchestratorEffectReplay(context.Background(), "already_completed")
+	OrchestratorResumeStalledFallback(context.Background())
 	ProviderProbe(context.Background(), "claude", true)
 	ProviderProbe(context.Background(), "codex", false)
 	ProviderHealthFlip(context.Background(), "claude", false)
@@ -68,6 +74,7 @@ func TestMetricsPipeline(t *testing.T) {
 	ProviderRateLimit("codex")
 	AgentFailover("claude", "codex")
 	AgentGated("claude", "logged_out")
+	DatabaseTransaction(context.Background(), "sqlite", "ok", 250*time.Millisecond, 25*time.Millisecond)
 
 	// Observable gauges — provide live callbacks.
 	RegisterTasksByStatus(func() map[string]int64 {
@@ -82,6 +89,30 @@ func TestMetricsPipeline(t *testing.T) {
 	})
 	RegisterProviderRawHealth(func() map[string]int64 {
 		return map[string]int64{"claude": 1, "codex": 0}
+	})
+	RegisterGHAuthState(func() map[string]int64 {
+		return map[string]int64{"healthy": 1, "unavailable": 0}
+	})
+	RegisterGHAuthTransitions(func() int64 { return 4 })
+	RegisterGHAuthSuppressedCalls(func() int64 { return 2 })
+	RegisterGHIssueOutboxPending(func() map[string]int64 {
+		return map[string]int64{"monitor": 1}
+	})
+	RegisterGHIssueOutboxReplayed(func() map[string]int64 {
+		return map[string]int64{"monitor": 3}
+	})
+	RegisterGHIssueOutboxOldestAgeSeconds(func() map[string]int64 {
+		return map[string]int64{"monitor": 120}
+	})
+	RegisterDatabasePoolStats(func() DatabasePoolStats {
+		return DatabasePoolStats{
+			MaxOpenConnections:  4,
+			OpenConnections:     3,
+			InUse:               2,
+			Idle:                1,
+			WaitCount:           7,
+			WaitDurationSeconds: 1.25,
+		}
 	})
 
 	body := scrape(t)
@@ -100,6 +131,8 @@ func TestMetricsPipeline(t *testing.T) {
 		"sybra_monitor_anomalies_total",
 		"sybra_orchestrator_ticks_total",
 		"sybra_orchestrator_stale_restarts_total",
+		"sybra_orchestrator_effect_replays_total",
+		"sybra_orchestrator_resume_stalled_fallbacks_total",
 		"sybra_tasks_by_status",
 		"sybra_agents_active",
 		"sybra_renovate_prs_fetched",
@@ -111,6 +144,18 @@ func TestMetricsPipeline(t *testing.T) {
 		"sybra_agents_gated_total",
 		"sybra_provider_healthy",
 		"sybra_provider_raw_healthy",
+		"sybra_github_auth_state",
+		"sybra_github_auth_transitions_total",
+		"sybra_github_auth_suppressed_calls_total",
+		"sybra_github_issue_outbox_pending",
+		"sybra_github_issue_outbox_replayed_total",
+		"sybra_github_issue_outbox_oldest_pending_age_seconds",
+		"sybra_database_transactions_total",
+		"sybra_database_transaction_duration_seconds",
+		"sybra_database_writer_admission_wait_seconds",
+		"sybra_database_pool_connections",
+		"sybra_database_pool_waits_total",
+		"sybra_database_pool_wait_duration_seconds_total",
 		`status="todo"`,
 		`state="running"`,
 		`result="ok"`,
@@ -118,8 +163,14 @@ func TestMetricsPipeline(t *testing.T) {
 		`kind="lost_agent"`,
 		`kind="pr_gap"`,
 		`provider="claude"`,
+		`result="replayed"`,
+		`result="already_completed"`,
 		`from="claude"`,
 		`to="codex"`,
+		`state="healthy"`,
+		`sink="monitor"`,
+		`backend="sqlite"`,
+		`state="in_use"`,
 	}
 	for _, want := range wantSubstrings {
 		if !strings.Contains(body, want) {

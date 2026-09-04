@@ -1,6 +1,7 @@
 package github
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -104,6 +105,47 @@ func TestFetchReviewsWith_success(t *testing.T) {
 	if summary.ReviewedByMe[0].Number != 3 {
 		t.Errorf("ReviewedByMe[0].Number = %d, want 3", summary.ReviewedByMe[0].Number)
 	}
+}
+
+func TestFetchReviewSplitFnsOnlyRunTheirOwnSearchLegs(t *testing.T) {
+	t.Parallel()
+
+	emptyResponse := `{
+		"data": {
+			"viewer": {"login": "me"},
+			"search": {"nodes": []}
+		}
+	}`
+
+	t.Run("created by me uses one search", func(t *testing.T) {
+		t.Parallel()
+		fe := &sequenceExecer{outputs: [][]byte{[]byte(emptyResponse)}}
+		prs, err := fetchCreatedByMePRsWith(fe)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(prs) != 0 {
+			t.Fatalf("created prs len = %d, want 0", len(prs))
+		}
+		if fe.calls != 1 {
+			t.Fatalf("calls = %d, want 1", fe.calls)
+		}
+	})
+
+	t.Run("assigned summary uses two searches", func(t *testing.T) {
+		t.Parallel()
+		fe := &sequenceExecer{outputs: [][]byte{[]byte(emptyResponse), []byte(emptyResponse)}}
+		summary, err := fetchAssignedReviewSummaryWith(fe)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(summary.ReviewRequested) != 0 || len(summary.ReviewedByMe) != 0 {
+			t.Fatalf("summary = %+v, want both assigned slices empty", summary)
+		}
+		if fe.calls != 2 {
+			t.Fatalf("calls = %d, want 2", fe.calls)
+		}
+	})
 }
 
 func TestFetchReviewsWith_failedCheckRunConclusion(t *testing.T) {
@@ -417,6 +459,96 @@ func TestFetchPRsForMonitorWith_queryRequestsRunAttempts(t *testing.T) {
 	want := "checkSuite { workflowRun { id runAttempt } }"
 	if !strings.Contains(normalized, want) {
 		t.Errorf("monitor CheckRun selection missing workflow run attempt\nwant fragment: %s\nquery: %s", want, normalized)
+	}
+	if !strings.Contains(normalized, "pageInfo { hasNextPage endCursor }") {
+		t.Errorf("monitor check contexts selection missing pagination metadata\nquery: %s", normalized)
+	}
+}
+
+func TestFetchPRsForMonitorWith_completesTruncatedCheckContexts(t *testing.T) {
+	t.Parallel()
+
+	firstPage := make([]string, 20)
+	for i := range firstPage {
+		firstPage[i] = fmt.Sprintf(`{"__typename":"CheckRun","name":"green-%d","status":"COMPLETED","conclusion":"SUCCESS"}`, i)
+	}
+	secondPage := make([]string, 9)
+	for i := range secondPage[:8] {
+		secondPage[i] = fmt.Sprintf(`{"__typename":"CheckRun","name":"green-late-%d","status":"COMPLETED","conclusion":"SUCCESS"}`, i)
+	}
+	secondPage[8] = `{"__typename":"CheckRun","name":"distributions","status":"COMPLETED","conclusion":"FAILURE"}`
+
+	initial := fmt.Sprintf(`{
+		"data": {"viewer": {"login": "me"}, "repo0": {"pullRequest": {
+			"number": 18028,
+			"title": "matrix PR",
+			"url": "https://github.com/o/r/pull/18028",
+			"state": "OPEN",
+			"author": {"login": "me", "type": "User"},
+			"repository": {"name": "r", "nameWithOwner": "o/r"},
+			"labels": {"nodes": []},
+			"commits": {"nodes": [{"commit": {"oid": "sha", "statusCheckRollup": {
+				"state": "FAILURE",
+				"contexts": {"pageInfo": {"hasNextPage": true, "endCursor": "cursor-20"}, "nodes": [%s]}
+			}}}]},
+			"reviewThreads": {"nodes": []},
+			"latestReviews": {"nodes": []}
+		}}}
+	}`, strings.Join(firstPage, ","))
+	continuation := fmt.Sprintf(`{
+		"data": {"repository": {"pullRequest": {"commits": {"nodes": [{"commit": {
+			"statusCheckRollup": {"contexts": {
+				"pageInfo": {"hasNextPage": false, "endCursor": ""},
+				"nodes": [%s]
+			}}
+		}}]}}}}
+	}`, strings.Join(secondPage, ","))
+
+	fe := &sequenceExecer{outputs: [][]byte{[]byte(initial), []byte(continuation)}}
+	results := fetchPRsForMonitorWith(fe, []PRRef{{Repo: "o/r", Number: 18028}})
+	if len(results) != 1 || results[0].Err != nil || !results[0].Open {
+		t.Fatalf("results = %+v, want one successfully completed PR", results)
+	}
+	if fe.calls != 2 {
+		t.Fatalf("calls = %d, want initial batch plus one context continuation", fe.calls)
+	}
+	if got := results[0].PR.CIStatus; got != "FAILURE" {
+		t.Fatalf("CIStatus = %q, want FAILURE from context 29", got)
+	}
+	issues := MatchTaskPRs([]PullRequest{results[0].PR}, []TaskMatcher{{ID: "task", PRNumber: 18028}})
+	if len(issues) != 1 || issues[0].Kind != PRIssueCIFailure {
+		t.Fatalf("issues = %+v, want ci_failure", issues)
+	}
+}
+
+func TestFetchPRsForMonitorWith_truncatedContextFailureDoesNotCertifyGreen(t *testing.T) {
+	t.Parallel()
+	initial := []byte(`{
+		"data": {"viewer": {"login": "me"}, "repo0": {"pullRequest": {
+			"number": 1,
+			"title": "x",
+			"url": "https://github.com/o/r/pull/1",
+			"state": "OPEN",
+			"author": {"login": "me", "type": "User"},
+			"repository": {"name": "r", "nameWithOwner": "o/r"},
+			"labels": {"nodes": []},
+			"commits": {"nodes": [{"commit": {"oid": "sha", "statusCheckRollup": {
+				"state": "FAILURE",
+				"contexts": {"pageInfo": {"hasNextPage": true, "endCursor": "cursor"}, "nodes": [
+					{"__typename":"CheckRun","name":"visible","status":"COMPLETED","conclusion":"SUCCESS"}
+				]}
+			}}}]},
+			"reviewThreads": {"nodes": []},
+			"latestReviews": {"nodes": []}
+		}}}
+	}`)
+	fe := &sequenceExecer{
+		outputs: [][]byte{initial, nil},
+		errs:    []error{nil, errors.New("continuation unavailable")},
+	}
+	results := fetchPRsForMonitorWith(fe, []PRRef{{Repo: "o/r", Number: 1}})
+	if len(results) != 1 || results[0].Err == nil || results[0].Open {
+		t.Fatalf("results = %+v, want retryable fetch error and no green PR", results)
 	}
 }
 

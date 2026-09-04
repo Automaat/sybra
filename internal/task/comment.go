@@ -20,6 +20,20 @@ type ReviewComment struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
+// CommentPersistence is the storage primitive Manager.Comments() runs
+// against: the file-backed *CommentStore (always available, today's
+// default) or a database-backed adapter, selected once via
+// Manager.SetCommentPersistence. Comments carry no actor field — unlike a
+// task mutation, a review comment already names its author in its content,
+// and there is no separate "who changed this" question to answer for it.
+type CommentPersistence interface {
+	List(taskID string) ([]ReviewComment, error)
+	Add(taskID string, line int, body string) (ReviewComment, error)
+	Resolve(taskID, commentID string) error
+	Delete(taskID, commentID string) error
+	ResolveAll(taskID string) error
+}
+
 // CommentStore persists review comments as a JSON sidecar next to the task
 // file. Every mutation is a List (read) → modify → write sequence, so a
 // per-task lock guards the whole critical section — otherwise a concurrent
@@ -164,3 +178,5 @@ func (s *CommentStore) write(taskID string, comments []ReviewComment) error {
 	}
 	return nil
 }
+
+var _ CommentPersistence = (*CommentStore)(nil)

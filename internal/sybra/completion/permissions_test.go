@@ -205,7 +205,7 @@ func TestOnComplete_SkipsPromptRenderedForInteractiveMode(t *testing.T) {
 	t.Cleanup(func() { _ = al.Close() })
 
 	taskMgr := newMinimalTaskManager(t)
-	tk, err := taskMgr.Create("interactive task", "", "interactive")
+	tk, err := taskMgr.Create("interactive task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}

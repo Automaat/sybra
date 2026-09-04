@@ -29,12 +29,19 @@ type Verdict struct {
 // so Codex's strict additionalProperties:false rule is satisfied — the model
 // emits null for them when unset, which json.Unmarshal decodes into the zero
 // value, matching the `omitempty` prose-parsing path's behavior.
-const Schema = `{"type":"object","properties":{"title":{"type":"string"},"description":{"type":["string","null"]},"tags":{"type":"array","items":{"type":"string"}},"size":{"type":"string","enum":["small","medium","large"]},"type":{"type":"string","enum":["bug","feature","refactor","review","chore","docs"]},"mode":{"type":"string","enum":["headless","interactive"]},"project_id":{"type":["string","null"]},"original_title":{"type":["string","null"]}},"required":["title","description","tags","size","type","mode","project_id","original_title"],"additionalProperties":false}`
+const Schema = `{"type":"object","properties":{"title":{"type":"string"},"description":{"type":["string","null"]},"tags":{"type":"array","items":{"type":"string"}},"size":{"type":"string","enum":["small","medium","large"]},"type":{"type":"string","enum":["bug","feature","refactor","review","chore","docs"]},"mode":{"type":"string","enum":["headless"]},"project_id":{"type":["string","null"]},"original_title":{"type":["string","null"]}},"required":["title","description","tags","size","type","mode","project_id","original_title"],"additionalProperties":false}`
 
 var (
 	validSizes = []string{"small", "medium", "large"}
 	validTypes = []string{"bug", "feature", "refactor", "review", "chore", "docs"}
-	validModes = []string{"headless", "interactive"}
+	// validModes only contains headless — the interactive runner was removed.
+	// This is the first of two independent floors: the schema enum restricts
+	// what the classifier is asked to emit, and ValidateVerdict rejects the
+	// verdict outright if a model still hallucinates outside it. RouteMode
+	// applies a second, unconditional floor regardless of what reaches it, as
+	// defense in depth against any other caller of RouteMode that skips
+	// ValidateVerdict.
+	validModes = []string{"headless"}
 
 	// domainTags are the controlled-vocabulary domain tags. Tags outside
 	// this set and the size/type sets are rejected.

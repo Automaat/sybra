@@ -1,5 +1,26 @@
 package config
 
+// DefaultGitHubWebhookCommandPrefix is the literal command token accepted in
+// issue and pull-request comments when GitHub webhook ingestion is configured.
+const DefaultGitHubWebhookCommandPrefix = "/sybra"
+
+type GitHubPollingConfig struct {
+	Issues      GitHubPollingStreamConfig `yaml:"issues" json:"issues"`
+	SybraPRs    GitHubPRPollingConfig     `yaml:"sybra_prs" json:"sybraPrs"`
+	AssignedPRs GitHubPRPollingConfig     `yaml:"assigned_prs" json:"assignedPrs"`
+}
+
+type GitHubPollingStreamConfig struct {
+	Enabled         bool `yaml:"enabled" json:"enabled"`
+	IntervalSeconds int  `yaml:"interval_seconds" json:"intervalSeconds"`
+}
+
+type GitHubPRPollingConfig struct {
+	Enabled               bool `yaml:"enabled" json:"enabled"`
+	ActiveIntervalSeconds int  `yaml:"active_interval_seconds" json:"activeIntervalSeconds"`
+	IdleIntervalSeconds   int  `yaml:"idle_interval_seconds" json:"idleIntervalSeconds"`
+}
+
 type GitHubConfig struct {
 	// Enabled is the top-level kill-switch: false forces every GitHub
 	// automation off regardless of the sub-toggles below. Fresh generated
@@ -7,14 +28,17 @@ type GitHubConfig struct {
 	// configs that omit this key keep the old enabled behavior during load.
 	// true defers to IssuesEnabled/ReviewsEnabled.
 	Enabled bool `yaml:"enabled" json:"enabled"`
+	// Polling is the primary stream-level control surface for GitHub polling.
+	// The legacy fields below remain as compatibility inputs during load but new
+	// code should read this block through the effective helper methods.
+	Polling GitHubPollingConfig `yaml:"polling" json:"polling"`
 	// IssuesEnabled gates the GitHub Issues fetcher specifically. Defaults to
-	// true (see DefaultConfig). Effective state is Enabled && IssuesEnabled —
-	// use RunsIssuesFetcher() rather than reading this field directly.
+	// true for legacy configs. Deprecated compatibility input for
+	// github.polling.issues.enabled.
 	IssuesEnabled bool `yaml:"issues_enabled" json:"issuesEnabled"`
 	// ReviewsEnabled gates PR reviewer poll registration specifically.
-	// Defaults to true (see DefaultConfig). Effective state is
-	// Enabled && ReviewsEnabled — use RunsReviewer() rather than reading this
-	// field directly.
+	// Deprecated compatibility input for both github.polling.sybra_prs.enabled
+	// and github.polling.assigned_prs.enabled.
 	ReviewsEnabled bool `yaml:"reviews_enabled" json:"reviewsEnabled"`
 	// PollerRole splits GitHub search polling (reviews/issues/renovate) across
 	// machines sharing one token. "primary" (or empty) runs the search pollers;
@@ -25,15 +49,10 @@ type GitHubConfig struct {
 	// Poll-interval overrides in seconds. Zero falls back to the built-in
 	// default. Raised defaults (vs. the original 1m/5m) cut steady-state request
 	// volume; lower them only on a high-limit (App-token) instance.
+	// Deprecated compatibility input for both PR streams' active intervals.
 	ReviewsFastSeconds int `yaml:"reviews_fast_seconds" json:"reviewsFastSeconds"`
-	// ReviewRoundsPerHour caps automated review runs one PR may receive in a
-	// rolling hour before the task is parked for a human. 0 uses the default;
-	// negative disables the cap. Rate-based rather than a lifetime total so a
-	// long-lived PR that is legitimately re-reviewed after each push is never
-	// blocked, while a runaway loop is stopped within the hour (#2164 sustained
-	// ~5/hour for 23 hours).
-	ReviewRoundsPerHour int `yaml:"review_rounds_per_hour" json:"reviewRoundsPerHour"`
-	ReviewsSlowSeconds  int `yaml:"reviews_slow_seconds" json:"reviewsSlowSeconds"`
+	// Deprecated compatibility input for both PR streams' idle intervals.
+	ReviewsSlowSeconds int `yaml:"reviews_slow_seconds" json:"reviewsSlowSeconds"`
 	// ReviewsMaxPRsPerTick caps how many non-active linked PRs the known-PR
 	// poller fetches in one tick. Zero falls back to the built-in default;
 	// resolved non-positive values mean "unlimited".
@@ -43,20 +62,30 @@ type GitHubConfig struct {
 	// back to the built-in default; resolved non-positive values disable the
 	// backoff entirely.
 	ReviewsStableBackoffMaxTicks int `yaml:"reviews_stable_backoff_max_ticks" json:"reviewsStableBackoffMaxTicks"`
-	IssuesSeconds                int `yaml:"issues_seconds" json:"issuesSeconds"`
+	// Deprecated compatibility input for github.polling.issues.interval.
+	IssuesSeconds int `yaml:"issues_seconds" json:"issuesSeconds"`
 	// MentionTriggerPhrase, when set, gates a comment-mention search alongside
 	// the existing assigned/labeled issue paths: an open issue whose comments
 	// contain this phrase (e.g. "@sybra") gets a task via the same
 	// dedup/creation path. Empty (default) disables the feature — existing
 	// installs see no behavior change.
 	MentionTriggerPhrase string `yaml:"mention_trigger_phrase" json:"mentionTriggerPhrase"`
-	RenovateFastSeconds  int    `yaml:"renovate_fast_seconds" json:"renovateFastSeconds"`
-	RenovateSlowSeconds  int    `yaml:"renovate_slow_seconds" json:"renovateSlowSeconds"`
+	// Webhook configures the GitHub App webhook listener, authentication, and
+	// comment commands.
+	Webhook             GitHubWebhookConfig `yaml:"webhook" json:"webhook"`
+	RenovateFastSeconds int                 `yaml:"renovate_fast_seconds" json:"renovateFastSeconds"`
+	RenovateSlowSeconds int                 `yaml:"renovate_slow_seconds" json:"renovateSlowSeconds"`
 	// App configures GitHub App installation-token auth. When enabled, Sybra
-	// mints a short-lived installation token and injects it into the gh
-	// subprocess (GH_TOKEN), raising the REST ceiling to 15k/hr. Unset = fall
-	// back to gh's own auth.
+	// mints short-lived installation tokens for GitHub subprocesses and the
+	// agent gh shim, raising the REST ceiling to 15k/hr without parking stale
+	// tokens in long-lived agent environments. Unset = fall back to gh's own auth.
 	App GitHubAppConfig `yaml:"app" json:"app"`
+	// AllowAmbientReviewAuth permits PR-review agents to use the machine's
+	// existing gh authentication when no restricted GitHub App verifier token
+	// is available. It is off by default: enabling it deliberately gives a
+	// verifier the operator's GitHub authority, although Sybra still blocks
+	// approval submissions and disables the verifier workspace's push remote.
+	AllowAmbientReviewAuth bool `yaml:"allow_ambient_review_auth" json:"allowAmbientReviewAuth"`
 	// NativeAutoMerge is a kill-switch for arming GitHub's native
 	// `gh pr merge --auto` on pet-project PRs once Sybra's own review/fix
 	// cycle is done and the base branch's protection supports it. It is an
@@ -64,13 +93,19 @@ type GitHubConfig struct {
 	// replacement — when unsupported or disabled the legacy merge stays the
 	// fallback. Default off (zero value = false).
 	NativeAutoMerge bool `yaml:"native_auto_merge" json:"nativeAutoMerge"`
-	// AutoResolveCleanMerges is a kill-switch for the deterministic
-	// clean-merge fast-path: before dispatching a conflict-recovery agent,
-	// Sybra attempts a plain `git merge` of the PR's base branch in Go. When
-	// that merge creates a commit with no conflicting hunks, it is pushed and
-	// no agent is spawned; conflicts, no-op merges, and errors still fall
-	// through to the agent-assisted path. Default off (zero value = false).
+	// AutoResolveCleanMerges is a kill-switch for the deterministic clean-merge
+	// fast-path used only for a single conflict issue on a PR: Sybra attempts a
+	// plain `git merge` of the PR's base branch in Go. A merge that creates a
+	// commit with no conflicting hunks is pushed and no agent is spawned.
+	// Comments, CI failures, and coalesced issue sets never use this path; Sybra
+	// does not merge base just to refresh a stale branch. Conflicts, no-op
+	// merges, and errors always fall through to the agent-assisted path. Default
+	// off (zero value = false).
 	AutoResolveCleanMerges bool `yaml:"auto_resolve_clean_merges" json:"autoResolveCleanMerges"`
+	// PRFixMaxRetries caps automated pr-fix attempts per task and PR issue kind
+	// before the PR monitor parks the task for a human. Zero falls back to the
+	// built-in default; a negative value disables this per-issue cap.
+	PRFixMaxRetries int `yaml:"pr_fix_max_retries" json:"prFixMaxRetries"`
 	// FlakyDetection is a kill-switch for same-commit CI flakiness
 	// classification. When true, a lone ci_failure issue is classified via
 	// ClassifyCIFlakiness (the head commit's full check-run history, not just
@@ -84,6 +119,29 @@ type GitHubConfig struct {
 	// deterministic. Zero falls back to the built-in default; see
 	// GitHubConfig.FlakyThreshold().
 	FlakySuccessThreshold float64 `yaml:"flaky_success_threshold" json:"flakySuccessThreshold"`
+}
+
+// GitHubWebhookConfig controls GitHub App deliveries sent to
+// POST /webhook/github.
+type GitHubWebhookConfig struct {
+	// Enabled starts the inbound GitHub webhook listener.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// Port is the dedicated webhook listener port.
+	Port int `yaml:"port" json:"port"`
+	// Secret authenticates X-Hub-Signature-256. It is intentionally distinct
+	// from TaskSecret, which authenticates POST /webhook/task. Empty disables
+	// GitHub comment-command ingestion.
+	Secret string `yaml:"secret" json:"secret" secret:"true"`
+	// CommandPrefix is the literal slash-command prefix accepted in issue and
+	// pull-request comments, for example "/sybra". The supported commands are
+	// "<prefix> ship" and "<prefix> review".
+	CommandPrefix string `yaml:"command_prefix" json:"commandPrefix"`
+	// TaskEnabled exposes the generic POST /webhook/task sibling route. Legacy
+	// top-level webhook.enabled configurations are migrated with this enabled.
+	TaskEnabled bool `yaml:"task_enabled" json:"taskEnabled"`
+	// TaskSecret authenticates the generic route's X-Sybra-Signature header.
+	// A non-empty value also enables the route.
+	TaskSecret string `yaml:"task_secret" json:"taskSecret" secret:"true"`
 }
 
 // GitHubAppConfig holds GitHub App installation-token credentials. The private

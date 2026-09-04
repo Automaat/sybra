@@ -13,17 +13,16 @@ import (
 	"github.com/Automaat/sybra/internal/evaluation"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/prompteval"
-	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/task"
 )
 
-func cmdEvaluation(cfg *config.Config, store *task.Manager, args []string, jsonOut bool) int {
+func cmdEvaluation(cfg *config.Config, api *apiClient, store taskBoard, args []string, jsonOut bool) int {
 	if len(args) == 0 {
 		return fatal(jsonOut, "usage: evaluation <scan|judge|golden|offline> [args] [--json]")
 	}
 	switch args[0] {
 	case "scan":
-		return cmdEvaluationScan(cfg, jsonOut)
+		return cmdEvaluationScan(cfg, api, jsonOut)
 	case "judge":
 		return cmdEvaluationJudge(store, args[1:], jsonOut)
 	case "golden":
@@ -358,18 +357,8 @@ func cmdEvaluationGolden(args []string, jsonOut bool) int {
 	return 0
 }
 
-func cmdEvaluationScan(cfg *config.Config, jsonOut bool) int {
-	statsStore, err := stats.NewStore(config.StatsFile())
-	if err != nil {
-		return fatal(jsonOut, "open stats: %v", err)
-	}
-	svc := evaluation.NewService(evaluation.Deps{
-		Cfg:       cfg.Evaluation,
-		ABTesting: cfg.ABTesting,
-		Stats:     statsStore,
-		Audit:     evaluation.AuditDirReader(cfg.AuditDir()),
-	})
-	report, err := svc.Scan(context.Background())
+func cmdEvaluationScan(cfg *config.Config, api *apiClient, jsonOut bool) int {
+	report, err := scanEvaluation(cfg, api)
 	if err != nil {
 		return fatal(jsonOut, "scan: %v", err)
 	}
@@ -382,11 +371,26 @@ func cmdEvaluationScan(cfg *config.Config, jsonOut bool) int {
 	fmt.Printf("  autonomy=%.0f%%  ci-first-pass=%.0f%%  failure=%.0f%% (%d/%d resolved runs)  change-failure=%.0f%% (%d reverted)  rework_tasks=%d\n",
 		o.AutonomyRate*100, o.CIFirstPassRate*100, o.FailureRate*100, o.AgentFailures, o.AgentResolvedRuns,
 		o.ChangeFailureRate*100, o.Reverted, o.ReworkTasks)
+	if o.AutonomyUnknownLandings > 0 {
+		fmt.Printf("  autonomy_unknown=%d landed tasks asked for intervention with no durably-attributed resolution — excluded from autonomy_rate rather than guessed\n",
+			o.AutonomyUnknownLandings)
+	}
 	fmt.Printf("  runs=%d  stalled=%d (retried, excluded from failure rate)\n", o.AgentRuns, o.AgentStalls)
 	fmt.Printf("  lead p50/p90=%.1f/%.1fh  cycle p50/p90=%.1f/%.1fh\n",
 		o.LeadTimeP50H, o.LeadTimeP90H, o.CycleTimeP50H, o.CycleTimeP90H)
-	fmt.Printf("  cost=$%.2f ($%.2f/landed)  turns/landed=%.1f  tools/landed=%.1f\n",
-		o.TotalCostUSD, o.CostPerLanded, o.TurnsPerLanded, o.ToolsPerLanded)
+	fmt.Printf("  cost=$%.2f ($%.2f/landed, $%.2f/merged)  tokens/merged=%.0f  turns/landed=%.1f  tools/landed=%.1f\n",
+		o.TotalCostUSD, o.CostPerLanded, o.CostPerMergedUSD, o.TokensPerMergedPR, o.TurnsPerLanded, o.ToolsPerLanded)
+	if b := report.CostPerMergedBaseline; b != nil {
+		fmt.Printf("  cost_per_merge_baseline=$%.2f (%d merged prior window)\n", b.CostPerMergedUSD, b.MergedPRs)
+	}
+	if len(report.ByCostTier) > 0 {
+		fmt.Println("by cost tier (provider:role:tier):")
+		for i := range report.ByCostTier {
+			r := &report.ByCostTier[i]
+			fmt.Printf("  %-40s landed=%-4d $/merged=$%-8.2f tokens/merged=%.0f\n",
+				r.Key, r.Landed, r.CostPerMergedUSD, r.TokensPerMergedPR)
+		}
+	}
 	if len(report.Weaknesses) > 0 {
 		fmt.Println("weaknesses:")
 		for _, w := range report.Weaknesses {
@@ -396,7 +400,7 @@ func cmdEvaluationScan(cfg *config.Config, jsonOut bool) int {
 	return 0
 }
 
-func cmdEvaluationJudge(store *task.Manager, args []string, jsonOut bool) int {
+func cmdEvaluationJudge(store taskBoard, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("judge", flag.ContinueOnError)
 	model := fs.String("model", "", "judge model (default claude-sonnet-4-6)")
 	seed := fs.Int64("seed", 0, "rubric shuffle seed (0 = stable order)")
@@ -465,4 +469,9 @@ func trajectorySummary(t task.Task) string {
 		parts = append(parts, fmt.Sprintf("%s(%s $%.2f)", role, r.State, r.CostUSD))
 	}
 	return fmt.Sprintf("%d agent runs: %s", len(t.AgentRuns), strings.Join(parts, " → "))
+}
+
+// scanEvaluation scores the fleet that owns the board. The stats file and audit log it reduces both live beside that board, so scoring this machine's copies would report a different fleet.
+func scanEvaluation(cfg *config.Config, api *apiClient) (evaluation.Report, error) {
+	return callAPIWithin[evaluation.Report](api, apiSlowCallTimeout, statsServiceName, "ScanEvaluation")
 }

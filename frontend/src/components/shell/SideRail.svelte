@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ClipboardList, Folder, MessageCircle, UserCircle, GitBranch, ClipboardCheck, LayoutDashboard, BarChart3, Settings, Archive, ChevronDown, ChevronUp, Bell, Activity } from '@lucide/svelte'
+  import { ClipboardList, Folder, UserCircle, GitBranch, ClipboardCheck, LayoutDashboard, BarChart3, Settings, Archive, ChevronDown, ChevronUp, Bell, Activity } from '@lucide/svelte'
   import type { Component } from 'svelte'
   import { navStore } from '../../lib/navigation.svelte.js'
   import { taskStore } from '../../stores/tasks.svelte.js'
@@ -11,10 +11,6 @@
   // Focus mode collapses the rail to the core destinations; "More" expands the
   // full nav so advanced views stay reachable.
   let moreExpanded = $state(false)
-
-  const interactiveAgentCount = $derived(
-    agentStore.list.filter(a => a.mode === 'interactive' && (a.state === 'running' || a.state === 'paused')).length
-  )
 
   const runningAgentCount = $derived(
     agentStore.list.filter(a => a.state === 'running').length
@@ -54,7 +50,6 @@
   // drop the WORK/SESSIONS/BUILD/DATA group headers. Settings is pinned bottom.
   const primaryItems: NavItem[] = [
     { kind: ['task-list', 'task-detail'], label: 'Board', icon: ClipboardList, onclick: () => navStore.reset({ kind: 'task-list' }) },
-    { kind: ['chats', 'chat-detail'], label: 'Chats', icon: MessageCircle, onclick: () => navStore.reset({ kind: 'chats' }) },
     { kind: ['agents', 'agent-detail'], label: 'Agents', icon: UserCircle, onclick: () => navStore.reset({ kind: 'agents' }) },
     { kind: ['reviews'], label: 'Reviews', icon: ClipboardCheck, onclick: () => navStore.reset({ kind: 'reviews' }) },
   ]
@@ -108,12 +103,6 @@
           title={`${badgeLabel(needsYouCount, 'task need', 'tasks need')} you`}
           aria-label={`${badgeLabel(needsYouCount, 'task need', 'tasks need')} you`}
         >{badgeText(needsYouCount)}</span>
-      {:else if item.label === 'Chats' && interactiveAgentCount > 0}
-        <span
-          class="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary-500 px-1 text-[8px] font-bold leading-none text-white"
-          title={badgeLabel(interactiveAgentCount, 'interactive chat')}
-          aria-label={badgeLabel(interactiveAgentCount, 'interactive chat')}
-        >{badgeText(interactiveAgentCount)}</span>
       {:else if item.label === 'Agents' && runningAgentCount > 0}
         <span
           class="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-success-500 px-1 text-[8px] font-bold leading-none text-white"

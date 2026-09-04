@@ -24,25 +24,41 @@ const (
 	// outlierMargin is how far a provider/role failure rate must exceed the
 	// overall before it's flagged as a systematic outlier.
 	outlierMargin = 0.15
+	// minMergedForSignal gates the cost-per-merge regression check: both the
+	// current and prior window must have landed at least this many merges
+	// (Merged+MergedWithEdits), or a handful of merges could swing $/merged
+	// wildly and flag a false regression.
+	minMergedForSignal = 5
+	// costRegressionMargin is how far $/merged-PR must rise relative to the
+	// prior equal-length window before it's flagged as a regression.
+	costRegressionMargin = 0.20
 )
 
 // Weaknesses inspects a report and returns ranked systematic weaknesses, each
 // with a suggested action. Empty when there is too little data or nothing
-// stands out. Pure and deterministic.
-func Weaknesses(r Report) []Weakness {
+// stands out. targets gates the autonomy/CI-first-pass/rework thresholds —
+// pass config.DefaultSLOTargets() (or the operator's EvaluationConfig.SLO)
+// rather than a hardcoded value so a fleet-wide SLO change and a weakness
+// warning stay in lockstep. Pure and deterministic.
+func Weaknesses(r Report, targets SLOTargets) []Weakness {
 	var out []Weakness
 	o := r.Overall
 
 	if o.TasksLanded >= minLandedForSignal {
-		if o.AutonomyRate < 0.7 {
+		if o.AutonomyRate < targets.MinAutonomyRate {
 			out = append(out, Weakness{
-				Severity:   "warn",
-				Metric:     "autonomy",
-				Detail:     fmt.Sprintf("%.0f%% of landings needed a human touch", (1-o.AutonomyRate)*100),
+				Severity: "warn",
+				Metric:   "autonomy",
+				// AutonomyRate is scoped to the known-provenance cohort
+				// (autonomous + humanTouched) — AutonomyUnknownLandings is
+				// excluded from both buckets rather than guessed into one
+				// (issue #2727), so 1-AutonomyRate here is purely the
+				// human-touched share of the known cohort.
+				Detail:     fmt.Sprintf("%.0f%% of landings with known provenance were human-touched", (1-o.AutonomyRate)*100),
 				Suggestion: "review what escalated to human-required; tighten triage so more tasks run headless end-to-end",
 			})
 		}
-		if o.CIFirstPassRate < 0.6 {
+		if o.CIFirstPassRate < targets.MinCIFirstPassRate {
 			out = append(out, Weakness{
 				Severity:   "warn",
 				Metric:     "ci_first_pass",
@@ -50,12 +66,27 @@ func Weaknesses(r Report) []Weakness {
 				Suggestion: "have the implementation agent run the full test/lint suite before pushing",
 			})
 		}
-		if rework := float64(o.ReworkTasks) / float64(o.TasksLanded); rework > 0.3 {
+		if rework := float64(o.ReworkTasks) / float64(o.TasksLanded); rework > targets.MaxReworkRate {
 			out = append(out, Weakness{
 				Severity:   "info",
 				Metric:     "rework",
 				Detail:     fmt.Sprintf("%.0f%% of landed tasks bounced between statuses", rework*100),
 				Suggestion: "strengthen plan-review so tasks converge in fewer rounds",
+			})
+		}
+	}
+
+	if mergedNow := o.Merged + o.MergedWithEdits; mergedNow >= minMergedForSignal &&
+		r.CostPerMergedBaseline != nil && r.CostPerMergedBaseline.MergedPRs >= minMergedForSignal &&
+		r.CostPerMergedBaseline.CostPerMergedUSD > 0 {
+		delta := (o.CostPerMergedUSD - r.CostPerMergedBaseline.CostPerMergedUSD) / r.CostPerMergedBaseline.CostPerMergedUSD
+		if delta > costRegressionMargin {
+			out = append(out, Weakness{
+				Severity: "warn",
+				Metric:   "cost_per_merge",
+				Detail: fmt.Sprintf("$/merged-PR rose %.0f%% to $%.2f (was $%.2f last window)",
+					delta*100, o.CostPerMergedUSD, r.CostPerMergedBaseline.CostPerMergedUSD),
+				Suggestion: "check byCostTier for a tier/model regression or runaway retries inflating cost per merged PR",
 			})
 		}
 	}

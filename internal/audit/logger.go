@@ -24,9 +24,15 @@ func NewLogger(dir string) (*Logger, error) {
 }
 
 func (l *Logger) Log(e Event) error {
+	// Normalize unconditionally, not just when unset. File names are derived
+	// from this timestamp's date, and Read selects files by UTC date, so a
+	// caller supplying a non-UTC Timestamp would file the event under a date
+	// no reader looks for — the same silent mismatch #2826 fixed on the read
+	// side, reintroduced from the write side.
 	if e.Timestamp.IsZero() {
-		e.Timestamp = time.Now().UTC()
+		e.Timestamp = time.Now()
 	}
+	e.Timestamp = e.Timestamp.UTC()
 
 	data, err := json.Marshal(e)
 	if err != nil {
@@ -49,7 +55,7 @@ func (l *Logger) Log(e Event) error {
 // nil. A logging failure is reported to fallback rather than returned, since
 // callers on the dispatch path (agent start, chat rollback, ...) treat audit
 // logging as best-effort and must not fail the operation it's recording.
-func LogEvent(al *Logger, fallback *slog.Logger, eventType, taskID, agentID string, data map[string]any) {
+func LogEvent(al Store, fallback *slog.Logger, eventType, taskID, agentID string, data map[string]any) {
 	if al == nil {
 		return
 	}
@@ -94,3 +100,9 @@ func (l *Logger) file(ts time.Time) (*os.File, error) {
 	l.today = day
 	return f, nil
 }
+
+// Read returns the events matching q from this trail's directory.
+func (l *Logger) Read(q Query) ([]Event, error) { return Read(l.dir, q) }
+
+// Cleanup removes day-files past retentionDays from this trail's directory.
+func (l *Logger) Cleanup(retentionDays int) error { return Cleanup(l.dir, retentionDays) }

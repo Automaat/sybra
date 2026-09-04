@@ -12,6 +12,12 @@ const (
 	// matching and exists only to keep its retry budget separate from PR-backed
 	// conflicts.
 	PRIssueBranchConflictNoPR PRIssueKind = "branch_conflict_no_pr"
+	// PRIssueTaskBranchConflict is a tracker-only kind for recovering a task's
+	// own branch when the local branch and the pushed copy of that SAME branch
+	// diverged and the clean merge hit content conflicts. It is never emitted by
+	// PR monitor matching; handlers use it only for the dedicated same-branch
+	// recovery workflow budget.
+	PRIssueTaskBranchConflict PRIssueKind = "task_branch_conflict"
 	PRIssueBranchRecreate     PRIssueKind = "branch_recreate"
 	PRIssueCIFailure          PRIssueKind = "ci_failure"
 	PRIssueComments           PRIssueKind = "comments"

@@ -9,12 +9,17 @@ import (
 	"go/parser"
 	gotoken "go/token"
 	"log/slog"
-	"os/exec"
 	pathpkg "path"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/Automaat/sybra/internal/blocker"
+	"github.com/Automaat/sybra/internal/evidence"
+	"github.com/Automaat/sybra/internal/gitexec"
+	"github.com/Automaat/sybra/internal/taskstatus"
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 // TamperBlessedTag short-circuits the detector: a human who has reviewed a
@@ -244,8 +249,12 @@ var (
 )
 
 type tamperDeletionAllowlist struct {
-	ExactPaths map[string]bool `json:"exactPaths"`
-	Basenames  map[string]bool `json:"basenames"`
+	ExactPaths      map[string]bool   `json:"exactPaths"`
+	Basenames       map[string]bool   `json:"basenames"`
+	Globs           []string          `json:"globs,omitempty"`
+	ExactPathSource map[string]string `json:"exactPathSource,omitempty"`
+	BasenameSource  map[string]string `json:"basenameSource,omitempty"`
+	GlobSource      map[string]string `json:"globSource,omitempty"`
 }
 
 // isEstablishedSkipIdiom reports whether the added skip line is already a
@@ -329,13 +338,14 @@ func scanTamperPatch(path string, cat tamperCategory, patch, baseContent, upstre
 
 func scanTamperPatchResult(path string, cat tamperCategory, patch, baseContent, upstreamContent string) tamperPatchResult {
 	s := &tamperScan{
-		path: path, cat: cat, isCI: cat == tamperCatCI, seen: map[string]bool{},
+		path: path, cat: cat, isCI: cat == tamperCatCI, isGo: strings.HasSuffix(path, ".go"), seen: map[string]bool{},
 		baseContent: baseContent, mergedUpstreamSkips: mergedUpstreamSkipAllowance(baseContent, upstreamContent),
 	}
 	inHunk := false
 	for line := range strings.SplitSeq(patch, "\n") {
 		switch {
 		case isDiffHeaderLine(line):
+			s.resetHunkState()
 			inHunk = false
 			// A guard and the skip it protects must be adjacent added lines; a
 			// hunk boundary breaks that adjacency, so reset the window rather
@@ -375,6 +385,7 @@ type tamperScan struct {
 	path                string
 	cat                 tamperCategory
 	isCI                bool
+	isGo                bool
 	baseContent         string
 	mergedUpstreamSkips map[string]int
 	seen                map[string]bool
@@ -387,9 +398,85 @@ type tamperScan struct {
 	delRun              int
 	guardWindow         int
 	platformGuardDepth  int
+	postGo              goLineMaskState
+	preGo               goLineMaskState
 }
 
 const tamperGuardWindowLines = 3
+
+func (s *tamperScan) postChangeVisible(content string) string {
+	if !s.isGo {
+		return content
+	}
+	return s.postGo.visibleLine(content)
+}
+
+func (s *tamperScan) preChangeVisible(content string) string {
+	if !s.isGo {
+		return content
+	}
+	return s.preGo.visibleLine(content)
+}
+
+type goLineMaskState struct {
+	quote          byte
+	escaped        bool
+	inBlockComment bool
+}
+
+func (s *goLineMaskState) visibleLine(content string) string {
+	out := []byte(content)
+	for i := 0; i < len(out); i++ {
+		ch := out[i]
+		if s.inBlockComment {
+			out[i] = ' '
+			if ch == '*' && i+1 < len(out) && out[i+1] == '/' {
+				out[i+1] = ' '
+				s.inBlockComment = false
+				i++
+			}
+			continue
+		}
+		if s.quote != 0 {
+			out[i] = ' '
+			switch {
+			case s.quote == '`' && ch == '`':
+				s.quote = 0
+			case s.quote != '`' && s.escaped:
+				s.escaped = false
+			case s.quote != '`' && ch == '\\':
+				s.escaped = true
+			case s.quote != '`' && ch == s.quote:
+				s.quote = 0
+			}
+			continue
+		}
+		if ch == '/' && i+1 < len(out) {
+			switch out[i+1] {
+			case '/':
+				for j := i; j < len(out); j++ {
+					out[j] = ' '
+				}
+				return string(out)
+			case '*':
+				out[i], out[i+1] = ' ', ' '
+				s.inBlockComment = true
+				i++
+				continue
+			}
+		}
+		switch ch {
+		case '"', '\'', '`':
+			s.quote = ch
+			out[i] = ' '
+		}
+	}
+	if s.quote != '`' {
+		s.quote = 0
+		s.escaped = false
+	}
+	return string(out)
+}
 
 func mergedUpstreamSkipAllowance(baseContent, upstreamContent string) map[string]int {
 	upstreamCounts := trimmedMatchingLineCounts(upstreamContent, tamperAddedSkipRe)
@@ -438,11 +525,16 @@ func (s *tamperScan) add(rule, detail string) {
 }
 
 func (s *tamperScan) resetHunkState() {
+	s.guardWindow = 0
 	s.platformGuardDepth = 0
+	s.postGo = goLineMaskState{}
+	s.preGo = goLineMaskState{}
 }
 
 func (s *tamperScan) feedContext(content string) {
-	s.updatePlatformGuardDepth(content, false)
+	visible := s.postChangeVisible(content)
+	_ = s.preChangeVisible(content)
+	s.updatePlatformGuardDepth(visible, false)
 }
 
 func (s *tamperScan) feedAdded(content string) {
@@ -452,54 +544,45 @@ func (s *tamperScan) feedAdded(content string) {
 		s.add("added-build-ignore", trimDiffLine(content))
 		return
 	}
+	visible := s.postChangeVisible(content)
 	if looksLikeComment(content) {
 		return
 	}
-	isCapabilityGuard := tamperCapabilityGuardRe.MatchString(content)
-	isPlatformGuard := isPlatformGuard(content)
+	isCapabilityGuard := tamperCapabilityGuardRe.MatchString(visible)
+	isPlatformGuard := isPlatformGuardVisible(content, visible)
 	guarded := isCapabilityGuard || isPlatformGuard || s.guardWindow > 0 || s.platformGuardDepth > 0
 	if isCapabilityGuard {
 		s.guardWindow = tamperGuardWindowLines
 	} else if s.guardWindow > 0 {
 		s.guardWindow--
 	}
-	// A skip pattern that only appears inside a Go string literal is fixture
-	// data — e.g. a diff snippet embedded as a test constant, including this
-	// detector's own regression tests (see
-	// https://github.com/Automaat/sybra/issues/2323) — not a real added
-	// t.Skip call. Match against a masked copy for .go files so that case is
-	// invisible to the detector instead of self-flagging.
-	skipScanContent := content
-	if strings.HasSuffix(s.path, ".go") {
-		skipScanContent = maskGoStringLiterals(content)
-	}
-	if tamperAddedSkipRe.MatchString(skipScanContent) && !guarded &&
+	if tamperAddedSkipRe.MatchString(visible) && !guarded &&
 		!isEstablishedSkipIdiom(content, s.baseContent) &&
 		!s.consumeMergedUpstreamSkip(content) {
 		s.add("added-skip", trimDiffLine(content))
 	}
-	if tamperAddedExitRe.MatchString(content) {
+	if tamperAddedExitRe.MatchString(visible) {
 		s.add("added-early-exit", trimDiffLine(content))
 	}
 	if s.isCI {
-		if tamperCINeuterRe.MatchString(content) {
+		if tamperCINeuterRe.MatchString(visible) {
 			s.add("ci-neutered", trimDiffLine(content))
 		}
-		if tamperCIRunRe.MatchString(content) {
+		if tamperCIRunRe.MatchString(visible) {
 			s.addRun++
 		}
 		return
 	}
-	if tamperAssertionRe.MatchString(content) {
+	if tamperAssertionRe.MatchString(visible) {
 		s.addAssert++
 	}
-	if tamperTestDeclRe.MatchString(content) {
+	if tamperTestDeclRe.MatchString(visible) {
 		s.addDecl++
 	}
-	if detectTautology(content) {
+	if detectTautology(visible) {
 		s.add("tautological-assertion", trimDiffLine(content))
 	}
-	s.updatePlatformGuardDepth(content, isPlatformGuard)
+	s.updatePlatformGuardDepth(visible, isPlatformGuard)
 }
 
 func (s *tamperScan) updatePlatformGuardDepth(content string, startsGuard bool) {
@@ -511,8 +594,8 @@ func (s *tamperScan) updatePlatformGuardDepth(content string, startsGuard bool) 
 	}
 }
 
-func isPlatformGuard(content string) bool {
-	if !tamperPlatformGuardLineRe.MatchString(content) {
+func isPlatformGuardVisible(content, visible string) bool {
+	if !tamperPlatformGuardLineRe.MatchString(visible) {
 		return false
 	}
 	expr, ok := parsePlatformGuardExpr(content)
@@ -638,45 +721,6 @@ func codeBraceDelta(content string) int {
 	return delta
 }
 
-// maskGoStringLiterals blanks the interior of Go string/rune literals in a
-// single diff line, leaving surrounding code visible. This lets the skip
-// detector above tell fixture *data* — a diff snippet embedded as a Go
-// string constant — apart from a genuine added t.Skip call: the former sits
-// entirely inside the literal's quotes, the latter does not. Scanning is
-// line-based (see codeBraceDelta), so a raw string that opens and does not
-// close on the same line masks through the rest of the line — the same
-// "fail toward not matching" trade-off already accepted for other
-// cross-line constructs in this scanner.
-func maskGoStringLiterals(content string) string {
-	var b strings.Builder
-	b.Grow(len(content))
-	var quote byte
-	escaped := false
-	for i := range len(content) {
-		ch := content[i]
-		if quote != 0 {
-			b.WriteByte(' ')
-			switch {
-			case quote != '`' && escaped:
-				escaped = false
-			case quote != '`' && ch == '\\':
-				escaped = true
-			case ch == quote:
-				quote = 0
-			}
-			continue
-		}
-		switch ch {
-		case '"', '\'', '`':
-			quote = ch
-			b.WriteByte(' ')
-		default:
-			b.WriteByte(ch)
-		}
-	}
-	return b.String()
-}
-
 func (s *tamperScan) consumeMergedUpstreamSkip(content string) bool {
 	if len(s.mergedUpstreamSkips) == 0 {
 		return false
@@ -690,19 +734,20 @@ func (s *tamperScan) consumeMergedUpstreamSkip(content string) bool {
 }
 
 func (s *tamperScan) feedRemoved(content string) {
+	visible := s.preChangeVisible(content)
 	if looksLikeComment(content) {
 		return
 	}
 	if s.isCI {
-		if tamperCIRunRe.MatchString(content) {
+		if tamperCIRunRe.MatchString(visible) {
 			s.delRun++
 		}
 		return
 	}
-	if tamperAssertionRe.MatchString(content) {
+	if tamperAssertionRe.MatchString(visible) {
 		s.delAssert++
 	}
-	if tamperTestDeclRe.MatchString(content) {
+	if tamperTestDeclRe.MatchString(visible) {
 		s.delDecl++
 	}
 }
@@ -761,9 +806,9 @@ func buildTamperReport(taskID, base string, changes []tamperChange, allow tamper
 		if strings.HasPrefix(c.Status, "D") {
 			severity := tamperHigh
 			detail := string(cat) + " file deleted"
-			if documentedDeletionMatches(c.Path, allow, deletedBasenames) {
+			if source := documentedDeletionMatches(c.Path, allow, deletedBasenames); source != "" {
 				severity = tamperMedium
-				detail += " (documented in task spec)"
+				detail += " (" + source + ")"
 			}
 			report.Findings = append(report.Findings, tamperFinding{
 				File: c.Path, Category: string(cat), Severity: severity,
@@ -847,12 +892,14 @@ func downgradeFindingsByRule(findings []tamperFinding, rule string) []tamperFind
 func (e *Engine) execDetectTampering(taskID string, step *Step, t TaskInfo) (StepOutput, error) {
 	if slices.Contains(t.Tags, TamperBlessedTag) {
 		e.logger.Info("workflow.detect-tampering.blessed", "task_id", taskID)
+		e.recordEvidence(taskID, step.ID, evidenceCriterionDetectTampering, evidence.ProofManual,
+			0, "human bless ("+TamperBlessedTag+" tag)", "blessed")
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "blessed"}, nil
 	}
-	if e.worktrees == nil {
+	if e.execution.Worktrees == nil {
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: no worktree getter configured"}, nil
 	}
-	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	wtPath, ok := e.execution.Worktrees.GetWorktreePath(taskID)
 	if !ok {
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: no worktree for task"}, nil
 	}
@@ -866,10 +913,21 @@ func (e *Engine) execDetectTampering(taskID string, step *Step, t TaskInfo) (Ste
 			return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: context canceled"}, nil
 		}
 		e.logger.Warn("workflow.detect-tampering.diff-error", "task_id", taskID, "err", err)
-		return StepOutput{StepID: step.ID, Status: "completed", Output: "clean"}, nil
+		// Fail open for the step's own routing (the task continues), but record
+		// NO evidence: a genuine tool failure is not proof the diff is clean.
+		// Recording it as ExitStatus 0 would manufacture a fresh, passing
+		// detect_tampering entry for the require_evidence completion gate — the
+		// exact opposite of "fresh, passing proof". Leaving the criterion
+		// absent/stale makes require_evidence block instead, so a transient git
+		// error cannot launder an unverified diff onto a PR. The Output says so
+		// explicitly (not "clean") so operators/logs/sidecars reading this step's
+		// result aren't misled into thinking the diff was actually checked.
+		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: diff error (no evidence recorded)"}, nil
 	}
 
 	if len(report.Files) == 0 {
+		e.recordEvidence(taskID, step.ID, evidenceCriterionDetectTampering, evidence.ProofDeterministicCheck,
+			0, "git diff --name-status", "clean (no verification files changed)")
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "clean"}, nil
 	}
 
@@ -883,15 +941,23 @@ func (e *Engine) execDetectTampering(taskID string, step *Step, t TaskInfo) (Ste
 
 	if high := report.highCount(); high > 0 {
 		reason := tamperReason(report)
-		if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
+		if statusErr := e.tasks.UpdateTaskBlocker(taskID, taskstatus.HumanRequired, reason, blocker.State{
+			Kind:       blocker.KindTamperDetected,
+			Actor:      blocker.ActorWorkflow,
+			NextAction: "bless_tampering",
+		}); statusErr != nil {
 			e.logger.Error("workflow.detect-tampering.status", "task_id", taskID, "err", statusErr)
 		}
 		e.logger.Warn("workflow.detect-tampering.flagged",
 			"task_id", taskID, "high", high, "files", len(report.Files))
+		e.recordEvidence(taskID, step.ID, evidenceCriterionDetectTampering, evidence.ProofDeterministicCheck,
+			1, "git diff --name-status", reason)
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "flagged"}, nil
 	}
 
 	e.logger.Info("workflow.detect-tampering.clean", "task_id", taskID, "files", len(report.Files))
+	e.recordEvidence(taskID, step.ID, evidenceCriterionDetectTampering, evidence.ProofDeterministicCheck,
+		0, "git diff --name-status", "clean")
 	return StepOutput{StepID: step.ID, Status: "completed", Output: "clean"}, nil
 }
 
@@ -905,9 +971,7 @@ func (e *Engine) collectTamperReport(taskID, wtPath string, t TaskInfo) (tamperR
 
 	// core.quotePath=false keeps non-ASCII paths unquoted so classification and
 	// the per-file diff pathspec below see the real filename.
-	nsCmd := exec.CommandContext(ctx, "git", "-c", "core.quotePath=false", "diff", "--name-status", rangeSpec)
-	nsCmd.Dir = wtPath
-	nsOut, err := nsCmd.Output()
+	nsOut, err := gitStdout(ctx, wtPath, "-c", "core.quotePath=false", "diff", "--name-status", rangeSpec)
 	if err != nil {
 		// Surface the per-step timeout/cancel through the error chain so the
 		// caller can distinguish it from a genuine git failure.
@@ -917,7 +981,7 @@ func (e *Engine) collectTamperReport(taskID, wtPath string, t TaskInfo) (tamperR
 		return tamperReport{}, fmt.Errorf("git diff --name-status: %w", err)
 	}
 
-	changes := dropUpstreamMergedChanges(ctx, wtPath, taskID, upstream, parseNameStatus(string(nsOut)), e.logger)
+	changes := dropUpstreamMergedChanges(ctx, wtPath, taskID, upstream, parseNameStatus(nsOut), e.logger)
 	fetched := 0
 	for i := range changes {
 		c := &changes[i]
@@ -1020,11 +1084,15 @@ func tamperCodeAuthorRole(role string) bool {
 
 func documentedDeletionAllowlistForTrustedSpec(t TaskInfo) tamperDeletionAllowlist {
 	allow := tamperDeletionAllowlist{
-		ExactPaths: map[string]bool{},
-		Basenames:  map[string]bool{},
+		ExactPaths:      map[string]bool{},
+		Basenames:       map[string]bool{},
+		ExactPathSource: map[string]string{},
+		BasenameSource:  map[string]string{},
+		GlobSource:      map[string]string{},
 	}
 	mergeDocumentedDeletionAllowlist(&allow, documentedDeletionAllowlist(t.Body))
 	mergeDocumentedDeletionAllowlist(&allow, documentedDeletionAllowlist(t.Plan))
+	mergeDocumentedDeletionAllowlist(&allow, documentedDeletionAllowlistFromPlanContract(t.PlanContract))
 	return allow
 }
 
@@ -1038,11 +1106,35 @@ func mergeDocumentedDeletionAllowlist(dst *tamperDeletionAllowlist, src tamperDe
 	if dst.Basenames == nil {
 		dst.Basenames = map[string]bool{}
 	}
+	if dst.ExactPathSource == nil {
+		dst.ExactPathSource = map[string]string{}
+	}
+	if dst.BasenameSource == nil {
+		dst.BasenameSource = map[string]string{}
+	}
+	if dst.GlobSource == nil {
+		dst.GlobSource = map[string]string{}
+	}
 	for path := range src.ExactPaths {
 		dst.ExactPaths[path] = true
+		if source := strings.TrimSpace(src.ExactPathSource[path]); source != "" {
+			dst.ExactPathSource[path] = source
+		}
 	}
 	for base := range src.Basenames {
 		dst.Basenames[base] = true
+		if source := strings.TrimSpace(src.BasenameSource[base]); source != "" {
+			dst.BasenameSource[base] = source
+		}
+	}
+	for _, glob := range src.Globs {
+		if glob == "" || slices.Contains(dst.Globs, glob) {
+			continue
+		}
+		dst.Globs = append(dst.Globs, glob)
+		if source := strings.TrimSpace(src.GlobSource[glob]); source != "" {
+			dst.GlobSource[glob] = source
+		}
 	}
 }
 
@@ -1065,18 +1157,14 @@ func resolveTamperRange(ctx context.Context, wtPath string, t TaskInfo, taskID s
 	if t.Workflow != nil {
 		if stepID := t.Workflow.LastAgentStepID(); stepID != "" {
 			if sha := strings.TrimSpace(t.Workflow.Variables[tamperBaselineVar(stepID)]); sha != "" {
-				verify := exec.CommandContext(ctx, "git", "rev-parse", "--verify", sha+"^{commit}")
-				verify.Dir = wtPath
-				if verify.Run() == nil {
+				if gitOK(ctx, wtPath, "rev-parse", "--verify", sha+"^{commit}") {
 					// A stored baseline can go stale (e.g. the underlying branch
 					// was force-pushed after the baseline was captured) and stay
 					// git-resolvable while no longer being an ancestor of HEAD.
 					// Diffing against such an orphaned base with two dots spans
 					// the entire divergent history instead of the agent's actual
 					// change, so require ancestry before trusting it.
-					ancestor := exec.CommandContext(ctx, "git", "merge-base", "--is-ancestor", sha, "HEAD")
-					ancestor.Dir = wtPath
-					if ancestor.Run() == nil {
+					if gitIsAncestor(ctx, wtPath, sha, "HEAD") {
 						return sha, sha + "..HEAD"
 					}
 					if logger != nil {
@@ -1112,15 +1200,15 @@ func dropUpstreamMergedChanges(ctx context.Context, wtPath, taskID, upstream str
 }
 
 func pathIdenticalToUpstream(ctx context.Context, wtPath, upstream, path string) bool {
-	cmd := exec.CommandContext(ctx, "git", "diff", "--quiet", upstream, "HEAD", "--", path)
-	cmd.Dir = wtPath
-	return cmd.Run() == nil
+	return gitOK(ctx, wtPath, "diff", "--quiet", upstream, "HEAD", "--", path)
 }
 
+// gitFilePatch and gitFileAtRef return raw (untrimmed) git output — the exact
+// patch/file bytes matter to the tamper regex scanners below, so they use the
+// shared runner's raw-output operation rather than the trimming helper.
+
 func gitFilePatch(ctx context.Context, wtPath, rangeSpec, path string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "-c", "core.quotePath=false", "diff", rangeSpec, "--", path)
-	cmd.Dir = wtPath
-	out, err := cmd.Output()
+	out, err := gitexec.RawOutput(ctx, gitexec.Options{Dir: wtPath}, "-c", "core.quotePath=false", "diff", rangeSpec, "--", path)
 	if err != nil {
 		return "", err
 	}
@@ -1132,9 +1220,7 @@ func gitFilePatch(ctx context.Context, wtPath, rangeSpec, path string) (string, 
 // newly added file — which callers treat as "no base content" rather than a
 // hard failure.
 func gitFileAtRef(ctx context.Context, wtPath, ref, path string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "show", ref+":"+path)
-	cmd.Dir = wtPath
-	out, err := cmd.Output()
+	out, err := gitexec.RawOutput(ctx, gitexec.Options{Dir: wtPath}, "show", ref+":"+path)
 	if err != nil {
 		return "", err
 	}
@@ -1198,12 +1284,8 @@ func tamperReason(r tamperReport) string {
 // trimDiffLine normalizes a diff content line for inclusion in a finding:
 // trimmed and capped to a sane length.
 func trimDiffLine(s string) string {
-	s = strings.TrimSpace(s)
 	const maxLen = 120
-	if len(s) > maxLen {
-		return s[:maxLen] + "…"
-	}
-	return s
+	return textutil.TruncateBytes(strings.TrimSpace(s), maxLen, "…")
 }
 
 // documentedDeletionAllowlist extracts explicitly documented file deletions
@@ -1215,8 +1297,11 @@ func documentedDeletionAllowlist(body string) tamperDeletionAllowlist {
 		return tamperDeletionAllowlist{}
 	}
 	allow := tamperDeletionAllowlist{
-		ExactPaths: map[string]bool{},
-		Basenames:  map[string]bool{},
+		ExactPaths:      map[string]bool{},
+		Basenames:       map[string]bool{},
+		ExactPathSource: map[string]string{},
+		BasenameSource:  map[string]string{},
+		GlobSource:      map[string]string{},
 	}
 	for _, heading := range []string{
 		"## Scope",
@@ -1226,7 +1311,9 @@ func documentedDeletionAllowlist(body string) tamperDeletionAllowlist {
 		"## File Deletions",
 		"## Removed Files",
 	} {
-		start, end, ok := topLevelSectionRange(body, heading)
+		start, end, ok := topLevelSectionRange(body, func(line string) bool {
+			return strings.EqualFold(line, heading)
+		})
 		if !ok {
 			continue
 		}
@@ -1255,12 +1342,49 @@ func collectDocumentedDeletionTokens(section string, allow tamperDeletionAllowli
 			}
 			for _, candidate := range deletionPathsFromSegment(segment) {
 				allow.ExactPaths[candidate] = true
+				allow.ExactPathSource[candidate] = "documented in task spec"
 				if !strings.Contains(candidate, "/") {
 					allow.Basenames[candidate] = true
+					allow.BasenameSource[candidate] = "documented in task spec"
 				}
 			}
 		}
 	}
+}
+
+func documentedDeletionAllowlistFromPlanContract(raw string) tamperDeletionAllowlist {
+	if strings.TrimSpace(raw) == "" {
+		return tamperDeletionAllowlist{}
+	}
+	contract, err := parsePlanContract(raw)
+	if err != nil {
+		return tamperDeletionAllowlist{}
+	}
+	allow := tamperDeletionAllowlist{
+		ExactPaths:      map[string]bool{},
+		Basenames:       map[string]bool{},
+		ExactPathSource: map[string]string{},
+		BasenameSource:  map[string]string{},
+		GlobSource:      map[string]string{},
+	}
+	for _, rawEntry := range contract.ExpectedDeletions {
+		entry, isGlob, normErr := normalizeExpectedDeletionEntry(rawEntry)
+		if normErr != nil {
+			continue
+		}
+		if isGlob {
+			allow.Globs = append(allow.Globs, entry)
+			allow.GlobSource[entry] = "declared in plan contract expected_deletions"
+			continue
+		}
+		allow.ExactPaths[entry] = true
+		allow.ExactPathSource[entry] = "declared in plan contract expected_deletions"
+		if !strings.Contains(entry, "/") {
+			allow.Basenames[entry] = true
+			allow.BasenameSource[entry] = "declared in plan contract expected_deletions"
+		}
+	}
+	return allow
 }
 
 type documentedPathToken struct {
@@ -1546,14 +1670,30 @@ func normalizeDocumentedPath(raw string) (string, bool) {
 	return token, true
 }
 
-func documentedDeletionMatches(pathname string, allow tamperDeletionAllowlist, deletedBasenames map[string]int) bool {
+func documentedDeletionMatches(pathname string, allow tamperDeletionAllowlist, deletedBasenames map[string]int) string {
 	normalized, ok := normalizeDocumentedPath(pathname)
 	if !ok {
-		return false
+		return ""
 	}
 	if allow.ExactPaths[normalized] {
-		return true
+		return deletionAllowlistSource(allow.ExactPathSource, normalized)
 	}
 	base := pathpkg.Base(normalized)
-	return allow.Basenames[base] && deletedBasenames[base] == 1
+	if allow.Basenames[base] && deletedBasenames[base] == 1 {
+		return deletionAllowlistSource(allow.BasenameSource, base)
+	}
+	for _, glob := range allow.Globs {
+		matched, err := pathpkg.Match(glob, normalized)
+		if err == nil && matched {
+			return deletionAllowlistSource(allow.GlobSource, glob)
+		}
+	}
+	return ""
+}
+
+func deletionAllowlistSource(sources map[string]string, key string) string {
+	if source := strings.TrimSpace(sources[key]); source != "" {
+		return source
+	}
+	return "documented in task spec or plan contract"
 }

@@ -1,9 +1,12 @@
 package github
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -31,8 +34,14 @@ type restPR struct {
 	Draft          bool   `json:"draft"`
 	MergeableState string `json:"mergeable_state"` // clean|dirty|blocked|unstable|behind|unknown
 	Head           struct {
-		Ref string `json:"ref"`
-		SHA string `json:"sha"`
+		Ref  string `json:"ref"`
+		SHA  string `json:"sha"`
+		Repo struct {
+			FullName string `json:"full_name"`
+			Owner    struct {
+				Login string `json:"login"`
+			} `json:"owner"`
+		} `json:"repo"`
 	} `json:"head"`
 	Base struct {
 		Ref string `json:"ref"`
@@ -54,7 +63,8 @@ type restPR struct {
 }
 
 type restCheckRuns struct {
-	CheckRuns []struct {
+	TotalCount int `json:"total_count"`
+	CheckRuns  []struct {
 		Name        string `json:"name"`
 		Status      string `json:"status"`       // queued | in_progress | completed
 		Conclusion  string `json:"conclusion"`   // success | failure | ...
@@ -64,7 +74,8 @@ type restCheckRuns struct {
 }
 
 type restCommitStatuses struct {
-	Statuses []struct {
+	TotalCount int `json:"total_count"`
+	Statuses   []struct {
 		Context string `json:"context"`
 		State   string `json:"state"` // error | failure | pending | success
 	} `json:"statuses"`
@@ -110,6 +121,8 @@ func fetchPRForMonitorViaREST(e execer, repo string, number int) (PullRequest, b
 		Author:             pr.User.Login,
 		IsDraft:            pr.Draft,
 		HeadRefName:        pr.Head.Ref,
+		HeadRepoOwner:      pr.Head.Repo.Owner.Login,
+		HeadRepo:           pr.Head.Repo.FullName,
 		HeadSHA:            pr.Head.SHA,
 		BaseRefName:        pr.Base.Ref,
 		Mergeable:          restMergeable(pr.MergeableState),
@@ -193,18 +206,64 @@ func restMergeable(state string) string {
 // latest-only rollup would otherwise hide. fetched reports whether the fetch
 // and parse both succeeded; false must never be read as "no check runs".
 func fetchCheckRunsWith(e execer, owner, name, sha, filter string) (runs restCheckRuns, fetched bool) {
-	path := fmt.Sprintf("repos/%s/%s/commits/%s/check-runs", owner, name, sha)
-	if filter != "" {
-		path += "?filter=" + filter
+	return fetchCheckRunsCtxWith(context.Background(), e, owner, name, sha, filter)
+}
+
+func fetchCheckRunsCtxWith(ctx context.Context, e execer, owner, name, sha, filter string) (runs restCheckRuns, fetched bool) {
+	const maxPages = 20
+	for page := 1; page <= maxPages; page++ {
+		path := fmt.Sprintf("repos/%s/%s/commits/%s/check-runs?per_page=100", owner, name, sha)
+		if filter != "" {
+			path += "&filter=" + url.QueryEscape(filter)
+		}
+		if page > 1 {
+			path += "&page=" + strconv.Itoa(page)
+		}
+		resp, err := runGHAPICtxWith(ctx, e, "30s", path)
+		if err != nil {
+			return restCheckRuns{}, false
+		}
+		var batch restCheckRuns
+		if jErr := json.Unmarshal(resp.body, &batch); jErr != nil {
+			return restCheckRuns{}, false
+		}
+		runs.CheckRuns = append(runs.CheckRuns, batch.CheckRuns...)
+		runs.TotalCount = batch.TotalCount
+		if batch.TotalCount > 0 && len(runs.CheckRuns) >= batch.TotalCount {
+			return runs, true
+		}
+		if batch.TotalCount == 0 && len(batch.CheckRuns) < 100 {
+			return runs, true
+		}
 	}
-	resp, err := runGHAPIWith(e, "30s", path)
-	if err != nil {
-		return restCheckRuns{}, false
+	return restCheckRuns{}, false
+}
+
+func fetchCommitStatusesWith(e execer, owner, name, sha string) (statuses restCommitStatuses, fetched bool) {
+	const maxPages = 20
+	for page := 1; page <= maxPages; page++ {
+		path := fmt.Sprintf("repos/%s/%s/commits/%s/status?per_page=100", owner, name, sha)
+		if page > 1 {
+			path += "&page=" + strconv.Itoa(page)
+		}
+		resp, err := runGHAPIWith(e, "30s", path)
+		if err != nil {
+			return restCommitStatuses{}, false
+		}
+		var batch restCommitStatuses
+		if jErr := json.Unmarshal(resp.body, &batch); jErr != nil {
+			return restCommitStatuses{}, false
+		}
+		statuses.Statuses = append(statuses.Statuses, batch.Statuses...)
+		statuses.TotalCount = batch.TotalCount
+		if batch.TotalCount > 0 && len(statuses.Statuses) >= batch.TotalCount {
+			return statuses, true
+		}
+		if batch.TotalCount == 0 && len(batch.Statuses) < 100 {
+			return statuses, true
+		}
 	}
-	if jErr := json.Unmarshal(resp.body, &runs); jErr != nil {
-		return restCheckRuns{}, false
-	}
-	return runs, true
+	return restCommitStatuses{}, false
 }
 
 // fetchCIStatusViaREST aggregates check-runs and legacy commit statuses for a
@@ -238,21 +297,16 @@ func fetchCIStatusViaREST(e execer, owner, name, sha string) (status string, pen
 		}
 	}
 
-	resp, err := runGHAPIWith(e, "30s", fmt.Sprintf("repos/%s/%s/commits/%s/status", owner, name, sha))
-	if err != nil {
+	statuses, fetched := fetchCommitStatusesWith(e, owner, name, sha)
+	if !fetched {
 		ok = false
 	} else {
-		var statuses restCommitStatuses
-		if jErr := json.Unmarshal(resp.body, &statuses); jErr != nil {
-			ok = false
-		} else {
-			for _, s := range statuses.Statuses {
-				contexts = append(contexts, gqlCheckContext{
-					Typename: "StatusContext",
-					Name:     s.Context,
-					State:    strings.ToUpper(s.State),
-				})
-			}
+		for _, s := range statuses.Statuses {
+			contexts = append(contexts, gqlCheckContext{
+				Typename: "StatusContext",
+				Name:     s.Context,
+				State:    strings.ToUpper(s.State),
+			})
 		}
 	}
 

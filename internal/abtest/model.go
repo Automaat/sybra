@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/Automaat/sybra/internal/modeltier"
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 // Config controls deterministic A/B assignment for workflow agent runs.
@@ -19,6 +20,14 @@ type Config struct {
 	// up to CurrentBuiltinVersion, leaving any other (user-authored) experiment
 	// untouched.
 	BuiltinVersion *int `yaml:"builtin_version,omitempty" json:"builtinVersion,omitempty"`
+	// WeightsVersion stamps the routing-service generation that produced this
+	// config's variant weights — nil for a plain operator-authored config
+	// (weights come straight from config.yaml, no overlay applied). Copied
+	// onto every Assignment as DecisionVersion so a run record can be joined
+	// back to the routing.reweighted audit event that set its weights. Never
+	// persisted to config.yaml — internal/routing sets it only on the
+	// in-memory merged config it pushes to selection sites.
+	WeightsVersion *int `yaml:"-" json:"weightsVersion,omitempty"`
 }
 
 // CurrentBuiltinVersion is the version stamp for the built-in experiment set
@@ -76,6 +85,34 @@ type Experiment struct {
 	Subject        *Subject  `yaml:"subject,omitempty" json:"subject,omitempty"`
 	Roles          []string  `yaml:"roles" json:"roles"`
 	Variants       []Variant `yaml:"variants" json:"variants"`
+	// Canary bounds and gates how much of this experiment's traffic may
+	// deviate from its declared baseline variant. nil (the default) means
+	// uncapped: every eligible variant competes for its declared Weight
+	// share exactly as today. See CanaryPolicy and SelectEligibleForContextWithCohort.
+	Canary *CanaryPolicy `yaml:"canary,omitempty" json:"canary,omitempty"`
+}
+
+// CanaryPolicy bounds and gates non-baseline traffic for an experiment,
+// keeping production routing on a stable baseline until a canary has both
+// enough observed data and a fresh (trustworthy) signal behind it.
+type CanaryPolicy struct {
+	// BaselineVariantID names the Variant every gated-out assignment
+	// resolves to. Must match a configured Variant.ID.
+	BaselineVariantID string `yaml:"baseline_variant_id" json:"baselineVariantId"`
+	// PercentBound is the maximum share (0-100) of traffic eligible to
+	// resolve to any variant at all (including the baseline itself, since
+	// the baseline may also win the normal weighted draw); the rest is
+	// forced to baseline. Bucketing uses the same deterministic hash as
+	// variant selection, so a task/role's canary membership is stable and
+	// reproducible across repeated selections.
+	PercentBound int `yaml:"percent_bound" json:"percentBound"`
+	// MinCohort is the minimum resolved-run count a CohortObserved call
+	// must report for this experiment before any traffic is allowed outside
+	// the forced-baseline slice, regardless of PercentBound. A cohort
+	// predicate that reports fresh=false (e.g. the backing evaluation
+	// report is stale/untrustworthy) is treated the same as an
+	// insufficient cohort.
+	MinCohort int `yaml:"min_cohort" json:"minCohort"`
 }
 
 // Subject identifies the workflow target for prompt and skill experiments.
@@ -131,6 +168,7 @@ type Assignment struct {
 	ExperimentID    string
 	Kind            string
 	VariantID       string
+	RoutingReason   string
 	Provider        string
 	Model           string
 	ReasoningEffort string
@@ -138,6 +176,11 @@ type Assignment struct {
 	AssignmentKey   string
 	PromptTransform *PromptTransform
 	SkillAliases    map[string]string
+	// DecisionVersion mirrors the Config's WeightsVersion at selection time
+	// (0 when the config carries no routing overlay), so downstream run
+	// records can be attributed to the routing generation that set this
+	// variant's weight.
+	DecisionVersion int
 }
 
 // DefaultConfig returns the default A/B suite split by price bracket: code
@@ -152,7 +195,7 @@ type Assignment struct {
 // per-provider breakdown after rollout — a provider that regresses a role can
 // be down-weighted here without code changes.
 func DefaultConfig() Config {
-	enabled := true
+	enabled := false
 	builtinVersion := CurrentBuiltinVersion
 	cheap := modeltier.Models(modeltier.Cheap)
 	expensive := modeltier.Models(modeltier.Expensive)
@@ -179,13 +222,13 @@ func codeAuthorCheapExperiment(cheap map[string]string) Experiment {
 		Bracket:        "cheap",
 		Roles:          []string{"implementation"},
 		Variants: []Variant{
-			{ID: "claude-sonnet", Provider: "claude", Model: "sonnet", Tier: "cheap", Weight: 1},
-			{ID: "codex-gpt-5.4", Provider: "codex", Model: cheap["codex"], Tier: "cheap", Weight: 1},
-			{ID: "copilot-sonnet", Provider: "copilot", Model: cheap["copilot"], Tier: "cheap", Weight: 1},
-			{ID: "opencode-deepseek-v4-flash", Provider: "opencode", Model: cheap["opencode"], Tier: "cheap", Weight: 1},
+			{ID: "claude-sonnet", Provider: providerid.Claude, Model: "sonnet", Tier: "cheap", Weight: 1},
+			{ID: "codex-gpt-5.4", Provider: providerid.Codex, Model: cheap[providerid.Codex], Tier: "cheap", Weight: 1},
+			{ID: "copilot-sonnet", Provider: providerid.Copilot, Model: cheap[providerid.Copilot], Tier: "cheap", Weight: 1},
+			{ID: "opencode-deepseek-v4-flash", Provider: providerid.OpenCode, Model: cheap[providerid.OpenCode], Tier: "cheap", Weight: 1},
 			{
 				ID:       "pl-41673aa95495-claude-sonnet",
-				Provider: "claude",
+				Provider: providerid.Claude,
 				Model:    "sonnet",
 				Tier:     "cheap",
 				Version:  "pl-41673aa95495",
@@ -209,10 +252,10 @@ func codeAuthorMaintenanceCheapExperiment(cheap map[string]string) Experiment {
 		Bracket:        "cheap",
 		Roles:          []string{"pr-fix", "test-runner"},
 		Variants: []Variant{
-			{ID: "claude-sonnet", Provider: "claude", Model: "sonnet", Tier: "cheap", Weight: 1},
-			{ID: "codex-gpt-5.4", Provider: "codex", Model: cheap["codex"], Tier: "cheap", Weight: 1},
-			{ID: "copilot-sonnet", Provider: "copilot", Model: cheap["copilot"], Tier: "cheap", Weight: 1},
-			{ID: "opencode-deepseek-v4-flash", Provider: "opencode", Model: cheap["opencode"], Tier: "cheap", Weight: 1},
+			{ID: "claude-sonnet", Provider: providerid.Claude, Model: "sonnet", Tier: "cheap", Weight: 1},
+			{ID: "codex-gpt-5.4", Provider: providerid.Codex, Model: cheap[providerid.Codex], Tier: "cheap", Weight: 1},
+			{ID: "copilot-sonnet", Provider: providerid.Copilot, Model: cheap[providerid.Copilot], Tier: "cheap", Weight: 1},
+			{ID: "opencode-deepseek-v4-flash", Provider: providerid.OpenCode, Model: cheap[providerid.OpenCode], Tier: "cheap", Weight: 1},
 		},
 	}
 }
@@ -226,10 +269,10 @@ func fixReviewExpensiveExperiment(expensive map[string]string) Experiment {
 		Bracket:        "expensive",
 		Roles:          []string{"fix-review"},
 		Variants: []Variant{
-			{ID: "claude-opus", Provider: "claude", Model: "opus", Tier: "expensive", Weight: 1},
-			{ID: "codex-gpt-5.5", Provider: "codex", Model: expensive["codex"], Tier: "expensive", Weight: 1},
-			{ID: "copilot-gemini-3.1-pro", Provider: "copilot", Model: expensive["copilot"], Tier: "expensive", Weight: 1},
-			{ID: "opencode-glm-5.2", Provider: "opencode", Model: expensive["opencode"], Tier: "expensive", Weight: 1},
+			{ID: "claude-opus", Provider: providerid.Claude, Model: "opus", Tier: "expensive", Weight: 1},
+			{ID: "codex-gpt-5.5", Provider: providerid.Codex, Model: expensive[providerid.Codex], Tier: "expensive", Weight: 1},
+			{ID: "copilot-gemini-3.1-pro", Provider: providerid.Copilot, Model: expensive[providerid.Copilot], Tier: "expensive", Weight: 1},
+			{ID: "opencode-glm-5.2", Provider: providerid.OpenCode, Model: expensive[providerid.OpenCode], Tier: "expensive", Weight: 1},
 		},
 	}
 }
@@ -243,10 +286,10 @@ func reviewExpensiveExperiment(expensive map[string]string) Experiment {
 		Bracket:        "expensive",
 		Roles:          []string{"plan"},
 		Variants: []Variant{
-			{ID: "claude-opus", Provider: "claude", Model: "opus", Tier: "expensive", Weight: 1},
-			{ID: "codex-gpt-5.5", Provider: "codex", Model: expensive["codex"], Tier: "expensive", Weight: 1},
-			{ID: "copilot-gemini-3.1-pro", Provider: "copilot", Model: expensive["copilot"], Tier: "expensive", Weight: 1},
-			{ID: "opencode-glm-5.2", Provider: "opencode", Model: expensive["opencode"], Tier: "expensive", Weight: 1},
+			{ID: "claude-opus", Provider: providerid.Claude, Model: "opus", Tier: "expensive", Weight: 1},
+			{ID: "codex-gpt-5.5", Provider: providerid.Codex, Model: expensive[providerid.Codex], Tier: "expensive", Weight: 1},
+			{ID: "copilot-gemini-3.1-pro", Provider: providerid.Copilot, Model: expensive[providerid.Copilot], Tier: "expensive", Weight: 1},
+			{ID: "opencode-glm-5.2", Provider: providerid.OpenCode, Model: expensive[providerid.OpenCode], Tier: "expensive", Weight: 1},
 		},
 	}
 }
@@ -262,14 +305,14 @@ func reviewTightenInstructionsExperiment(expensive map[string]string) Experiment
 		Subject:        &Subject{Role: "review"},
 		Roles:          []string{"review"},
 		Variants: []Variant{
-			{ID: "claude-opus", Provider: "claude", Model: "opus", Tier: "expensive", Weight: 1},
-			{ID: "codex-gpt-5.5", Provider: "codex", Model: expensive["codex"], Tier: "expensive", Weight: 1},
-			{ID: "copilot-gemini-3.1-pro", Provider: "copilot", Model: expensive["copilot"], Tier: "expensive", Weight: 1},
-			{ID: "opencode-glm-5.2", Provider: "opencode", Model: expensive["opencode"], Tier: "expensive", Weight: 1},
+			{ID: "claude-opus", Provider: providerid.Claude, Model: "opus", Tier: "expensive", Weight: 1},
+			{ID: "codex-gpt-5.5", Provider: providerid.Codex, Model: expensive[providerid.Codex], Tier: "expensive", Weight: 1},
+			{ID: "copilot-gemini-3.1-pro", Provider: providerid.Copilot, Model: expensive[providerid.Copilot], Tier: "expensive", Weight: 1},
+			{ID: "opencode-glm-5.2", Provider: providerid.OpenCode, Model: expensive[providerid.OpenCode], Tier: "expensive", Weight: 1},
 			{
 				ID:       "pl-a2d853b2c1d9-codex-gpt-5.5",
-				Provider: "codex",
-				Model:    expensive["codex"],
+				Provider: providerid.Codex,
+				Model:    expensive[providerid.Codex],
 				Tier:     "expensive",
 				Version:  "pl-a2d853b2c1d9",
 				Digest:   digestString(ReviewTightenInstructionsPLA2D853B2C1D9),
@@ -293,9 +336,40 @@ func (c Config) Validate() error {
 	return nil
 }
 
+// WithoutInvalidExperiments returns a copy with every experiment that would
+// fail selection-time validation removed, calling report once per drop.
+// Selection validates each experiment as it matches (see selectFromExperiment)
+// and propagates the error to the dispatcher, so one malformed experiment
+// otherwise wedges every role it targets — the workflow step fails to start an
+// agent, indefinitely, with nothing logged at startup.
+//
+// Dropping at load turns that into a warning plus unrouted (default-provider)
+// dispatch, which is recoverable. It matters for edits made outside Sybra and
+// for configs a code change retroactively invalidates: the per-role
+// reasoning-effort baseline decides what an omitted variant effort resolves to,
+// so retuning a role can invalidate an operator's prompt/skill experiment.
+func (c Config) WithoutInvalidExperiments(report func(id string, err error)) Config {
+	if len(c.Experiments) == 0 {
+		return c
+	}
+	kept := make([]Experiment, 0, len(c.Experiments))
+	for i := range c.Experiments {
+		exp := c.Experiments[i]
+		if err := validateExperiment(exp, nil); err != nil {
+			if report != nil {
+				report(exp.ID, err)
+			}
+			continue
+		}
+		kept = append(kept, exp)
+	}
+	c.Experiments = kept
+	return c
+}
+
 // EnabledValue reports whether A/B assignment should run.
 func (c Config) EnabledValue() bool {
-	return c.Enabled == nil || *c.Enabled
+	return c.Enabled != nil && *c.Enabled
 }
 
 func (c Config) BuiltinVersionValue() int {

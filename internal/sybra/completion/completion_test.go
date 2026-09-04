@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -12,8 +13,12 @@ import (
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/artifact"
+	"github.com/Automaat/sybra/internal/fsutil"
+	"github.com/Automaat/sybra/internal/reviewbudget"
 	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/watchdogreason"
+	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
 )
 
@@ -31,6 +36,28 @@ func sigkillErr(t *testing.T) error {
 		t.Fatalf("signal: %v", err)
 	}
 	return cmd.Wait()
+}
+
+type recordingCompletionWorkflow struct {
+	completed chan workflow.AgentCompletion
+}
+
+func (w *recordingCompletionWorkflow) HandleAgentComplete(_ string, c workflow.AgentCompletion) {
+	w.completed <- c
+}
+
+func (w *recordingCompletionWorkflow) ClearAgentStep(_, _ string) {}
+
+func (w *recordingCompletionWorkflow) RescheduleInterruptedAgent(_, _ string) {}
+
+func (w *recordingCompletionWorkflow) RescheduleRateLimitedAgent(_, _ string) {}
+
+func (w *recordingCompletionWorkflow) RescheduleCheckpointedAgent(_, _ string) {}
+
+func (w *recordingCompletionWorkflow) ReschedulePromptUndeliveredAgent(_, _ string) {}
+
+func (w *recordingCompletionWorkflow) DispatchEvent(_, _ string, _, _ map[string]string) (string, error) {
+	return "", nil
 }
 
 func TestRunOutcome(t *testing.T) {
@@ -73,13 +100,13 @@ func TestRunOutcome(t *testing.T) {
 			want:          "failed",
 		},
 		{
-			// #2149: the ~96% codex stall case. The workflow engine retries
-			// this run, so recording it as "failed" is what drove the reported
-			// 92.3% implementation failure rate over runs that never resolved.
-			name:    "signal_killed_run_is_a_stall_not_a_failure",
+			// A process killed by an external shutdown signal is not a resolved
+			// run, but we now preserve that sharper cause instead of flattening
+			// it into the generic stalled bucket.
+			name:    "signal_killed_run_is_cancelled_shutdown_not_failure",
 			role:    agent.RoleImplementation,
 			exitErr: sigkillErr(t),
-			want:    "stalled",
+			want:    "cancelled_shutdown",
 		},
 		{
 			name: "stopped_before_result_is_a_stall",
@@ -113,6 +140,28 @@ func TestRunOutcome(t *testing.T) {
 			want: "stalled",
 		},
 		{
+			name: "tool_use_aborted_is_a_stall",
+			role: agent.RoleImplementation,
+			agent: func() *agent.Agent {
+				ag := &agent.Agent{}
+				ag.SetError(agent.ErrorKindToolUseAborted, "provider run aborted after tool use was rejected")
+				return ag
+			},
+			exitErr: errBoom,
+			want:    "stalled",
+		},
+		{
+			name: "user_interrupted_is_a_stall",
+			role: agent.RoleTestRunner,
+			agent: func() *agent.Agent {
+				ag := &agent.Agent{}
+				ag.SetError(agent.ErrorKindUserInterrupted, "provider run was interrupted by the user before completion")
+				return ag
+			},
+			exitErr: errBoom,
+			want:    "stalled",
+		},
+		{
 			// A budget breach is a deliberate hard-stop, not an infra stall —
 			// it must stay countable as a real failure (classifyStall).
 			name: "cost_guardrail_stop_stays_a_failure",
@@ -121,6 +170,21 @@ func TestRunOutcome(t *testing.T) {
 				ag := &agent.Agent{}
 				ag.MarkStopped()
 				ag.SetEscalationReason(agent.EscalationReasonCost)
+				return ag
+			},
+			exitErr: errBoom,
+			want:    "failed",
+		},
+		{
+			// A runaway forked-subagent fan-out is hard-stopped outright, not an
+			// infra stall — it must flow through the bounded failed-completion
+			// path, not ResumeStalled's silent re-dispatch.
+			name: "subagent_turns_guardrail_stop_stays_a_failure",
+			role: agent.RoleImplementation,
+			agent: func() *agent.Agent {
+				ag := &agent.Agent{}
+				ag.MarkStopped()
+				ag.SetEscalationReason(agent.EscalationReasonSubagentTurns)
 				return ag
 			},
 			exitErr: errBoom,
@@ -135,7 +199,7 @@ func TestRunOutcome(t *testing.T) {
 			if tc.agent != nil {
 				ag = tc.agent()
 			}
-			if got := runOutcome(ag, tc.role, tc.exitErr, tc.resultContent); got != tc.want {
+			if got := (&Handler{}).runOutcome(ag, tc.role, tc.exitErr, tc.resultContent); got != tc.want {
 				t.Errorf("runOutcome(%v, %v, %q) = %q, want %q", tc.role, tc.exitErr, tc.resultContent, got, tc.want)
 			}
 		})
@@ -206,6 +270,115 @@ func TestBuildRunPatchIncludesSkillAttributionMetadata(t *testing.T) {
 	}
 	if patch.SubagentCallCount == nil || *patch.SubagentCallCount != 2 {
 		t.Fatalf("SubagentCallCount = %v, want 2 distinct parents", patch.SubagentCallCount)
+	}
+}
+
+// TestBuildRunPatchMarksResumeZeroOutputStall covers the circuit-breaker
+// marker (see agentorch.PickImplementationResumeSession): buildRunPatch must
+// set ResumeZeroOutputStall only for the specific errorKind/errorMsg pair the
+// watchdog's zero-output-stall path records, never for a generic rate limit
+// or any other terminal state.
+func TestBuildRunPatchMarksResumeZeroOutputStall(t *testing.T) {
+	t.Parallel()
+
+	t.Run("zero-output stall sets the marker", func(t *testing.T) {
+		t.Parallel()
+		ag := &agent.Agent{ID: "ag-1", TaskID: "task-1"}
+		ag.SetError(agent.ErrorKindSilentHang, watchdogreason.ZeroOutputBeforeStartup)
+
+		patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 0, 0, "", nil)
+
+		if patch.ResumeZeroOutputStall == nil || !*patch.ResumeZeroOutputStall {
+			t.Fatalf("ResumeZeroOutputStall = %v, want true", patch.ResumeZeroOutputStall)
+		}
+	})
+
+	t.Run("legacy rate_limit kind from an in-flight run still sets the marker", func(t *testing.T) {
+		t.Parallel()
+		ag := &agent.Agent{ID: "ag-1b", TaskID: "task-1"}
+		ag.SetError("rate_limit", watchdogreason.ZeroOutputBeforeStartup)
+
+		patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 0, 0, "", nil)
+
+		if patch.ResumeZeroOutputStall == nil || !*patch.ResumeZeroOutputStall {
+			t.Fatalf("ResumeZeroOutputStall = %v, want true", patch.ResumeZeroOutputStall)
+		}
+	})
+
+	t.Run("generic rate limit does not set the marker", func(t *testing.T) {
+		t.Parallel()
+		ag := &agent.Agent{ID: "ag-2", TaskID: "task-1"}
+		ag.SetError("rate_limit", "rate_limited")
+
+		patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 0, 0, "", nil)
+
+		if patch.ResumeZeroOutputStall != nil {
+			t.Fatalf("ResumeZeroOutputStall = %v, want nil", patch.ResumeZeroOutputStall)
+		}
+	})
+
+	t.Run("wrapped zero-output reason (task status_reason form) does not set the marker", func(t *testing.T) {
+		t.Parallel()
+		ag := &agent.Agent{ID: "ag-3", TaskID: "task-1"}
+		ag.SetError("rate_limit", watchdogreason.RateLimit(watchdogreason.ZeroOutputBeforeStartup))
+
+		patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 0, 0, "", nil)
+
+		if patch.ResumeZeroOutputStall != nil {
+			t.Fatalf("ResumeZeroOutputStall = %v, want nil", patch.ResumeZeroOutputStall)
+		}
+	})
+
+	t.Run("zero-output message without rate_limit kind does not set the marker", func(t *testing.T) {
+		t.Parallel()
+		ag := &agent.Agent{ID: "ag-4", TaskID: "task-1"}
+		ag.SetError("crash", watchdogreason.ZeroOutputBeforeStartup)
+
+		patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 0, 0, "", nil)
+
+		if patch.ResumeZeroOutputStall != nil {
+			t.Fatalf("ResumeZeroOutputStall = %v, want nil", patch.ResumeZeroOutputStall)
+		}
+	})
+}
+
+// TestOnComplete_SilentHangReschedulesInsteadOfClearing pins the routing the
+// whole reschedule contract rests on. The disposition alone proves nothing:
+// a silent hang that reaches the default branch still reads as "stalled", it
+// just quietly loses its same-tick re-dispatch and waits for a later sweep.
+func TestOnComplete_SilentHangReschedulesInsteadOfClearing(t *testing.T) {
+	store, err := task.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := discardLogger()
+	wm := worktree.New(worktree.Config{WorktreesDir: t.TempDir(), Tasks: tasks, Logger: logger})
+	wf := &recordingWorkflow{}
+
+	created, err := tasks.CreateWithStatus("hung task", "body", "headless", task.StatusInProgress, task.Update{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.AddRun(created.ID, task.AgentRun{AgentID: "ag-1", Role: "implementation", Mode: "headless"}); err != nil {
+		t.Fatal(err)
+	}
+
+	ag := &agent.Agent{ID: "ag-1", TaskID: created.ID, Mode: "headless", Provider: "claude"}
+	ag.SetError(agent.ErrorKindSilentHang, watchdogreason.ZeroOutputBeforeStartup)
+	ag.MarkStopped()
+
+	h := New(Config{Logger: logger, Tasks: tasks, Worktrees: wm, WorkflowEngine: wf})
+	h.OnComplete(ag)
+
+	if len(wf.rateLimited) != 1 || wf.rateLimited[0] != "ag-1" {
+		t.Fatalf("RescheduleRateLimitedAgent calls = %v, want [ag-1] (a silent hang must re-drive its step now)", wf.rateLimited)
+	}
+	if len(wf.completed) != 0 {
+		t.Fatalf("HandleAgentComplete called %d times, want 0 (a silent run carries no verdict)", len(wf.completed))
+	}
+	if len(wf.cleared) != 0 {
+		t.Fatalf("ClearAgentStep called %d times, want 0 (clearing drops the immediate re-dispatch)", len(wf.cleared))
 	}
 }
 
@@ -464,10 +637,10 @@ func TestClassifyStall_CheckpointDisposition(t *testing.T) {
 		ag.MarkStopped()
 		ag.SetEscalationReason("checkpoint")
 
-		stalled, rateLimited, malformedTool, stopStalled, checkpointStopped := classifyStall(ag, nil)
-		if !stalled || rateLimited || malformedTool || stopStalled || !checkpointStopped {
-			t.Fatalf("classifyStall(checkpoint) = stalled=%v rateLimited=%v malformedTool=%v stopStalled=%v checkpointStopped=%v",
-				stalled, rateLimited, malformedTool, stopStalled, checkpointStopped)
+		stall := classifyStall(ag, nil)
+		if !stall.Stalled || stall.RateLimited || stall.MalformedTool || stall.ToolUseAborted || stall.StopStalled || !stall.CheckpointStopped {
+			t.Fatalf("classifyStall(checkpoint) = stalled=%v rateLimited=%v malformedTool=%v toolUseAborted=%v stopStalled=%v checkpointStopped=%v",
+				stall.Stalled, stall.RateLimited, stall.MalformedTool, stall.ToolUseAborted, stall.StopStalled, stall.CheckpointStopped)
 		}
 	})
 
@@ -476,10 +649,10 @@ func TestClassifyStall_CheckpointDisposition(t *testing.T) {
 		ag.MarkStopped()
 		ag.SetEscalationReason("checkpoint_failed")
 
-		stalled, rateLimited, malformedTool, stopStalled, checkpointStopped := classifyStall(ag, errors.New("checkpoint commit failed"))
-		if stalled || rateLimited || malformedTool || stopStalled || checkpointStopped {
-			t.Fatalf("classifyStall(checkpoint_failed) = stalled=%v rateLimited=%v malformedTool=%v stopStalled=%v checkpointStopped=%v",
-				stalled, rateLimited, malformedTool, stopStalled, checkpointStopped)
+		stall := classifyStall(ag, errors.New("checkpoint commit failed"))
+		if stall.Stalled || stall.RateLimited || stall.MalformedTool || stall.ToolUseAborted || stall.StopStalled || stall.CheckpointStopped {
+			t.Fatalf("classifyStall(checkpoint_failed) = stalled=%v rateLimited=%v malformedTool=%v toolUseAborted=%v stopStalled=%v checkpointStopped=%v",
+				stall.Stalled, stall.RateLimited, stall.MalformedTool, stall.ToolUseAborted, stall.StopStalled, stall.CheckpointStopped)
 		}
 	})
 
@@ -487,10 +660,69 @@ func TestClassifyStall_CheckpointDisposition(t *testing.T) {
 		ag := &agent.Agent{}
 		ag.SetError("malformed_tool_call", "tool rejected malformed input")
 
-		stalled, rateLimited, malformedTool, stopStalled, checkpointStopped := classifyStall(ag, nil)
-		if !stalled || rateLimited || !malformedTool || stopStalled || checkpointStopped {
-			t.Fatalf("classifyStall(malformed_tool_call) = stalled=%v rateLimited=%v malformedTool=%v stopStalled=%v checkpointStopped=%v",
-				stalled, rateLimited, malformedTool, stopStalled, checkpointStopped)
+		stall := classifyStall(ag, nil)
+		if !stall.Stalled || stall.RateLimited || !stall.MalformedTool || stall.ToolUseAborted || stall.StopStalled || stall.CheckpointStopped {
+			t.Fatalf("classifyStall(malformed_tool_call) = stalled=%v rateLimited=%v malformedTool=%v toolUseAborted=%v stopStalled=%v checkpointStopped=%v",
+				stall.Stalled, stall.RateLimited, stall.MalformedTool, stall.ToolUseAborted, stall.StopStalled, stall.CheckpointStopped)
+		}
+	})
+
+	// A silent hang carries no verdict either, and the watchdog no longer
+	// borrows the rate-limit kind to reach this branch (#3154), so the
+	// disposition has to recognize it on its own or the run stops being
+	// re-dispatched at all.
+	t.Run("silent hang stalls for retry without claiming a rate limit", func(t *testing.T) {
+		ag := &agent.Agent{}
+		ag.SetError(agent.ErrorKindSilentHang, watchdogreason.ZeroOutputBeforeStartup)
+
+		stall := classifyStall(ag, nil)
+		if !stall.Stalled || !stall.SilentHang || stall.RateLimited || stall.MalformedTool || stall.ToolUseAborted || stall.CheckpointStopped {
+			t.Fatalf("classifyStall(silent_hang) = stalled=%v silentHang=%v rateLimited=%v malformedTool=%v toolUseAborted=%v checkpointStopped=%v",
+				stall.Stalled, stall.SilentHang, stall.RateLimited, stall.MalformedTool, stall.ToolUseAborted, stall.CheckpointStopped)
+		}
+	})
+
+	// An initial prompt that never reached the child leaves a run holding no
+	// verdict about anything, so it must be re-dispatched rather than counted.
+	t.Run("undelivered prompt stalls for retry", func(t *testing.T) {
+		ag := &agent.Agent{}
+		ag.SetError(agent.ErrorKindPromptUndelivered, "write stdin: timed out after 2m0s, pipe closed")
+
+		stall := classifyStall(ag, errors.New("deliver initial prompt: write stdin: timed out after 2m0s, pipe closed"))
+		if !stall.Stalled || !stall.PromptUndelivered || stall.RateLimited || stall.MalformedTool || stall.ToolUseAborted || stall.CheckpointStopped {
+			t.Fatalf("classifyStall(prompt_undelivered) = stalled=%v promptUndelivered=%v rateLimited=%v malformedTool=%v toolUseAborted=%v checkpointStopped=%v",
+				stall.Stalled, stall.PromptUndelivered, stall.RateLimited, stall.MalformedTool, stall.ToolUseAborted, stall.CheckpointStopped)
+		}
+	})
+
+	t.Run("undelivered prompt is not a definitive outcome", func(t *testing.T) {
+		ag := &agent.Agent{}
+		ag.SetError(agent.ErrorKindPromptUndelivered, "write stdin: timed out after 2m0s, pipe closed")
+
+		if got := runTerminalOutcome(ag, errors.New("deliver initial prompt: timed out")); got != "" {
+			t.Fatalf("runTerminalOutcome(prompt_undelivered) = %q, want empty", got)
+		}
+	})
+
+	t.Run("tool use aborted stalls for retry", func(t *testing.T) {
+		ag := &agent.Agent{}
+		ag.SetError(agent.ErrorKindToolUseAborted, "provider run aborted after tool use was rejected")
+
+		stall := classifyStall(ag, errors.New("provider result error provider_error"))
+		if !stall.Stalled || stall.RateLimited || stall.MalformedTool || !stall.ToolUseAborted || stall.UserInterrupted || stall.StopStalled || stall.CheckpointStopped {
+			t.Fatalf("classifyStall(tool_use_aborted) = stalled=%v rateLimited=%v malformedTool=%v toolUseAborted=%v userInterrupted=%v stopStalled=%v checkpointStopped=%v",
+				stall.Stalled, stall.RateLimited, stall.MalformedTool, stall.ToolUseAborted, stall.UserInterrupted, stall.StopStalled, stall.CheckpointStopped)
+		}
+	})
+
+	t.Run("user interrupted stalls for retry", func(t *testing.T) {
+		ag := &agent.Agent{}
+		ag.SetError(agent.ErrorKindUserInterrupted, "provider run was interrupted by the user before completion")
+
+		stall := classifyStall(ag, errors.New("provider result error provider_error"))
+		if !stall.Stalled || stall.RateLimited || stall.MalformedTool || stall.ToolUseAborted || !stall.UserInterrupted || stall.StopStalled || stall.CheckpointStopped {
+			t.Fatalf("classifyStall(user_interrupted) = stalled=%v rateLimited=%v malformedTool=%v toolUseAborted=%v userInterrupted=%v stopStalled=%v checkpointStopped=%v",
+				stall.Stalled, stall.RateLimited, stall.MalformedTool, stall.ToolUseAborted, stall.UserInterrupted, stall.StopStalled, stall.CheckpointStopped)
 		}
 	})
 }
@@ -558,6 +790,78 @@ func TestOnComplete_ImportsTestRunnerEvidenceBeforeTerminalStatus(t *testing.T) 
 	}
 	if metas[0].SourcePath != shotPath {
 		t.Fatalf("SourcePath = %q, want %q", metas[0].SourcePath, shotPath)
+	}
+}
+
+func TestOnComplete_DefersWorkflowUntilLockTimeoutRunUpdatePersists(t *testing.T) {
+	taskMgr := newMinimalTaskManager(t)
+	tk, err := taskMgr.Create("locked completion", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := taskMgr.AddRun(tk.ID, task.AgentRun{
+		AgentID:   "agent-lock",
+		Role:      string(agent.RoleImplementation),
+		Mode:      "headless",
+		State:     string(agent.StateRunning),
+		StartedAt: time.Now().Add(-time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	unlock, err := fsutil.LockFile(tk.FilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = unlock() }()
+
+	wf := &recordingCompletionWorkflow{completed: make(chan workflow.AgentCompletion, 1)}
+	h := &Handler{
+		logger:         discardLogger(),
+		tasks:          taskMgr,
+		workflowEngine: wf,
+	}
+	ag := &agent.Agent{
+		ID:        "agent-lock",
+		TaskID:    tk.ID,
+		Name:      agent.RoleImplementation.AgentName(tk.Title),
+		Mode:      "headless",
+		State:     agent.StateStopped,
+		StartedAt: time.Now().Add(-time.Second),
+	}
+	ag.AppendOutput(agent.StreamEvent{Type: "result", Content: "done after lock"})
+
+	h.OnComplete(ag)
+
+	select {
+	case c := <-wf.completed:
+		t.Fatalf("workflow completed before terminal run persisted: %+v", c)
+	default:
+	}
+
+	if err := unlock(); err != nil {
+		t.Fatal(err)
+	}
+	unlock = func() error { return nil }
+
+	select {
+	case c := <-wf.completed:
+		if c.AgentID != "agent-lock" || c.Result != "done after lock" || !c.Success {
+			t.Fatalf("workflow completion = %+v, want persisted successful agent result", c)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("deferred completion did not reach workflow")
+	}
+
+	got, err := taskMgr.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AgentRuns[0].State != string(agent.StateStopped) {
+		t.Fatalf("run state = %q, want %q", got.AgentRuns[0].State, agent.StateStopped)
+	}
+	if got.AgentRuns[0].Result != "done after lock" {
+		t.Fatalf("run result = %q, want deferred result", got.AgentRuns[0].Result)
 	}
 }
 
@@ -818,4 +1122,125 @@ func itoa(n int) string {
 		n /= 10
 	}
 	return string(buf[pos:])
+}
+
+func TestSalvageInterruptedReviewMarksTheRunAsSalvaged(t *testing.T) {
+	taskMgr := newMinimalTaskManager(t)
+	tk, err := taskMgr.Create("review task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := taskMgr.AddRun(tk.ID, task.AgentRun{
+		AgentID: "review-agent", Role: string(agent.RoleReview),
+		StartedAt: time.Now(), Outcome: "failure",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	h := &Handler{logger: discardLogger(), tasks: taskMgr}
+	ag := &agent.Agent{ID: "review-agent", TaskID: tk.ID, Name: agent.RoleReview.AgentName(tk.Title)}
+	ag.SetEscalationReason("cost")
+	ag.AppendOutput(agent.StreamEvent{Type: "assistant", Content: "partial findings before the cost stop"})
+
+	h.salvageInterruptedReview(ag)
+
+	got, err := taskMgr.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.CodeReview == "" {
+		t.Fatal("no review was salvaged, so there is nothing for the budget to count")
+	}
+	idx := slices.IndexFunc(got.AgentRuns, func(r task.AgentRun) bool { return r.AgentID == "review-agent" })
+	if idx < 0 {
+		t.Fatal("run missing from the task")
+	}
+	if !got.AgentRuns[idx].ReviewSalvaged {
+		t.Fatal("a run that left a review behind was not marked, so the lifetime ceiling will not count it")
+	}
+}
+
+func TestSalvageInterruptedReviewMarksALaterRoundToo(t *testing.T) {
+	taskMgr := newMinimalTaskManager(t)
+	tk, err := taskMgr.Create("review task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	existing := "# Interrupted Code Review\n\nround one salvage"
+	if _, err := taskMgr.Update(tk.ID, task.Update{CodeReview: &existing}); err != nil {
+		t.Fatal(err)
+	}
+	if err := taskMgr.AddRun(tk.ID, task.AgentRun{
+		AgentID: "review-b", Role: string(agent.RoleReview),
+		StartedAt: time.Now(), Outcome: "failure",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	h := &Handler{logger: discardLogger(), tasks: taskMgr}
+	ag := &agent.Agent{ID: "review-b", TaskID: tk.ID, Name: agent.RoleReview.AgentName(tk.Title)}
+	ag.SetEscalationReason("cost")
+	ag.AppendOutput(agent.StreamEvent{Type: "assistant", Content: "round two findings before the cost stop"})
+
+	h.salvageInterruptedReview(ag)
+
+	got, err := taskMgr.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.CodeReview != existing {
+		t.Fatal("round one's salvaged review was overwritten")
+	}
+	idx := slices.IndexFunc(got.AgentRuns, func(r task.AgentRun) bool { return r.AgentID == "review-b" })
+	if idx < 0 || !got.AgentRuns[idx].ReviewSalvaged {
+		t.Fatal("a later cost-stopped round was not marked, so every round after the first charges nothing")
+	}
+}
+
+func TestSalvagedRunReachesTheLifetimeBudget(t *testing.T) {
+	taskMgr := newMinimalTaskManager(t)
+	tk, err := taskMgr.Create("review task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := taskMgr.AddRun(tk.ID, task.AgentRun{
+		AgentID: "review-agent", Role: string(agent.RoleReview),
+		StartedAt: time.Now(), Outcome: "failure",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	budget := reviewbudget.Budget{PerHour: 3, PerTask: 6}
+	before, err := taskMgr.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := budget.LifetimeSpent(budgetRunsOf(before)); got != 0 {
+		t.Fatalf("LifetimeSpent = %d before the salvage, want 0", got)
+	}
+
+	h := &Handler{logger: discardLogger(), tasks: taskMgr}
+	ag := &agent.Agent{ID: "review-agent", TaskID: tk.ID, Name: agent.RoleReview.AgentName(tk.Title)}
+	ag.SetEscalationReason("cost")
+	ag.AppendOutput(agent.StreamEvent{Type: "assistant", Content: "findings before the cost stop"})
+	h.salvageInterruptedReview(ag)
+
+	after, err := taskMgr.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := budget.LifetimeSpent(budgetRunsOf(after)); got != 1 {
+		t.Fatalf("LifetimeSpent = %d after the salvage, want 1 — the marker never reached the budget", got)
+	}
+}
+
+func budgetRunsOf(t task.Task) []reviewbudget.Run {
+	runs := make([]reviewbudget.Run, len(t.AgentRuns))
+	for i := range t.AgentRuns {
+		runs[i] = reviewbudget.Run{
+			Role: t.AgentRuns[i].Role, StartedAt: t.AgentRuns[i].StartedAt,
+			Outcome: t.AgentRuns[i].Outcome, TurnCount: t.AgentRuns[i].TurnCount,
+			Salvaged: t.AgentRuns[i].ReviewSalvaged,
+		}
+	}
+	return runs
 }

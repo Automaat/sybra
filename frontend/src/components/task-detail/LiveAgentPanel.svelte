@@ -5,7 +5,6 @@
   import { EventsOn } from '$lib/api'
   import { agentState } from '../../lib/events.js'
   import StreamOutput from '../StreamOutput.svelte'
-  import ChatView from '../ChatView.svelte'
   import ProviderLogo from '../ProviderLogo.svelte'
 
   interface Props {
@@ -79,17 +78,6 @@
         <pre class="max-h-64 overflow-y-auto whitespace-pre-wrap border-t border-surface-300 px-3 py-2 text-xs text-surface-700 dark:border-surface-600 dark:text-surface-300">{runningAgent.prompt}</pre>
       </details>
     {/if}
-    {#if runningAgent.mode === 'interactive'}
-      <ChatView
-        agentId={runningAgent.id}
-        agentState={runningAgent.state}
-        costUsd={runningAgent.costUsd}
-        inputTokens={runningAgent.inputTokens ?? 0}
-        outputTokens={runningAgent.outputTokens ?? 0}
-        bounded={true}
-      />
-    {:else}
-      <StreamOutput agentId={runningAgent.id} />
-    {/if}
+    <StreamOutput agentId={runningAgent.id} />
   </div>
 {/if}

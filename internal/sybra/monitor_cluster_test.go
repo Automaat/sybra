@@ -131,7 +131,7 @@ func TestLeaderMonitorRoutesRemoteLostAgentAndMirrorConverges(t *testing.T) {
 	httpapi.Mount(mux, map[string]httpapi.Service{
 		"TaskService":  httpapi.NewService(followerTaskSvc, "AssignTask", "RecoverLostAgent", "ListTasks", "GetTask"),
 		"AgentService": httpapi.NewService(followerAgentSvc, "ListAgents"),
-	}, slog.Default())
+	}, slog.Default(), nil)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 

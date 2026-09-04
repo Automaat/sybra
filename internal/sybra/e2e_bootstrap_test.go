@@ -5,17 +5,21 @@ package sybra
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/agentqueue"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
 )
 
@@ -37,6 +41,10 @@ type bootstrapE2E struct {
 }
 
 func setupBootstrapE2E(t *testing.T, repoSetup, appSetup []string) *bootstrapE2E {
+	return setupBootstrapE2EWithMaxConcurrent(t, repoSetup, appSetup, 0)
+}
+
+func setupBootstrapE2EWithMaxConcurrent(t *testing.T, repoSetup, appSetup []string, maxConcurrent int) *bootstrapE2E {
 	t.Helper()
 
 	binDir := buildTestBinaries(t)
@@ -153,7 +161,7 @@ func setupBootstrapE2E(t *testing.T, repoSetup, appSetup []string) *bootstrapE2E
 	}
 	logger := e2eLogger(t)
 	agentMgr := newTestAgentManager(t, ctx, func(string, any) {}, logger, agentLogDir, agent.ManagerConfig{
-		Runtime: agent.ManagerRuntimeConfig{DefaultProvider: "claude"},
+		Runtime: agent.ManagerRuntimeConfig{DefaultProvider: "claude", MaxConcurrent: maxConcurrent},
 	})
 
 	wm := worktree.New(worktree.Config{
@@ -280,4 +288,92 @@ func TestE2E_BootstrapFailure_AbortsAgentStart(t *testing.T) {
 	if !strings.Contains(err.Error(), "exit 13") {
 		t.Errorf("error does not reference failing command: %v", err)
 	}
+}
+
+func TestE2E_StartAgentWithAssignment_ReservesCapacityBeforeSetup(t *testing.T) {
+	home := t.TempDir()
+	counter := filepath.Join(home, "setup-count.txt")
+	script := filepath.Join(home, "count-setup.sh")
+	if err := os.WriteFile(script, []byte("#!/usr/bin/env bash\n"+
+		"set -euo pipefail\n"+
+		"count=0\n"+
+		"if [ -f \"$1\" ]; then count=$(cat \"$1\"); fi\n"+
+		"printf '%s\\n' $((count+1)) > \"$1\"\n"), 0o755); err != nil {
+		t.Fatalf("write counter script: %v", err)
+	}
+
+	env := setupBootstrapE2EWithMaxConcurrent(t, []string{script + " " + counter}, nil, 1)
+	q, err := agentqueue.New(t.TempDir(), agentqueue.Options{}, e2eLogger(t))
+	if err != nil {
+		t.Fatalf("agentqueue.New: %v", err)
+	}
+	env.agentOrch.SetQueue(q)
+
+	blocker, err := env.agents.Run(agent.RunConfig{
+		TaskID:   "blocker",
+		Name:     "blocker",
+		Mode:     "headless",
+		Prompt:   "hold",
+		Dir:      t.TempDir(),
+		ExtraEnv: []string{"FAKE_CLAUDE_SCENARIO=hang"},
+	})
+	if err != nil {
+		t.Fatalf("start blocker: %v", err)
+	}
+	t.Cleanup(func() { _ = env.agents.StopAgent(blocker.ID) })
+
+	tk, err := env.tasks.Create("capacity-before-setup", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(env.projectID)}); err != nil {
+		t.Fatal(err)
+	}
+
+	for i := range 3 {
+		if _, _, err := env.agentOrch.StartAgentWithAssignment(tk.ID, "headless", "any prompt", false, false, "", "", workflow.AgentAssignment{}); !errors.Is(err, workflow.ErrAgentPoolBusy) {
+			t.Fatalf("busy attempt %d err = %v, want workflow.ErrAgentPoolBusy", i+1, err)
+		}
+	}
+	if got := readSetupCount(t, counter); got != 0 {
+		t.Fatalf("setup count while queued = %d, want 0", got)
+	}
+	snap := q.Snapshot()
+	if len(snap) != 1 || snap[0].TaskID != tk.ID {
+		t.Fatalf("queue snapshot = %+v, want single queued task %s", snap, tk.ID)
+	}
+
+	if err := env.agents.StopAgent(blocker.ID); err != nil {
+		t.Fatalf("stop blocker: %v", err)
+	}
+	waitFor(t, 10*time.Second, "free slot after blocker stop", func() bool {
+		return env.agents.TryReserveSlot()
+	})
+
+	ag, _, err := env.agentOrch.StartAgentWithAssignment(tk.ID, "headless", "any prompt", false, false, "", "", workflow.AgentAssignment{})
+	if err != nil {
+		t.Fatalf("StartAgentWithAssignment after release: %v", err)
+	}
+	if got := readSetupCount(t, counter); got != 1 {
+		t.Fatalf("setup count after slot release = %d, want 1", got)
+	}
+	waitFor(t, 10*time.Second, "queued task completion", func() bool {
+		return ag.GetState() == agent.StateStopped
+	})
+}
+
+func readSetupCount(t *testing.T, path string) int {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0
+		}
+		t.Fatalf("read setup count: %v", err)
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		t.Fatalf("parse setup count %q: %v", strings.TrimSpace(string(data)), err)
+	}
+	return n
 }

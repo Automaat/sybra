@@ -3,9 +3,9 @@ package agent
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	providerpkg "github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 type headlessInvocation struct {
@@ -13,11 +13,6 @@ type headlessInvocation struct {
 	args    []string
 	env     []string
 	command string
-}
-
-type perTurnConvoInvocation struct {
-	bin  string
-	args []string
 }
 
 type Provider interface {
@@ -34,11 +29,8 @@ type Provider interface {
 	// receipt unsatisfiable — copilot/opencode silently ignore the schema, so a
 	// receipt must still be appended and verified for them.
 	EnforcesOutputSchema() bool
-	UsesPerTurnConvo() bool
-	BuildPerTurnConvoInvocation(a *Agent, cfg RunConfig, prompt string) perTurnConvoInvocation
-	ParseConvoLine(line []byte) (ConvoEvent, error)
 	SessionFilePath(sessionID string) string
-	ClassifyError(sample providerpkg.ErrorSample) (providerpkg.Signal, string, time.Duration)
+	ClassifyError(sample providerpkg.ErrorSample) providerpkg.Classification
 	// HonorsAllowedTools reports whether this provider actually enforces
 	// RunConfig.AllowedTools on the spawned CLI. False means the list is
 	// silently ignored and the agent runs with the provider's own default
@@ -76,20 +68,6 @@ func (baseProvider) EnforcesOutputSchema() bool { return false }
 
 func (baseProvider) OutputSchemaAsFile() bool { return false }
 
-func (baseProvider) UsesPerTurnConvo() bool { return false }
-
-func (baseProvider) BuildPerTurnConvoInvocation(a *Agent, _ RunConfig, _ string) perTurnConvoInvocation {
-	bin := strings.ToLower(strings.TrimSpace(a.Provider))
-	if bin == "" {
-		bin = "claude"
-	}
-	return perTurnConvoInvocation{bin: bin}
-}
-
-func (baseProvider) ParseConvoLine([]byte) (ConvoEvent, error) {
-	return ConvoEvent{}, fmt.Errorf("provider does not support per-turn conversational parsing")
-}
-
 func (baseProvider) SessionFilePath(string) string { return "" }
 
 var agentProviders = map[string]Provider{}
@@ -101,7 +79,7 @@ func registerAgentProvider(p Provider) {
 func lookupProvider(name string) (Provider, error) {
 	key := strings.ToLower(strings.TrimSpace(name))
 	if key == "" {
-		key = "claude"
+		key = providerid.Claude
 	}
 	if p, ok := agentProviders[key]; ok {
 		return p, nil

@@ -27,13 +27,13 @@ func TestCollectWeakSubjectsGates(t *testing.T) {
 	// implementation: 10 runs, 5 failed -> 0.50 failure rate, clears both gates.
 	records = append(records, repeatRecords(5, "implementation", stats.OutcomeFailed, "p1", "impl-fail-")...)
 	records = append(records, repeatRecords(5, "implementation", stats.OutcomeCompleted, "p2", "impl-ok-")...)
-	// review: 10 runs, 1 failed -> 0.10 failure rate, below min effect size.
-	records = append(records, repeatRecords(1, "review", stats.OutcomeFailed, "p1", "review-fail-")...)
-	records = append(records, repeatRecords(9, "review", stats.OutcomeCompleted, "p1", "review-ok-")...)
+	// pr-fix: 10 runs, 1 failed -> 0.10 failure rate, below min effect size.
+	records = append(records, repeatRecords(1, "pr-fix", stats.OutcomeFailed, "p1", "pr-fix-fail-")...)
+	records = append(records, repeatRecords(9, "pr-fix", stats.OutcomeCompleted, "p1", "pr-fix-ok-")...)
 	// fix-review: 2 runs, both failed -> below min samples despite high rate.
 	records = append(records, repeatRecords(2, "fix-review", stats.OutcomeFailed, "p1", "fix-review-")...)
-	// docs: 10 runs, all passing -> dilutes the fleet baseline to 0.25.
-	records = append(records, repeatRecords(10, "docs", stats.OutcomeCompleted, "p1", "docs-")...)
+	// test-fix: 10 clean runs -> keeps the fleet baseline at 0.25.
+	records = append(records, repeatRecords(10, "test-fix", stats.OutcomeCompleted, "p1", "test-fix-")...)
 
 	got := CollectWeakSubjects(records, 5, 0.15)
 	if len(got) != 1 {
@@ -60,15 +60,15 @@ func TestCollectWeakSubjectsGates(t *testing.T) {
 // autonomously rewrite a prompt over what is really a provider stall (#2149).
 func TestCollectWeakSubjectsGatesOnResolvedRunsNotStalls(t *testing.T) {
 	var records []stats.RunRecord
-	// review: 5 dispatches, but only 1 resolved (a failure). Samples of one.
-	records = append(records, repeatRecords(4, "review", stats.OutcomeStalled, "p1", "review-stall-")...)
-	records = append(records, repeatRecords(1, "review", stats.OutcomeFailed, "p1", "review-fail-")...)
-	// docs: 20 clean runs, holding the fleet baseline near zero so review's
+	// pr-fix: 5 dispatches, but only 1 resolved (a failure). Samples of one.
+	records = append(records, repeatRecords(4, "pr-fix", stats.OutcomeStalled, "p1", "pr-fix-stall-")...)
+	records = append(records, repeatRecords(1, "pr-fix", stats.OutcomeFailed, "p1", "pr-fix-fail-")...)
+	// implementation: 20 clean runs, holding the fleet baseline near zero so pr-fix's
 	// effect size clears MinEffectSize easily if the sample gate lets it past.
-	records = append(records, repeatRecords(20, "docs", stats.OutcomeCompleted, "p1", "docs-")...)
+	records = append(records, repeatRecords(20, "implementation", stats.OutcomeCompleted, "p1", "impl-")...)
 
 	if got := CollectWeakSubjects(records, 5, 0.15); len(got) != 0 {
-		t.Fatalf("CollectWeakSubjects = %+v, want none: review has 1 resolved run against minSamples=5", got)
+		t.Fatalf("CollectWeakSubjects = %+v, want none: pr-fix has 1 resolved run against minSamples=5", got)
 	}
 }
 
@@ -78,7 +78,7 @@ func TestCollectWeakSubjectsReportsResolvedSampleCount(t *testing.T) {
 	var records []stats.RunRecord
 	records = append(records, repeatRecords(5, "implementation", stats.OutcomeFailed, "p1", "impl-fail-")...)
 	records = append(records, repeatRecords(3, "implementation", stats.OutcomeStalled, "p1", "impl-stall-")...)
-	records = append(records, repeatRecords(20, "docs", stats.OutcomeCompleted, "p1", "docs-")...)
+	records = append(records, repeatRecords(20, "pr-fix", stats.OutcomeCompleted, "p1", "pr-fix-")...)
 
 	got := CollectWeakSubjects(records, 5, 0.15)
 	if len(got) != 1 || got[0].Role != "implementation" {

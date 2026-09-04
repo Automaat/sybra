@@ -26,6 +26,10 @@ func claudeEventToStreamEvent(e ClaudeEvent) StreamEvent {
 			ev.toolSig = obs.signature
 			ev.toolLoopLabel = obs.label
 			ev.toolUses = e.Message.ToolUses
+			ev.InputTokens = e.Message.InputTokens
+			ev.OutputTokens = e.Message.OutputTokens
+			ev.CacheCreationInputTokens = e.Message.CacheCreationInputTokens
+			ev.CacheReadInputTokens = e.Message.CacheReadInputTokens
 		}
 	case "user":
 		if e.Message != nil {
@@ -52,6 +56,7 @@ func claudeEventToStreamEvent(e ClaudeEvent) StreamEvent {
 			ev.ReasoningTokens = e.Result.ReasoningTokens
 			ev.ErrorType = e.Result.ErrorType
 			ev.ErrorStatus = e.Result.ErrorStatus
+			ev.TerminalReason = e.Result.TerminalReason
 		}
 
 	}
@@ -130,6 +135,7 @@ func codexEventToStreamEvent(e CodexEvent) StreamEvent {
 			ev.ReasoningTokens = e.Result.ReasoningTokens
 			ev.ErrorType = e.Result.ErrorType
 			ev.ErrorStatus = e.Result.ErrorStatus
+			ev.TerminalReason = e.Result.TerminalReason
 		}
 	}
 	return ev
@@ -170,6 +176,7 @@ func copilotEventToStreamEvent(e CopilotEvent) StreamEvent {
 			ev.PremiumRequests = e.Result.PremiumRequests
 			ev.ErrorType = e.Result.ErrorType
 			ev.ErrorStatus = e.Result.ErrorStatus
+			ev.TerminalReason = e.Result.TerminalReason
 		}
 	}
 	return ev
@@ -219,6 +226,7 @@ func opencodeEventToStreamEvent(e OpenCodeEvent) StreamEvent {
 			ev.ReasoningTokens = e.Result.ReasoningTokens
 			ev.ErrorType = e.Result.ErrorType
 			ev.ErrorStatus = e.Result.ErrorStatus
+			ev.TerminalReason = e.Result.TerminalReason
 		}
 	}
 	return ev

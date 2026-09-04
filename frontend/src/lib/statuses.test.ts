@@ -126,6 +126,15 @@ describe('needsPlanApproval — keyed off workflow, not stale status (issue #164
     expect(needsPlanApproval({ status: 'planning' })).toBe(false)
   })
 
+  it.each(['done', 'cancelled'])('is false for terminal %s tasks with stale waiting workflow state', (status) => {
+    expect(
+      needsPlanApproval({
+        status,
+        workflow: { currentStep: 'review_plan', state: 'waiting' },
+      }),
+    ).toBe(false)
+  })
+
   it('is true when the workflow is waiting on review_plan, even if status desynced away from plan-review', () => {
     expect(
       needsPlanApproval({

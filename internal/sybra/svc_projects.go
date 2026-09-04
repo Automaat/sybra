@@ -9,6 +9,7 @@ import (
 	"github.com/Automaat/sybra/internal/bgop"
 	"github.com/Automaat/sybra/internal/notification"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/reject"
 	"github.com/Automaat/sybra/internal/worktree"
 )
 
@@ -29,7 +30,65 @@ func (s *ProjectService) ListProjects() ([]project.Project, error) {
 
 // GetProject returns a single project by ID.
 func (s *ProjectService) GetProject(id string) (project.Project, error) {
-	return s.projects.Get(id)
+	p, err := s.projects.Get(id)
+	return p, boardRejectionFor("project", id, err)
+}
+
+// GetProjectRawType returns a project's type exactly as recorded, without
+// GetProject's missing-type→pet coercion.
+//
+// A client cannot derive this from GetProject: the confidentiality guard needs
+// "unset" to stay distinguishable from "pet" so a work project with an absent
+// type field is never routed to an untrusted follower, and GetProject has
+// already collapsed the two by the time the record reaches the wire.
+func (s *ProjectService) GetProjectRawType(id string) (string, error) {
+	raw, err := s.projects.RawType(id)
+	if err != nil {
+		return "", boardRejectionFor("project", id, err)
+	}
+	return string(raw), nil
+}
+
+// CreateProjectAndClone registers a repo and finishes its clone before
+// returning, reporting a clone failure to the caller.
+//
+// CreateProject's background clone suits the GUI, which watches the record
+// flip out of `cloning`. A CLI caller has nothing to watch: it exits, so an
+// async create would print success on a repo that never cloned and hand back
+// a record in `cloning` where the filesystem-backed command returned `ready`.
+func (s *ProjectService) CreateProjectAndClone(url, ptype string) (project.Project, error) {
+	s.logger.Info("project.create.sync", "url", url, "type", ptype)
+	p, err := s.projects.Create(url, project.ProjectType(ptype))
+	if err != nil {
+		s.logger.Error("project.create.sync.failed", "url", url, "err", err)
+		if reject.Is(err) {
+			return project.Project{}, validationError(err.Error())
+		}
+		// A clone failure wraps the git invocation, which carries the
+		// server's clone path. It stays in the log rather than going on
+		// the wire; the caller still gets a loud, non-generic failure.
+		return project.Project{}, unavailableError("clone failed; see the server log for the git error")
+	}
+	return p, nil
+}
+
+// AdoptProject registers a project pointing at an already-existing local
+// clone, without cloning or contacting any remote. url is used only to
+// derive the ID/owner/repo and for display; a placeholder value works for a
+// fixture or an air-gapped install describing a repo it already has on
+// disk. Synchronous like CreateProjectAndClone: there is no background step
+// for a caller to watch, so the project is ready or the call fails.
+func (s *ProjectService) AdoptProject(url, ptype, clonePath string) (project.Project, error) {
+	s.logger.Info("project.adopt", "url", url, "type", ptype, "clone_path", clonePath)
+	p, err := s.projects.Adopt(url, project.ProjectType(ptype), clonePath)
+	if err != nil {
+		s.logger.Error("project.adopt.failed", "url", url, "err", err)
+		if reject.Is(err) {
+			return project.Project{}, validationError(err.Error())
+		}
+		return project.Project{}, err
+	}
+	return p, nil
 }
 
 // CreateProject registers a GitHub repo and starts a bare clone in the
@@ -39,7 +98,7 @@ func (s *ProjectService) CreateProject(url, ptype string) (project.Project, erro
 	p, err := s.projects.CreateMeta(url, project.ProjectType(ptype))
 	if err != nil {
 		s.logger.Error("project.create.failed", "url", url, "err", err)
-		return p, err
+		return p, boardRejection(err)
 	}
 
 	opID := ""
@@ -53,7 +112,7 @@ func (s *ProjectService) CreateProject(url, ptype string) (project.Project, erro
 		// runs in a detached background goroutine with no ctx to thread.
 		if err := project.CloneBare(context.Background(), p.URL, p.ClonePath); err != nil {
 			s.logger.Error("project.clone.failed", "id", p.ID, "err", err)
-			if markErr := s.projects.MarkError(p.ID); markErr != nil {
+			if markErr := s.projects.MarkErrorFor(p); markErr != nil {
 				s.logger.Error("project.mark-error", "id", p.ID, "err", markErr)
 			}
 			if s.bgops != nil && opID != "" {
@@ -65,7 +124,12 @@ func (s *ProjectService) CreateProject(url, ptype string) (project.Project, erro
 			}
 			return
 		}
-		if markErr := s.projects.MarkReady(p.ID); markErr != nil {
+		// Non-gating: the startup migration retries this, and an otherwise
+		// healthy clone should not be marked failed over it.
+		if err := project.ConfigureCommitSigning(context.Background(), p.ClonePath, s.projects.SigningPolicy()); err != nil {
+			s.logger.Warn("project.clone.commit-signing", "id", p.ID, "err", err)
+		}
+		if markErr := s.projects.MarkReadyFor(p); markErr != nil {
 			s.logger.Error("project.mark-ready", "id", p.ID, "err", markErr)
 		}
 		if s.bgops != nil && opID != "" {
@@ -87,7 +151,7 @@ func (s *ProjectService) UpdateProject(id, ptype string) (project.Project, error
 	p, err := s.projects.Update(id, project.ProjectType(ptype))
 	if err != nil {
 		s.logger.Error("project.update.failed", "id", id, "err", err)
-		return p, err
+		return p, boardRejectionFor("project", id, err)
 	}
 	return p, nil
 }
@@ -108,7 +172,7 @@ func (s *ProjectService) SetProjectSetupCommands(id string, cmds []string) (proj
 	p, err := s.projects.SetSetupCommands(id, cmds)
 	if err != nil {
 		s.logger.Error("project.set-setup-commands.failed", "id", id, "err", err)
-		return p, err
+		return p, boardRejectionFor("project", id, err)
 	}
 	return p, nil
 }
@@ -129,20 +193,26 @@ func (s *ProjectService) DeleteProject(id string) error {
 	s.logger.Info("project.delete", "id", id)
 	if err := s.projects.Delete(id); err != nil {
 		s.logger.Error("project.delete.failed", "id", id, "err", err)
-		return err
+		return boardRejectionFor("project", id, err)
 	}
 	return nil
 }
 
 // ListWorktrees returns all git worktrees for the given project's bare clone.
 func (s *ProjectService) ListWorktrees(projectID string) ([]project.Worktree, error) {
+	if s.worktrees == nil {
+		return nil, unavailableError("worktrees unavailable")
+	}
 	// context.Background(): Wails-bound method with no ctx.
-	return s.worktrees.List(context.Background(), projectID)
+	list, err := s.worktrees.List(context.Background(), projectID)
+	// The project lookup fails first, so an unregistered id is a caller's
+	// mistake rather than a server fault.
+	return list, boardRejectionFor("project", projectID, err)
 }
 
 // OpenInTerminal opens a worktree path in a new Ghostty terminal tab.
 func (s *ProjectService) OpenInTerminal(path string) error {
-	if err := s.worktrees.ValidatePath(path); err != nil {
+	if err := s.checkWorktreePath(path); err != nil {
 		return err
 	}
 	return openDirInGhostty(path)
@@ -150,8 +220,21 @@ func (s *ProjectService) OpenInTerminal(path string) error {
 
 // OpenInEditor opens a worktree path in Zed.
 func (s *ProjectService) OpenInEditor(path string) error {
-	if err := s.worktrees.ValidatePath(path); err != nil {
+	if err := s.checkWorktreePath(path); err != nil {
 		return err
 	}
 	return exec.CommandContext(context.Background(), "zed", path).Start()
+}
+
+// checkWorktreePath rejects a path outside the worktrees directory as the
+// caller's own mistake. ValidatePath's plain error would otherwise reach the
+// HTTP mapper as a server fault and come back sanitized, hiding the reason.
+func (s *ProjectService) checkWorktreePath(path string) error {
+	if s.worktrees == nil {
+		return unavailableError("worktrees unavailable")
+	}
+	if err := s.worktrees.ValidatePath(path); err != nil {
+		return validationError(err.Error())
+	}
+	return nil
 }

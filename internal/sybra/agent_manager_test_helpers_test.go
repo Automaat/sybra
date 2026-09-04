@@ -45,5 +45,8 @@ func newTestAgentManager(tb testing.TB, ctx context.Context, emit agent.EmitFunc
 			cancel()
 		})
 	}
+	// Task-scoped PR-review dispatch now fails closed unless the lifecycle has
+	// minted its contents:read/pull_requests:write installation token.
+	m.SetGHVerifierAppToken(func() string { return "test-verifier-token" })
 	return m
 }

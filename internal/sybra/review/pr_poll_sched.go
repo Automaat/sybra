@@ -2,55 +2,45 @@ package review
 
 import (
 	"cmp"
+	"context"
 	"slices"
 
+	"github.com/Automaat/sybra/internal/backoff"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/task"
 )
-
-type prPollEntry struct {
-	lastHeadSHA   string
-	lastUpdatedAt string
-	stableStreak  int
-	skipTicks     int
-}
 
 type knownPRPollSelection struct {
 	tasks       []task.Task
 	selectedPRs int
 	deferredPRs int
 	cappedPRs   int
+	// retainKeys are the PRs this tick deliberately skipped (deferred by
+	// backoff or cut by the per-tick cap). They are absent from `tasks`, so
+	// without listing them here Prune would delete the very skip counters that
+	// deferred them and the backoff could never last more than one tick.
+	retainKeys []string
 }
 
 func expBackoff(streak, maxTicks int) int {
 	if streak <= 0 || maxTicks <= 0 {
 		return 0
 	}
-	skip := 1
-	for i := 1; i < streak && skip < maxTicks; i++ {
-		skip *= 2
-		if skip >= maxTicks {
-			return maxTicks
-		}
-	}
-	return skip
+	return backoff.StepsForAttempt(streak, 1, maxTicks).Steps
 }
 
-func (r *Handler) selectKnownPRPoll(tasks []task.Task) knownPRPollSelection {
-	if r.prPollState == nil {
-		r.prPollState = make(map[string]prPollEntry)
-	}
-
+func (r *Handler) selectKnownPRPoll(ctx context.Context, tasks []task.Task) knownPRPollSelection {
 	active := make([]task.Task, 0, len(tasks))
 	passthrough := make([]task.Task, 0, len(tasks))
 	candidates := make([]task.Task, 0, len(tasks))
+	var retainKeys []string
 	activePRs := 0
 	deferred := 0
 
 	for i := range tasks {
 		tk := tasks[i]
-		if r.agents != nil && r.agents.HasRunningAgentForTask(tk.ID) {
+		if r.hasBlockingAgentForTask(ctx, tk.ID) {
 			active = append(active, tk)
 			if knownPRPollEligible(&tk) {
 				activePRs++
@@ -63,13 +53,19 @@ func (r *Handler) selectKnownPRPoll(tasks []task.Task) knownPRPollSelection {
 		}
 
 		key := prRefCacheKey(tk.ProjectID, tk.PRNumber)
-		entry := r.prPollState[key]
-		if entry.skipTicks > 0 {
-			entry.skipTicks--
-			r.prPollState[key] = entry
-			deferred++
-			continue
+		_, _, skipTicks, _ := r.prSnapshots.Backoff(key)
+		if r.prSnapshots.TaskStatusAdvancedSince(key, tk.StatusChangedAt) {
+			r.prSnapshots.ResetBackoff(key)
+			skipTicks = 0
 		}
+		if skipTicks > 0 {
+			if r.knownPRStillStableDuringBackoff(&tk, key) {
+				deferred++
+				retainKeys = append(retainKeys, key)
+				continue
+			}
+		}
+		r.prSnapshots.NoteTaskStatus(key, tk.StatusChangedAt)
 		candidates = append(candidates, tk)
 	}
 
@@ -90,9 +86,14 @@ func (r *Handler) selectKnownPRPoll(tasks []task.Task) knownPRPollSelection {
 	selected = append(selected, active...)
 	selected = append(selected, passthrough...)
 	selected = append(selected, candidates[:budget]...)
+	for i := range candidates[budget:] {
+		capped := &candidates[budget+i]
+		retainKeys = append(retainKeys, prRefCacheKey(capped.ProjectID, capped.PRNumber))
+	}
 
 	return knownPRPollSelection{
 		tasks:       selected,
+		retainKeys:  retainKeys,
 		selectedPRs: activePRs + budget,
 		deferredPRs: deferred,
 		cappedPRs:   len(candidates) - budget,
@@ -106,38 +107,36 @@ func knownPRPollEligible(t *task.Task) bool {
 	return prMonitorEligible(t) || prClosedEligible(t) || humanRequiredBlockerReconcileEligible(t)
 }
 
+func (r *Handler) knownPRStillStableDuringBackoff(t *task.Task, key string) bool {
+	lastHeadSHA, lastUpdatedAt, _, _ := r.prSnapshots.Backoff(key)
+	headStateFn := r.fetchHeadStateFn
+	if headStateFn == nil {
+		r.prSnapshots.DecrementSkipTicks(key)
+		return true
+	}
+	sha, open, updatedAt, err := headStateFn(t.ProjectID, t.PRNumber)
+	if err != nil {
+		r.prSnapshots.DecrementSkipTicks(key)
+		return true
+	}
+	if !open || sha == "" || sha != lastHeadSHA || updatedAt != lastUpdatedAt {
+		r.prSnapshots.ResetBackoff(key)
+		return false
+	}
+	r.prSnapshots.DecrementSkipTicks(key)
+	return true
+}
+
 func (r *Handler) noteKnownPRResult(repo string, number int, pr github.PullRequest) {
 	if repo == "" || number == 0 {
 		return
 	}
-	if r.prPollState == nil {
-		r.prPollState = make(map[string]prPollEntry)
-	}
-
 	key := prRefCacheKey(repo, number)
-	entry, ok := r.prPollState[key]
-	if !ok || entry.lastHeadSHA != pr.HeadSHA || entry.lastUpdatedAt != pr.UpdatedAt {
-		r.prPollState[key] = prPollEntry{
-			lastHeadSHA:   pr.HeadSHA,
-			lastUpdatedAt: pr.UpdatedAt,
-		}
-		return
-	}
-
-	entry.stableStreak++
-	entry.skipTicks = expBackoff(entry.stableStreak, r.reviewsStableBackoffMaxTicks())
-	r.prPollState[key] = entry
+	r.prSnapshots.NoteResult(key, pr.HeadSHA, pr.UpdatedAt, r.reviewsStableBackoffMaxTicks())
 }
 
 func (r *Handler) pruneKnownPRState(seen map[string]struct{}) {
-	if r.prPollState == nil {
-		return
-	}
-	for key := range r.prPollState {
-		if _, ok := seen[key]; !ok {
-			delete(r.prPollState, key)
-		}
-	}
+	r.prSnapshots.Prune(seen)
 }
 
 func (r *Handler) reviewsMaxPRsPerTick() int {

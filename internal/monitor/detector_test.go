@@ -13,15 +13,17 @@ import (
 
 func defaultCfg() config.MonitorConfig {
 	return config.MonitorConfig{
-		Enabled:              true,
-		IntervalSeconds:      300,
-		Model:                "sonnet",
-		IssueCooldownMinutes: 30,
-		DispatchLimit:        3,
-		StuckHumanHours:      8,
-		LostAgentMinutes:     15,
-		PRGapGraceMinutes:    15,
-		FailureRateThreshold: 0.3,
+		Enabled:                        true,
+		IntervalSeconds:                300,
+		Model:                          "sonnet",
+		IssueCooldownMinutes:           30,
+		DispatchLimit:                  3,
+		StuckHumanHours:                8,
+		LostAgentMinutes:               15,
+		PRGapGraceMinutes:              15,
+		FailureRateThreshold:           0.3,
+		LostAgentIssueAfterOccurrences: 2,
+		LostAgentAutoCloseAfterClears:  3,
 		BottleneckHours: map[string]float64{
 			"plan-review":    4,
 			"human-required": 8,
@@ -496,11 +498,11 @@ func TestDetect(t *testing.T) {
 func TestDetectPRGap_EvidenceIncludesTiming(t *testing.T) {
 	now := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
 	cfg := defaultCfg()
-	updatedAt := now.Add(-20 * time.Minute)
+	statusChangedAt := now.Add(-20 * time.Minute)
 	tk := mkTaskAt(now, "a", task.StatusInReview, func(t *task.Task) {
 		t.ProjectID = "owner/repo"
 		t.Branch = "task-a"
-		t.UpdatedAt = updatedAt
+		t.StatusChangedAt = statusChangedAt
 	})
 
 	report := Detect(DetectInput{Now: now, Tasks: []task.Task{tk}, Cfg: cfg})
@@ -508,8 +510,8 @@ func TestDetectPRGap_EvidenceIncludesTiming(t *testing.T) {
 		t.Fatalf("want 1 anomaly, got %d", len(report.Anomalies))
 	}
 	ev := report.Anomalies[0].Evidence
-	if ev["updated_at"] != updatedAt.Format(time.RFC3339) {
-		t.Errorf("updated_at = %v, want %s", ev["updated_at"], updatedAt.Format(time.RFC3339))
+	if ev["status_changed_at"] != statusChangedAt.Format(time.RFC3339) {
+		t.Errorf("status_changed_at = %v, want %s", ev["status_changed_at"], statusChangedAt.Format(time.RFC3339))
 	}
 	if ev["dwell_minutes"] != 20.0 {
 		t.Errorf("dwell_minutes = %v, want 20", ev["dwell_minutes"])
@@ -1171,6 +1173,33 @@ func TestFingerprintStability(t *testing.T) {
 	}
 }
 
+func TestFingerprintCause(t *testing.T) {
+	base := Fingerprint(KindLostAgent, "abc", nil)
+	if got := Fingerprint(KindLostAgent, "abc", map[string]any{"cause": ""}); got != base {
+		t.Fatalf("empty cause should not change the fingerprint: got %q, want %q", got, base)
+	}
+	withCause := Fingerprint(KindLostAgent, "abc", map[string]any{"cause": `task update conflict: "abc" is locked`})
+	if withCause == base {
+		t.Fatal("a non-empty cause must produce a fingerprint distinct from the bare kind+task one")
+	}
+	if !strings.HasPrefix(withCause, base+":") {
+		t.Fatalf("cause-qualified fingerprint %q should extend the base %q", withCause, base)
+	}
+	// Repeating the exact same cause reuses the same fingerprint — this is
+	// what lets a recurring, identical failure comment on one open issue
+	// instead of fragmenting into a new one every tick.
+	again := Fingerprint(KindLostAgent, "abc", map[string]any{"cause": `task update conflict: "abc" is locked`})
+	if withCause != again {
+		t.Fatal("identical cause text should produce identical fingerprints")
+	}
+	// A different cause on the same kind+task must not collide with the
+	// first one's fingerprint/issue.
+	otherCause := Fingerprint(KindLostAgent, "abc", map[string]any{"cause": "context deadline exceeded"})
+	if otherCause == withCause {
+		t.Fatal("distinct causes on the same kind+task should produce distinct fingerprints")
+	}
+}
+
 func sameKinds(got, want []AnomalyKind) bool {
 	if len(got) != len(want) {
 		return false
@@ -1193,5 +1222,75 @@ func SortAnomalyKinds(k []AnomalyKind) {
 		for j := i; j > 0 && k[j] < k[j-1]; j-- {
 			k[j], k[j-1] = k[j-1], k[j]
 		}
+	}
+}
+
+// The Aug 1–3 stall: queued work, nothing running, spare capacity, and every
+// monitor tick reporting in_progress=0 todo=12 without escalating. The
+// existing bottleneck detector could not see it — its dwell comes from the
+// last hour of audit events, and a stalled board emits none.
+func TestDetect_BoardStalled(t *testing.T) {
+	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	stale := now.Add(-6 * time.Hour)
+
+	tests := []struct {
+		name  string
+		tasks []task.Task
+		live  []liveAgent
+		want  bool
+	}{
+		{
+			name:  "queued work with nothing running and no agents",
+			tasks: []task.Task{{ID: "a", Status: task.StatusTodo, StatusChangedAt: stale}},
+			want:  true,
+		},
+		{
+			name: "work is running",
+			tasks: []task.Task{
+				{ID: "a", Status: task.StatusTodo, StatusChangedAt: stale},
+				{ID: "b", Status: task.StatusInProgress, StatusChangedAt: stale},
+			},
+			want: false,
+		},
+		{
+			name:  "an agent is live even though no task reads in-progress",
+			tasks: []task.Task{{ID: "a", Status: task.StatusTodo, StatusChangedAt: stale}},
+			live:  []liveAgent{{TaskID: "b", Running: true}},
+			want:  false,
+		},
+		{
+			name:  "a known-but-stopped agent must not mask the stall",
+			tasks: []task.Task{{ID: "a", Status: task.StatusTodo, StatusChangedAt: stale}},
+			live:  []liveAgent{{TaskID: "b", Running: false}},
+			want:  true,
+		},
+		{
+			name:  "queue is fresh",
+			tasks: []task.Task{{ID: "a", Status: task.StatusTodo, StatusChangedAt: now.Add(-2 * time.Minute)}},
+			want:  false,
+		},
+		{
+			name:  "empty board",
+			tasks: nil,
+			want:  false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rep := Detect(DetectInput{Now: now, Tasks: tc.tasks, LiveAgents: tc.live})
+
+			got := false
+			for _, a := range rep.Anomalies {
+				if a.Kind == KindBoardStalled {
+					got = true
+					if a.RequiresLLM {
+						t.Error("board-stall anomaly requires an LLM dispatch; acting on it must not depend on the dispatch path suspected of being broken")
+					}
+				}
+			}
+			if got != tc.want {
+				t.Fatalf("board_stalled detected = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

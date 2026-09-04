@@ -3,14 +3,18 @@ package monitor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/metrics"
+	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -39,16 +43,21 @@ type EmitFunc func(event string, data any)
 // Deps groups Service constructor inputs so the wiring at app.go is named
 // rather than positional.
 type Deps struct {
-	Cfg           config.MonitorConfig
-	Tasks         taskAPI
-	Audit         auditAPI
-	Agents        agentLister
-	ObserverOnly  bool
-	Dispatcher    Dispatcher
-	Sink          IssueSink
-	Emit          EmitFunc
-	Logger        *slog.Logger
-	Now           func() time.Time
+	Cfg          config.MonitorConfig
+	Tasks        taskAPI
+	Audit        auditAPI
+	Agents       agentLister
+	ObserverOnly bool
+	Dispatcher   Dispatcher
+	Sink         IssueSink
+	Emit         EmitFunc
+	Logger       *slog.Logger
+	Now          func() time.Time
+	Incidents    *IncidentStore
+	// IncidentScope returns a persistence-safe project scope and task ID. The
+	// app supplies opaque values for work projects; nil uses public IDs.
+	IncidentScope func(task.Task) (projectScope, safeTaskID string, confidential bool)
+	AuditLog      func(audit.Event)
 	AllowsProject func(projectID string) bool
 	// DowngradeLLMForTask, when non-nil, is consulted for every anomaly with
 	// RequiresLLM=true after detection. Returning true for an anomaly's
@@ -63,30 +72,61 @@ type Deps struct {
 	// recovery path so the monitor detection immediately hands the
 	// in-progress task back to workflow/agent recovery on the assigned node.
 	RecoverLostAgent func(context.Context, string)
+	// FetchPRState checks linked PR terminal state. Production uses GitHub REST
+	// so human-required tasks whose PR landed outside the normal review poll
+	// loop do not wait for an LLM stuck-task investigation.
+	FetchPRState func(repo string, number int) (github.PRState, error)
+	// LandClosedPR advances the same landing pipeline the review handler uses
+	// when a linked PR is observed closed or merged outside its normal poll.
+	LandClosedPR func(context.Context, string, int, string) error
 }
 
 // Service runs the monitor loop. It is constructed once at app startup and
 // runs until its context is cancelled.
 type Service struct {
-	cfg                 config.MonitorConfig
-	tasks               taskAPI
-	audit               auditAPI
-	agents              agentLister
-	observerOnly        bool
-	dispatcher          Dispatcher
-	sink                IssueSink
-	emit                EmitFunc
-	logger              *slog.Logger
-	now                 func() time.Time
-	allowsProject       func(string) bool
+	cfg           config.MonitorConfig
+	tasks         taskAPI
+	audit         auditAPI
+	agents        agentLister
+	observerOnly  bool
+	dispatcher    Dispatcher
+	sink          IssueSink
+	emit          EmitFunc
+	logger        *slog.Logger
+	now           func() time.Time
+	allowsProject func(string) bool
+	// providerHealth reports every configured provider's state. Late-bound
+	// (SetProviderHealth); nil keeps the no-capacity rule silent rather than
+	// guessing that a fleet with no reported providers has no capacity.
+	providerHealth      func() []ProviderHealth
 	downgradeLLMForTask func(taskID string) bool
+	fetchPRState        func(repo string, number int) (github.PRState, error)
+	landClosedPR        func(context.Context, string, int, string) error
 	state               *runState
 	rem                 *remediator
+	incidents           *IncidentStore
+	incidentScope       func(task.Task) (string, string, bool)
+	auditLog            func(audit.Event)
 }
 
 type remediationResult struct {
-	labels         []string
-	skipIssueForFP map[string]bool
+	labels []string
+	// attempts records a typed outcome for the incident ledger. "attempted"
+	// remains pending until a later healthy detector observation proves it.
+	attempts []remediationOutcome
+	// lostAgentCauses maps a lost_agent anomaly's base fingerprint to the
+	// remediation error message, for anomalies whose remediation this tick
+	// returned an error. fileIssues uses presence in this map to file
+	// immediately (an outright remediation failure) rather than waiting for
+	// the occurrence-streak gate a merely-recurring-but-"successful"
+	// remediation goes through.
+	lostAgentCauses map[string]string
+}
+
+type remediationOutcome struct {
+	fingerprint string
+	kind        string
+	result      string
 }
 
 // NewService validates dependencies and returns a Service ready for Run.
@@ -106,6 +146,9 @@ func NewService(d Deps) *Service {
 	if d.Emit == nil {
 		d.Emit = func(string, any) {}
 	}
+	if d.FetchPRState == nil {
+		d.FetchPRState = github.FetchPRStateViaREST
+	}
 	return &Service{
 		cfg:                 d.Cfg,
 		tasks:               d.Tasks,
@@ -119,8 +162,13 @@ func NewService(d Deps) *Service {
 		now:                 d.Now,
 		allowsProject:       d.AllowsProject,
 		downgradeLLMForTask: d.DowngradeLLMForTask,
+		fetchPRState:        d.FetchPRState,
+		landClosedPR:        d.LandClosedPR,
 		state:               newRunState(),
-		rem:                 newRemediator(d.Tasks, d.RecoverLostAgent),
+		rem:                 newRemediator(d.Tasks, d.RecoverLostAgent, d.FetchPRState, d.LandClosedPR),
+		incidents:           d.Incidents,
+		incidentScope:       d.IncidentScope,
+		auditLog:            d.AuditLog,
 	}
 }
 
@@ -167,6 +215,7 @@ func (s *Service) tickAndLog(ctx context.Context) {
 		"dispatched", len(report.Dispatched),
 		"issues_opened", report.IssuesOpened,
 		"issues_updated", report.IssuesUpdated,
+		"issues_closed", report.IssuesClosed,
 	)
 }
 
@@ -174,14 +223,24 @@ func (s *Service) tickAndLog(ctx context.Context) {
 // dispatch → file issues → emit. Exported via Scan for read-only callers.
 func (s *Service) tick(ctx context.Context) (Report, error) {
 	now := s.now()
-	tasks, err := s.tasks.List()
+	tasks, err := s.tasks.ListActive()
 	if err != nil {
 		return Report{}, err
 	}
+	preRemediated := []string(nil)
+	if !s.observerOnly {
+		preRemediated = s.closeMergedHumanRequiredPRs(ctx, tasks)
+		if len(preRemediated) > 0 {
+			tasks, err = s.tasks.ListActive()
+			if err != nil {
+				return Report{}, err
+			}
+		}
+	}
 	since15 := now.Add(-15 * time.Minute)
-	events15, _ := s.audit.Read(audit.Query{Since: since15, Until: now})
+	events15, events15Err := s.audit.Read(audit.Query{Since: since15, Until: now})
 	since1h := now.Add(-1 * time.Hour)
-	events1h, _ := s.audit.Read(audit.Query{Since: since1h, Until: now})
+	events1h, events1hErr := s.audit.Read(audit.Query{Since: since1h, Until: now})
 	summary := audit.Summarize(events1h, since1h, now)
 
 	live := snapshotLiveAgents(s.agents)
@@ -194,17 +253,43 @@ func (s *Service) tick(ctx context.Context) (Report, error) {
 		LiveAgents:    live,
 		Cfg:           s.cfg,
 		AllowsProject: s.allowsProject,
+		Providers:     s.snapshotProviders(),
 	})
+	if events1hErr == nil {
+		report.Anomalies = append(report.Anomalies, controlPlaneAnomalies(events1h)...)
+	}
 	report.Anomalies = SortAnomalies(report.Anomalies)
 	s.applyDowngradeLLM(report.Anomalies)
+	incidentChanges := s.observeIncidents(tasks, report.Anomalies)
+	if events1hErr == nil {
+		s.recordControlPlaneRepairAttempts(events1h, tasks)
+	}
 
 	if !s.observerOnly {
 		rem := s.applyRemediations(ctx, report.Anomalies)
-		report.Remediated = rem.labels
+		s.recordIncidentRemediations(report.Anomalies, rem, now)
+		report.Remediated = make([]string, 0, len(preRemediated)+len(rem.labels))
+		report.Remediated = append(report.Remediated, preRemediated...)
+		report.Remediated = append(report.Remediated, rem.labels...)
 		report.Dispatched = s.dispatchLLMAnomalies(ctx, now, report.Anomalies)
-		opened, updated := s.fileIssues(ctx, now, report.Anomalies, rem.skipIssueForFP)
+		opened, updated := s.fileIssues(ctx, now, report.Anomalies, rem.lostAgentCauses, incidentChanges)
 		report.IssuesOpened = opened
 		report.IssuesUpdated = updated
+		// The durable incident ledger owns recovery once enabled. Running the
+		// legacy streak closers as well would bypass the certified-health grace.
+		if s.incidents == nil {
+			report.IssuesClosed = s.closeRecoveredLostAgents(ctx, report.Anomalies)
+			report.IssuesClosed += s.closeRecoveredUntriaged(ctx, tasks, now)
+		}
+		report.IssuesClosed += s.reconcileHealthyIncidents(ctx, now, tasks, incidentChanges, events15Err == nil && events1hErr == nil)
+	}
+	if s.incidents != nil {
+		incidents, err := s.incidents.List()
+		if err != nil {
+			s.logger.Warn("monitor.incident_store.list_failed", "err", err)
+		} else {
+			report.Incidents = incidents
+		}
 	}
 
 	s.state.recordReport(report, now)
@@ -214,6 +299,54 @@ func (s *Service) tick(ctx context.Context) (Report, error) {
 		metrics.MonitorAnomaly(ctx, string(report.Anomalies[i].Kind))
 	}
 	return report, nil
+}
+
+func (s *Service) closeMergedHumanRequiredPRs(ctx context.Context, tasks []task.Task) []string {
+	_ = ctx
+	if s.fetchPRState == nil {
+		return nil
+	}
+	var labels []string
+	for i := range tasks {
+		t := &tasks[i]
+		if t.Status != task.StatusHumanRequired || t.ProjectID == "" || t.PRNumber == 0 {
+			continue
+		}
+		if !projectAllowed(s.allowsProject, t.ProjectID) {
+			continue
+		}
+		state, err := s.fetchPRState(t.ProjectID, t.PRNumber)
+		if err != nil {
+			s.logger.Debug("monitor.human-required-pr-state.failed", "task_id", t.ID, "pr", t.PRNumber, "err", err)
+			continue
+		}
+		if state.State != "MERGED" {
+			continue
+		}
+		if s.landClosedPR != nil {
+			if err := s.landClosedPR(ctx, t.ID, t.PRNumber, state.State); err != nil {
+				s.logger.Warn("monitor.human-required-pr-merged.land_failed", "task_id", t.ID, "pr", t.PRNumber, "err", err)
+				continue
+			}
+		} else {
+			if _, err := s.tasks.ApplyStatusEffect(t.ID, task.StatusEffect{
+				Source:         "monitor.close-merged-human-required-pr",
+				ToStatus:       task.StatusDone,
+				ExpectedStatus: t.Status,
+				Extra: task.Update{
+					StatusReason: task.Ptr("monitor: linked PR already merged"),
+					Outcome:      task.Ptr("merged"),
+				},
+			}); err != nil {
+				s.logger.Warn("monitor.human-required-pr-merged.update_failed", "task_id", t.ID, "pr", t.PRNumber, "err", err)
+				continue
+			}
+		}
+		label := "linked_pr_merged:" + t.ID
+		labels = append(labels, label)
+		s.logger.Info("monitor.human-required-pr-merged", "task_id", t.ID, "pr", t.PRNumber)
+	}
+	return labels
 }
 
 func (s *Service) logPRGapGraceSuppressions(tasks []task.Task, now time.Time) {
@@ -253,7 +386,7 @@ func (s *Service) logPRGapGraceSuppressions(tasks []task.Task, now time.Time) {
 // effects. Used by `sybra-cli monitor scan` and by tests.
 func (s *Service) Scan(_ context.Context) (Report, error) {
 	now := s.now()
-	tasks, err := s.tasks.List()
+	tasks, err := s.tasks.ListActive()
 	if err != nil {
 		return Report{}, err
 	}
@@ -271,6 +404,7 @@ func (s *Service) Scan(_ context.Context) (Report, error) {
 		LiveAgents:    live,
 		Cfg:           s.cfg,
 		AllowsProject: s.allowsProject,
+		Providers:     s.snapshotProviders(),
 	})
 	report.Anomalies = SortAnomalies(report.Anomalies)
 	return report, nil
@@ -288,6 +422,17 @@ func (s *Service) LastReport() (Report, bool) {
 // agent-driven filing path (which produces hard-to-scrub LLM output) into the
 // deterministic-body path where the issue sink applies redaction. No-op when
 // the closure is unset.
+// SetProviderHealth late-binds the provider-health snapshot the no-capacity
+// rule reads. Left unset the rule stays silent.
+func (s *Service) SetProviderHealth(fn func() []ProviderHealth) { s.providerHealth = fn }
+
+func (s *Service) snapshotProviders() []ProviderHealth {
+	if s == nil || s.providerHealth == nil {
+		return nil
+	}
+	return s.providerHealth()
+}
+
 func (s *Service) applyDowngradeLLM(anoms []Anomaly) {
 	if s.downgradeLLMForTask == nil {
 		return
@@ -303,10 +448,10 @@ func (s *Service) applyDowngradeLLM(anoms []Anomaly) {
 }
 
 func (s *Service) applyRemediations(ctx context.Context, anoms []Anomaly) remediationResult {
-	res := remediationResult{skipIssueForFP: map[string]bool{}}
+	res := remediationResult{lostAgentCauses: map[string]string{}}
 	for i := range anoms {
 		a := anoms[i]
-		if a.RequiresLLM {
+		if a.RequiresLLM || isControlPlaneObservation(a) {
 			continue
 		}
 		if a.Kind != KindLostAgent && a.Kind != KindUntriaged && !isHumanRequiredStuck(a) {
@@ -314,15 +459,370 @@ func (s *Service) applyRemediations(ctx context.Context, anoms []Anomaly) remedi
 		}
 		label, err := s.rem.Apply(ctx, a)
 		if err != nil {
+			res.attempts = append(res.attempts, remediationOutcome{a.Fingerprint, string(a.Kind), "failed"})
 			s.logger.Warn("monitor.remediate.failed", "kind", a.Kind, "task_id", a.TaskID, "err", err)
+			if a.Kind == KindLostAgent {
+				res.lostAgentCauses[Fingerprint(a.Kind, a.TaskID, nil)] = err.Error()
+			}
 			continue
 		}
+		res.attempts = append(res.attempts, remediationOutcome{a.Fingerprint, string(a.Kind), "attempted"})
 		res.labels = append(res.labels, label)
-		if a.Kind == KindLostAgent {
-			res.skipIssueForFP[a.Fingerprint] = true
-		}
 	}
 	return res
+}
+
+func (s *Service) observeIncidents(tasks []task.Task, anoms []Anomaly) map[string]IncidentChange {
+	changes := make(map[string]IncidentChange, len(anoms))
+	if s.incidents == nil {
+		return changes
+	}
+	byID := make(map[string]task.Task, len(tasks))
+	for i := range tasks {
+		byID[tasks[i].ID] = tasks[i]
+	}
+	for i := range anoms {
+		a := &anoms[i]
+		scope, safeTaskID, confidential := "fleet", a.TaskID, false
+		if a.IncidentScope != "" {
+			scope, safeTaskID, confidential = a.IncidentScope, a.IncidentTaskID, a.Confidential
+		}
+		if t, ok := byID[a.TaskID]; ok {
+			if t.ProjectID != "" {
+				scope = t.ProjectID
+			}
+			if s.incidentScope != nil {
+				mappedScope, mappedTaskID, mappedConfidential := s.incidentScope(t)
+				if mappedScope != "" {
+					scope = mappedScope
+				}
+				safeTaskID, confidential = mappedTaskID, mappedConfidential
+			}
+		} else if a.TaskID == "" && s.incidentScope != nil {
+			// Board-wide anomalies fail closed when any contributing task is
+			// work-typed. Their public evidence must never expose a mixed fleet.
+			for j := range tasks {
+				_, _, work := s.incidentScope(tasks[j])
+				if work {
+					scope, confidential = "work-fleet", true
+					break
+				}
+			}
+		}
+		a.IncidentScope, a.IncidentTaskID, a.Confidential = scope, safeTaskID, confidential
+		cause := rootCauseFor(*a, scope, monitorConfigGeneration(a.Kind, s.cfg))
+		a.Fingerprint = RootCauseFingerprint(cause)
+		in, change, err := s.incidents.Observe(*a, cause, safeTaskID)
+		if err != nil {
+			s.logger.Warn("monitor.incident.observe_failed", "fingerprint", a.Fingerprint, "err", err)
+			continue
+		}
+		changes[a.Fingerprint] = mergeIncidentChange(changes[a.Fingerprint], change)
+		if change != IncidentUnchanged {
+			s.logIncidentEvent(audit.EventMonitorIncidentObserved, in, change, a.IncidentTaskID)
+		}
+	}
+	return changes
+}
+
+func (s *Service) recordIncidentRemediations(anoms []Anomaly, result remediationResult, now time.Time) {
+	if s.incidents == nil {
+		return
+	}
+	for _, attempt := range result.attempts {
+		if err := s.incidents.RecordRemediation(attempt.fingerprint, attempt.kind, attempt.result, now); err != nil {
+			s.logger.Warn("monitor.incident.remediation_record_failed", "fingerprint", attempt.fingerprint, "err", err)
+			continue
+		}
+		if in, ok, _ := s.incidents.Get(attempt.fingerprint); ok {
+			s.logIncidentEvent(audit.EventMonitorIncidentRemediation, in, IncidentUnchanged, "")
+		}
+	}
+}
+
+func mergeIncidentChange(current, next IncidentChange) IncidentChange {
+	if current == "" {
+		current = IncidentUnchanged
+	}
+	if next == "" {
+		next = IncidentUnchanged
+	}
+	priority := map[IncidentChange]int{IncidentUnchanged: 0, IncidentExpanded: 1, IncidentOpened: 2, IncidentReopened: 3}
+	if priority[next] > priority[current] {
+		return next
+	}
+	return current
+}
+
+func (s *Service) reconcileHealthyIncidents(ctx context.Context, now time.Time, tasks []task.Task, seen map[string]IncidentChange, auditObserved bool) int {
+	if s.incidents == nil {
+		return 0
+	}
+	seenSet := make(map[string]bool, len(seen))
+	for fp := range seen {
+		seenSet[fp] = true
+	}
+	observable := map[string]bool{"fleet": true}
+	workFleet := false
+	for i := range tasks {
+		scope := tasks[i].ProjectID
+		if s.incidentScope != nil {
+			var confidential bool
+			scope, _, confidential = s.incidentScope(tasks[i])
+			workFleet = workFleet || confidential
+		}
+		if scope != "" {
+			observable[scope] = true
+		}
+	}
+	if workFleet {
+		observable["work-fleet"] = true
+	}
+	covered := make(map[string]bool, len(AllAnomalyKinds()))
+	for _, kind := range AllAnomalyKinds() {
+		covered[string(kind)] = true
+	}
+	covered[string(KindFailureSpike)] = auditObserved
+	covered[string(KindBottleneck)] = auditObserved
+	covered[string(KindNoProviderCapacity)] = len(s.snapshotProviders()) > 0
+	if auditObserved {
+		covered["orphan_attempt_lease"] = true
+		covered["reconciliation.repair"] = true
+		covered["reconciliation.quarantine"] = true
+		covered["reconciliation.human-decision"] = true
+	}
+	grace := time.Duration(s.cfg.IncidentResolveGraceMinutes) * time.Minute
+	reopenGrace := time.Duration(s.cfg.IncidentReopenGraceMinutes) * time.Minute
+	generations := make(map[string]string, len(AllAnomalyKinds()))
+	for _, kind := range AllAnomalyKinds() {
+		generations[string(kind)] = monitorConfigGeneration(kind, s.cfg)
+	}
+	generations["orphan_attempt_lease"] = monitorConfigGeneration(KindLostAgent, s.cfg)
+	for _, code := range []string{"reconciliation.repair", "reconciliation.quarantine", "reconciliation.human-decision"} {
+		generations[code] = monitorConfigGeneration(KindBottleneck, s.cfg)
+	}
+	closed, err := s.incidents.ReconcileHealthy(seenSet, observable, covered, generations, now, grace, reopenGrace)
+	if err != nil {
+		s.logger.Warn("monitor.incident.reconcile_failed", "err", err)
+		return 0
+	}
+	toPublish := make(map[string]Incident, len(closed))
+	for i := range closed {
+		in := closed[i]
+		toPublish[in.Fingerprint] = in
+		if in.SupersededAt != nil {
+			s.logIncidentEvent(audit.EventMonitorIncidentSuperseded, in, IncidentClosed, "")
+		} else {
+			s.logIncidentEvent(audit.EventMonitorIncidentResolved, in, IncidentClosed, "")
+		}
+	}
+	all, listErr := s.incidents.List()
+	if listErr != nil {
+		s.logger.Warn("monitor.incident.list_failed", "err", listErr)
+	} else {
+		for i := range all {
+			in := all[i]
+			if in.State == IncidentResolved && in.PublishedRevision < in.Revision {
+				toPublish[in.Fingerprint] = in
+			}
+		}
+	}
+	count := 0
+	incidentSink, _ := s.sink.(IncidentSink)
+	for fp := range toPublish {
+		in := toPublish[fp]
+		if incidentSink == nil {
+			continue
+		}
+		comment := "Resolved after a certified healthy monitor observation remained stable through the configured grace period."
+		if in.SupersededAt != nil {
+			comment = "Superseded by a newer detector configuration generation; this transition is not counted as observed recovery."
+		}
+		ok, closeErr := incidentSink.ResolveIncident(ctx, in, comment)
+		if closeErr != nil {
+			s.logger.Warn("monitor.incident.close_failed", "fingerprint", in.Fingerprint, "err", closeErr)
+			continue
+		}
+		if !ok && in.IssueURL == "" {
+			// No canonical artifact exists yet. Leave PublishedRevision behind so
+			// a later tick retries publication instead of latching a false close.
+			continue
+		}
+		if linkErr := s.incidents.Link(in.Fingerprint, in.IssueURL, "", nil); linkErr != nil {
+			s.logger.Warn("monitor.incident.resolve_link_failed", "fingerprint", in.Fingerprint, "err", linkErr)
+			continue
+		}
+		if ok {
+			count++
+		}
+	}
+	return count
+}
+
+func (s *Service) logIncidentEvent(eventType string, in Incident, change IncidentChange, taskID string) {
+	if s.auditLog == nil {
+		return
+	}
+	data := map[string]any{
+		"fingerprint": in.Fingerprint, "failure_code": in.FailureCode,
+		"component": in.Component, "capability": in.Capability,
+		"project_scope": in.ProjectScope, "config_generation": in.ConfigGeneration,
+		"change": string(change), "affected_task_count": in.AffectedTaskCount,
+		"affected_task_count_known": !in.AffectedTaskOverflow,
+		"recurrence_count":          in.RecurrenceCount, "revision": in.Revision,
+		"first_seen": in.FirstSeen.UTC().Format(time.RFC3339Nano),
+	}
+	if in.FirstContainedAt != nil {
+		data["containment_s"] = in.FirstContainedAt.Sub(in.FirstSeen).Seconds()
+	}
+	if in.ResolvedAt != nil {
+		data["recovery_s"] = in.ResolvedAt.Sub(in.FirstSeen).Seconds()
+	}
+	if len(in.RemediationAttempts) > 0 {
+		latest := in.RemediationAttempts[len(in.RemediationAttempts)-1]
+		data["remediation_id"] = latest.ID
+		data["remediation_result"] = latest.Result
+	}
+	s.auditLog(audit.Event{Type: eventType, TaskID: taskID, Data: data})
+}
+
+// recordControlPlaneRepairAttempts links completion's post-run conflict
+// recovery callback (audited as EventReconciliationRepairAttempted — see
+// completion.Handler.reconcileAuthorCompletion) to the reconciliation.repair
+// incident it belongs to. applyRemediations deliberately skips control-plane
+// observations (isControlPlaneObservation): the actual repair attempt for a
+// reconciliation.repair anomaly runs synchronously inside agent completion,
+// not through the generic remediator, so without this hookup the incident's
+// RemediationAttempts — and the RecoverySuccess/RepeatRepair autonomy SLOs
+// derived from monitor.incident_remediation events — never see any
+// reconciliation.repair activity at all, no matter how many times conflict
+// recovery actually ran.
+//
+// The failure_code/component/capability/config-generation tuple alone
+// determines the incident fingerprint (RootCauseFingerprint excludes task
+// identity), so the fingerprint is rebuilt directly rather than re-running
+// the full anomaly-observation pipeline.
+func (s *Service) recordControlPlaneRepairAttempts(auditEvents []audit.Event, tasks []task.Task) {
+	if s.incidents == nil {
+		return
+	}
+	byID := make(map[string]task.Task, len(tasks))
+	for i := range tasks {
+		byID[tasks[i].ID] = tasks[i]
+	}
+	generation := monitorConfigGeneration(KindBottleneck, s.cfg)
+	for i := range auditEvents {
+		e := auditEvents[i]
+		if e.Type != audit.EventReconciliationRepairAttempted {
+			continue
+		}
+		result, _ := e.Data["result"].(string)
+		if result == "" {
+			continue
+		}
+		scope := "fleet"
+		if t, ok := byID[e.TaskID]; ok && s.incidentScope != nil {
+			if mapped, _, _ := s.incidentScope(t); mapped != "" {
+				scope = mapped
+			}
+		}
+		fp := RootCauseFingerprint(RootCause{
+			FailureCode: "reconciliation.repair", Component: "reconciliation", Capability: "post-run",
+			ProjectScope: scope, ConfigGeneration: generation,
+		})
+		in, ok, err := s.incidents.Get(fp)
+		if err != nil || !ok {
+			// No open incident to attach this attempt to (already resolved,
+			// or a config change rekeyed it) — nothing durable left to record.
+			continue
+		}
+		if hasRepairAttempt(in, e.Timestamp) {
+			continue // already recorded from a prior tick's overlapping 1h window
+		}
+		if err := s.incidents.RecordRemediation(fp, "reconciliation.repair", result, e.Timestamp); err != nil {
+			s.logger.Warn("monitor.incident.control_plane_remediation_failed", "fingerprint", fp, "err", err)
+			continue
+		}
+		if in, ok, _ := s.incidents.Get(fp); ok {
+			s.logIncidentEvent(audit.EventMonitorIncidentRemediation, in, IncidentUnchanged, "")
+		}
+	}
+}
+
+// hasRepairAttempt reports whether in already has a reconciliation.repair
+// remediation attempt recorded for the exact source event timestamp at,
+// which recordControlPlaneRepairAttempts uses as its dedup key across the
+// audit log's overlapping 1h read windows.
+func hasRepairAttempt(in Incident, at time.Time) bool {
+	for _, attempt := range in.RemediationAttempts {
+		if attempt.Kind == "reconciliation.repair" && attempt.AttemptedAt.Equal(at) {
+			return true
+		}
+	}
+	return false
+}
+
+// controlPlaneAnomalies projects durable lease/reconciliation outcomes into
+// the incident stream. Identity uses categorical fields only; display-only
+// reconciliation reasons never participate.
+func controlPlaneAnomalies(auditEvents []audit.Event) []Anomaly {
+	var out []Anomaly
+	for i := range auditEvents {
+		e := auditEvents[i]
+		switch e.Type {
+		case audit.EventAttemptLeasesReconciled:
+			count := 0
+			switch value := e.Data["count"].(type) {
+			case int:
+				count = value
+			case float64:
+				count = int(value)
+			}
+			if count <= 0 {
+				continue
+			}
+			out = append(out, Anomaly{Kind: KindLostAgent,
+				Fingerprint: Fingerprint(KindLostAgent, "", map[string]any{"cause": "orphan_attempt_lease"}),
+				DetectedAt:  e.Timestamp, Evidence: map[string]any{
+					"root_cause_certified": true, "failure_code": "orphan_attempt_lease",
+					"component": "dispatch", "capability": "attempt-leases",
+					"certificate_id": "audit:attempt-leases", "evidence_fingerprint": "orphan-reconciled",
+				}})
+		case audit.EventReconciliationDecided:
+			action, _ := e.Data["action"].(string)
+			if action != "repair" && action != "quarantine" && action != "human-decision" {
+				continue
+			}
+			scope, _ := e.Data["project_scope"].(string)
+			confidential, _ := e.Data["confidential"].(bool)
+			out = append(out, Anomaly{Kind: KindBottleneck, TaskID: e.TaskID,
+				Fingerprint:   Fingerprint(KindBottleneck, e.TaskID, map[string]any{"cause": action}),
+				DetectedAt:    e.Timestamp,
+				IncidentScope: scope, IncidentTaskID: e.TaskID, Confidential: confidential,
+				Evidence: map[string]any{
+					"root_cause_certified": true, "failure_code": "reconciliation." + action,
+					"component": "reconciliation", "capability": "post-run",
+					"certificate_id": "audit:reconciliation", "evidence_fingerprint": action,
+				}})
+		}
+	}
+	return out
+}
+
+// isTransientCapacityRefusal reports whether a dispatch failure was a
+// self-healing capacity throttle rather than a refusal that needs a human.
+// UnhealthyError.RateLimited is the reliable signal — a rate limit is not
+// always tagged with Until, so a zero Until would otherwise read as "not a
+// rate limit".
+func isTransientCapacityRefusal(err error) bool {
+	if agent.IsCapacityError(err) {
+		return true
+	}
+	var unhealthy *provider.UnhealthyError
+	if errors.As(err, &unhealthy) {
+		return unhealthy.RateLimited
+	}
+	return false
 }
 
 func (s *Service) dispatchLLMAnomalies(ctx context.Context, now time.Time, anoms []Anomaly) []string {
@@ -345,6 +845,21 @@ func (s *Service) dispatchLLMAnomalies(ctx context.Context, now time.Time, anoms
 		}
 		agentID, err := s.dispatcher.Dispatch(ctx, a)
 		if err != nil {
+			// A dispatch refused for want of provider capacity never ran, so
+			// it must not consume the anomaly's cooldown. Charging the fleet's
+			// outage to the task is what leaves an anomaly unexamined for a
+			// full cooldown window after every rate limit.
+			//
+			// Only a transient throttle, not every unhealthy provider: a
+			// permanent refusal (logged out, disabled in config) does not
+			// self-heal, so releasing there would retry it every tick until a
+			// human intervenes.
+			if isTransientCapacityRefusal(err) {
+				s.state.releaseDispatch(a.Fingerprint)
+				s.logger.Warn("monitor.dispatch.no-capacity",
+					"kind", a.Kind, "fingerprint", a.Fingerprint, "err", err)
+				continue
+			}
 			s.logger.Warn("monitor.dispatch.failed", "kind", a.Kind, "fingerprint", a.Fingerprint, "err", err)
 			continue
 		}
@@ -353,23 +868,81 @@ func (s *Service) dispatchLLMAnomalies(ctx context.Context, now time.Time, anoms
 	return out
 }
 
-// fileIssues files deterministic-body issues for anomalies that were neither
-// dispatched to an LLM nor fully handled in-process. Returns (opened, updated).
-func (s *Service) fileIssues(ctx context.Context, now time.Time, anoms []Anomaly, skipIssueForFP map[string]bool) (opened, updated int) {
+// fileIssues files deterministic-body issues for anomalies that are not
+// handled exclusively in-process. Legacy mode skips LLM-dispatched anomalies;
+// incident mode publishes their canonical artifact alongside investigation.
+// Human-required dwell refreshes never publish an artifact in either mode.
+// Returns (opened, updated).
+//
+// lostAgentCauses carries the remediation failure message for lost_agent
+// anomalies whose remediation errored this tick (see applyRemediations); its
+// presence is what lets a lost_agent anomaly file immediately instead of
+// going through the occurrence-streak gate in gateLostAgentIssue.
+func (s *Service) fileIssues(ctx context.Context, now time.Time, anoms []Anomaly, lostAgentCauses map[string]string, incidentChanges map[string]IncidentChange) (opened, updated int) {
 	cooldown := time.Duration(s.cfg.IssueCooldownMinutes) * time.Minute
+	processedIncidents := map[string]bool{}
 	for i := range anoms {
 		a := anoms[i]
-		if a.RequiresLLM || isHumanRequiredStuck(a) {
+		originalFingerprint := a.Fingerprint
+		if s.incidents != nil && processedIncidents[a.Fingerprint] {
 			continue
 		}
-		if skipIssueForFP[a.Fingerprint] {
+		if (a.RequiresLLM && s.incidents == nil) || isHumanRequiredStuck(a) {
 			continue
+		}
+		var body string
+		if a.Kind == KindLostAgent && !isControlPlaneObservation(a) {
+			incidentFP := a.Fingerprint
+			if s.incidents != nil {
+				a.Fingerprint = Fingerprint(a.Kind, a.TaskID, nil)
+			}
+			var ok bool
+			if a, body, ok = s.gateLostAgentIssue(a, lostAgentCauses); !ok {
+				continue
+			}
+			if s.incidents != nil {
+				a.Fingerprint = incidentFP
+			}
+		} else {
+			body = DeterministicIssueBody(a)
+		}
+		if s.incidents != nil {
+			processedIncidents[a.Fingerprint] = true
+			change := incidentChanges[a.Fingerprint]
+			in, ok, err := s.incidents.Get(a.Fingerprint)
+			if err != nil || !ok {
+				s.logger.Warn("monitor.incident.load_failed", "fingerprint", a.Fingerprint, "err", err)
+				continue
+			}
+			if in.PublishedRevision >= in.Revision && in.IssueURL != "" {
+				continue
+			}
+			if change == IncidentUnchanged {
+				if in.IssueURL == "" {
+					change = IncidentOpened
+				} else {
+					change = IncidentExpanded
+				}
+				incidentChanges[a.Fingerprint] = change
+			}
+			body = incidentBody(in, change)
 		}
 		if !s.state.canIssue(a.Fingerprint, now, cooldown) {
 			continue
 		}
-		body := DeterministicIssueBody(a)
-		created, err := s.sink.Submit(ctx, a, body)
+		var created bool
+		var artifact IncidentArtifact
+		var err error
+		if s.incidents != nil {
+			in, _, _ := s.incidents.Get(a.Fingerprint)
+			if sink, ok := s.sink.(IncidentSink); ok {
+				created, artifact, err = sink.ApplyIncident(ctx, in, incidentChanges[a.Fingerprint], body)
+			} else {
+				created, err = s.sink.Submit(ctx, a, body)
+			}
+		} else {
+			created, err = s.sink.Submit(ctx, a, body)
+		}
 		if err != nil {
 			if errors.Is(err, ErrGHRateLimit) {
 				s.logger.Warn("monitor.issue.rate_limited", "kind", a.Kind, "fingerprint", a.Fingerprint)
@@ -378,6 +951,12 @@ func (s *Service) fileIssues(ctx context.Context, now time.Time, anoms []Anomaly
 			s.logger.Warn("monitor.issue.failed", "kind", a.Kind, "fingerprint", a.Fingerprint, "err", err)
 			continue
 		}
+		if a.Kind == KindLostAgent && s.incidents == nil {
+			s.state.lostAgentFiled(originalFingerprint, a.Fingerprint)
+		}
+		if s.incidents != nil && artifact.URL != "" {
+			_ = s.incidents.Link(a.Fingerprint, artifact.URL, "", nil)
+		}
 		if created {
 			opened++
 		} else {
@@ -385,6 +964,149 @@ func (s *Service) fileIssues(ctx context.Context, now time.Time, anoms []Anomaly
 		}
 	}
 	return opened, updated
+}
+
+func isControlPlaneObservation(a Anomaly) bool {
+	code := typedEvidenceString(a.Evidence, "failure_code")
+	return code == "orphan_attempt_lease" || strings.HasPrefix(code, "reconciliation.")
+}
+
+// gateLostAgentIssue decides whether a lost_agent anomaly should reach the
+// issue sink this tick, and with what body:
+//
+//   - An outright remediation failure this tick (recorded in causes) files
+//     immediately — remediation has already failed at least once, so there is
+//     nothing to wait for. The fingerprint is qualified with the failure cause
+//     so a distinct failure mode never collapses into whatever issue an
+//     earlier, unrelated cause opened.
+//   - Otherwise, remediation "succeeded" (resetLostAgent is best-effort and
+//     always returns nil short of a task-store error), so the anomaly only
+//     recurring means recovery hasn't taken effect *yet* — a single
+//     detection is not "failed", it's business as usual. Filing waits for
+//     LostAgentIssueAfterOccurrences consecutive detections; recurrences past
+//     the first that actually files post a terse occurrence-count comment
+//     instead of the full body, so a self-healing anomaly doesn't read as a
+//     stream of fresh incidents.
+func (s *Service) gateLostAgentIssue(a Anomaly, causes map[string]string) (Anomaly, string, bool) {
+	baseFP := a.Fingerprint
+	// Always record the hit, even on the already-filed/immediate-file
+	// branches below, so a tracking entry exists for closeRecoveredLostAgents
+	// to later clear and auto-close.
+	streak := s.state.lostAgentHit(baseFP, a.TaskID)
+	if filedFP, alreadyFiled := s.state.lostAgentFiledFP(baseFP); alreadyFiled {
+		// An issue is already open for this task's lost_agent condition:
+		// keep commenting on it regardless of this tick's cause/streak
+		// state, rather than re-evaluating the gate — which could otherwise
+		// open a second, differently-fingerprinted issue once a transient
+		// remediation error clears while the underlying condition persists.
+		a.Fingerprint = filedFP
+		return a, RecurrenceComment(a, streak), true
+	}
+	if cause, failed := causes[baseFP]; failed {
+		a.Fingerprint = Fingerprint(a.Kind, a.TaskID, map[string]any{"cause": cause})
+		return a, DeterministicIssueBody(a), true
+	}
+	if streak < s.cfg.LostAgentIssueAfterOccurrences {
+		s.logger.Debug("monitor.lost_agent.remediation_pending", "task_id", a.TaskID, "fingerprint", baseFP, "streak", streak)
+		return a, "", false
+	}
+	// At or past threshold and not yet successfully filed: always emit the full
+	// diagnostic body. The alreadyFiled check above owns the "issue exists, just
+	// comment" case, so a streak that has overshot the threshold (e.g. because a
+	// prior submit on the qualifying tick failed transiently) must still produce
+	// the full body — not a terse recurrence comment that would become the entire
+	// body of the brand-new issue this create actually opens.
+	return a, DeterministicIssueBody(a), true
+}
+
+// closeRecoveredLostAgents auto-closes any previously-filed lost_agent
+// issue/task whose condition has stayed clear for
+// LostAgentAutoCloseAfterClears consecutive ticks — the same "stayed clear
+// for N scans" intent as the #2433 merged-PR task auto-close, applied here
+// to monitor-filed issues rather than tasks. No-op when the sink doesn't
+// implement IssueCloser.
+func (s *Service) closeRecoveredLostAgents(ctx context.Context, anoms []Anomaly) int {
+	seen := make(map[string]bool, len(anoms))
+	for i := range anoms {
+		if anoms[i].Kind == KindLostAgent {
+			seen[anoms[i].Fingerprint] = true
+		}
+	}
+	cleared := s.state.lostAgentSweepClears(seen, s.cfg.LostAgentAutoCloseAfterClears)
+	if len(cleared) == 0 {
+		return 0
+	}
+	closer, ok := s.sink.(IssueCloser)
+	if !ok {
+		// No closer wired: nothing can ever close these, so drop them now
+		// rather than re-returning them (with an ever-climbing clearStreak)
+		// on every future tick.
+		for _, c := range cleared {
+			s.state.lostAgentForget(c.fp)
+		}
+		return 0
+	}
+	closed := 0
+	for _, c := range cleared {
+		a := Anomaly{Kind: KindLostAgent, TaskID: c.taskID, Fingerprint: c.filedFP}
+		comment := fmt.Sprintf("monitor: condition cleared for %d consecutive scans; auto-closing.", s.cfg.LostAgentAutoCloseAfterClears)
+		didClose, err := closer.CloseIfOpen(ctx, a, comment)
+		if err != nil {
+			// Keep the tracking entry alive (lostAgentSweepClears did not
+			// delete it) so the next tick retries this close instead of
+			// permanently orphaning the open issue/task.
+			s.logger.Warn("monitor.lost_agent.autoclose_failed", "task_id", c.taskID, "fingerprint", c.filedFP, "err", err)
+			continue
+		}
+		// Close succeeded or the issue was already gone: forget the entry so
+		// a future recurrence starts a clean streak.
+		s.state.lostAgentForget(c.fp)
+		if didClose {
+			closed++
+			s.logger.Info("monitor.lost_agent.autoclosed", "task_id", c.taskID, "fingerprint", c.filedFP)
+		}
+	}
+	return closed
+}
+
+// closeRecoveredUntriaged auto-closes any previously-filed untriaged
+// investigation whose source task is no longer untriaged — either because it
+// was triaged successfully or because it was deleted outright. Unlike
+// lost_agent this is resolved on the first clear tick: once a task has mode +
+// tags again, the monitor chore is stale immediately.
+func (s *Service) closeRecoveredUntriaged(ctx context.Context, tasks []task.Task, now time.Time) int {
+	closer, ok := s.sink.(IssueCloser)
+	if !ok {
+		return 0
+	}
+	active := make(map[string]bool)
+	for i := range tasks {
+		t := &tasks[i]
+		if detectUntriaged(t, now) != nil {
+			active[t.ID] = true
+		}
+	}
+	open := openUntriagedInvestigations(tasks)
+	if len(open) == 0 {
+		return 0
+	}
+	closed := 0
+	for taskID, fp := range open {
+		if active[taskID] {
+			continue
+		}
+		a := Anomaly{Kind: KindUntriaged, TaskID: taskID, Fingerprint: fp}
+		didClose, err := closer.CloseIfOpen(ctx, a, "monitor: source task is no longer untriaged; auto-closing.")
+		if err != nil {
+			s.logger.Warn("monitor.untriaged.autoclose_failed", "task_id", taskID, "fingerprint", fp, "err", err)
+			continue
+		}
+		if didClose {
+			closed++
+			s.logger.Info("monitor.untriaged.autoclosed", "task_id", taskID, "fingerprint", fp)
+		}
+	}
+	return closed
 }
 
 // AuditDirReader builds an auditAPI bound to a fixed directory. Used by the
@@ -411,4 +1133,20 @@ func snapshotLiveAgents(src agentLister) []liveAgent {
 		})
 	}
 	return out
+}
+
+// AuditStoreReader adapts the board's audit store into a reader.
+//
+// The directory-backed reader above only sees what a file-backed trail wrote.
+// Under a database backend the day-files stop growing, so a consumer left on
+// the directory reads an empty trail and reports the fleet as idle.
+func AuditStoreReader(store interface {
+	Read(audit.Query) ([]audit.Event, error)
+}) auditAPI {
+	return auditFunc(func(q audit.Query) ([]audit.Event, error) {
+		if store == nil {
+			return nil, nil
+		}
+		return store.Read(q)
+	})
 }

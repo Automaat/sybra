@@ -1,6 +1,7 @@
 package selfmonitor
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -80,6 +81,57 @@ func TestScanNoHealthReport(t *testing.T) {
 	}
 	if r.SchemaVersion != ReportSchemaVersion {
 		t.Errorf("SchemaVersion = %d, want %d", r.SchemaVersion, ReportSchemaVersion)
+	}
+	if r.State != StateHealthy {
+		t.Errorf("State = %q, want %q (no health report yet is not a degraded state)", r.State, StateHealthy)
+	}
+}
+
+// TestScanMarksPartialOnOversizedLogRecord is the selfmonitor-level
+// regression test for the scanner fix: an oversized NDJSON record in an
+// agent log must not blank out the whole LogSummary for that finding, and
+// the tick must surface the degradation via State/TruncatedRecords instead
+// of silently reporting "healthy".
+func TestScanMarksPartialOnOversizedLogRecord(t *testing.T) {
+	logsDir := t.TempDir()
+	agentDir := filepath.Join(logsDir, "agents")
+	if err := os.MkdirAll(agentDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	huge := `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tbig","content":"` +
+		strings.Repeat("x", maxLogLineBytes+1024) + `"}]}}`
+	lines := append([]string{`{"type":"system","subtype":"init","session_id":"s1"}`, huge}, fixtureLines()...)
+	logPath := filepath.Join(agentDir, "agent-big.ndjson")
+	if err := os.WriteFile(logPath, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatalf("write log: %v", err)
+	}
+
+	rep := &health.Report{
+		Findings: []health.Finding{{
+			Category:    health.CatCostOutlier,
+			Fingerprint: "cost_outlier:task-big",
+			TaskID:      "task-big",
+			AgentID:     "agent-big",
+			LogFile:     logPath,
+		}},
+	}
+	svc := newServiceForTest(t, &stubHealth{Report: rep}, nil, logsDir)
+
+	r, err := svc.Scan(context.Background())
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if r.State != StatePartial {
+		t.Errorf("State = %q, want %q", r.State, StatePartial)
+	}
+	if r.TruncatedRecords == 0 {
+		t.Error("TruncatedRecords = 0, want > 0")
+	}
+	if len(r.Findings) != 1 || r.Findings[0].LogSummary == nil {
+		t.Fatalf("expected the finding to still be analyzed despite the oversized record: %+v", r.Findings)
+	}
+	if r.InputsTotal != 1 || r.InputsAnalyzed != 1 {
+		t.Errorf("InputsTotal/InputsAnalyzed = %d/%d, want 1/1", r.InputsTotal, r.InputsAnalyzed)
 	}
 }
 
@@ -270,6 +322,97 @@ func TestPersistReportWritesFile(t *testing.T) {
 	}
 	if back.HealthScore != health.ScoreGood {
 		t.Errorf("HealthScore = %q, want %q", back.HealthScore, health.ScoreGood)
+	}
+	if back.State != StateHealthy {
+		t.Errorf("State = %q, want %q", back.State, StateHealthy)
+	}
+}
+
+// TestTickAndLogFailedTickPreservesLastGoodReport covers the "failed refresh
+// preserves the previous valid report" acceptance criterion: a hard error
+// reading the health report (not the expected/no-op ErrNoHealthReport) must
+// not clobber the last-report.json a prior successful tick wrote, and must
+// still surface a typed degraded result via LastReport/the emitted event.
+func TestTickAndLogFailedTickPreservesLastGoodReport(t *testing.T) {
+	dir := t.TempDir()
+	reportPath := filepath.Join(dir, "last-report.json")
+	svc := NewService(Deps{
+		Cfg:            config.SelfMonitorConfig{Enabled: true, IntervalHours: 6},
+		Health:         &stubHealth{Report: &health.Report{Score: health.ScoreGood}},
+		LastReportPath: reportPath,
+	})
+	svc.tickAndLog(context.Background())
+
+	before, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatalf("seed persisted file missing: %v", err)
+	}
+
+	svc.deps.Health = &stubHealth{Err: errors.New("boom: disk read failed")}
+	svc.tickAndLog(context.Background())
+
+	after, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatalf("persisted file missing after failed tick: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Errorf("last-report.json changed after a failed tick; want it untouched\nbefore=%s\nafter=%s", before, after)
+	}
+
+	last, _, ok := svc.LastReport()
+	if !ok {
+		t.Fatal("LastReport ok=false after a tick")
+	}
+	if last.State != StateFailed {
+		t.Errorf("State = %q, want %q", last.State, StateFailed)
+	}
+	if last.FailureReason == "" {
+		t.Error("FailureReason is empty, want the tick error message")
+	}
+}
+
+// TestPersistReportInterruptedWritePreservesLastGood covers the
+// "interrupted write" acceptance criterion at the persistReport call site:
+// if the atomic write itself can't complete (here: the report directory
+// loses its write bit mid-run, standing in for a disk-full/crash write
+// failure), the previously persisted good report must survive untouched
+// rather than being partially overwritten.
+func TestPersistReportInterruptedWritePreservesLastGood(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses chmod-based permission checks")
+	}
+	dir := t.TempDir()
+	reportPath := filepath.Join(dir, "last-report.json")
+	svc := NewService(Deps{
+		Cfg:            config.SelfMonitorConfig{Enabled: true, IntervalHours: 6},
+		Health:         &stubHealth{Report: &health.Report{Score: health.ScoreGood}},
+		LastReportPath: reportPath,
+	})
+	svc.tickAndLog(context.Background())
+
+	good, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatalf("seed persisted file missing: %v", err)
+	}
+
+	// fsutil.AtomicWrite's temp file must land next to the target to rename
+	// atomically, so dropping the directory's write bit blocks the write
+	// before it can touch the existing file at all.
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+
+	svc.deps.Health = &stubHealth{Report: &health.Report{Score: health.ScoreCritical}}
+	svc.tickAndLog(context.Background())
+
+	_ = os.Chmod(dir, 0o755)
+	after, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatalf("persisted file missing after interrupted write: %v", err)
+	}
+	if !bytes.Equal(after, good) {
+		t.Errorf("last-report.json changed after an interrupted write; want the previous good report preserved\nbefore=%s\nafter=%s", good, after)
 	}
 }
 

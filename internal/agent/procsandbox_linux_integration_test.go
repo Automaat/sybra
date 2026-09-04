@@ -4,14 +4,60 @@ package agent
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/project"
 )
+
+// TestSandboxEnforce_UnsharePidHidesHostProcesses pins the fix for task
+// 0871ec54's test-runner crash loop: without --unshare-pid, --proc /proc
+// still reflects the host's real process table, so a sandboxed agent's own
+// `pkill -f <pattern>` (e.g. dev-server teardown) can see and signal
+// unrelated live processes on a shared multi-agent host — including a
+// sibling sybra-server — self-inflicting the completion-stall it was
+// supposed to avoid. The victim here stands in for that sibling process: it
+// runs entirely outside the sandboxed command's process tree.
+func TestSandboxEnforce_UnsharePidHidesHostProcesses(t *testing.T) {
+	if !sandboxExecAvailable() {
+		t.Skip("bwrap not installed; enforce path unexercised on this host")
+	}
+	wt, err := canonicalizeRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &RunConfig{sandbox: sandboxSpec{
+		mode:        "enforce",
+		worktree:    wt,
+		sandboxHome: wt,
+		tmp:         wt,
+		sharedCache: wt,
+	}}
+
+	victim := exec.Command("sleep", "9999")
+	if err := victim.Start(); err != nil {
+		t.Fatalf("start victim: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = victim.Process.Kill()
+		_ = victim.Wait()
+	})
+
+	script := "kill -0 " + strconv.Itoa(victim.Process.Pid) + " 2>&1 && echo CAN_SIGNAL_HOST || echo CANNOT_SIGNAL_HOST"
+	cmd := newProviderCmd(context.Background(), cfg, false, "sh", "-c", script)
+	out, runErr := cmd.CombinedOutput()
+	got := string(out)
+	if strings.Contains(got, "CAN_SIGNAL_HOST") || !strings.Contains(got, "CANNOT_SIGNAL_HOST") {
+		t.Errorf("sandboxed process could see/signal a host process outside its own pid namespace (err=%v): %q", runErr, got)
+	}
+}
 
 func TestSandboxEnforce_FencesWritesToAllowlist(t *testing.T) {
 	if !sandboxExecAvailable() {
@@ -239,6 +285,177 @@ func TestSandboxEnforce_LinkedWorktreeGitOps(t *testing.T) {
 	}
 }
 
+func TestSandboxEnforce_BlocksSharedCloneMaintenance(t *testing.T) {
+	if !sandboxExecAvailable() {
+		t.Skip("bwrap not installed; enforce path unexercised on this host")
+	}
+
+	h := newSandboxGitHarness(t)
+	m, _ := newTestManager(t, ManagerConfig{
+		SandboxHome: func(string) (string, error) { return h.sandboxHome, nil },
+	})
+	cfg, _, err := m.prepareRunConfig(RunConfig{
+		TaskID:      "task-block-maintenance",
+		Mode:        "headless",
+		Dir:         h.taskWt,
+		SandboxMode: "enforce",
+	})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+	before := linuxMaintenanceState(t, h.sybraBare)
+	cmd := newProviderCmd(context.Background(), &cfg, false, "git", "gc")
+	cmd.Dir = h.taskWt
+	cmd.Env = append(os.Environ(), cfg.ExtraEnv...)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("git gc unexpectedly succeeded: %s", out)
+	}
+	if after := linuxMaintenanceState(t, h.sybraBare); after != before {
+		t.Fatalf("git gc partially mutated shared maintenance state\nbefore: %s\nafter:  %s\noutput: %s", before, after, out)
+	}
+}
+
+func TestSandboxEnforce_LargeFetchUnpacksLooseObjects(t *testing.T) {
+	if !sandboxExecAvailable() {
+		t.Skip("bwrap not installed; enforce path unexercised on this host")
+	}
+	h := newSandboxGitHarness(t)
+	for i := range 160 {
+		name := filepath.Join(h.src, "bulk", fmt.Sprintf("file-%03d.txt", i))
+		if err := os.MkdirAll(filepath.Dir(name), 0o755); err != nil {
+			t.Fatalf("mkdir bulk fixture: %v", err)
+		}
+		if err := os.WriteFile(name, fmt.Appendf(nil, "payload-%03d\n", i), 0o644); err != nil {
+			t.Fatalf("write bulk fixture: %v", err)
+		}
+	}
+	h.gitRaw(t, h.src, "add", "bulk")
+	h.gitRaw(t, h.src, "commit", "-m", "large upstream change")
+	h.gitRaw(t, h.src, "push", "origin", "main")
+	upstreamHead := strings.TrimSpace(h.gitRaw(t, h.src, "rev-parse", "HEAD"))
+
+	m, _ := newTestManager(t, ManagerConfig{
+		SandboxHome: func(string) (string, error) { return h.sandboxHome, nil },
+	})
+	cfg, _, err := m.prepareRunConfig(RunConfig{
+		TaskID:      "task-large-fetch",
+		Mode:        "headless",
+		Dir:         h.taskWt,
+		SandboxMode: "enforce",
+	})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+	before := linuxRepoWideMaintenanceState(t, h.sybraBare)
+	cmd := newProviderCmd(context.Background(), &cfg, false, "git", "fetch", "origin")
+	cmd.Dir = h.taskWt
+	cmd.Env = append(os.Environ(), cfg.ExtraEnv...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("large sandboxed fetch: %v: %s", err, out)
+	}
+	if after := linuxRepoWideMaintenanceState(t, h.sybraBare); after != before {
+		t.Fatalf("large fetch wrote shared pack/info state instead of loose objects\nbefore: %s\nafter: %s", before, after)
+	}
+	// The fetched history itself must reach the shared clone, as loose
+	// objects: the maintenance snapshot above only watches pack/ and info/, so
+	// without this a publish regression (an empty object overlay, a fanout
+	// glob that stops matching) leaves every assertion here green while the
+	// fetch is discarded by the next run's overlay reset.
+	if !h.gitShowRefExists(t, h.sybraBare, "refs/heads/main") {
+		t.Fatal("harness lost refs/heads/main in the shared clone")
+	}
+	h.gitBare(t, h.sybraBare, "cat-file", "-e", upstreamHead+"^{commit}")
+	// Proves the fetch actually landed its ref, which is what makes the
+	// loose-object assertion above mean anything — checked inside the same
+	// sandbox, because on Linux refs/remotes is bound to a per-run overlay
+	// (#2054) so a task-scoped fetch cannot publish it. Darwin grants the
+	// shared ref dir directly (sandboxUsesGitObjectOverlay is false there) and
+	// its twin test asserts the host-visible form instead.
+	inSandbox := newProviderCmd(context.Background(), &cfg, false, "git", "cat-file", "-e", "refs/remotes/origin/main^{commit}")
+	inSandbox.Dir = h.taskWt
+	inSandbox.Env = append(os.Environ(), cfg.ExtraEnv...)
+	if out, err := inSandbox.CombinedOutput(); err != nil {
+		t.Fatalf("fetched ref not visible to the sandboxed run that fetched it: %v: %s", err, out)
+	}
+	// The other half of the same contract: the ref must not reach the shared
+	// clone, where every sibling worktree would read it.
+	if h.gitShowRefExists(t, h.sybraBare, "refs/remotes/origin/main") {
+		t.Fatal("sandboxed fetch published refs/remotes/origin/main into the shared clone")
+	}
+}
+
+func linuxMaintenanceState(t *testing.T, bare string) string {
+	t.Helper()
+	var state []string
+	for _, root := range []string{filepath.Join(bare, "objects")} {
+		err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if entry.IsDir() {
+				return nil
+			}
+			content, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			state = append(state, path+"="+string(content))
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("snapshot %s: %v", root, err)
+		}
+	}
+	for _, name := range []string{"packed-refs", "packed-refs.new", "packed-refs.lock", "gc.pid", "gc.pid.lock"} {
+		path := filepath.Join(bare, name)
+		content, err := os.ReadFile(path)
+		if err == nil {
+			state = append(state, path+"="+string(content))
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("snapshot %s: %v", path, err)
+		}
+	}
+	slices.Sort(state)
+	return strings.Join(state, "\n")
+}
+
+func linuxRepoWideMaintenanceState(t *testing.T, bare string) string {
+	t.Helper()
+	var state []string
+	for _, root := range []string{filepath.Join(bare, "objects", "pack"), filepath.Join(bare, "objects", "info")} {
+		err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if entry.IsDir() {
+				return nil
+			}
+			content, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			state = append(state, path+"="+string(content))
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("snapshot %s: %v", root, err)
+		}
+	}
+	for _, name := range []string{"packed-refs", "packed-refs.new", "packed-refs.lock", "gc.pid", "gc.pid.lock"} {
+		path := filepath.Join(bare, name)
+		content, err := os.ReadFile(path)
+		if err == nil {
+			state = append(state, path+"="+string(content))
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("snapshot %s: %v", path, err)
+		}
+	}
+	slices.Sort(state)
+	return strings.Join(state, "\n")
+}
+
 func TestPrepareRunConfig_Sandbox_EnforceFailsClosedOnBrokenGitMetadata(t *testing.T) {
 	if !sandboxExecAvailable() {
 		t.Skip("bwrap not installed; enforce path unexercised on this host")
@@ -289,6 +506,26 @@ func newSandboxGitHarness(t *testing.T) sandboxGitHarness {
 		t.Fatalf("MkdirTemp(wd): %v", err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(base) })
+
+	// The harness roots its clone at the working directory, not t.TempDir(),
+	// because enforceSpec binds os.TempDir() writable: a shared clone living
+	// there is inside a sandbox write root, which inverts every assertion in
+	// this file about writes being blocked. A checkout under /tmp reintroduces
+	// that silently, so say so instead of failing two unrelated tests.
+	tmpRoot, err := canonicalizeRoot(os.TempDir())
+	if err != nil {
+		t.Fatalf("canonicalize temp root: %v", err)
+	}
+	canonBase, err := canonicalizeRoot(base)
+	if err != nil {
+		t.Fatalf("canonicalize harness base: %v", err)
+	}
+	// Canonicalized on both sides, the way enforceSpec resolves the write
+	// root: a symlinked temp dir compares unequal as a raw string and would
+	// skip the skip.
+	if canonBase == tmpRoot || strings.HasPrefix(canonBase, tmpRoot+string(filepath.Separator)) {
+		t.Skipf("checkout lives under the sandbox temp write root %s; run the suite from another path", tmpRoot)
+	}
 
 	h := sandboxGitHarness{
 		base:        base,
@@ -377,7 +614,17 @@ func (h sandboxGitHarness) gitShowRefExists(t *testing.T, gitDir, ref string) bo
 	t.Helper()
 	cmd := exec.Command("git", "-c", "safe.bareRepository=all", "--git-dir="+gitDir, "show-ref", "--verify", "--quiet", ref)
 	err := cmd.Run()
-	return err == nil
+	if err == nil {
+		return true
+	}
+	// Exit 1 is "no such ref"; anything else (dubious ownership, a mistyped
+	// git-dir, no git on PATH) would otherwise read as absence and quietly
+	// satisfy a containment assertion for the wrong reason.
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("show-ref %s in %s: %v", ref, gitDir, err)
+	}
+	return false
 }
 
 func (h sandboxGitHarness) writeLooseObject(t *testing.T, gitDir, body string) string {

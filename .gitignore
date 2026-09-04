@@ -1,9 +1,11 @@
 # Build
+/bin/
 build/bin/
 frontend/dist/
 frontend/dist-web/
 frontend/node_modules/
 frontend/package.json.md5
+/frontend/.vite/
 
 # v3 binary populates its embed dir from frontend/dist at build time
 cmd/sybra-v3/dist/*
@@ -49,6 +51,10 @@ core.*
 .sybra-manual-test-port*
 .sybra-bad-*
 .sybra-manual-*
+/.tmp-test-fakebin/
+.tmp-sybra-home*/
+/fakehome/
+server_auth_token
 deploy/k8s-poc/.env
 
 # Web-mode dev mock backend home + fake CLIs
@@ -57,3 +63,9 @@ deploy/k8s-poc/.env
 # Stray secondary git-dirs from sandboxed/isolated tool invocations
 # (see AutoCommitUncommitted's embedded-git-dir guard in internal/project/git.go)
 .git-local/
+
+# Local Codex/sandbox artifacts
+.codex-go-cache/
+.codex-golangci-cache/
+.codex-test-home/
+internal/sybra/zz_probe_release_test.go

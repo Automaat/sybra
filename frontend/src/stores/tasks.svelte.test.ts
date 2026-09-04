@@ -63,6 +63,7 @@ describe('TaskStore', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     taskStore.tasks = new Map()
+    taskStore.detailItems = new Map()
     taskStore.error = ''
     taskStore.loading = false
   })
@@ -97,6 +98,22 @@ describe('TaskStore', () => {
       expect(taskStore.error).toBe('Error: connection failed')
     })
 
+    it('keeps a refresh error visible until a later load succeeds', async () => {
+      mockListTasks.mockRejectedValueOnce(new Error('timed out'))
+      await taskStore.load()
+      expect(taskStore.error).toBe('Error: timed out')
+
+      let resolveLoad!: (tasks: Task[]) => void
+      mockListTasks.mockImplementationOnce(() => new Promise<Task[]>((resolve) => { resolveLoad = resolve }))
+      const retry = taskStore.load()
+      expect(taskStore.error).toBe('Error: timed out')
+      resolveLoad([makeTask({ id: 'fresh' })])
+      await retry
+
+      expect(taskStore.error).toBe('')
+      expect(taskStore.tasks.has('fresh')).toBe(true)
+    })
+
     it('sets loading flag', async () => {
       mockListTasks.mockResolvedValue([])
 
@@ -112,6 +129,54 @@ describe('TaskStore', () => {
       await taskStore.load()
 
       expect(taskStore.loading).toBe(false)
+    })
+
+    it('does not let a compact board poll erase hydrated run text', async () => {
+      vi.useFakeTimers()
+      try {
+        const run = {
+          agentId: 'agent-1', role: 'implementation', mode: 'headless', state: 'stopped',
+          startedAt: '2026-04-01T00:00:00Z', costUsd: 1.25,
+          prompt: 'full prompt', result: 'full result', logFile: '',
+        }
+        taskStore.tasks = new Map([['t1', makeTask({ id: 't1', agentRuns: [run] })]])
+        mockListTasks.mockResolvedValue([
+          makeTask({ id: 't1', status: 'done', agentRuns: [{ ...run, prompt: '', result: '' }] }),
+        ])
+
+        await taskStore.load()
+        await vi.advanceTimersByTimeAsync(500)
+
+        const loaded = taskStore.tasks.get('t1')!
+        expect(loaded.status).toBe('done')
+        expect(loaded.agentRuns[0].prompt).toBe('full prompt')
+        expect(loaded.agentRuns[0].result).toBe('full result')
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('does not let a compact board poll erase a retained task plan', async () => {
+      vi.useFakeTimers()
+      const release = taskStore.retainDetail('t1')
+      try {
+        const hydrated = makeTask({ id: 't1', plan: '## Complete plan', planCritique: 'CLEAN' })
+        mockGetTask.mockResolvedValue(hydrated)
+        await taskStore.get('t1')
+
+        mockListTasks.mockResolvedValue([makeTask({ id: 't1', plan: '', planCritique: '' })])
+        // Make this an initial collection load so the store's cross-test
+        // throttle timestamp cannot defer the projection fetch.
+        taskStore.tasks = new Map()
+        await taskStore.load()
+
+        expect(taskStore.tasks.get('t1')?.plan).toBe('')
+        expect(taskStore.detail('t1')?.plan).toBe('## Complete plan')
+        expect(taskStore.detail('t1')?.planCritique).toBe('CLEAN')
+      } finally {
+        release()
+        vi.useRealTimers()
+      }
     })
 
     it('runs a trailing fetch when throttled instead of dropping the load', async () => {
@@ -165,6 +230,46 @@ describe('TaskStore', () => {
       expect(mockGetTask).toHaveBeenCalledWith('t1')
       expect(result.title).toBe('Fetched')
       expect(taskStore.tasks.get('t1')).toBeDefined()
+    })
+  })
+
+  describe('patchOne', () => {
+    it('updates a retained detail when a sidecar is cleared', async () => {
+      const release = taskStore.retainDetail('t1')
+      try {
+        mockGetTask.mockResolvedValueOnce(makeTask({ id: 't1', plan: 'old plan' }))
+        await taskStore.get('t1')
+        mockGetTask.mockResolvedValueOnce(makeTask({ id: 't1', plan: '' }))
+
+        await taskStore.patchOne('t1')
+
+        expect(taskStore.detail('t1')?.plan).toBe('')
+      } finally {
+        release()
+      }
+    })
+
+    it('reloads the board when an edited task becomes unreadable', async () => {
+      const degraded = makeTask({ id: 'unreadable:a1b2c3d4', status: 'human-required', title: 'Unreadable task file: t1.md' })
+      mockGetTask.mockRejectedValue(new Error('parse task t1.md: invalid frontmatter'))
+      mockListTasks.mockResolvedValue([degraded])
+
+      await taskStore.patchOne('t1')
+
+      await vi.waitFor(() => expect(mockListTasks).toHaveBeenCalled())
+      expect(taskStore.tasks.get(degraded.id)?.title).toBe(degraded.title)
+    })
+
+    it('removes the degraded entry when the source task is repaired', async () => {
+      const degraded = makeTask({ id: 'unreadable:a1b2c3d4', status: 'human-required', filePath: '/tasks/t1.md', degraded: true })
+      taskStore.tasks.set(degraded.id, degraded)
+      const repaired = makeTask({ id: 't1', filePath: '/tasks/t1.md' })
+      mockGetTask.mockResolvedValue(repaired)
+
+      await taskStore.patchOne('t1')
+
+      expect(taskStore.tasks.has(degraded.id)).toBe(false)
+      expect(taskStore.tasks.get('t1')).toEqual(repaired)
     })
   })
 

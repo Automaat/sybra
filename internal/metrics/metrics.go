@@ -54,8 +54,10 @@ var (
 	monitorTicks     metric.Int64Counter
 	monitorAnomalies metric.Int64Counter
 
-	orchestratorTicks         metric.Int64Counter
-	orchestratorStaleRestarts metric.Int64Counter
+	orchestratorTicks                  metric.Int64Counter
+	orchestratorStaleRestarts          metric.Int64Counter
+	orchestratorEffectReplays          metric.Int64Counter
+	orchestratorResumeStalledFallbacks metric.Int64Counter
 
 	providerProbes        metric.Int64Counter
 	providerHealthFlips   metric.Int64Counter
@@ -64,24 +66,67 @@ var (
 	agentFailoversCounter metric.Int64Counter
 	agentsGatedCounter    metric.Int64Counter
 
+	agentClassAdmitted metric.Int64Counter
+	agentClassRejected metric.Int64Counter
+	agentClassBorrowed metric.Int64Counter
+
+	autoMergeAttempts    metric.Int64Counter
+	databaseTransactions metric.Int64Counter
+	databaseTxDuration   metric.Float64Histogram
+	databaseWriterWait   metric.Float64Histogram
+
 	// Observable gauge providers, mutated at wiring time and read from the
 	// meter's registered callback. Guarded by obsMu.
-	obsMu               sync.RWMutex
-	tasksByStatusFn     func() map[string]int64
-	agentsActiveFn      func() map[string]int64
-	renovatePRsFetchFn  func() int64
-	providerHealthFn    func() map[string]int64
-	pollerAuthHealthFn  func() map[string]int64
-	providerRawHealthFn func() map[string]int64
-	agentsInFlightFn    func() map[string]int64
-	tasksByStatusGauge  metric.Int64ObservableGauge
-	agentsActiveGauge   metric.Int64ObservableGauge
-	renovatePRsGauge    metric.Int64ObservableGauge
-	providerHealthyG    metric.Int64ObservableGauge
-	providerRawHealthyG metric.Int64ObservableGauge
-	pollerAuthHealthyG  metric.Int64ObservableGauge
-	agentsInFlightGauge metric.Int64ObservableGauge
+	obsMu                  sync.RWMutex
+	tasksByStatusFn        func() map[string]int64
+	agentsActiveFn         func() map[string]int64
+	renovatePRsFetchFn     func() int64
+	providerHealthFn       func() map[string]int64
+	pollerAuthHealthFn     func() map[string]int64
+	providerRawHealthFn    func() map[string]int64
+	agentsInFlightFn       func() map[string]int64
+	agentsByClassFn        func() map[string]int64
+	ghAuthStateFn          func() map[string]int64
+	ghAuthTransitionsFn    func() int64
+	ghAuthSuppressedFn     func() int64
+	ghIssueOutboxPendingFn func() map[string]int64
+	ghIssueOutboxReplayFn  func() map[string]int64
+	ghIssueOutboxAgeFn     func() map[string]int64
+	cleanupFindingsFn      func() map[string]int64
+	cleanupBlockedBytesFn  func() map[string]int64
+	databasePoolStatsFn    func() DatabasePoolStats
+	tasksByStatusGauge     metric.Int64ObservableGauge
+	agentsActiveGauge      metric.Int64ObservableGauge
+	renovatePRsGauge       metric.Int64ObservableGauge
+	providerHealthyG       metric.Int64ObservableGauge
+	providerRawHealthyG    metric.Int64ObservableGauge
+	pollerAuthHealthyG     metric.Int64ObservableGauge
+	agentsInFlightGauge    metric.Int64ObservableGauge
+	agentsByClassGauge     metric.Int64ObservableGauge
+	ghAuthStateGauge       metric.Int64ObservableGauge
+	ghAuthTransitionsGauge metric.Int64ObservableGauge
+	ghAuthSuppressedGauge  metric.Int64ObservableGauge
+	ghOutboxPendingGauge   metric.Int64ObservableGauge
+	ghOutboxReplayedGauge  metric.Int64ObservableGauge
+	ghOutboxAgeGauge       metric.Int64ObservableGauge
+	cleanupFindingsGauge   metric.Int64ObservableGauge
+	cleanupBlockedGauge    metric.Int64ObservableGauge
+	databasePoolConnsGauge metric.Int64ObservableGauge
+	databasePoolWaitsGauge metric.Int64ObservableGauge
+	databasePoolWaitGauge  metric.Float64ObservableGauge
 )
+
+// DatabasePoolStats is the database/sql pool snapshot exposed on each scrape.
+// Durations are converted at the registration seam so this package stays
+// independent of a concrete database handle.
+type DatabasePoolStats struct {
+	MaxOpenConnections  int64
+	OpenConnections     int64
+	InUse               int64
+	Idle                int64
+	WaitCount           int64
+	WaitDurationSeconds float64
+}
 
 // Enabled reports whether the metrics pipeline was initialized and is active.
 func Enabled() bool { return enabled }
@@ -163,6 +208,12 @@ func createInstruments() error {
 		return err
 	}
 	if err := createProviderInstruments(); err != nil {
+		return err
+	}
+	if err := createAutoMergeInstruments(); err != nil {
+		return err
+	}
+	if err := createDatabaseInstruments(); err != nil {
 		return err
 	}
 	return createObservableGauges()
@@ -268,9 +319,21 @@ func createOrchestratorInstruments() error {
 	); err != nil {
 		return err
 	}
-	orchestratorStaleRestarts, err = m.Int64Counter(
+	if orchestratorStaleRestarts, err = m.Int64Counter(
 		"sybra_orchestrator_stale_restarts_total",
 		metric.WithDescription("Orchestrator stale in-progress task restart attempts, by result."),
+	); err != nil {
+		return err
+	}
+	if orchestratorEffectReplays, err = m.Int64Counter(
+		"sybra_orchestrator_effect_replays_total",
+		metric.WithDescription("Persisted workflow effect replay decisions, by result."),
+	); err != nil {
+		return err
+	}
+	orchestratorResumeStalledFallbacks, err = m.Int64Counter(
+		"sybra_orchestrator_resume_stalled_fallbacks_total",
+		metric.WithDescription("ResumeStalled fallback executions after persisted effect replay."),
 	)
 	return err
 }
@@ -311,9 +374,67 @@ func createProviderInstruments() error {
 	); err != nil {
 		return err
 	}
-	agentsGatedCounter, err = m.Int64Counter(
+	if agentsGatedCounter, err = m.Int64Counter(
 		"sybra_agents_gated_total",
 		metric.WithDescription("Agent runs refused by the provider health gate, by provider and reason."),
+	); err != nil {
+		return err
+	}
+	if agentClassAdmitted, err = m.Int64Counter(
+		"sybra_agent_class_admitted_total",
+		metric.WithDescription("Agent dispatches admitted by the per-workload-class capacity gate, by class."),
+	); err != nil {
+		return err
+	}
+	if agentClassRejected, err = m.Int64Counter(
+		"sybra_agent_class_rejected_total",
+		metric.WithDescription("Agent dispatches refused by the per-workload-class capacity gate, by class."),
+	); err != nil {
+		return err
+	}
+	agentClassBorrowed, err = m.Int64Counter(
+		"sybra_agent_class_borrowed_total",
+		metric.WithDescription("Agent dispatches admitted by drawing on another class's unused reserved capacity, by class."),
+	)
+	return err
+}
+
+func createAutoMergeInstruments() error {
+	m := meter
+	if m == nil {
+		return nil
+	}
+	var err error
+	autoMergeAttempts, err = m.Int64Counter(
+		"sybra_automerge_attempts_total",
+		metric.WithDescription("Auto-merge decision points, by result (attempted/failed/suppressed/armed/recovered/terminal) and error class."),
+	)
+	return err
+}
+
+func createDatabaseInstruments() error {
+	m := meter
+	if m == nil {
+		return nil
+	}
+	var err error
+	if databaseTransactions, err = m.Int64Counter(
+		"sybra_database_transactions_total",
+		metric.WithDescription("Database transactions completed, by backend and result."),
+	); err != nil {
+		return err
+	}
+	if databaseTxDuration, err = m.Float64Histogram(
+		"sybra_database_transaction_duration_seconds",
+		metric.WithDescription("Complete database transaction latency including SQLite writer admission."),
+		metric.WithUnit("s"),
+	); err != nil {
+		return err
+	}
+	databaseWriterWait, err = m.Float64Histogram(
+		"sybra_database_writer_admission_wait_seconds",
+		metric.WithDescription("Time a SQLite transaction waited in the process-local writer queue before taking a pooled connection."),
+		metric.WithUnit("s"),
 	)
 	return err
 }
@@ -366,11 +487,106 @@ func createObservableGauges() error {
 	); err != nil {
 		return err
 	}
-	_, err = m.RegisterCallback(
+	if agentsByClassGauge, err = m.Int64ObservableGauge(
+		"sybra_agents_by_class",
+		metric.WithDescription("Current in-flight agent count, by workload class."),
+	); err != nil {
+		return err
+	}
+	if ghAuthStateGauge, err = m.Int64ObservableGauge(
+		"sybra_github_auth_state",
+		metric.WithDescription("Current centralized GitHub auth-health state (1=active), by state name."),
+	); err != nil {
+		return err
+	}
+	if ghAuthTransitionsGauge, err = m.Int64ObservableGauge(
+		"sybra_github_auth_transitions_total",
+		metric.WithDescription("Cumulative count of GitHub auth-health state transitions."),
+	); err != nil {
+		return err
+	}
+	if ghAuthSuppressedGauge, err = m.Int64ObservableGauge(
+		"sybra_github_auth_suppressed_calls_total",
+		metric.WithDescription("Cumulative count of gh calls skipped by the auth circuit breaker."),
+	); err != nil {
+		return err
+	}
+	if ghOutboxPendingGauge, err = m.Int64ObservableGauge(
+		"sybra_github_issue_outbox_pending",
+		metric.WithDescription("Current count of GitHub issue filings queued in the durable outbox, by sink."),
+	); err != nil {
+		return err
+	}
+	if ghOutboxReplayedGauge, err = m.Int64ObservableGauge(
+		"sybra_github_issue_outbox_replayed_total",
+		metric.WithDescription("Cumulative count of queued filings that succeeded after retry, by sink."),
+	); err != nil {
+		return err
+	}
+	if ghOutboxAgeGauge, err = m.Int64ObservableGauge(
+		"sybra_github_issue_outbox_oldest_pending_age_seconds",
+		metric.WithDescription("Age in seconds of the oldest queued filing in the durable outbox, by sink."),
+	); err != nil {
+		return err
+	}
+	return registerObservableCallback(m)
+}
+
+func registerObservableCallback(m metric.Meter) error {
+	if err := createCleanupGauges(m); err != nil {
+		return err
+	}
+	if err := createDatabaseGauges(m); err != nil {
+		return err
+	}
+	_, err := m.RegisterCallback(
 		observe,
 		tasksByStatusGauge, agentsActiveGauge, renovatePRsGauge, providerHealthyG, providerRawHealthyG, pollerAuthHealthyG, agentsInFlightGauge,
+		agentsByClassGauge,
+		ghAuthStateGauge, ghAuthTransitionsGauge, ghAuthSuppressedGauge, ghOutboxPendingGauge, ghOutboxReplayedGauge, ghOutboxAgeGauge,
+		cleanupFindingsGauge, cleanupBlockedGauge,
+		databasePoolConnsGauge, databasePoolWaitsGauge, databasePoolWaitGauge,
 	)
 	return err
+}
+
+func createDatabaseGauges(m metric.Meter) error {
+	var err error
+	if databasePoolConnsGauge, err = m.Int64ObservableGauge(
+		"sybra_database_pool_connections",
+		metric.WithDescription("database/sql pool connections by state (max_open/open/in_use/idle)."),
+	); err != nil {
+		return err
+	}
+	if databasePoolWaitsGauge, err = m.Int64ObservableGauge(
+		"sybra_database_pool_waits_total",
+		metric.WithDescription("Cumulative database/sql waits for a pooled connection."),
+	); err != nil {
+		return err
+	}
+	databasePoolWaitGauge, err = m.Float64ObservableGauge(
+		"sybra_database_pool_wait_duration_seconds_total",
+		metric.WithDescription("Cumulative time spent waiting for a database/sql pooled connection."),
+		metric.WithUnit("s"),
+	)
+	return err
+}
+
+func createCleanupGauges(m metric.Meter) error {
+	var err error
+	if cleanupFindingsGauge, err = m.Int64ObservableGauge(
+		"sybra_cleanup_protected_findings",
+		metric.WithDescription("Current count of open protected-resource cleanup findings, by resource kind."),
+	); err != nil {
+		return err
+	}
+	if cleanupBlockedGauge, err = m.Int64ObservableGauge(
+		"sybra_cleanup_protected_bytes",
+		metric.WithDescription("Current bytes blocked from cleanup by open protected-resource findings, by resource kind."),
+	); err != nil {
+		return err
+	}
+	return nil
 }
 
 func observe(_ context.Context, obs metric.Observer) error {
@@ -382,6 +598,16 @@ func observe(_ context.Context, obs metric.Observer) error {
 	providerRawHealth := providerRawHealthFn
 	pollerAuthHealth := pollerAuthHealthFn
 	inFlight := agentsInFlightFn
+	byClass := agentsByClassFn
+	ghAuthState := ghAuthStateFn
+	ghAuthTransitions := ghAuthTransitionsFn
+	ghAuthSuppressed := ghAuthSuppressedFn
+	ghOutboxPending := ghIssueOutboxPendingFn
+	ghOutboxReplayed := ghIssueOutboxReplayFn
+	ghOutboxAge := ghIssueOutboxAgeFn
+	cleanupFindings := cleanupFindingsFn
+	cleanupBlockedBytes := cleanupBlockedBytesFn
+	databasePoolStats := databasePoolStatsFn
 	obsMu.RUnlock()
 
 	if byStatus != nil {
@@ -423,7 +649,78 @@ func observe(_ context.Context, obs metric.Observer) error {
 				metric.WithAttributes(attribute.String("provider", name)))
 		}
 	}
+	if byClass != nil {
+		for class, n := range byClass() {
+			obs.ObserveInt64(agentsByClassGauge, n,
+				metric.WithAttributes(attribute.String("class", class)))
+		}
+	}
+	if ghAuthState != nil {
+		for state, active := range ghAuthState() {
+			obs.ObserveInt64(ghAuthStateGauge, active,
+				metric.WithAttributes(attribute.String("state", state)))
+		}
+	}
+	if ghAuthTransitions != nil {
+		obs.ObserveInt64(ghAuthTransitionsGauge, ghAuthTransitions())
+	}
+	if ghAuthSuppressed != nil {
+		obs.ObserveInt64(ghAuthSuppressedGauge, ghAuthSuppressed())
+	}
+	if ghOutboxPending != nil {
+		for sink, n := range ghOutboxPending() {
+			obs.ObserveInt64(ghOutboxPendingGauge, n,
+				metric.WithAttributes(attribute.String("sink", sink)))
+		}
+	}
+	if ghOutboxReplayed != nil {
+		for sink, n := range ghOutboxReplayed() {
+			obs.ObserveInt64(ghOutboxReplayedGauge, n,
+				metric.WithAttributes(attribute.String("sink", sink)))
+		}
+	}
+	if ghOutboxAge != nil {
+		for sink, n := range ghOutboxAge() {
+			obs.ObserveInt64(ghOutboxAgeGauge, n,
+				metric.WithAttributes(attribute.String("sink", sink)))
+		}
+	}
+	observeCleanupGauges(obs, cleanupFindings, cleanupBlockedBytes)
+	observeDatabaseGauges(obs, databasePoolStats)
 	return nil
+}
+
+func observeDatabaseGauges(obs metric.Observer, statsFn func() DatabasePoolStats) {
+	if statsFn == nil {
+		return
+	}
+	stats := statsFn()
+	for state, n := range map[string]int64{
+		"max_open": stats.MaxOpenConnections,
+		"open":     stats.OpenConnections,
+		"in_use":   stats.InUse,
+		"idle":     stats.Idle,
+	} {
+		obs.ObserveInt64(databasePoolConnsGauge, n,
+			metric.WithAttributes(attribute.String("state", state)))
+	}
+	obs.ObserveInt64(databasePoolWaitsGauge, stats.WaitCount)
+	obs.ObserveFloat64(databasePoolWaitGauge, stats.WaitDurationSeconds)
+}
+
+func observeCleanupGauges(obs metric.Observer, findingsFn, blockedBytesFn func() map[string]int64) {
+	if findingsFn != nil {
+		for kind, n := range findingsFn() {
+			obs.ObserveInt64(cleanupFindingsGauge, n,
+				metric.WithAttributes(attribute.String("kind", kind)))
+		}
+	}
+	if blockedBytesFn != nil {
+		for kind, n := range blockedBytesFn() {
+			obs.ObserveInt64(cleanupBlockedGauge, n,
+				metric.WithAttributes(attribute.String("kind", kind)))
+		}
+	}
 }
 
 // RegisterTasksByStatus wires a provider callback for the tasks_by_status
@@ -484,7 +781,101 @@ func RegisterAgentsInFlightByProvider(fn func() map[string]int64) {
 	obsMu.Unlock()
 }
 
+// RegisterAgentsByClass wires a provider callback returning workload class
+// name -> current in-flight agent count for the agents_by_class gauge.
+func RegisterAgentsByClass(fn func() map[string]int64) {
+	obsMu.Lock()
+	agentsByClassFn = fn
+	obsMu.Unlock()
+}
+
+// RegisterGHAuthState wires a callback returning GitHub auth-health state
+// name -> 1 for the currently active state (0 for every other known state),
+// for the github_auth_state gauge. Never carries token or task content.
+func RegisterGHAuthState(fn func() map[string]int64) {
+	obsMu.Lock()
+	ghAuthStateFn = fn
+	obsMu.Unlock()
+}
+
+// RegisterGHAuthTransitions wires a callback returning the cumulative count
+// of GitHub auth-health state transitions.
+func RegisterGHAuthTransitions(fn func() int64) {
+	obsMu.Lock()
+	ghAuthTransitionsFn = fn
+	obsMu.Unlock()
+}
+
+// RegisterGHAuthSuppressedCalls wires a callback returning the cumulative
+// count of gh calls skipped by the auth circuit breaker.
+func RegisterGHAuthSuppressedCalls(fn func() int64) {
+	obsMu.Lock()
+	ghAuthSuppressedFn = fn
+	obsMu.Unlock()
+}
+
+// RegisterGHIssueOutboxPending wires a callback returning durable-outbox
+// sink name -> current pending-filing depth.
+func RegisterGHIssueOutboxPending(fn func() map[string]int64) {
+	obsMu.Lock()
+	ghIssueOutboxPendingFn = fn
+	obsMu.Unlock()
+}
+
+// RegisterGHIssueOutboxReplayed wires a callback returning durable-outbox
+// sink name -> cumulative count of queued filings that succeeded after
+// retry.
+func RegisterGHIssueOutboxReplayed(fn func() map[string]int64) {
+	obsMu.Lock()
+	ghIssueOutboxReplayFn = fn
+	obsMu.Unlock()
+}
+
+// RegisterGHIssueOutboxOldestAgeSeconds wires a callback returning
+// durable-outbox sink name -> age in seconds of its oldest pending filing.
+func RegisterGHIssueOutboxOldestAgeSeconds(fn func() map[string]int64) {
+	obsMu.Lock()
+	ghIssueOutboxAgeFn = fn
+	obsMu.Unlock()
+}
+
+func RegisterCleanupProtectedFindings(fn func() map[string]int64) {
+	obsMu.Lock()
+	cleanupFindingsFn = fn
+	obsMu.Unlock()
+}
+
+func RegisterCleanupProtectedBytes(fn func() map[string]int64) {
+	obsMu.Lock()
+	cleanupBlockedBytesFn = fn
+	obsMu.Unlock()
+}
+
+// RegisterDatabasePoolStats wires a database/sql pool snapshot provider.
+func RegisterDatabasePoolStats(fn func() DatabasePoolStats) {
+	obsMu.Lock()
+	databasePoolStatsFn = fn
+	obsMu.Unlock()
+}
+
 // --- Record helpers. Each is a cheap nil guard when metrics are disabled. ---
+
+// DatabaseTransaction records one completed DB.InTx call.
+func DatabaseTransaction(ctx context.Context, backend, result string, duration, writerWait time.Duration) {
+	attrs := metric.WithAttributes(
+		attribute.String("backend", backend),
+		attribute.String("result", result),
+	)
+	if databaseTransactions != nil {
+		databaseTransactions.Add(ctx, 1, attrs)
+	}
+	if databaseTxDuration != nil {
+		databaseTxDuration.Record(ctx, duration.Seconds(), attrs)
+	}
+	if databaseWriterWait != nil && backend == "sqlite" {
+		databaseWriterWait.Record(ctx, writerWait.Seconds(), attrs)
+	}
+}
 
 func AgentStarted(provider, mode string) {
 	if agentsStarted == nil {
@@ -583,6 +974,21 @@ func OrchestratorStaleRestart(ctx context.Context, ok bool) {
 		metric.WithAttributes(attribute.String("result", resultLabel(ok))))
 }
 
+func OrchestratorEffectReplay(ctx context.Context, result string) {
+	if orchestratorEffectReplays == nil {
+		return
+	}
+	orchestratorEffectReplays.Add(ctx, 1,
+		metric.WithAttributes(attribute.String("result", result)))
+}
+
+func OrchestratorResumeStalledFallback(ctx context.Context) {
+	if orchestratorResumeStalledFallbacks == nil {
+		return
+	}
+	orchestratorResumeStalledFallbacks.Add(ctx, 1)
+}
+
 func ProviderProbe(ctx context.Context, name string, ok bool) {
 	if providerProbes == nil {
 		return
@@ -649,6 +1055,52 @@ func AgentGated(name, reason string) {
 		metric.WithAttributes(
 			attribute.String("provider", name),
 			attribute.String("reason", reason),
+		))
+}
+
+// AgentClassAdmitted records one dispatch admitted by the per-workload-class
+// capacity gate.
+func AgentClassAdmitted(class string) {
+	if agentClassAdmitted == nil {
+		return
+	}
+	agentClassAdmitted.Add(context.Background(), 1,
+		metric.WithAttributes(attribute.String("class", class)))
+}
+
+// AgentClassRejected records one dispatch refused by the per-workload-class
+// capacity gate.
+func AgentClassRejected(class string) {
+	if agentClassRejected == nil {
+		return
+	}
+	agentClassRejected.Add(context.Background(), 1,
+		metric.WithAttributes(attribute.String("class", class)))
+}
+
+// AgentClassBorrowed records one dispatch admitted by drawing on another
+// class's unused reserved capacity (see agent.borrowsSharedCapacity).
+func AgentClassBorrowed(class string) {
+	if agentClassBorrowed == nil {
+		return
+	}
+	agentClassBorrowed.Add(context.Background(), 1,
+		metric.WithAttributes(attribute.String("class", class)))
+}
+
+// AutoMergeAttempt records one auto-merge decision point. result is one of
+// "attempted", "failed", "suppressed", "armed", "recovered", or "terminal";
+// class is the github.MergeErrorClass behind a failed/suppressed/terminal
+// result, empty otherwise. Passed as a plain string so this package does not
+// need to import internal/github.
+func AutoMergeAttempt(ctx context.Context, result, class string) {
+	if autoMergeAttempts == nil {
+		return
+	}
+	autoMergeAttempts.Add(ctx, 1,
+		metric.WithAttributes(
+			attribute.String("result", result),
+			attribute.String("class", class),
 		))
 }
 

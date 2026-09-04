@@ -7,6 +7,9 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/runacct"
+	"github.com/Automaat/sybra/internal/runoutcome"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 const (
@@ -16,20 +19,20 @@ const (
 // statusDwellThresholds maps task status → max acceptable hours in that status
 // before flagging a bottleneck. Statuses absent from the map are not checked.
 var statusDwellThresholds = map[string]float64{
-	"plan-review":    12,
-	"in-review":      24,
-	"testing":        12,
-	"ready-pr":       2, // transient (PR opens in seconds); flag fast if PR-open stalls
-	"human-required": 24,
-	"todo":           24,
+	string(taskstatus.PlanReview):    12,
+	string(taskstatus.InReview):      24,
+	string(taskstatus.Testing):       12,
+	string(taskstatus.ReadyPR):       2, // transient (PR opens in seconds); flag fast if PR-open stalls
+	string(taskstatus.HumanRequired): 24,
+	string(taskstatus.Todo):          24,
 }
 
 // isAgentFailure classifies an audit event as a failed agent run. Production
 // emits failures as agent.completed with state != "stopped"; the legacy
 // agent.failed type is also accepted for forward/test compatibility.
 func isAgentFailure(e audit.Event) bool {
-	runs := audit.NormalizeAgentRuns([]audit.Event{e})
-	return len(runs) == 1 && runs[0].Terminal && runs[0].Failed
+	counts := runacct.Count(audit.RunRecords([]audit.Event{e}), nil, runacct.CountConfig{})
+	return counts.Failures == 1
 }
 
 // checkAgentRetryLoops flags tasks that have 2+ failed agent runs in the
@@ -38,15 +41,15 @@ func isAgentFailure(e audit.Event) bool {
 func checkAgentRetryLoops(events []audit.Event, now time.Time) []Finding {
 	failuresPerTask := make(map[string]int)
 	lastRole := make(map[string]string)
-	runs := audit.NormalizeAgentRuns(events)
-	for i := range runs {
-		run := &runs[i]
-		if !run.Terminal || !run.Failed || run.TaskID == "" {
+	records := audit.RunRecords(events)
+	for i := range records {
+		rec := records[i]
+		if rec.TaskID == "" || rec.Outcome != runoutcome.Failed {
 			continue
 		}
-		failuresPerTask[run.TaskID]++
-		if role, ok := run.TerminalEvent.Data["role"].(string); ok {
-			lastRole[run.TaskID] = role
+		failuresPerTask[rec.TaskID]++
+		if rec.Role != "" {
+			lastRole[rec.TaskID] = rec.Role
 		}
 	}
 
@@ -91,7 +94,7 @@ func checkTriageMismatch(events []audit.Event, now time.Time) []Finding {
 			continue
 		}
 		to, _ := e.Data["to"].(string)
-		if to == "human-required" && classifiedHeadless[e.TaskID] {
+		if to == string(taskstatus.HumanRequired) && classifiedHeadless[e.TaskID] {
 			if isExpectedHumanRequired(e) {
 				continue
 			}
@@ -109,7 +112,7 @@ func checkTriageMismatch(events []audit.Event, now time.Time) []Finding {
 			TaskID:      taskID,
 			Evidence: map[string]any{
 				"classified_mode": "headless",
-				"final_status":    "human-required",
+				"final_status":    string(taskstatus.HumanRequired),
 			},
 			DetectedAt: now,
 		})
@@ -200,26 +203,47 @@ func checkGHPushAuthFailure(events []audit.Event, now time.Time) []Finding {
 	}}
 }
 
+// ghAuthStateMisconfigured mirrors github.AuthMisconfigured
+// (internal/github/authhealth.go) by value. This package intentionally
+// doesn't import internal/github — health analyzes state handed to it, it
+// doesn't couple to service internals — so the string is duplicated here
+// rather than referencing the typed constant.
+const ghAuthStateMisconfigured = "misconfigured"
+
 // checkGHAuthUnavailable turns a proactive gh-auth probe result into a
 // finding — the periodic counterpart to checkGHPushAuthFailure/
 // checkGHIssueAuthFailure, which only fire after a real push or issue-filing
 // attempt has already failed. authenticated is the live result of
-// github.Authenticated(), sampled once per health tick (see Checker.ghAuthProbe);
-// a nil probe (the default) means this check never runs.
-func checkGHAuthUnavailable(authenticated bool, now time.Time) []Finding {
+// github.Authenticated(), sampled once per health tick (see
+// Checker.ghAuthProbe); a nil probe (the default) means this check never
+// runs. state is the paired github.AuthHealthSnapshot().State, used to tell
+// a permanent credential misconfiguration — which needs a human to rotate
+// credentials and gets a single actionable critical finding — apart from a
+// transient mint/network failure that the circuit breaker and force-refresh
+// are already retrying on their own, which is downgraded to a warning so it
+// doesn't page for something expected to self-heal. See #2453.
+func checkGHAuthUnavailable(authenticated bool, state string, now time.Time) []Finding {
 	if authenticated {
 		return nil
 	}
-	return []Finding{{
-		Category:    CatGHAuthUnavailable,
-		Severity:    SeverityCritical,
-		Title:       "GitHub credentials are unavailable",
-		Description: "Periodic gh auth probe failed — every push, PR, and issue operation against GitHub is blocked. Configure github.app or run `gh auth login` on the host.",
+	f := Finding{
+		Category: CatGHAuthUnavailable,
 		Evidence: map[string]any{
 			"probe": "gh api rate_limit",
+			"state": state,
 		},
 		DetectedAt: now,
-	}}
+	}
+	if state == ghAuthStateMisconfigured {
+		f.Severity = SeverityCritical
+		f.Title = "GitHub credentials are misconfigured"
+		f.Description = "Periodic gh auth probe failed with a permanent credential problem (revoked key, suspended App, removed installation) that will not resolve by retrying. Rotate credentials: reconfigure github.app or run `gh auth login` on the host."
+	} else {
+		f.Severity = SeverityWarning
+		f.Title = "GitHub credentials are temporarily unavailable"
+		f.Description = "Periodic gh auth probe failed with a transient error (network blip, GitHub outage, or a force-refresh in flight) — the circuit breaker is suppressing repeat calls and will retry on its own backoff. No action needed unless this persists."
+	}
+	return []Finding{f}
 }
 
 func isExpectedHumanRequired(e audit.Event) bool {

@@ -5,11 +5,22 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/taskstatus"
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 const readyPRRecoveryReason = "manual verification requires a live PR and the branch is already pushed — routing to PR flow instead of parking human-required"
 const alreadyFixedOnMainRecoveryReason = "requested change already satisfies origin base and the task branch has no remaining diff — closing duplicate task as done"
+
+// maxDeclaredReasonBytes bounds the agent's own text before it reaches the
+// task's YAML frontmatter.
+const maxDeclaredReasonBytes = 400
+
+const unreadableRecoveryVerdictReason = "run emitted an unreadable recovery declaration — staying parked rather than inferring the outcome from its prose"
+
+var recoveryRemoteBranchHead = project.RemoteBranchHead
 
 // maybeRecoverHumanRequiredAlreadyFixedOnMain rewrites a narrow duplicate-task
 // class: an implementation step parked the task at human-required after
@@ -17,26 +28,40 @@ const alreadyFixedOnMainRecoveryReason = "requested change already satisfies ori
 // still clean with no commits ahead of the origin base. In that case Sybra has
 // enough deterministic proof to close the task itself instead of parking it.
 //
-// Agent text is only a trigger hint here. The close decision itself still
-// requires repo-state proof: no commits ahead, no uncommitted diff, and HEAD
-// reachable from the origin base.
-func (e *Engine) maybeRecoverHumanRequiredAlreadyFixedOnMain(taskID string, currentStep *Step, wfExec *Execution, t TaskInfo, output StepOutput) (*CompletionInfo, bool, error) {
+// The trigger is the run's structured declaration, set as the task's whole
+// status reason through the CLI. The run's response text is not a channel:
+// accepting it there let a response that was only the JSON object close a
+// task whose reason explicitly refused to declare one.
+//
+// The repo-state proof that follows (no commits ahead, no uncommitted diff,
+// HEAD reachable from the origin base) is necessary but not sufficient: it is
+// trivially true for a branch the agent never committed to, which is why the
+// declaration carries the decision.
+func (e *Engine) maybeRecoverHumanRequiredAlreadyFixedOnMain(taskID string, currentStep *Step, wfExec *Execution, t TaskInfo, output StepOutput, duplicateSignal string) (*CompletionInfo, bool, error) {
 	if currentStep == nil || currentStep.Type != StepRunAgent || currentStep.Config.Role != "implementation" || output.Status != "completed" {
 		return nil, false, nil
 	}
-	if t.Status != "human-required" || t.PRNumber != 0 || t.ProjectID == "" {
+	if t.Status != taskstatus.HumanRequired || t.PRNumber != 0 || t.ProjectID == "" {
 		return nil, false, nil
 	}
 	if wfExec != nil && wfExec.LastAgentStepFailed() {
 		return nil, false, nil
 	}
-	if !looksLikeAlreadyFixedOnMainVerdict(t.StatusReason + "\n" + output.Output) {
+	alreadyFixed, declared, err := declaresAlreadyFixedOnMain(duplicateSignal)
+	if err != nil {
+		e.logger.Warn("workflow.human-required.duplicate-recovery.unreadable-verdict", "task_id", taskID, "err", err)
+		if uerr := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, unreadableRecoveryVerdictReason); uerr != nil {
+			return nil, false, uerr
+		}
 		return nil, false, nil
 	}
-	if e.worktrees == nil {
+	if !declared || !alreadyFixed {
 		return nil, false, nil
 	}
-	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	if e.execution.Worktrees == nil {
+		return nil, false, nil
+	}
+	wtPath, ok := e.execution.Worktrees.GetWorktreePath(taskID)
 	if !ok || wtPath == "" {
 		return nil, false, nil
 	}
@@ -48,7 +73,11 @@ func (e *Engine) maybeRecoverHumanRequiredAlreadyFixedOnMain(taskID string, curr
 	if !clean {
 		return nil, false, nil
 	}
-	if err := e.tasks.UpdateTaskStatus(taskID, "done", alreadyFixedOnMainRecoveryReason); err != nil {
+	reason := alreadyFixedOnMainRecoveryReason
+	if declaredReason := recoveryVerdictReason(duplicateSignal); declaredReason != "" {
+		reason += " — agent declared: " + textutil.TruncateBytes(declaredReason, maxDeclaredReasonBytes, "…")
+	}
+	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.Done, reason); err != nil {
 		return nil, false, err
 	}
 	e.logger.Info("workflow.human-required.duplicate-recovery", "task_id", taskID)
@@ -70,16 +99,16 @@ func (e *Engine) maybeRecoverHumanRequiredByOpeningPR(taskID string, currentStep
 	if currentStep == nil || currentStep.Type != StepRunAgent || output.Status != "completed" {
 		return nil, false, nil
 	}
-	if t.Status != "human-required" || t.PRNumber != 0 || t.ProjectID == "" {
+	if t.Status != taskstatus.HumanRequired || t.PRNumber != 0 || t.ProjectID == "" {
 		return nil, false, nil
 	}
 	if !isMissingLivePRVerificationBlocker(t.StatusReason + "\n" + output.Output) {
 		return nil, false, nil
 	}
-	if e.worktrees == nil {
+	if e.execution.Worktrees == nil {
 		return nil, false, nil
 	}
-	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	wtPath, ok := e.execution.Worktrees.GetWorktreePath(taskID)
 	if !ok || wtPath == "" {
 		return nil, false, nil
 	}
@@ -91,14 +120,24 @@ func (e *Engine) maybeRecoverHumanRequiredByOpeningPR(taskID string, currentStep
 		e.logger.Warn("workflow.human-required.pr-recovery.resolve-head", "task_id", taskID, "err", err)
 		return nil, false, nil
 	}
+	existingPR, existingFound := e.findExistingPRForBranch(t.ProjectID, headArg)
 	remote := project.PushRemote(ctx, wtPath)
-	remoteSHA, err := project.RemoteBranchHead(ctx, wtPath, remote, branch)
+	remoteBranch := branch
+	if existingFound {
+		if authoritativeRemote, authoritativeBranch, ok, resolveErr := e.authoritativePRTrackingRef(ctx, wtPath, t.ProjectID, existingPR, branch); resolveErr != nil {
+			e.logger.Warn("workflow.human-required.pr-recovery.pr-meta", "task_id", taskID, "pr", existingPR, "err", resolveErr)
+		} else if ok {
+			remote = authoritativeRemote
+			remoteBranch = authoritativeBranch
+		}
+	}
+	remoteSHA, err := recoveryRemoteBranchHead(ctx, wtPath, remote, remoteBranch)
 	if err != nil {
-		e.logger.Warn("workflow.human-required.pr-recovery.remote-head", "task_id", taskID, "remote", remote, "branch", branch, "err", err)
+		e.logger.Warn("workflow.human-required.pr-recovery.remote-head", "task_id", taskID, "remote", remote, "branch", remoteBranch, "err", err)
 		return nil, false, nil
 	}
 	if remoteSHA == "" {
-		e.logger.Info("workflow.human-required.pr-recovery.remote-missing", "task_id", taskID, "remote", remote, "branch", branch)
+		e.logger.Info("workflow.human-required.pr-recovery.remote-missing", "task_id", taskID, "remote", remote, "branch", remoteBranch)
 		return nil, false, nil
 	}
 
@@ -108,7 +147,7 @@ func (e *Engine) maybeRecoverHumanRequiredByOpeningPR(taskID string, currentStep
 		return nil, false, nil
 	}
 
-	status := "ready-pr"
+	status := taskstatus.ReadyPR
 	reason := readyPRRecoveryReason
 	// Only take the link-existing-PR -> in-review shortcut when the local HEAD
 	// being recovered is the exact commit already on the remote branch. If new
@@ -118,11 +157,11 @@ func (e *Engine) maybeRecoverHumanRequiredByOpeningPR(taskID string, currentStep
 	// would never reach the PR. Fall through to ready-pr in that case so
 	// simple-task-pr pushes the current HEAD before linking.
 	if remoteSHA == localSHA {
-		if existing, found := e.findExistingPRForBranch(t.ProjectID, headArg); found {
-			if err := e.tasks.UpdateTaskPR(taskID, existing); err != nil {
+		if existingFound {
+			if err := e.linkTaskPR(taskID, t, existingPR); err != nil {
 				return nil, false, err
 			}
-			status = "in-review"
+			status = taskstatus.InReview
 			reason = ""
 		}
 	}
@@ -163,27 +202,42 @@ func isMissingLivePRVerificationBlocker(reason string) bool {
 		strings.Contains(r, "live proof")
 }
 
-func looksLikeAlreadyFixedOnMainVerdict(reason string) bool {
-	lower := strings.ToLower(strings.TrimSpace(reason))
-	if lower == "" {
+func (e *Engine) authoritativePRTrackingRef(ctx context.Context, wtPath, repo string, prNumber int, fallbackBranch string) (remote, branch string, ok bool, err error) {
+	if e.pr.MetaFetcher == nil || repo == "" || prNumber <= 0 {
+		return "", "", false, nil
+	}
+	meta, err := e.pr.MetaFetcher.FetchPRMeta(ctx, repo, prNumber)
+	if err != nil {
+		return "", "", false, err
+	}
+	branch = strings.TrimSpace(meta.HeadRefName)
+	if branch == "" {
+		branch = strings.TrimSpace(fallbackBranch)
+	}
+	if branch == "" {
+		return "", "", false, nil
+	}
+	headRepo := strings.TrimSpace(meta.HeadRepo)
+	switch {
+	case strings.EqualFold(headRepo, repo):
+		return "origin", branch, true, nil
+	case recoveryRemoteRepoMatches(ctx, wtPath, "fork", headRepo):
+		return "fork", branch, true, nil
+	default:
+		return "", "", false, nil
+	}
+}
+
+func recoveryRemoteRepoMatches(ctx context.Context, wtPath, remote, repo string) bool {
+	raw, err := gitexec.Output(ctx, gitexec.Options{Dir: wtPath}, "config", "--get", "remote."+remote+".url")
+	if err != nil {
 		return false
 	}
-	fixedSignal := strings.Contains(lower, "already fixed") ||
-		strings.Contains(lower, "already on main") ||
-		strings.Contains(lower, "already merged") ||
-		strings.Contains(lower, "already landed") ||
-		strings.Contains(lower, "already satisfied") ||
-		strings.Contains(lower, "duplicate task")
-	mainSignal := strings.Contains(lower, "main") ||
-		strings.Contains(lower, "origin/main") ||
-		strings.Contains(lower, "upstream") ||
-		strings.Contains(lower, "origin")
-	closeSignal := strings.Contains(lower, "no pr needed") ||
-		strings.Contains(lower, "no pr required") ||
-		strings.Contains(lower, "safe to close") ||
-		strings.Contains(lower, "mark done") ||
-		strings.Contains(lower, "mark as done")
-	return fixedSignal && (mainSignal || closeSignal)
+	owner, name, err := project.ParseGitHubURL(strings.TrimSpace(raw))
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(owner+"/"+name, repo)
 }
 
 func (e *Engine) branchAlreadySatisfiedOnMain(taskID, wtPath string, t TaskInfo) (bool, error) {

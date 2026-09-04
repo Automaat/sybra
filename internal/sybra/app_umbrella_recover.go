@@ -25,7 +25,7 @@ func (a *App) recoverDegradedUmbrellas() {
 	if a.cfg == nil || !a.cfg.Umbrella.Enabled {
 		return
 	}
-	tasks, err := a.tasks.List()
+	tasks, err := a.tasks.ListBoard()
 	if err != nil {
 		return
 	}
@@ -57,10 +57,12 @@ func (a *App) recoverDegradedUmbrellas() {
 		if a.umbrellaRecoverFn != nil {
 			recoverFn = a.umbrellaRecoverFn
 		}
-		a.wg.Go(func() {
+		if !a.goWhileRunning(func() {
 			defer a.clearUmbrellaRecoveryInFlight(key)
 			recoverFn(tracker)
-		})
+		}) {
+			a.clearUmbrellaRecoveryInFlight(key)
+		}
 	}
 }
 

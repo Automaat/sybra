@@ -184,7 +184,7 @@ func TestBackfillOutcomes(t *testing.T) {
 		{"completed_stopped", audit.EventAgentCompleted, "stopped", "completed"},
 		{"completed_other_state", audit.EventAgentCompleted, "error", "failed"},
 		{"failed_event", audit.EventAgentFailed, "error", "failed"},
-		{"completed_missing_state", audit.EventAgentCompleted, "", "completed"},
+		{"completed_missing_state", audit.EventAgentCompleted, "", "unknown"},
 	}
 
 	for _, tc := range tests {

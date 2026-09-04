@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 // execParallel spawns every child of a `parallel` block concurrently, all
@@ -12,7 +14,7 @@ import (
 // (validated at definition load time); planning is read-only so contention
 // on the worktree is benign. The parent step advances to its `next` only
 // after every child has terminated; per-child completions are routed
-// through AdvanceStep via the existing agentRoutes mapping.
+// through AdvanceStep via the workflow's persisted agent routes.
 //
 // Returns a non-nil *CompletionInfo when every child terminates at spawn time
 // and the parent's `next` ends the workflow synchronously — threaded up to the
@@ -103,33 +105,37 @@ func (e *Engine) execParallel(taskID string, def *Definition, step *Step, wfExec
 // at the parent level) and writes results into the ChildStatus slot
 // instead of mutating wfExec.State directly.
 func (e *Engine) spawnParallelChild(taskID string, parent, child *Step, wfExec *Execution, parentCtx TemplateContext, dir string, status *ChildStatus) error {
+	if status == nil {
+		return fmt.Errorf("parallel child %q has no status", child.ID)
+	}
+	if !parallelObserverRole(child.Config.Role) {
+		return fmt.Errorf("parallel child %q role %q is not read-only", child.ID, child.Config.Role)
+	}
 	// Render the child prompt with a context that points at the child step
 	// so {{.Step.ID}} et al. resolve correctly inside the prompt template.
 	childCtx := parentCtx
 	childCtx.Step = *child
-
-	mode := child.Config.Mode
-	if strings.Contains(mode, "{{") {
-		if rendered, rErr := RenderTemplate(mode, childCtx); rErr == nil {
-			mode = rendered
+	if sidecar := e.resolveSidecarDir(taskID); sidecar != "" {
+		wfExec.SetVar(WorkflowVarSidecarDir, sidecar)
+		if childCtx.Vars == nil {
+			childCtx.Vars = map[string]string{}
 		}
+		childCtx.Vars[WorkflowVarSidecarDir] = sidecar
 	}
-	if mode == "" {
-		mode = "headless"
-	}
+
+	mode := resolveRunAgentMode(child.Config.Mode, childCtx)
 	if admit, reason := e.agents.AdmitDispatch(taskID, child.Config.Role, mode); !admit {
 		return fmt.Errorf("%w: %s", ErrResourcePressure, reason)
 	}
-	model := child.Config.Model
-	if model == "" {
-		model = "sonnet"
-	}
+	model := resolveRunAgentModel(child.Config.Model, childCtx)
 
 	provider, model, assignment, err := e.resolveAgentVariant(childCtx.Task, child, wfExec, model, "workflow.parallel.cross-provider.fallback")
 	if err != nil {
 		return err
 	}
 	applySkillReceiptRecoveryAssignment(child.ID, wfExec, &assignment)
+	assignment.IntentID = taskID + ":" + wfExec.WorkflowID + ":parallel:" + parent.ID + ":" + child.ID
+	assignment.AdmissionObserve = true
 
 	prompt, err := e.renderAssignedPrompt(taskID, child, childCtx, assignment, "workflow.parallel.consume-steer")
 	if err != nil {
@@ -137,18 +143,13 @@ func (e *Engine) spawnParallelChild(taskID string, parent, child *Step, wfExec *
 	}
 
 	// Headless one-shot: parallel children must terminate so the parent
-	// can advance. Interactive/wait_for_status children are not supported
-	// here (validated at definition load time would be the proper place;
-	// guard here defensively).
-	if mode == "interactive" {
-		return fmt.Errorf("parallel child %q: interactive mode not supported", child.ID)
-	}
+	// can advance (mode is forced to headless above).
 	oneShot := false
 
-	// Hold e.mu across StartAgent so HandleAgentComplete (which acquires
-	// e.mu via lookupAgentStep) cannot race past the agentRoutes registration.
-	// Fast-exiting agents (e.g. fail_exit in tests) can otherwise complete
-	// before agentRoutes is populated, causing the wrong step to advance.
+	// Hold e.mu until the child route is durably persisted on the workflow.
+	// Fast-exiting children can otherwise complete before their agent→step route
+	// is visible outside this goroutine, recreating the stale-completion bug the
+	// old process-local agentRoutes map used to paper over.
 	e.mu.Lock()
 	agentID, _, baselineRef, err := e.agents.StartAgent(taskID, child.Config.Role, mode, model, provider, prompt, dir, child.Config.AllowedTools, child.Config.NeedsWorktree, oneShot, child.Config.OutputSchema, "", assignment)
 	if err != nil {
@@ -158,15 +159,17 @@ func (e *Engine) spawnParallelChild(taskID string, parent, child *Step, wfExec *
 	if baselineRef != "" {
 		wfExec.SetVar(tamperBaselineVar(child.ID), baselineRef)
 	}
-	// agentRoutes key uses the *child* step ID. StepByID recurses into
-	// Parallel children so the lookup in lookupAgentStep / AdvanceStep
-	// returns the right step config.
-	e.agentRoutes[agentID] = agentRoute{taskID: taskID, stepID: child.ID}
-	e.mu.Unlock()
-
 	status.AgentID = agentID
 	status.Provider = provider
 	status.Status = "pending"
+	wfExec.SetAgentRoute(agentID, child.ID)
+	e.setPendingAgentStepLocked(taskID, agentID, child.ID)
+	err = e.tasks.SetWorkflow(taskID, wfExec)
+	e.mu.Unlock()
+	if err != nil {
+		return e.deferStartedAgentRoute(taskID, child.ID, agentID, err)
+	}
+	e.clearPendingAgentStep(taskID, agentID)
 	e.logger.Info("workflow.parallel.spawn",
 		"task_id", taskID, "parent", parent.ID, "child", child.ID,
 		"role", child.Config.Role, "agent_id", agentID, "provider", provider)
@@ -236,7 +239,7 @@ func (e *Engine) advanceParallelChild(taskID string, def *Definition, parent, ch
 	status.AgentID = output.AgentID
 	status.Provider = output.Provider
 	status.Status = output.Status
-	status.Output = truncate(output.Output, 4000)
+	status.Output = textutil.TruncateBytes(output.Output, 4000, "\n... (truncated)")
 
 	// Wait for the rest of the cohort.
 	if !rec.AllChildrenDone() {
@@ -283,12 +286,12 @@ func (e *Engine) finalizeParallelParent(taskID string, def *Definition, parent *
 	wfExec.RecordStep(StepRecord{
 		StepID:    parent.ID,
 		Status:    parentStatus,
-		Output:    truncate(parentOutput, 4000),
+		Output:    textutil.TruncateBytes(parentOutput, 4000, "\n... (truncated)"),
 		StartedAt: rec.StartedAt,
 		EndedAt:   now,
 	})
 	if parentOutput != "" {
-		wfExec.SetVar("step."+parent.ID+".output", truncate(parentOutput, 2000))
+		wfExec.SetVar("step."+parent.ID+".output", textutil.TruncateBytes(parentOutput, 2000, "\n... (truncated)"))
 	}
 
 	t, err := e.tasks.GetTask(taskID)
@@ -304,7 +307,8 @@ func (e *Engine) finalizeParallelParent(taskID string, def *Definition, parent *
 		return comp, nil
 	}
 	e.logger.Info("workflow.parallel.advance", "task_id", taskID, "from", parent.ID, "to", nextStep.ID, "status", parentStatus)
-	return e.executeSteps(taskID, def, nextStep, wfExec)
+	comp, err = e.executeSteps(taskID, def, nextStep, wfExec)
+	return comp, normalizeExecuteStepsErr(err)
 }
 
 // summarizeChildOutputs renders a compact "child=status" summary that

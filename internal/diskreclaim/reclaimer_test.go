@@ -82,8 +82,11 @@ func runGit(t *testing.T, dir string, args ...string) {
 	}
 }
 
-// makeCleanGitWorktree creates a real, initialized, clean git repo at path
-// so it passes cleanup's dirty-worktree safety check.
+// makeCleanGitWorktree creates a real, initialized, clean git repo at path,
+// pushed to a throwaway bare "origin" so it passes both cleanup's
+// dirty-worktree and unpushed-commits safety checks — matching production,
+// where every Sybra-managed worktree tracks the project's bare clone as
+// origin.
 func makeCleanGitWorktree(t *testing.T, path string) {
 	t.Helper()
 	mustMkdir(t, path)
@@ -93,6 +96,11 @@ func makeCleanGitWorktree(t *testing.T, path string) {
 	}
 	runGit(t, path, "add", "-A")
 	runGit(t, path, "commit", "-q", "-m", "init")
+
+	origin := t.TempDir()
+	runGit(t, origin, "init", "-q", "--bare")
+	runGit(t, path, "remote", "add", "origin", origin)
+	runGit(t, path, "push", "-q", "-u", "origin", "HEAD:refs/heads/main")
 }
 
 func TestReclaimerRunReclaimsSafeBucketsOnly(t *testing.T) {
@@ -228,9 +236,56 @@ func TestReclaimerTryRunRespectsCooldown(t *testing.T) {
 
 func TestReclaimerTryRunStartsWhenIdleAndCooldownElapsed(t *testing.T) {
 	r := New(testConfig(t), &fakeLister{}, time.Millisecond, nil)
+	// testConfig registered the temp home's cleanup first, and t.Cleanup runs
+	// LIFO, so this drains the pass before RemoveAll touches the directories
+	// it is still writing into.
+	t.Cleanup(r.Wait)
 	if !r.TryRun() {
 		t.Fatal("TryRun should start a pass when idle and the cooldown has elapsed")
 	}
+	waitForReclaimerIdle(t, r)
+}
+
+func waitForReclaimerIdle(t *testing.T, r *Reclaimer) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		r.mu.Lock()
+		running := r.running
+		r.mu.Unlock()
+		if !running {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("reclaimer did not finish")
+}
+
+// TestReclaimerWaitDrainsInFlightPass pins the guarantee the cleanup above
+// depends on: after Wait returns, no pass is still writing. Without it the
+// package's temp home is torn down under a live writer, which surfaced as an
+// unrelated-looking "directory not empty" cleanup failure.
+func TestReclaimerWaitDrainsInFlightPass(t *testing.T) {
+	r := New(testConfig(t), &fakeLister{}, time.Millisecond, nil)
+	if !r.TryRun() {
+		t.Fatal("TryRun should start a pass")
+	}
+	r.Wait()
+
+	r.mu.Lock()
+	running := r.running
+	r.mu.Unlock()
+	if running {
+		t.Fatal("a pass is still running after Wait returned")
+	}
+}
+
+// TestReclaimerWaitNilIsSafe mirrors TryRun's nil-receiver contract: callers
+// hold a possibly-nil Reclaimer (App.getDiskReclaimer returns nil when the
+// app is not fully wired), so Wait must not panic on one.
+func TestReclaimerWaitNilIsSafe(t *testing.T) {
+	var r *Reclaimer
+	r.Wait()
 }
 
 func TestReclaimerTryRunNilReclaimerIsSafe(t *testing.T) {

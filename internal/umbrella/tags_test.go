@@ -120,19 +120,20 @@ func TestRecoverBackoff(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		failCount int
-		want      time.Duration
+		wantMin   time.Duration
+		wantMax   time.Duration
 	}{
-		{0, time.Hour}, // treated as 1
-		{1, time.Hour},
-		{2, 2 * time.Hour},
-		{3, 4 * time.Hour},
-		{5, 16 * time.Hour},
-		{6, 24 * time.Hour}, // 32h would exceed the cap
-		{100, 24 * time.Hour},
+		{0, 30 * time.Minute, time.Hour}, // treated as 1
+		{1, 30 * time.Minute, time.Hour},
+		{2, time.Hour, 2 * time.Hour},
+		{3, 2 * time.Hour, 4 * time.Hour},
+		{5, 8 * time.Hour, 16 * time.Hour},
+		{6, 12 * time.Hour, 24 * time.Hour}, // nominal 32h is capped before jitter
+		{100, 12 * time.Hour, 24 * time.Hour},
 	}
 	for _, c := range cases {
-		if got := RecoverBackoff(c.failCount); got != c.want {
-			t.Errorf("RecoverBackoff(%d) = %v, want %v", c.failCount, got, c.want)
+		if got := RecoverBackoff(c.failCount); got < c.wantMin || got > c.wantMax {
+			t.Errorf("RecoverBackoff(%d) = %v, want [%v, %v]", c.failCount, got, c.wantMin, c.wantMax)
 		}
 	}
 }
@@ -158,6 +159,34 @@ func TestReplaceTagPrefix(t *testing.T) {
 				t.Errorf("ReplaceTagPrefix(%v, %q, %q) = %v, want %v", c.tags, c.prefix, c.newTag, got, c.want)
 			}
 		})
+	}
+}
+
+func TestParseExpandPhase(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		tags []string
+		want ExpandPhase
+	}{
+		{"present", []string{"umbrella", ExpandPhaseTag(ExpandPhasePlanning)}, ExpandPhasePlanning},
+		{"absent", []string{"umbrella"}, ""},
+		{"malformed", []string{"umbrella-expand-phase:not-real"}, ""},
+		{"last valid wins", []string{ExpandPhaseTag(ExpandPhasePlanning), ExpandPhaseTag(ExpandPhaseMaterializing)}, ExpandPhaseMaterializing},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			if got := ParseExpandPhase(c.tags); got != c.want {
+				t.Fatalf("ParseExpandPhase(%v) = %q, want %q", c.tags, got, c.want)
+			}
+		})
+	}
+	if HasActiveExpandPhase([]string{"umbrella"}) {
+		t.Fatal("HasActiveExpandPhase = true without an expand phase")
+	}
+	if !HasActiveExpandPhase([]string{"umbrella", ExpandPhaseTag(ExpandPhaseFetched)}) {
+		t.Fatal("HasActiveExpandPhase = false with an expand phase present")
 	}
 }
 

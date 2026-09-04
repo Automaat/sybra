@@ -8,8 +8,8 @@ import (
 	"time"
 )
 
-const issueQuery = `query($q: String!) {
-  search(query: $q, type: ISSUE, first: 100) {
+const issueQuery = `query($q: String!, $after: String) {
+  search(query: $q, type: ISSUE, first: 100, after: $after) {
     pageInfo {
       hasNextPage
       endCursor
@@ -81,6 +81,7 @@ const issueLinkedPRsQuery = `query($owner: String!, $name: String!, $number: Int
                 state
                 headRefName
                 author { login type: __typename }
+                headRepository { nameWithOwner owner { login } }
                 repository { name nameWithOwner }
               }
             }
@@ -169,6 +170,12 @@ type gqlCrossReferencedEvent struct {
 			Login string `json:"login"`
 			Type  string `json:"type"`
 		} `json:"author"`
+		HeadRepository struct {
+			NameWithOwner string `json:"nameWithOwner"`
+			Owner         struct {
+				Login string `json:"login"`
+			} `json:"owner"`
+		} `json:"headRepository"`
 		Repository struct {
 			Name          string `json:"name"`
 			NameWithOwner string `json:"nameWithOwner"`
@@ -360,22 +367,35 @@ func searchMentionedChunked(e execer, repos []string, phrase string) ([]Issue, e
 }
 
 func searchIssuesWith(e execer, query string) ([]Issue, error) {
-	httpResp, err := runGHAPIWith(e, "", "graphql",
-		"-f", "query="+issueQuery,
-		"-f", "q="+query)
-	if err != nil {
-		return nil, fmt.Errorf("gh api graphql: %s: %w", sanitizeGHOutput(httpResp.body), err)
-	}
+	var all []Issue
+	var after string
+	for range maxSearchPages {
+		args := []string{"-f", "query=" + issueQuery, "-f", "q=" + query}
+		if after != "" {
+			args = append(args, "-F", "after="+after)
+		}
+		httpResp, err := runGHAPIWith(e, "", append([]string{"graphql"}, args...)...)
+		if err != nil {
+			return nil, fmt.Errorf("gh api graphql: %s: %w", sanitizeGHOutput(httpResp.body), err)
+		}
 
-	var gqlResp gqlIssueResponse
-	if err := json.Unmarshal(httpResp.body, &gqlResp); err != nil {
-		return nil, fmt.Errorf("parse graphql response: %w", err)
+		var gqlResp gqlIssueResponse
+		if err := json.Unmarshal(httpResp.body, &gqlResp); err != nil {
+			return nil, fmt.Errorf("parse graphql response: %w", err)
+		}
+		if len(gqlResp.Errors) > 0 {
+			return nil, fmt.Errorf("graphql: %s", gqlResp.Errors[0].Message)
+		}
+		all = append(all, convertIssues(gqlResp.Data.Search.Nodes)...)
+		if !gqlResp.Data.Search.PageInfo.HasNextPage {
+			return all, nil
+		}
+		after = gqlResp.Data.Search.PageInfo.EndCursor
+		if after == "" {
+			return nil, fmt.Errorf("graphql: search has next page without cursor")
+		}
 	}
-	if len(gqlResp.Errors) > 0 {
-		return nil, fmt.Errorf("graphql: %s", gqlResp.Errors[0].Message)
-	}
-
-	return convertIssues(gqlResp.Data.Search.Nodes), nil
+	return nil, fmt.Errorf("graphql: search exceeded %d pages", maxSearchPages)
 }
 
 // issueSearchChunkSize bounds how many repo: qualifiers go into one labeled
@@ -612,13 +632,15 @@ func fetchIssueLinkedPRsWith(e execer, repo string, issueNumber int) ([]PullRequ
 		}
 		seen[src.Number] = struct{}{}
 		prs = append(prs, PullRequest{
-			Number:      src.Number,
-			Title:       src.Title,
-			URL:         src.URL,
-			HeadRefName: src.HeadRefName,
-			Repository:  src.Repository.NameWithOwner,
-			RepoName:    src.Repository.Name,
-			Author:      src.Author.Login,
+			Number:        src.Number,
+			Title:         src.Title,
+			URL:           src.URL,
+			HeadRefName:   src.HeadRefName,
+			HeadRepo:      src.HeadRepository.NameWithOwner,
+			HeadRepoOwner: src.HeadRepository.Owner.Login,
+			Repository:    src.Repository.NameWithOwner,
+			RepoName:      src.Repository.Name,
+			Author:        src.Author.Login,
 		})
 	}
 	return prs, nil

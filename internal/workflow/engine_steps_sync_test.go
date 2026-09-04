@@ -39,7 +39,7 @@ func newSyncBranchStep() *Step { return &Step{ID: "sync_branch", Type: StepSyncB
 
 func newSyncBranchEngine(t *testing.T) (*Engine, *memTasks) {
 	t.Helper()
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	return engine, engine.tasks.(*memTasks)
 }
 
@@ -67,7 +67,7 @@ func TestExecSyncBranch_Success(t *testing.T) {
 	t.Parallel()
 	engine, tasks := newSyncBranchEngine(t)
 	tasks.Put(TaskInfo{ID: "t1", Status: "ready-pr"})
-	engine.SetBranchSyncer(&fakeBranchSyncer{result: "synced"})
+	engine.setBranchSyncerForTest(&fakeBranchSyncer{result: "synced"})
 
 	out, err := engine.execSyncBranch("t1", newSyncBranchStep())
 	if err != nil {
@@ -85,7 +85,7 @@ func TestExecSyncBranch_NoopIsCompleted(t *testing.T) {
 	t.Parallel()
 	engine, tasks := newSyncBranchEngine(t)
 	tasks.Put(TaskInfo{ID: "t1", Status: "ready-pr"})
-	engine.SetBranchSyncer(&fakeBranchSyncer{result: "noop"})
+	engine.setBranchSyncerForTest(&fakeBranchSyncer{result: "noop"})
 
 	out, err := engine.execSyncBranch("t1", newSyncBranchStep())
 	if err != nil {
@@ -100,7 +100,7 @@ func TestExecSyncBranch_ConflictDoesNotBlock(t *testing.T) {
 	t.Parallel()
 	engine, tasks := newSyncBranchEngine(t)
 	tasks.Put(TaskInfo{ID: "t1", Status: "ready-pr"})
-	engine.SetBranchSyncer(&fakeBranchSyncer{result: "conflict", err: errors.New("rebase conflict")})
+	engine.setBranchSyncerForTest(&fakeBranchSyncer{result: "conflict", err: errors.New("rebase conflict")})
 
 	out, err := engine.execSyncBranch("t1", newSyncBranchStep())
 	if err != nil {
@@ -121,7 +121,7 @@ func TestExecSyncBranch_FailedDoesNotBlock(t *testing.T) {
 	t.Parallel()
 	engine, tasks := newSyncBranchEngine(t)
 	tasks.Put(TaskInfo{ID: "t1", Status: "ready-pr"})
-	engine.SetBranchSyncer(&fakeBranchSyncer{result: "failed", err: errors.New("network timeout")})
+	engine.setBranchSyncerForTest(&fakeBranchSyncer{result: "failed", err: errors.New("network timeout")})
 
 	out, err := engine.execSyncBranch("t1", newSyncBranchStep())
 	if err != nil {
@@ -140,7 +140,7 @@ func TestExecSyncBranch_UsesShellTimeout(t *testing.T) {
 	engine, tasks := newSyncBranchEngine(t)
 	tasks.Put(TaskInfo{ID: "t1", Status: "ready-pr"})
 	syncer := &deadlineCapturingSyncer{}
-	engine.SetBranchSyncer(syncer)
+	engine.setBranchSyncerForTest(syncer)
 
 	out, err := engine.execSyncBranch("t1", newSyncBranchStep())
 	if err != nil {
@@ -161,7 +161,7 @@ func TestExecSyncBranch_PanicIsContained(t *testing.T) {
 	t.Parallel()
 	engine, tasks := newSyncBranchEngine(t)
 	tasks.Put(TaskInfo{ID: "t1", Status: "ready-pr"})
-	engine.SetBranchSyncer(&fakeBranchSyncer{panics: true})
+	engine.setBranchSyncerForTest(&fakeBranchSyncer{panics: true})
 
 	out, err := engine.execSyncBranch("t1", newSyncBranchStep())
 	if err != nil {

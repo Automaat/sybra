@@ -3,60 +3,79 @@ package task
 import (
 	"time"
 
+	"github.com/Automaat/sybra/internal/autonomy"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
 // taskFrontmatter is the on-disk YAML schema for a task file. Keep persistence
 // field names here so Task can evolve as the domain/API model without carrying
-// serialization tags.
+// serialization tags (see TestTaskDomainTypesHaveNoYAMLTags). Field order
+// mirrors Task's so the two are easy to diff side by side when a field is
+// added.
 type taskFrontmatter struct {
-	ID                     string              `yaml:"id"`
-	Slug                   string              `yaml:"slug,omitempty"`
-	Title                  string              `yaml:"title"`
-	Status                 Status              `yaml:"status"`
-	TaskType               TaskType            `yaml:"task_type,omitempty"`
-	AgentMode              string              `yaml:"agent_mode"`
-	AllowedTools           []string            `yaml:"allowed_tools"`
-	Tags                   []string            `yaml:"tags"`
-	ProjectID              string              `yaml:"project_id,omitempty"`
-	Branch                 string              `yaml:"branch,omitempty"`
-	WorktreeDir            string              `yaml:"worktree_dir,omitempty"`
-	PRNumber               int                 `yaml:"pr_number,omitempty"`
-	Issue                  string              `yaml:"issue,omitempty"`
-	RefIssue               string              `yaml:"ref_issue,omitempty"`
-	StatusReason           string              `yaml:"status_reason,omitempty"`
-	HandoffSourceProvider  string              `yaml:"handoff_source_provider,omitempty"`
-	BlockedByIssue         string              `yaml:"blocked_by_issue,omitempty"`
-	UmbrellaIssue          string              `yaml:"umbrella_issue,omitempty"`
-	DependsOn              []string            `yaml:"depends_on,omitempty"`
-	Reviewed               bool                `yaml:"reviewed,omitempty"`
-	RunRole                string              `yaml:"run_role,omitempty"`
-	SupervisorSteer        string              `yaml:"supervisor_steer,omitempty"`
-	ReviewPhase            string              `yaml:"review_phase,omitempty"`
-	ReviewedHeadSHA        string              `yaml:"reviewed_head_sha,omitempty"`
-	ReviewedHeadAttempts   int                 `yaml:"reviewed_head_attempts,omitempty"`
-	PRPhase                string              `yaml:"pr_phase,omitempty"`
-	Priority               Priority            `yaml:"priority,omitempty"`
-	DueDate                *time.Time          `yaml:"due_date,omitempty"`
-	ClosedAt               *time.Time          `yaml:"closed_at,omitempty"`
-	Outcome                string              `yaml:"outcome,omitempty"`
-	MergeCommit            string              `yaml:"merge_commit,omitempty"`
-	MaxTurns               int                 `yaml:"max_turns,omitempty"`
-	RequirePermissions     *bool               `yaml:"require_permissions,omitempty"`
-	HeadlessPermissionMode string              `yaml:"headless_permission_mode,omitempty"`
-	ForkSubagent           bool                `yaml:"fork_subagent,omitempty"`
-	Sandbox                *bool               `yaml:"sandbox,omitempty"`
-	ReasoningEffort        string              `yaml:"reasoning_effort,omitempty"`
-	TestingCycleStartedAt  *time.Time          `yaml:"testing_cycle_started_at,omitempty"`
-	AgentRuns              []agentRunRecord    `yaml:"agent_runs,omitempty"`
-	Workflow               *workflow.Execution `yaml:"workflow,omitempty"`
-	CreatedAt              time.Time           `yaml:"created_at"`
-	UpdatedAt              time.Time           `yaml:"updated_at"`
-	StatusChangedAt        time.Time           `yaml:"status_changed_at,omitempty"`
-	AssignedNode           string              `yaml:"assigned_node,omitempty"`
-	NodeOverride           string              `yaml:"node_override,omitempty"`
-	MirrorRev              int64               `yaml:"mirror_rev,omitempty"`
-	MirrorUpdatedAt        *time.Time          `yaml:"mirror_updated_at,omitempty"`
+	ID              string                    `yaml:"id"`
+	Slug            string                    `yaml:"slug,omitempty"`
+	Title           string                    `yaml:"title"`
+	Status          Status                    `yaml:"status"`
+	TaskType        TaskType                  `yaml:"task_type,omitempty"`
+	AgentMode       string                    `yaml:"agent_mode"`
+	AllowedTools    []string                  `yaml:"allowed_tools"`
+	Tags            []string                  `yaml:"tags"`
+	ProjectID       string                    `yaml:"project_id,omitempty"`
+	Branch          string                    `yaml:"branch,omitempty"`
+	WorktreeDir     string                    `yaml:"worktree_dir,omitempty"`
+	PRNumber        int                       `yaml:"pr_number,omitempty"`
+	Issue           string                    `yaml:"issue,omitempty"`
+	StatusReason    string                    `yaml:"status_reason,omitempty"`
+	Escalation      autonomy.EscalationReason `yaml:"escalation,omitempty"`
+	AutonomyOutcome autonomy.Outcome          `yaml:"autonomy_outcome,omitempty"`
+	// Blocker matches Task's value type (not a pointer): blocker.State
+	// implements IsZeroer, so yaml.v3's omitempty already skips a zero value
+	// without needing pointer indirection to distinguish "unset" from "set".
+	Blocker                blocker.State             `yaml:"blocker,omitempty"`
+	HandoffSourceProvider  string                    `yaml:"handoff_source_provider,omitempty"`
+	BlockedByIssue         string                    `yaml:"blocked_by_issue,omitempty"`
+	UmbrellaIssue          string                    `yaml:"umbrella_issue,omitempty"`
+	RefIssue               string                    `yaml:"ref_issue,omitempty"`
+	DependsOn              []string                  `yaml:"depends_on,omitempty"`
+	DependsOnConditions    []DepCondition            `yaml:"depends_on_conditions,omitempty"`
+	Reviewed               bool                      `yaml:"reviewed,omitempty"`
+	CodeReviewVerdict      string                    `yaml:"code_review_verdict,omitempty"`
+	RunRole                string                    `yaml:"run_role,omitempty"`
+	SupervisorSteer        string                    `yaml:"supervisor_steer,omitempty"`
+	ReviewPhase            string                    `yaml:"review_phase,omitempty"`
+	ReviewedHeadSHA        string                    `yaml:"reviewed_head_sha,omitempty"`
+	ReviewedHeadAttempts   int                       `yaml:"reviewed_head_attempts,omitempty"`
+	ReconcileFailures      int                       `yaml:"reconcile_failures,omitempty"`
+	PRPhase                string                    `yaml:"pr_phase,omitempty"`
+	Priority               Priority                  `yaml:"priority,omitempty"`
+	DueDate                *time.Time                `yaml:"due_date,omitempty"`
+	ClosedAt               *time.Time                `yaml:"closed_at,omitempty"`
+	Outcome                string                    `yaml:"outcome,omitempty"`
+	MergeCommit            string                    `yaml:"merge_commit,omitempty"`
+	MaxTurns               int                       `yaml:"max_turns,omitempty"`
+	RequirePermissions     *bool                     `yaml:"require_permissions,omitempty"`
+	HeadlessPermissionMode string                    `yaml:"headless_permission_mode,omitempty"`
+	ForkSubagent           bool                      `yaml:"fork_subagent,omitempty"`
+	Sandbox                *bool                     `yaml:"sandbox,omitempty"`
+	SandboxOffReason       string                    `yaml:"sandbox_off_reason,omitempty"`
+	ReasoningEffort        string                    `yaml:"reasoning_effort,omitempty"`
+	TestingCycleStartedAt  *time.Time                `yaml:"testing_cycle_started_at,omitempty"`
+	Attachments            []Attachment              `yaml:"attachments,omitempty"`
+	AgentRuns              []agentRunRecord          `yaml:"agent_runs,omitempty"`
+	DocumentCompaction     *documentCompactionRecord `yaml:"document_compaction,omitempty"`
+	EffectLog              []workflow.EffectRecord   `yaml:"effect_log,omitempty"`
+	Workflow               *workflow.Execution       `yaml:"workflow,omitempty"`
+	CreatedAt              time.Time                 `yaml:"created_at"`
+	UpdatedAt              time.Time                 `yaml:"updated_at"`
+	StatusChangedAt        time.Time                 `yaml:"status_changed_at,omitempty"`
+	AssignedNode           string                    `yaml:"assigned_node,omitempty"`
+	NodeOverride           string                    `yaml:"node_override,omitempty"`
+	AssignmentRev          int64                     `yaml:"assignment_rev,omitempty"`
+	Generation             int64                     `yaml:"generation,omitempty"`
+	MirrorRev              int64                     `yaml:"mirror_rev,omitempty"`
+	MirrorUpdatedAt        *time.Time                `yaml:"mirror_updated_at,omitempty"`
 }
 
 type agentRunRecord struct {
@@ -67,8 +86,10 @@ type agentRunRecord struct {
 	Model                   string    `yaml:"model,omitempty"`
 	ExperimentID            string    `yaml:"experiment_id,omitempty"`
 	VariantID               string    `yaml:"variant_id,omitempty"`
+	RoutingReason           string    `yaml:"routing_reason,omitempty"`
 	AssignmentUnit          string    `yaml:"assignment_unit,omitempty"`
 	AssignmentKey           string    `yaml:"assignment_key,omitempty"`
+	DecisionVersion         int       `yaml:"decision_version,omitempty"`
 	ReasoningEffort         string    `yaml:"reasoning_effort,omitempty"`
 	RequestedSkill          string    `yaml:"requested_skill,omitempty"`
 	SkillExecutionMode      string    `yaml:"skill_execution_mode,omitempty"`
@@ -76,22 +97,38 @@ type agentRunRecord struct {
 	SkillConformance        string    `yaml:"skill_conformance,omitempty"`
 	State                   string    `yaml:"state"`
 	Outcome                 string    `yaml:"outcome,omitempty"`
+	ReviewSalvaged          bool      `yaml:"review_salvaged,omitempty"`
 	EscalationReason        string    `yaml:"escalation_reason,omitempty"`
 	StartedAt               time.Time `yaml:"started_at"`
 	CostUSD                 float64   `yaml:"cost_usd,omitempty"`
+	ToolFailures            int       `yaml:"tool_failures,omitempty"`
 	PremiumRequests         float64   `yaml:"premium_requests,omitempty"`
 	Prompt                  string    `yaml:"prompt,omitempty"`
 	Result                  string    `yaml:"result,omitempty"`
 	OneShot                 bool      `yaml:"one_shot,omitempty"`
 	Verdict                 string    `yaml:"verdict,omitempty"`
 	VerdictRendered         bool      `yaml:"verdict_rendered,omitempty"`
+	RecoveryReplayRejected  bool      `yaml:"recovery_replay_rejected,omitempty"`
 	LogFile                 string    `yaml:"log_file,omitempty"`
 	SessionID               string    `yaml:"session_id,omitempty"`
 	ProtocolViolation       string    `yaml:"protocol_violation,omitempty"`
 	TestOutcome             string    `yaml:"test_outcome,omitempty"`
 	TestFailureFingerprint  string    `yaml:"test_failure_fingerprint,omitempty"`
 	HeadSHA                 string    `yaml:"head_sha,omitempty"`
+	FinalCommitSource       string    `yaml:"final_commit_source,omitempty"`
 	SubagentCallCount       int       `yaml:"subagent_call_count,omitempty"`
+	ResumeZeroOutputStall   bool      `yaml:"zero_output_stall,omitempty"`
+	TurnCount               int       `yaml:"turn_count,omitempty"`
+}
+
+type documentCompactionRecord struct {
+	LastCompactedAt   time.Time `yaml:"last_compacted_at"`
+	LargestBytesSeen  int       `yaml:"largest_bytes_seen"`
+	DroppedAgentRuns  int       `yaml:"dropped_agent_runs,omitempty"`
+	DroppedRunCostUSD float64   `yaml:"dropped_run_cost_usd,omitempty"`
+	TrimmedRunFields  int       `yaml:"trimmed_run_fields,omitempty"`
+	TrimmedWorkflow   int       `yaml:"trimmed_workflow,omitempty"`
+	BodyTruncated     bool      `yaml:"body_truncated,omitempty"`
 }
 
 // taskFromFrontmatter rebuilds the persisted task fields. Store loading
@@ -102,7 +139,7 @@ func taskFromFrontmatter(fm taskFrontmatter, body string) Task {
 		Slug:                   fm.Slug,
 		Title:                  fm.Title,
 		Status:                 fm.Status,
-		TaskType:               fm.TaskType,
+		TaskType:               normalizeTaskType(fm.TaskType),
 		AgentMode:              fm.AgentMode,
 		AllowedTools:           fm.AllowedTools,
 		Tags:                   fm.Tags,
@@ -111,18 +148,24 @@ func taskFromFrontmatter(fm taskFrontmatter, body string) Task {
 		WorktreeDir:            fm.WorktreeDir,
 		PRNumber:               fm.PRNumber,
 		Issue:                  fm.Issue,
-		RefIssue:               fm.RefIssue,
 		StatusReason:           fm.StatusReason,
+		Escalation:             fm.Escalation,
+		AutonomyOutcome:        fm.AutonomyOutcome,
+		Blocker:                fm.Blocker,
 		HandoffSourceProvider:  fm.HandoffSourceProvider,
 		BlockedByIssue:         fm.BlockedByIssue,
 		UmbrellaIssue:          fm.UmbrellaIssue,
+		RefIssue:               fm.RefIssue,
 		DependsOn:              fm.DependsOn,
+		DependsOnConditions:    fm.DependsOnConditions,
 		Reviewed:               fm.Reviewed,
+		CodeReviewVerdict:      fm.CodeReviewVerdict,
 		RunRole:                fm.RunRole,
 		SupervisorSteer:        fm.SupervisorSteer,
 		ReviewPhase:            fm.ReviewPhase,
 		ReviewedHeadSHA:        fm.ReviewedHeadSHA,
 		ReviewedHeadAttempts:   fm.ReviewedHeadAttempts,
+		ReconcileFailures:      fm.ReconcileFailures,
 		PRPhase:                fm.PRPhase,
 		Priority:               fm.Priority,
 		DueDate:                fm.DueDate,
@@ -134,27 +177,50 @@ func taskFromFrontmatter(fm taskFrontmatter, body string) Task {
 		HeadlessPermissionMode: fm.HeadlessPermissionMode,
 		ForkSubagent:           fm.ForkSubagent,
 		Sandbox:                fm.Sandbox,
+		SandboxOffReason:       fm.SandboxOffReason,
 		ReasoningEffort:        fm.ReasoningEffort,
 		TestingCycleStartedAt:  fm.TestingCycleStartedAt,
+		Attachments:            fm.Attachments,
+		DocumentCompaction:     documentCompactionFromRecord(fm.DocumentCompaction),
 		Workflow:               fm.Workflow,
+		EffectLog:              fm.EffectLog,
 		CreatedAt:              fm.CreatedAt,
 		UpdatedAt:              fm.UpdatedAt,
 		StatusChangedAt:        fm.StatusChangedAt,
 		AssignedNode:           fm.AssignedNode,
 		NodeOverride:           fm.NodeOverride,
+		AssignmentRev:          fm.AssignmentRev,
+		Generation:             fm.Generation,
 		MirrorRev:              fm.MirrorRev,
 		MirrorUpdatedAt:        fm.MirrorUpdatedAt,
 		Body:                   body,
 	}
-	if t.TaskType == "" {
-		t.TaskType = TaskTypeNormal
+	if t.Status == StatusHumanRequired && t.Escalation.IsZero() {
+		t.Escalation = autonomy.LegacyReason(t.StatusReason)
+	}
+	if t.Status == StatusHumanRequired && t.Blocker.IsZero() && workflow.IsTamperFlaggedReason(t.StatusReason) {
+		t.Blocker = blocker.State{
+			Kind:       blocker.KindTamperDetected,
+			Actor:      blocker.ActorWorkflow,
+			NextAction: "bless_tampering",
+		}
 	}
 	t.AgentRuns = agentRunsFromRecords(fm.AgentRuns)
 	if t.AgentRuns == nil {
 		t.AgentRuns = []AgentRun{}
 	}
-	t.TamperFlagged = isTamperFlagged(t.Status, t.StatusReason)
+	if t.Attachments == nil {
+		t.Attachments = []Attachment{}
+	}
+	t.TamperFlagged = isTamperFlagged(t.Status, t.Blocker)
 	return t
+}
+
+func normalizeTaskType(tt TaskType) TaskType {
+	if tt == TaskTypeUmbrella {
+		return TaskTypeUmbrella
+	}
+	return ""
 }
 
 func frontmatterFromTask(t Task) taskFrontmatter {
@@ -172,18 +238,24 @@ func frontmatterFromTask(t Task) taskFrontmatter {
 		WorktreeDir:            t.WorktreeDir,
 		PRNumber:               t.PRNumber,
 		Issue:                  t.Issue,
-		RefIssue:               t.RefIssue,
 		StatusReason:           t.StatusReason,
+		Escalation:             t.Escalation,
+		AutonomyOutcome:        t.AutonomyOutcome,
+		Blocker:                t.Blocker,
 		HandoffSourceProvider:  t.HandoffSourceProvider,
 		BlockedByIssue:         t.BlockedByIssue,
 		UmbrellaIssue:          t.UmbrellaIssue,
+		RefIssue:               t.RefIssue,
 		DependsOn:              t.DependsOn,
+		DependsOnConditions:    t.DependsOnConditions,
 		Reviewed:               t.Reviewed,
+		CodeReviewVerdict:      t.CodeReviewVerdict,
 		RunRole:                t.RunRole,
 		SupervisorSteer:        t.SupervisorSteer,
 		ReviewPhase:            t.ReviewPhase,
 		ReviewedHeadSHA:        t.ReviewedHeadSHA,
 		ReviewedHeadAttempts:   t.ReviewedHeadAttempts,
+		ReconcileFailures:      t.ReconcileFailures,
 		PRPhase:                t.PRPhase,
 		Priority:               t.Priority,
 		DueDate:                t.DueDate,
@@ -195,15 +267,21 @@ func frontmatterFromTask(t Task) taskFrontmatter {
 		HeadlessPermissionMode: t.HeadlessPermissionMode,
 		ForkSubagent:           t.ForkSubagent,
 		Sandbox:                t.Sandbox,
+		SandboxOffReason:       t.SandboxOffReason,
 		ReasoningEffort:        t.ReasoningEffort,
 		TestingCycleStartedAt:  t.TestingCycleStartedAt,
+		Attachments:            t.Attachments,
 		AgentRuns:              agentRunRecordsFromRuns(t.AgentRuns),
+		DocumentCompaction:     documentCompactionToRecord(t.DocumentCompaction),
+		EffectLog:              t.EffectLog,
 		Workflow:               t.Workflow,
 		CreatedAt:              t.CreatedAt,
 		UpdatedAt:              t.UpdatedAt,
 		StatusChangedAt:        t.StatusChangedAt,
 		AssignedNode:           t.AssignedNode,
 		NodeOverride:           t.NodeOverride,
+		AssignmentRev:          t.AssignmentRev,
+		Generation:             t.Generation,
 		MirrorRev:              t.MirrorRev,
 		MirrorUpdatedAt:        t.MirrorUpdatedAt,
 	}
@@ -229,4 +307,28 @@ func agentRunRecordsFromRuns(runs []AgentRun) []agentRunRecord {
 		records[i] = agentRunRecord(runs[i])
 	}
 	return records
+}
+
+func documentCompactionFromRecord(record *documentCompactionRecord) *DocumentCompaction {
+	if record == nil {
+		return nil
+	}
+	return &DocumentCompaction{
+		LastCompactedAt: record.LastCompactedAt, LargestBytesSeen: record.LargestBytesSeen,
+		DroppedAgentRuns: record.DroppedAgentRuns, DroppedRunCostUSD: record.DroppedRunCostUSD,
+		TrimmedRunFields: record.TrimmedRunFields,
+		TrimmedWorkflow:  record.TrimmedWorkflow, BodyTruncated: record.BodyTruncated,
+	}
+}
+
+func documentCompactionToRecord(receipt *DocumentCompaction) *documentCompactionRecord {
+	if receipt == nil {
+		return nil
+	}
+	return &documentCompactionRecord{
+		LastCompactedAt: receipt.LastCompactedAt, LargestBytesSeen: receipt.LargestBytesSeen,
+		DroppedAgentRuns: receipt.DroppedAgentRuns, DroppedRunCostUSD: receipt.DroppedRunCostUSD,
+		TrimmedRunFields: receipt.TrimmedRunFields,
+		TrimmedWorkflow:  receipt.TrimmedWorkflow, BodyTruncated: receipt.BodyTruncated,
+	}
 }

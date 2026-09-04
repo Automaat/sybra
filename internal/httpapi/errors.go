@@ -10,11 +10,13 @@ import (
 type ErrorCode string
 
 const (
-	ErrCodeNotFound   ErrorCode = "not_found"
-	ErrCodeValidation ErrorCode = "validation_error"
-	ErrCodeConflict   ErrorCode = "conflict"
-	ErrCodeTooLarge   ErrorCode = "payload_too_large"
-	ErrCodeInternal   ErrorCode = "internal_error"
+	ErrCodeNotFound    ErrorCode = "not_found"
+	ErrCodeForbidden   ErrorCode = "forbidden"
+	ErrCodeValidation  ErrorCode = "validation_error"
+	ErrCodeConflict    ErrorCode = "conflict"
+	ErrCodeUnavailable ErrorCode = "unavailable"
+	ErrCodeTooLarge    ErrorCode = "payload_too_large"
+	ErrCodeInternal    ErrorCode = "internal_error"
 )
 
 // ClientError is implemented by service errors that are safe to surface to

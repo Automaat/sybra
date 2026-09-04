@@ -4,65 +4,48 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Automaat/sybra/internal/reject"
+
+	"github.com/Automaat/sybra/internal/attachment"
+	"github.com/Automaat/sybra/internal/autonomy"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/providerid"
+	"github.com/Automaat/sybra/internal/prreview"
+	"github.com/Automaat/sybra/internal/taskstatus"
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
-// Status is a task's position in its lifecycle (see the pipeline diagram in
-// the root CLAUDE.md). Transitions are enforced by the workflow engine and
-// callers should validate untrusted input with ValidateStatus rather than
-// casting a string directly.
-type Status string
+// Status re-exports the task status vocabulary from internal/taskstatus.
+// The type and constants live in a leaf package so internal/workflow can use
+// them too; internal/task imports internal/workflow, so they cannot live here.
+// These aliases keep every existing caller and the Wails bindings unchanged.
+type Status = taskstatus.Status
 
 const (
-	StatusNew           Status = "new"
-	StatusTodo          Status = "todo"
-	StatusInProgress    Status = "in-progress"
-	StatusReadyReview   Status = "ready-review"
-	StatusInReview      Status = "in-review"
-	StatusPlanning      Status = "planning"
-	StatusPlanReview    Status = "plan-review"
-	StatusTesting       Status = "testing"
-	StatusReadyPR       Status = "ready-pr"
-	StatusHumanRequired Status = "human-required"
-	StatusBlocked       Status = "blocked"
-	StatusDone          Status = "done"
-	StatusCancelled     Status = "cancelled"
+	StatusNew           = taskstatus.New
+	StatusTodo          = taskstatus.Todo
+	StatusInProgress    = taskstatus.InProgress
+	StatusReadyReview   = taskstatus.ReadyReview
+	StatusInReview      = taskstatus.InReview
+	StatusPlanning      = taskstatus.Planning
+	StatusPlanReview    = taskstatus.PlanReview
+	StatusTesting       = taskstatus.Testing
+	StatusReadyPR       = taskstatus.ReadyPR
+	StatusHumanRequired = taskstatus.HumanRequired
+	StatusBlocked       = taskstatus.Blocked
+	StatusDone          = taskstatus.Done
+	StatusCancelled     = taskstatus.Cancelled
 )
 
-var validStatuses = map[Status]bool{
-	StatusNew: true, StatusTodo: true, StatusInProgress: true,
-	StatusReadyReview: true, StatusInReview: true,
-	StatusPlanning: true, StatusPlanReview: true,
-	StatusTesting: true, StatusReadyPR: true,
-	StatusHumanRequired: true, StatusBlocked: true,
-	StatusDone: true, StatusCancelled: true,
-}
-
 // AllStatuses returns every valid status in display order.
-func AllStatuses() []Status {
-	return []Status{
-		StatusNew, StatusTodo, StatusPlanning, StatusPlanReview,
-		StatusInProgress, StatusReadyReview, StatusInReview,
-		StatusTesting, StatusReadyPR,
-		StatusHumanRequired, StatusBlocked, StatusDone, StatusCancelled,
-	}
-}
+func AllStatuses() []Status { return taskstatus.All() }
 
 // IsTerminalStatus reports whether s is a terminal (closed) status.
-func IsTerminalStatus(s Status) bool {
-	return s == StatusDone || s == StatusCancelled
-}
+func IsTerminalStatus(s Status) bool { return taskstatus.IsTerminal(s) }
 
 // ValidateStatus parses s into a Status, returning an error naming every
 // valid status if s does not match one of the known constants.
-func ValidateStatus(s string) (Status, error) {
-	st := Status(s)
-	if !validStatuses[st] {
-		return "", fmt.Errorf("invalid status %q (valid: %v)", s, AllStatuses())
-	}
-	return st, nil
-}
+func ValidateStatus(s string) (Status, error) { return taskstatus.Validate(s) }
 
 // Priority is a task's dispatch priority. PriorityNone (the empty string) is
 // treated as the lowest priority, distinct from an unset/invalid value.
@@ -91,18 +74,10 @@ func ValidatePriority(s string) (Priority, error) {
 	return p, nil
 }
 
-// TaskType distinguishes a task's role for agents beyond its lifecycle
-// Status — e.g. TaskTypeChat and TaskTypeUmbrella are synthetic types that
-// run no agent of their own and are excluded from normal dispatch.
+// TaskType is an internal marker for umbrella tracker tasks.
 type TaskType string
 
 const (
-	TaskTypeNormal   TaskType = "normal"
-	TaskTypeDebug    TaskType = "debug"
-	TaskTypeResearch TaskType = "research"
-	// TaskTypeChat is a synthetic task created for interactive chat sessions.
-	// Hidden from the task list UI and skipped by restart-stale/watchdog.
-	TaskTypeChat TaskType = "chat"
 	// TaskTypeUmbrella is the tracker task for an expanded ☂️ umbrella issue.
 	// It runs no agent: it rolls up the status of its child tasks and is the
 	// task the dependency gate flips to human-required on a dependency cycle.
@@ -110,13 +85,13 @@ const (
 )
 
 var validTaskTypes = map[TaskType]bool{
-	TaskTypeNormal: true, TaskTypeDebug: true, TaskTypeResearch: true,
-	TaskTypeChat: true, TaskTypeUmbrella: true,
+	"": true, TaskTypeUmbrella: true,
 }
 
-// AllTaskTypes returns every valid task type in display order.
+// AllTaskTypes returns explicit task_type values in display order. The empty
+// string is also accepted as the implicit default but is not returned here.
 func AllTaskTypes() []TaskType {
-	return []TaskType{TaskTypeNormal, TaskTypeDebug, TaskTypeResearch, TaskTypeChat, TaskTypeUmbrella}
+	return []TaskType{TaskTypeUmbrella}
 }
 
 // ValidateTaskType parses s into a TaskType, returning an error naming every
@@ -124,7 +99,7 @@ func AllTaskTypes() []TaskType {
 func ValidateTaskType(s string) (TaskType, error) {
 	tt := TaskType(s)
 	if !validTaskTypes[tt] {
-		return "", fmt.Errorf("invalid task_type %q (valid: %v)", s, AllTaskTypes())
+		return "", fmt.Errorf("invalid task_type %q (valid: empty or %v)", s, AllTaskTypes())
 	}
 	return tt, nil
 }
@@ -143,12 +118,29 @@ func AllAgentModes() []string {
 	return []string{AgentModeHeadless, AgentModeInteractive}
 }
 
-// ValidateAgentMode rejects unknown agent modes. Empty strings are rejected
-// here; callers that need to allow "unset" (e.g. parser legacy compat) must
-// guard the empty case before calling.
+// ValidateAgentMode rejects any agent mode not in validAgentModes, which
+// intentionally still includes the legacy AgentModeInteractive value: the
+// interactive runner itself was removed and no dispatch path honors it
+// anymore, but pre-existing task files carrying it must still parse (see
+// parser.go) and cluster-replicated tasks must still assign it. Empty
+// strings are rejected here; callers that need to allow "unset" (e.g. parser
+// legacy compat) must guard the empty case before calling. New or updated
+// tasks must use ValidateMintableAgentMode instead, which excludes
+// "interactive".
 func ValidateAgentMode(s string) (string, error) {
 	if !validAgentModes[s] {
-		return "", fmt.Errorf("invalid agent_mode %q (valid: %v)", s, AllAgentModes())
+		return "", reject.New("invalid agent_mode %q (valid: %v)", s, AllAgentModes())
+	}
+	return s, nil
+}
+
+// ValidateMintableAgentMode rejects any agent mode that isn't currently
+// dispatchable. Use this — not ValidateAgentMode — whenever a task is being
+// newly created or its mode explicitly changed, so no path can mint a fresh
+// "interactive" task now that the interactive runner is gone.
+func ValidateMintableAgentMode(s string) (string, error) {
+	if s != AgentModeHeadless {
+		return "", reject.New("invalid agent_mode %q (valid: %v)", s, []string{AgentModeHeadless})
 	}
 	return s, nil
 }
@@ -196,6 +188,13 @@ func ValidateAgentProvider(s string) (string, error) {
 const (
 	RunOutcomeSuccess = "success"
 	RunOutcomeFailure = "failure"
+	// RunOutcomeIncomplete marks a code-author run that exited cleanly but
+	// produced nothing. A clean exit is not evidence of work: an agent that
+	// delegates to a subagent and ends its turn waiting for it exits 0 with no
+	// commit, and recording that as success let one task accumulate 18 runs
+	// over 4 days while every downstream consumer believed the implementation
+	// had landed.
+	RunOutcomeIncomplete = "incomplete"
 )
 
 // AgentRun records one dispatch of an agent process against a task: what was
@@ -205,7 +204,7 @@ const (
 // Task.AgentRuns across its lifetime, most-recent last.
 type AgentRun struct {
 	AgentID  string `json:"agentId"`
-	Role     string `json:"role"` // triage, plan, eval, pr-fix, or "" for implementation
+	Role     string `json:"role"` // explicit run role; legacy empty still means implementation
 	Mode     string `json:"mode"`
 	Provider string `json:"provider,omitempty"`
 	Model    string `json:"model,omitempty"`
@@ -213,8 +212,10 @@ type AgentRun struct {
 	// before the run started.
 	ExperimentID    string `json:"experimentId,omitempty"`
 	VariantID       string `json:"variantId,omitempty"`
+	RoutingReason   string `json:"routingReason,omitempty"`
 	AssignmentUnit  string `json:"assignmentUnit,omitempty"`
 	AssignmentKey   string `json:"assignmentKey,omitempty"`
+	DecisionVersion int    `json:"decisionVersion,omitempty"`
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`
 	RequestedSkill  string `json:"requestedSkill,omitempty"`
 	// SkillExecutionMode records how a mandatory workflow skill actually ran:
@@ -238,11 +239,18 @@ type AgentRun struct {
 	// definitive terminal outcome (still running, or stalled/rate-limited and
 	// due for retry) — callers must not infer success from Outcome == "".
 	Outcome string `json:"outcome,omitempty"`
+	// ReviewSalvaged marks a review run that left a usable review behind even
+	// though it did not finish — the cost guardrail stops one mid-flight and
+	// its partial transcript is written to the task. The review budget counts
+	// rounds that reviewed something, and Outcome alone cannot tell this run
+	// apart from one that produced nothing.
+	ReviewSalvaged bool `json:"reviewSalvaged,omitempty"`
 	// EscalationReason records the guardrail reason that stopped the run
 	// ("cost" or "turns"). Empty for ordinary completions.
 	EscalationReason string    `json:"escalationReason,omitempty"`
 	StartedAt        time.Time `json:"startedAt"`
 	CostUSD          float64   `json:"costUsd"`
+	ToolFailures     int       `json:"toolFailures,omitempty"`
 	PremiumRequests  float64   `json:"premiumRequests,omitempty"`
 	Prompt           string    `json:"prompt,omitempty"`
 	Result           string    `json:"result"`
@@ -255,9 +263,13 @@ type AgentRun struct {
 	// all side-effects for this run (note appended, issue filed, local task
 	// created). Used by verdictAlreadyRendered as the durable rendered-marker
 	// instead of body-text patterns which can collide with user content.
-	VerdictRendered bool   `json:"verdictRendered,omitempty"`
-	LogFile         string `json:"logFile"`
-	SessionID       string `json:"sessionId,omitempty"`
+	VerdictRendered bool `json:"verdictRendered,omitempty"`
+	// RecoveryReplayRejected records that startup replay evaluated this exact
+	// unblocked verdict and permanently rejected it. It is keyed to the run so
+	// a newer verdict with identical wording still gets its own evaluation.
+	RecoveryReplayRejected bool   `json:"recoveryReplayRejected,omitempty"`
+	LogFile                string `json:"logFile"`
+	SessionID              string `json:"sessionId,omitempty"`
 	// ProtocolViolation records deterministic workflow-level contract failures
 	// for this run. Test routing uses it to avoid counting a bad verifier report
 	// as an implementation failure across later workflow executions.
@@ -274,10 +286,75 @@ type AgentRun struct {
 	// agent left on the branch. Compared against the merged PR head to detect
 	// human edits after the agent (merged_with_edits) and measure edit distance.
 	HeadSHA string `json:"headSha,omitempty"`
+	// FinalCommitSource records who owned the branch head that verify_commits
+	// settled on: "agent" when the final head came from the agent-pushed remote
+	// commit, "fallback" when verify_commits had to auto-commit recovered work.
+	FinalCommitSource string `json:"finalCommitSource,omitempty"`
 	// SubagentCallCount is the number of distinct forked-Claude subagent calls
 	// observed in the run. Zero for non-Claude runs and runs recorded before
 	// fan-out counting existed.
 	SubagentCallCount int `json:"subagentCallCount,omitempty"`
+	// ResumeZeroOutputStall marks a run whose zero-output watchdog stall fired
+	// (errorKind "silent_hang" + errorMsg watchdogreason.ZeroOutputBeforeStartup).
+	// It is the durable poison signal agentorch.PickImplementationResumeSession
+	// counts to detect a session stuck in a resume-stall loop.
+	ResumeZeroOutputStall bool `json:"zeroOutputStall,omitempty"`
+	// TurnCount is zero when the child produced nothing, so the run holds no
+	// evidence about its instructions and must not spend a conformance budget.
+	TurnCount int `json:"turnCount,omitempty"`
+}
+
+// DocumentCompaction is the durable operator-visible receipt left when Sybra
+// has to discard historical text to keep a task document within its storage
+// bound. The counters are cumulative: a later write may compact the task
+// again, but it must never make an earlier loss invisible.
+type DocumentCompaction struct {
+	LastCompactedAt   time.Time `json:"lastCompactedAt"`
+	LargestBytesSeen  int       `json:"largestBytesSeen"`
+	DroppedAgentRuns  int       `json:"droppedAgentRuns,omitempty"`
+	DroppedRunCostUSD float64   `json:"droppedRunCostUsd,omitempty"`
+	TrimmedRunFields  int       `json:"trimmedRunFields,omitempty"`
+	TrimmedWorkflow   int       `json:"trimmedWorkflow,omitempty"`
+	BodyTruncated     bool      `json:"bodyTruncated,omitempty"`
+}
+
+// Attachment re-exports the persisted task attachment metadata type.
+type Attachment = attachment.Attachment
+
+// DepConditionKindLabel and DepConditionKindNote are the DepCondition.Kind
+// values the umbrella dependency gate understands. Any other value fails
+// closed at gate time (held, never released, never escalated) rather than
+// being silently ignored or crashing — see holdUnmetConditions in
+// internal/sybra/app_umbrella_gate.go. Author-time input (CLI, HTTP API) is
+// validated against this pair before it ever reaches a task file; this
+// constant pair is the single source of truth both sides check against.
+const (
+	DepConditionKindLabel = "label"
+	DepConditionKindNote  = "note"
+)
+
+// DepCondition attaches a completion condition to one Task.DependsOn ref.
+// Ref must match a current DependsOn entry (by the same ref-matching rules
+// the gate uses elsewhere, e.g. matchesDepRef) or the condition is inert.
+//
+// Kind "label" mechanically checks the referenced closing issue's GitHub
+// labels (via cached github.FetchIssue) for Value's label name; it holds the
+// child while absent and self-heals the next time the gate ticks after the
+// label is applied — no escalation.
+//
+// Kind "note" never auto-satisfies: it holds the child and escalates to
+// human-required, naming Value as the free-text acceptance note a human must
+// confirm. Clearing the resulting blocker (blocker.KindDependencyConditionUnmet)
+// alone does not release the child — as long as this condition still names a
+// current DependsOn ref, the gate re-escalates on the next tick it becomes
+// ready again. A human must remove or edit the condition itself (once the
+// scope it names is confirmed to exist) to actually release the child; this
+// mirrors blocker.KindDependencyScopeUnmet's existing require-explicit-
+// human-confirmation design and is an accepted limitation, not a bug.
+type DepCondition struct {
+	Ref   string `json:"ref" yaml:"ref"`
+	Kind  string `json:"kind" yaml:"kind"`
+	Value string `json:"value" yaml:"value"`
 }
 
 // Task is the in-memory representation of a task markdown file: YAML
@@ -312,6 +389,13 @@ type Task struct {
 	// this after creation to attach an unrelated reference — use RefIssue.
 	Issue        string `json:"issue"`
 	StatusReason string `json:"statusReason"`
+	// Escalation is the policy authority for the current human-required state.
+	// StatusReason remains display text and must never be parsed back into a
+	// failure owner or recovery decision. Legacy files load with an explicit
+	// unknown/legacy adapter (see taskFromFrontmatter).
+	Escalation      autonomy.EscalationReason `json:"escalation,omitzero"`
+	AutonomyOutcome autonomy.Outcome          `json:"autonomyOutcome,omitempty"`
+	Blocker         blocker.State             `json:"blocker,omitzero"`
 	// HandoffSourceProvider records which local agent provider produced the
 	// work before a handoff skipped directly into review/testing/PR. Workflow
 	// steps with provider=cross use it when there is no Sybra-authored run
@@ -335,10 +419,27 @@ type Task struct {
 	// owner/repo#n shorthand) this task waits on — resolved by issue ref only,
 	// not task IDs. While the task is `blocked`, the gate holds it until every
 	// referenced task has reached `done`; an empty list releases immediately.
-	// Used only by umbrella child tasks.
+	// Used only by umbrella child tasks. Not exclusively planner-authored: the
+	// gate also folds in a ref it parses out of the body as a free-text
+	// "after #N" precondition on a different program's issue — one the
+	// planner's own schema can never emit, since it only allows refs among an
+	// umbrella's own sub-issues (see umbrella.ExternalBlockers) — and persists
+	// it here so it survives as structured state instead of being re-derived
+	// from prose every gate tick.
 	DependsOn []string `json:"dependsOn,omitempty"`
-	Reviewed  bool     `json:"reviewed"`
-	RunRole   string   `json:"runRole"` // pr-fix when fixing review issues, "" for initial impl
+	// DependsOnConditions attaches an optional completion condition to one of
+	// DependsOn's refs, beyond that task simply reaching Done — the umbrella
+	// dependency gate (holdUnmetConditions in
+	// internal/sybra/app_umbrella_gate.go) enforces it before releasing a
+	// child. A condition whose Ref no longer names a current DependsOn entry
+	// is inert (never enforced), the same rule the gate already applies to a
+	// stale blocker.KindDependencyScopeUnmet verdict. See DepCondition for the
+	// supported Kind values (sybra#2649: a prior run closed a dependency
+	// issue via a narrower PR than the scope this task actually needed, and
+	// nothing structural caught it before a wasted implementation cycle).
+	DependsOnConditions []DepCondition `json:"dependsOnConditions,omitempty"`
+	Reviewed            bool           `json:"reviewed"`
+	RunRole             string         `json:"runRole"` // pr-fix when fixing review issues, "" for initial impl
 	// SupervisorSteer is a one-shot corrective message left by the watchdog's
 	// headless nudge: it stops a looping headless agent (which has no mid-stream
 	// channel) and persists the steer here so the recovery loop re-dispatches
@@ -356,6 +457,11 @@ type Task struct {
 	// re-dispatch loop (#2164 spent 112 reviews on one unchanged commit).
 	ReviewedHeadSHA      string `json:"reviewedHeadSha,omitempty"`
 	ReviewedHeadAttempts int    `json:"reviewedHeadAttempts,omitempty"`
+	// ReconcileFailures counts consecutive non-transient review-phase reconcile
+	// failures (#2199); recordReconcileFailure escalates to human-required once
+	// it reaches reconcileFailureLimit. Durable so a process restart never
+	// hands a permanently-failing task a fresh free budget.
+	ReconcileFailures int `json:"reconcileFailures,omitempty"`
 	// PRPhase tracks where an outbound own-PR task (status in-review/ready-review,
 	// not tag `review`) sits in its lifecycle: draft → building → fixing →
 	// changes-requested → awaiting-approval → approved. Computed by the PR poller;
@@ -394,6 +500,11 @@ type Task struct {
 	// NOT tighten posture beyond the system default (ResolveSandboxMode only
 	// treats Sandbox=false as meaningful).
 	Sandbox *bool `json:"sandbox,omitempty"`
+	// SandboxOffReason explains why Sandbox is false. Disabling the sandbox
+	// hands a task's agents unrestricted write access to the host, so the
+	// audit trail needs to say why rather than only that it happened.
+	// Meaningful only alongside Sandbox=false; ignored otherwise.
+	SandboxOffReason string `json:"sandboxOffReason,omitempty"`
 	// ReasoningEffort sets the reasoning level for this task's agents
 	// (low/medium/high/xhigh). Empty = model default. Applied across providers:
 	// codex via -c model_reasoning_effort=<v>, claude and copilot via --effort.
@@ -405,10 +516,16 @@ type Task struct {
 	// counting toward TestingMaxAttempts. Nil means no re-dispatch has occurred
 	// and all test-runner runs count (correct for first-ever cycles).
 	TestingCycleStartedAt *time.Time          `json:"testingCycleStartedAt,omitempty"`
+	Attachments           []Attachment        `json:"attachments"`
 	AgentRuns             []AgentRun          `json:"agentRuns"`
-	Workflow              *workflow.Execution `json:"workflow,omitempty"`
-	CreatedAt             time.Time           `json:"createdAt"`
-	UpdatedAt             time.Time           `json:"updatedAt"`
+	DocumentCompaction    *DocumentCompaction `json:"documentCompaction,omitempty"`
+	// EffectLog records durable intent/completion for observer-owned task
+	// status effects (pollers, monitor, recovery) that operate outside a live
+	// workflow execution.
+	EffectLog []workflow.EffectRecord `json:"effectLog,omitempty"`
+	Workflow  *workflow.Execution     `json:"workflow,omitempty"`
+	CreatedAt time.Time               `json:"createdAt"`
+	UpdatedAt time.Time               `json:"updatedAt"`
 	// StatusChangedAt marks the last time Status actually transitioned, as
 	// opposed to UpdatedAt which is bumped by any field write (tags, audit
 	// sidecars, status_reason, ...). Detectors that need to know "how long
@@ -419,6 +536,8 @@ type Task struct {
 
 	AssignedNode    string     `json:"assignedNode,omitempty"`
 	NodeOverride    string     `json:"nodeOverride,omitempty"`
+	AssignmentRev   int64      `json:"assignmentRev,omitempty"`
+	Generation      int64      `json:"generation,omitempty"`
 	MirrorRev       int64      `json:"mirrorRev,omitempty"`
 	MirrorUpdatedAt *time.Time `json:"mirrorUpdatedAt,omitempty"`
 
@@ -433,6 +552,16 @@ type Task struct {
 	PlanDecisions string `json:"planDecisions,omitempty"`
 	PlanBrief     string `json:"planBrief,omitempty"`
 	CodeReview    string `json:"codeReview,omitempty"`
+	// CodeReviewVerdict is the last review-role step's structured verdict
+	// ("CLEAN"/"NEEDS_FIXES"), extracted from the agent's schema-enforced
+	// output rather than the CodeReview sidecar markdown (see
+	// workflow.ExtractReviewVerdict). Persisted so a re-triggered workflow run
+	// can tell a genuine NEEDS_FIXES review from Reviewed=true without
+	// re-parsing the sidecar for a literal-prefix marker.
+	CodeReviewVerdict   string `json:"codeReviewVerdict,omitempty"`
+	CurrentTestFailures string `json:"currentTestFailures,omitempty"`
+	AcceptanceLedger    string `json:"acceptanceLedger,omitempty"`
+	SpecDecision        string `json:"specDecision,omitempty"`
 	// PlanDrafts holds per-provider raw plan outputs during dual- (or N-)
 	// provider planning. Keys are typically the parallel child step ID
 	// (e.g. "plan_claude", "plan_codex"). Populated from PlanDraftStore on
@@ -440,12 +569,17 @@ type Task struct {
 	// result to Plan.
 	PlanDrafts map[string]string `json:"planDrafts,omitempty"`
 	FilePath   string            `json:"filePath"`
+	// Degraded marks a synthetic, read-only board entry created for a task file
+	// that could not be parsed. It is never persisted and must never be
+	// dispatched or mirrored; fixing the source file makes the entry disappear
+	// on the next List.
+	Degraded   bool   `json:"degraded,omitempty"`
+	ParseError string `json:"parseError,omitempty"`
 	// TamperFlagged reports whether this task is parked at human-required
-	// pending a tamper bless. Derived from Status/StatusReason (never
-	// persisted) so the frontend doesn't need to duplicate
-	// workflow.TamperFlaggedReasonPrefix to decide whether to show the bless
-	// action. Recomputed on every load/update — see taskFromFrontmatter and
-	// Store.UpdateWithPrev.
+	// pending a tamper bless. Derived from Status/Blocker (never persisted) so
+	// the frontend doesn't need to duplicate the latch logic to decide whether
+	// to show the bless action. Recomputed on every load/update — see
+	// taskFromFrontmatter and Store.UpdateWithPrev.
 	TamperFlagged bool `json:"tamperFlagged"`
 }
 
@@ -458,9 +592,20 @@ func (t Task) DirName() string {
 	return t.Slug + "-" + t.ID
 }
 
-// isTamperFlagged reports whether a task's status/status_reason combination
+// TagReview marks a task created to review a pull request Sybra did not open.
+const TagReview = prreview.Tag
+
+// TagAdoptedPR marks a review-tagged task whose pull request Sybra itself opened.
+const TagAdoptedPR = prreview.TagAdopted
+
+// IsPRReview reports whether t reviews a linked pull request it must not write to.
+func (t Task) IsPRReview() bool {
+	return prreview.Is(t.PRNumber, t.Tags)
+}
+
+// isTamperFlagged reports whether a task's status/blocker combination
 // represents an unblessed tamper flag. Single source of truth for both the
 // derived Task.TamperFlagged field and BlessTampering's precondition check.
-func isTamperFlagged(status Status, statusReason string) bool {
-	return status == StatusHumanRequired && workflow.IsTamperFlaggedReason(statusReason)
+func isTamperFlagged(status Status, state blocker.State) bool {
+	return status == StatusHumanRequired && state.Kind == blocker.KindTamperDetected
 }

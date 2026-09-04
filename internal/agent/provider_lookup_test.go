@@ -23,7 +23,7 @@ func TestProviderLookupDefaultsOnlyEmptyName(t *testing.T) {
 	}
 }
 
-func TestUnknownProviderRejectedByInvocationReplayAndConvoParsing(t *testing.T) {
+func TestUnknownProviderRejectedByInvocationAndReplay(t *testing.T) {
 	t.Parallel()
 
 	if name, _, _, _, err := buildHeadlessInvocation(&Agent{Provider: ""}, RunConfig{Prompt: "ok"}); err != nil || name != "claude" {
@@ -48,9 +48,5 @@ func TestUnknownProviderRejectedByInvocationReplayAndConvoParsing(t *testing.T) 
 	}
 	if _, err := ParseLogFile(path, 0, "future-provider"); err == nil {
 		t.Fatal("ParseLogFile(unknown provider) succeeded, want error")
-	}
-
-	if _, err := parseConvoEvent("future-provider", []byte(line)); err == nil || !strings.Contains(err.Error(), "unknown agent provider") {
-		t.Fatalf("parseConvoEvent(unknown provider) err = %v, want unknown provider error", err)
 	}
 }

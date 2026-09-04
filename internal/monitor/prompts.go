@@ -30,6 +30,19 @@ func DeterministicIssueBody(a Anomaly) string {
 	return b.String()
 }
 
+// RecurrenceComment renders the compact comment posted on an already-open
+// issue when its anomaly is detected again. occurrence is the consecutive
+// detection count (1-based) at the time of posting. Deliberately terse —
+// re-posting the full DeterministicIssueBody on every recurrence is what
+// makes a self-healing anomaly look like a stream of fresh incidents instead
+// of one ongoing, tracked condition.
+func RecurrenceComment(a Anomaly, occurrence int) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Recurred (occurrence #%d) at %s — still detected after remediation ran again.\n", occurrence, a.DetectedAt.UTC().Format(time.RFC3339))
+	fmt.Fprintf(&b, "Fingerprint: `%s`\n", a.Fingerprint)
+	return b.String()
+}
+
 // DispatchPrompt builds the focused per-anomaly Claude prompt the agent
 // dispatcher hands to claude -p. Each kind gets a short, surgical script.
 // issueRepo is the "owner/name" repository where GitHub issues must be filed;
@@ -52,11 +65,38 @@ func DispatchPrompt(a Anomaly, issueRepo, pushRemote string) string {
 	}
 }
 
+func dispatchPromptForAnomaly(a Anomaly, issueRepo, pushRemote string) string {
+	if a.IncidentScope == "" || a.Kind == KindPRGap {
+		return DispatchPrompt(a, issueRepo, pushRemote)
+	}
+	failureCode := typedEvidenceString(a.Evidence, "failure_code", "code")
+	if failureCode == "" {
+		failureCode = string(a.Kind)
+	}
+	return fmt.Sprintf(`You are a read-only Sybra incident investigator.
+
+Incident fingerprint: %s
+Typed failure code: %s
+Scope: %s
+
+Investigate the local Sybra state and return one final JSON object with
+categorical fields: {"component":"...","capability":"...","finding_code":"...","remediation":"..."}.
+Do not create, comment, close, or reopen GitHub issues. The host owns the
+canonical incident lifecycle. Never include task prose, repository URLs,
+branch names, commit hashes, customer names, or other work-derived content.`,
+		a.Fingerprint, failureCode, a.IncidentScope)
+}
+
 func prGapPrompt(a Anomaly, pushRemote string) string {
 	taskID, _ := a.Evidence["task_id"].(string)
 	title, _ := a.Evidence["title"].(string)
+	projectID, _ := a.Evidence["project_id"].(string)
 	if pushRemote == "" {
 		pushRemote = "origin"
+	}
+	repoFlag := ""
+	if projectID != "" {
+		repoFlag = " --repo " + projectID
 	}
 	return fmt.Sprintf(
 		`You are the sybra monitor PR-gap remediator.
@@ -73,13 +113,13 @@ Run, in order:
    then exit.
 3. Otherwise:
    `+"`git push -u %s HEAD`"+`
-   `+"`gh pr create --base main --title %q --body \"<two-sentence summary from the latest commits>\"`"+`
-   When pushing to a fork remote, gh detects the cross-repo head automatically; no extra flags needed.
+   `+"`gh pr create%s --base main --title %q --body \"<two-sentence summary from the latest commits>\"`"+`
+   ALWAYS pass `+"`--repo %s`"+` explicitly — do NOT rely on gh to auto-detect the base repo. When %s is a fork remote, a bare `+"`gh pr create`"+` run from this worktree can silently open the PR against the fork's own default branch instead of upstream (the worktree's origin push is intentionally disabled for fork-based projects), which leaves the task looking done while no real PR exists upstream. Before recording a PR number, verify with `+"`gh pr view <n> --repo %s`"+` that it actually resolves in this repo.
 4. On success, run `+"`sybra-cli update %s --pr <number> --status-reason \"monitor: created missing PR\"`"+`.
 
 Output exactly one final JSON line:
 {"action":"created"|"escalated"|"failed","prNumber":N,"reason":"..."}`,
-		taskID, title, taskID, pushRemote, title, taskID,
+		taskID, title, taskID, pushRemote, repoFlag, title, projectID, pushRemote, projectID, taskID,
 	)
 }
 
@@ -122,14 +162,10 @@ func stuckPrompt(a Anomaly, issueRepo string) string {
 		}
 		doneCmd := ""
 		if taskID != "" {
-			doneCmd = "\n- Once " + prRef + " merges, mark task done: `sybra-cli update " + taskID + " --status done`."
-		}
-		mergedCmd := ""
-		if taskID != "" {
-			mergedCmd = "`sybra-cli update " + taskID + " --status done`"
+			doneCmd = "\n- Once " + prRef + " merges, wait for the PR monitor landing pass; do not mark the task done manually."
 		}
 		investigationHint = "- A fix-review agent already ran — skip the agent log and check " + prRef + " state with `gh pr view --json state,reviewDecision,statusCheckRollup`.\n" +
-			"- If state=MERGED: the PR has already been merged. Run " + mergedCmd + ". Skip issue filing and output: {\"issueNumber\":null,\"action\":\"remediated\",\"blocker\":\"PR already merged\",\"nextStep\":\"none\"}.\n" +
+			"- If state=MERGED: the PR has already been merged. Do not mark the task done manually; let the PR monitor landing pass record telemetry. Skip issue filing and output: {\"issueNumber\":null,\"action\":\"remediated\",\"blocker\":\"PR already merged\",\"nextStep\":\"none\"}.\n" +
 			"- If CHANGES_REQUESTED: new review comments arrived — report that as the blocker with \"run another fix-review agent\" as the next step.\n" +
 			"- If REVIEW_REQUIRED: fixes were pushed but review was not re-requested — report \"awaiting re-review\" with \"re-request review\" as the next step.\n" +
 			"- If APPROVED and CI passes: report \"ready to merge\" with \"merge the PR\" as the next step." +
@@ -250,6 +286,8 @@ func suggestedInvestigation(a Anomaly) string {
 		return "- Confirm the agent process actually exited; workflow recovery should resume the in-progress task.\n"
 	case KindUntriaged:
 		return "- Run `/sybra-triage` against the affected task to fill `agent_mode` and `tags`.\n"
+	case KindClusterDrift:
+		return "- Mirror already repaired this by re-pushing the leader's Tags/DependsOn to the follower — filed as an audit trail. If it recurs for the same task, the write path that edits it is failing to reach the follower; check that node's connectivity and cluster.mirror.drift_repair.failed logs.\n"
 	case KindStuckHumanBlocked:
 		hint := "- Review the task file and `status_reason`, then provide the required human input to unblock progress.\n"
 		if reason, _ := a.Evidence["status_reason"].(string); reason != "" {
@@ -264,7 +302,7 @@ func suggestedInvestigation(a Anomaly) string {
 			if verdict == "human" {
 				hint += "- Human-review agent confirmed: this task requires direct human input (scope beyond automation — credentials, creative decision, or ambiguous requirement).\n"
 				if taskID != "" {
-					hint += "- Review the task body and the auto-review note, provide the required input, then unblock: `sybra-cli update " + taskID + " --mode interactive --status todo`.\n"
+					hint += "- Review the task body and the auto-review note, provide the required input, then unblock: `sybra-cli update " + taskID + " --status todo`.\n"
 				}
 			} else {
 				hint += "- Human-review agent assessed this task — check the latest auto-review note in the task body.\n"
@@ -273,19 +311,19 @@ func suggestedInvestigation(a Anomaly) string {
 						hint += fmt.Sprintf("- If note says awaiting PR review: check PR #%d for new reviewer feedback.\n", prNum)
 					}
 					hint += "- Note confirms human input needed: provide it, then `sybra-cli update " + taskID + " --status todo`.\n"
-					hint += "- If the note says scope exceeds automation, switch to interactive mode: `sybra-cli update " + taskID + " --mode interactive --status todo`.\n"
+					hint += "- If the note says scope exceeds automation, this is ongoing human work, not a one-time unblock — expect to keep providing input and re-queuing with `--status todo` across multiple rounds.\n"
 				}
 				hint += "- Note shows unparseable or failed verdict: review the raw agent output in the note and act accordingly.\n"
 			}
 		} else if lastRole == "fix-review" && lastState == "stopped" {
 			hint += "- Fix-review agent finished — check the PR and agent log for the outcome.\n"
 			if prNum > 0 {
-				hint += fmt.Sprintf("- Check PR #%d state: if MERGED mark task done immediately (`sybra-cli update %s --status done`); if CHANGES_REQUESTED run another fix-review agent; if REVIEW_REQUIRED re-request review; if APPROVED and CI passes merge.\n", prNum, taskID)
+				hint += fmt.Sprintf("- Check PR #%d state: if MERGED wait for the PR monitor landing pass; if CHANGES_REQUESTED run another fix-review agent; if REVIEW_REQUIRED re-request review; if APPROVED and CI passes merge.\n", prNum)
 			} else {
-				hint += "- Check the PR state: if already merged mark task done; address remaining comments, re-request review, or merge if approved.\n"
+				hint += "- Check the PR state: if already merged wait for the PR monitor landing pass; address remaining comments, re-request review, or merge if approved.\n"
 			}
 			if taskID != "" {
-				hint += "- Once PR merges, mark task done: `sybra-cli update " + taskID + " --status done`.\n"
+				hint += "- Once PR merges, wait for the PR monitor landing pass; do not mark the task done manually.\n"
 			}
 		}
 		return hint

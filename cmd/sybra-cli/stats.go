@@ -13,13 +13,13 @@ import (
 	"github.com/Automaat/sybra/internal/evaluation"
 )
 
-func cmdStats(cfg *config.Config, args []string, jsonOut bool) int {
+func cmdStats(cfg *config.Config, api *apiClient, args []string, jsonOut bool) int {
 	if len(args) == 0 {
 		return fatal(jsonOut, "usage: stats <lifecycle> [args] [--json]")
 	}
 	switch args[0] {
 	case "lifecycle":
-		return cmdStatsLifecycle(cfg, args[1:], jsonOut)
+		return cmdStatsLifecycle(cfg, api, args[1:], jsonOut)
 	default:
 		return fatal(jsonOut, "unknown stats subcommand: %s", args[0])
 	}
@@ -28,7 +28,7 @@ func cmdStats(cfg *config.Config, args []string, jsonOut bool) int {
 // cmdStatsLifecycle decomposes the lead time of tasks that landed in the window
 // into per-phase durations (planning/implementing/testing/review/waiting), so
 // you can see where end-to-end time actually goes.
-func cmdStatsLifecycle(cfg *config.Config, args []string, jsonOut bool) int {
+func cmdStatsLifecycle(cfg *config.Config, api *apiClient, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("lifecycle", flag.ContinueOnError)
 	since := fs.String("since", "30d", "cohort window for landed tasks (duration like 7d/720h or date YYYY-MM-DD)")
 	slowest := fs.Int("slowest", 10, "number of slowest landed tasks to list (0 = none)")
@@ -41,7 +41,7 @@ func cmdStatsLifecycle(cfg *config.Config, args []string, jsonOut bool) int {
 	// Read status history wider than the cohort window so a task that landed
 	// in-window but started earlier is fully reconstructed.
 	histSince := sinceTime.Add(-2 * now.Sub(sinceTime))
-	evts, err := audit.Read(cfg.AuditDir(), audit.Query{Since: histSince, Until: now})
+	evts, err := readAuditEvents(api, audit.Query{Since: histSince, Until: now})
 	if err != nil {
 		return fatal(jsonOut, "read audit: %v", err)
 	}

@@ -1,14 +1,21 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"os/exec"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
+	"github.com/Automaat/sybra/internal/errclass"
+	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/prreview"
+	"github.com/Automaat/sybra/internal/taskstatus"
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 // execPushBranch deterministically pushes the task's worktree branch to its
@@ -16,9 +23,9 @@ import (
 // maybe_create_pr retry path in simple-task-pr). Replaces the push-branch
 // agent role: no LLM/agent involved, only git plumbing.
 func (e *Engine) execPushBranch(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error) {
-	wtPath, branch, out, done := e.prWorktreeAndBranch(taskID, step, t)
+	wtPath, branch, out, done, err := e.prWorktreeAndBranch(taskID, step, t)
 	if done {
-		return out, nil
+		return out, err
 	}
 
 	if out, err, ok := e.pushTaskBranch(taskID, step, wfExec, t, wtPath, branch); !ok {
@@ -30,7 +37,7 @@ func (e *Engine) execPushBranch(taskID string, step *Step, wfExec *Execution, t 
 	// (propagation lag, or a race with another pusher) is logged, not fatal —
 	// link_pr_and_review still finds task.pr_number regardless, and a stale
 	// head would surface as a failing PR check rather than a silent miss.
-	if e.prHeads != nil && t.PRNumber > 0 && t.ProjectID != "" {
+	if e.pr.HeadFetcher != nil && t.PRNumber > 0 && t.ProjectID != "" {
 		e.verifyPushedHead(taskID, wtPath, t)
 	}
 
@@ -45,9 +52,9 @@ func (e *Engine) execCreatePR(taskID string, step *Step, wfExec *Execution, t Ta
 		return e.humanRequiredPR(taskID, step, "task has no project — cannot open a PR")
 	}
 
-	wtPath, branch, out, done := e.prWorktreeAndBranch(taskID, step, t)
+	wtPath, branch, out, done, err := e.prWorktreeAndBranch(taskID, step, t)
 	if done {
-		return out, nil
+		return out, err
 	}
 
 	headArg, err := func() (string, error) {
@@ -66,10 +73,14 @@ func (e *Engine) execCreatePR(taskID string, step *Step, wfExec *Execution, t Ta
 	// so a fork-hosted branch, which GitHub only matches as "owner:branch",
 	// is found too.
 	if existing, ok := e.findExistingPRForBranch(t.ProjectID, headArg); ok {
-		if err := e.tasks.UpdateTaskPR(taskID, existing); err != nil {
+		if err := e.linkTaskPR(taskID, t, existing); err != nil {
 			return StepOutput{}, fmt.Errorf("create_pr: link existing pr: %w", err)
 		}
+		e.requestCopilotReview(taskID, t.ProjectID, existing)
 		return stepDone(step, fmt.Sprintf("pr #%d already exists for branch", existing))
+	}
+	if out, done := e.handleExistingAnyStatePRForBranch(taskID, step, wtPath, t, headArg); done {
+		return out, nil
 	}
 
 	if out, err, ok := e.pushTaskBranch(taskID, step, wfExec, t, wtPath, branch); !ok {
@@ -78,13 +89,13 @@ func (e *Engine) execCreatePR(taskID string, step *Step, wfExec *Execution, t Ta
 
 	title, body := e.generatePRContent(taskID, wtPath, t)
 
-	if e.prCreator == nil {
+	if e.pr.Creator == nil {
 		return e.humanRequiredPR(taskID, step, "no PR creator configured")
 	}
 
 	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
 	defer cancel()
-	number, headSHA, createErr := e.prCreator.CreatePR(ctx, wtPath, PRCreateRequest{
+	number, headSHA, createErr := e.pr.Creator.CreatePR(ctx, wtPath, PRCreateRequest{
 		Repo:  t.ProjectID,
 		Head:  headArg,
 		Draft: t.ProjectType != "pet",
@@ -98,14 +109,28 @@ func (e *Engine) execCreatePR(taskID string, step *Step, wfExec *Execution, t Ta
 		return e.classifyPRGitError(taskID, step, wfExec, t, createErr, "create_pr")
 	}
 
-	if err := e.tasks.UpdateTaskPR(taskID, number); err != nil {
+	if err := e.linkTaskPR(taskID, t, number); err != nil {
 		return StepOutput{}, fmt.Errorf("create_pr: link pr: %w", err)
 	}
+	e.requestCopilotReview(taskID, t.ProjectID, number)
 	if localSHA, lErr := project.CurrentCommit(ctx, wtPath); lErr == nil && headSHA != "" && localSHA != headSHA {
 		e.logger.Warn("workflow.create-pr.head-mismatch", "task_id", taskID, "pr", number, "local", localSHA, "remote", headSHA)
 	}
 	e.logger.Info("workflow.create-pr.created", "task_id", taskID, "pr", number)
 	return stepDone(step, fmt.Sprintf("created pr #%d", number))
+}
+
+func (e *Engine) requestCopilotReview(taskID, repo string, prNumber int) {
+	if repo == "" || prNumber <= 0 || e.pr.ReviewRequester == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
+	defer cancel()
+	if err := e.pr.ReviewRequester.RequestCopilotReview(ctx, repo, prNumber); err != nil {
+		e.logger.Warn("workflow.create-pr.copilot-review.failed", "task_id", taskID, "repo", repo, "pr", prNumber, "err", err)
+		return
+	}
+	e.logger.Info("workflow.create-pr.copilot-review.requested", "task_id", taskID, "repo", repo, "pr", prNumber)
 }
 
 func (e *Engine) adoptExistingPROnConflict(taskID, repo, headArg string, createErr error) (int, bool) {
@@ -116,28 +141,66 @@ func (e *Engine) adoptExistingPROnConflict(taskID, repo, headArg string, createE
 	if !ok {
 		return 0, false
 	}
-	if err := e.tasks.UpdateTaskPR(taskID, existing); err != nil {
+	t, err := e.tasks.GetTask(taskID)
+	if err != nil {
+		e.logger.Warn("workflow.create-pr.adopt-existing.get-task", "task_id", taskID, "pr", existing, "err", err)
+		return 0, false
+	}
+	if err := e.linkTaskPR(taskID, t, existing); err != nil {
 		e.logger.Warn("workflow.create-pr.adopt-existing", "task_id", taskID, "pr", existing, "err", err)
 		return 0, false
 	}
 	e.logger.Info("workflow.create-pr.adopt-existing", "task_id", taskID, "pr", existing)
+	e.requestCopilotReview(taskID, repo, existing)
 	return existing, true
 }
 
-// prWorktreeAndBranch resolves the on-disk worktree and branch used by
-// push_branch/create_pr. Both are reached only from the ready-pr stage of
-// simple-task-pr, after implementation/testing already produced a worktree —
-// a missing WorktreeGetter or worktree is therefore an unrecoverable setup
-// problem, not a transient one, so it flips straight to human-required.
-func (e *Engine) prWorktreeAndBranch(taskID string, step *Step, t TaskInfo) (wtPath, branch string, out StepOutput, done bool) {
-	if e.worktrees == nil {
-		out, _ = e.humanRequiredPR(taskID, step, "no worktree getter configured")
-		return "", "", out, true
+func (e *Engine) linkTaskPR(taskID string, t TaskInfo, newPR int) error {
+	oldPR := t.PRNumber
+	if err := e.tasks.UpdateTaskPR(taskID, newPR); err != nil {
+		return err
 	}
-	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	if oldPR == 0 || oldPR == newPR || t.ProjectID == "" || e.pr.Closer == nil {
+		return nil
+	}
+	comment := fmt.Sprintf("Superseded by #%d for Sybra task %s.", newPR, taskID)
+	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
+	defer cancel()
+	if err := e.pr.Closer.ClosePR(ctx, t.ProjectID, oldPR, comment); err != nil {
+		e.logger.Warn("workflow.pr.superseded-close", "task_id", taskID, "old_pr", oldPR, "new_pr", newPR, "err", err)
+		return nil
+	}
+	e.logger.Info("workflow.pr.superseded-close", "task_id", taskID, "old_pr", oldPR, "new_pr", newPR)
+	return nil
+}
+
+// prWorktreeAndBranch resolves the on-disk worktree and branch used by
+// push_branch/create_pr. A production WorktreeGetter may also implement
+// PRWorktreeResolver, allowing one reconstruction attempt before a genuinely
+// unrecoverable setup problem is escalated to human-required.
+func (e *Engine) prWorktreeAndBranch(taskID string, step *Step, t TaskInfo) (wtPath, branch string, out StepOutput, done bool, stepErr error) {
+	if e.execution.Worktrees == nil {
+		out, stepErr = e.humanRequiredPR(taskID, step, "no worktree getter configured")
+		return "", "", out, true, stepErr
+	}
+	var (
+		ok  bool
+		err error
+	)
+	if resolver, resolves := e.execution.Worktrees.(PRWorktreeResolver); resolves {
+		ctx, cancel := context.WithTimeout(e.ctx, prWorktreePrepareTimeout)
+		defer cancel()
+		wtPath, ok, err = resolver.ResolvePRWorktree(ctx, taskID)
+	} else {
+		wtPath, ok = e.execution.Worktrees.GetWorktreePath(taskID)
+	}
+	if err != nil {
+		out, stepErr = e.humanRequiredPR(taskID, step, "could not prepare worktree: "+err.Error())
+		return "", "", out, true, stepErr
+	}
 	if !ok {
-		out, _ = e.humanRequiredPR(taskID, step, "no worktree found for task")
-		return "", "", out, true
+		out, stepErr = e.humanRequiredPR(taskID, step, "no worktree found for task")
+		return "", "", out, true, stepErr
 	}
 	branch = t.Branch
 	if branch == "" {
@@ -149,19 +212,19 @@ func (e *Engine) prWorktreeAndBranch(taskID string, step *Step, t TaskInfo) (wtP
 			if err != nil {
 				reason += ": " + err.Error()
 			}
-			out, _ = e.humanRequiredPR(taskID, step, reason)
-			return "", "", out, true
+			out, stepErr = e.humanRequiredPR(taskID, step, reason)
+			return "", "", out, true, stepErr
 		}
 		branch = resolved
 	}
-	return wtPath, branch, StepOutput{}, false
+	return wtPath, branch, StepOutput{}, false, nil
 }
 
 // humanRequiredPR flips the task to human-required with reason and returns a
 // completed StepOutput carrying the same reason, matching the pattern used
 // throughout the other PR-tail steps (e.g. execRequireSidecar).
 func (e *Engine) humanRequiredPR(taskID string, step *Step, reason string) (StepOutput, error) {
-	if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 		return StepOutput{}, fmt.Errorf("%s: set human-required: %w", step.ID, err)
 	}
 	e.logger.Warn("workflow.pr-tail.human-required", "task_id", taskID, "step", step.ID, "reason", reason)
@@ -173,13 +236,49 @@ func (e *Engine) humanRequiredPR(taskID string, step *Step, reason string) (Step
 // (out, err) immediately — either the push failed permanently (human-required)
 // or it was parked for a bounded retry (errStepParked).
 func (e *Engine) pushTaskBranch(taskID string, step *Step, wfExec *Execution, t TaskInfo, wtPath, branch string) (out StepOutput, err error, ok bool) {
+	if prreview.Is(t.PRNumber, t.Tags) {
+		out, err = e.humanRequiredPR(taskID, step, fmt.Sprintf("task only reviews pull request #%d: refusing to push its branch", t.PRNumber))
+		return out, err, false
+	}
 	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
 	defer cancel()
 	if preflightErr := e.preflightPushCredentials(ctx, wtPath); preflightErr != nil {
-		out, err = e.classifyPRGitError(taskID, step, wfExec, t, preflightErr, "push credential preflight")
-		return out, err, false
+		// The dry-run probe can false-positive on a momentarily stale
+		// credential (e.g. an app-token rotation window landing mid-check,
+		// #2160) even though the real push would succeed (#2386). Don't park
+		// on the probe alone — fall through and attempt the actual push;
+		// only classify/escalate below if that also fails. PreflightPushCredentials
+		// already recorded the audit finding (pushAuthFailureHook) before
+		// returning, so the signal isn't lost even though it no longer blocks.
+		e.logger.Warn("workflow.pr-tail.preflight-failed-attempting-push",
+			"task_id", taskID, "step", step.ID, "err", preflightErr)
 	}
-	pushErr := project.PushSync(ctx, wtPath, branch)
+	// Preflight's mandated retry backoffs and dry-run subprocesses can consume
+	// a large slice of the shared budget; give the real push its own fresh
+	// timeout so it isn't killed on stale budget and misclassified into the
+	// non-auth retry bucket (#2160/#2386).
+	pushCtx, pushCancel := context.WithTimeout(e.ctx, shellTimeout)
+	defer pushCancel()
+	pushRemote := ""
+	pushURL := ""
+	if wfExec != nil {
+		pushRemote = strings.TrimSpace(wfExec.Variables[WorkflowVarBranchConflictPushRemote])
+		pushURL = strings.TrimSpace(wfExec.Variables[WorkflowVarBranchConflictPushURL])
+	}
+	var pushErr error
+	if wfExec != nil && wfExec.WorkflowID == "branch-conflict-fix" && pushRemote == "origin" && pushURL != "" {
+		hasGuard, guardErr := project.OriginPushHasForkOnlyGuard(pushCtx, wtPath)
+		switch {
+		case guardErr != nil:
+			pushErr = fmt.Errorf("verify fork-only origin guard: %w", guardErr)
+		case !hasGuard:
+			pushErr = errors.New("fork-only origin guard changed during branch recovery")
+		default:
+			pushErr = project.PushSyncToPinnedRemote(pushCtx, wtPath, branch, pushRemote, pushURL)
+		}
+	} else {
+		pushErr = project.PushSync(pushCtx, wtPath, branch)
+	}
 	if pushErr == nil {
 		return StepOutput{}, nil, true
 	}
@@ -221,8 +320,8 @@ func (e *Engine) pushTaskBranch(taskID string, step *Step, wfExec *Execution, t 
 }
 
 func (e *Engine) preflightPushCredentials(ctx context.Context, wtPath string) error {
-	if e.pushPreflight != nil {
-		return e.pushPreflight.PreflightPushCredentials(ctx, wtPath)
+	if e.pr.PushPreflighter != nil {
+		return e.pr.PushPreflighter.PreflightPushCredentials(ctx, wtPath)
 	}
 	return project.PreflightPushCredentials(ctx, wtPath)
 }
@@ -335,7 +434,7 @@ func (e *Engine) drainPendingConflictRecovery(taskID string) {
 
 func (e *Engine) escalatePendingConflictRecovery(taskID string) {
 	reason := "branch diverged from remote — needs manual conflict resolution (never force-pushed)"
-	if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 		e.logger.Error("workflow.pr-tail.conflict-recovery.escalate", "task_id", taskID, "err", err)
 	}
 	if _, err := e.CancelWorkflow(taskID, reason); err != nil {
@@ -361,26 +460,35 @@ func (e *Engine) escalatePendingConflictRecovery(taskID string) {
 // escalates exactly as before.
 func (e *Engine) classifyPRGitError(taskID string, step *Step, wfExec *Execution, t TaskInfo, err error, phase string) (StepOutput, error) {
 	msg := err.Error()
-	switch {
-	case looksLikeGitHubRateLimit(msg):
+	class := errclass.Classify(msg, errclass.WorkflowProseRetryBiased)
+	switch class {
+	case errclass.RateLimited:
 		return e.parkStepForRetry(taskID, wfExec, t, step.ID, prCreateRetryStatusReason, "workflow.pr-tail.rate-limit", "phase", phase)
-	case looksLikeTransientGitHub(msg):
+	case errclass.Transient:
 		return e.parkStepForRetry(taskID, wfExec, t, step.ID, prCreateTransientStatusReason, "workflow.pr-tail.transient", "phase", phase)
-	case looksLikeAuthFailure(msg):
+	case errclass.Auth:
 		attempts := parseWorkflowInt(wfExec.Variables[prCreateAuthAttemptsVar])
 		if attempts < maxPRCreateAuthRetries {
 			wfExec.SetVar(prCreateAuthAttemptsVar, strconv.Itoa(attempts+1))
-			return e.parkStepForRetry(taskID, wfExec, t, step.ID, prCreateAuthRetryReason, "workflow.pr-tail.auth-retry", "attempt", attempts+1, "max", maxPRCreateAuthRetries)
+			return e.parkStepForRetry(taskID, wfExec, t, step.ID, prRetryReason(prCreateAuthRetryReason, msg), "workflow.pr-tail.auth-retry", "attempt", attempts+1, "max", maxPRCreateAuthRetries, "phase", phase)
 		}
 		return e.humanRequiredPR(taskID, step, fmt.Sprintf("%s failing due to invalid or expired GitHub credentials after %d retries: %s", phase, attempts, msg))
 	default:
 		attempts := parseWorkflowInt(wfExec.Variables[prPushAttemptsVar])
 		if attempts < maxPRPushRetries {
 			wfExec.SetVar(prPushAttemptsVar, strconv.Itoa(attempts+1))
-			return e.parkStepForRetry(taskID, wfExec, t, step.ID, prPushRetryStatusReason, "workflow.pr-tail.push-retry", "phase", phase, "attempt", attempts+1, "max", maxPRPushRetries)
+			return e.parkStepForRetry(taskID, wfExec, t, step.ID, prRetryReason(prPushRetryStatusReason, msg), "workflow.pr-tail.push-retry", "phase", phase, "attempt", attempts+1, "max", maxPRPushRetries)
 		}
 		return e.humanRequiredPR(taskID, step, fmt.Sprintf("%s failed after %d retries: %s", phase, attempts, msg))
 	}
+}
+
+func prRetryReason(base, detail string) string {
+	detail = strings.TrimSpace(detail)
+	if detail == "" {
+		return base
+	}
+	return base + ": " + textutil.TruncateMiddle(detail, 240, "\n... (truncated) ...\n")
 }
 
 // findExistingPRForBranch checks for a PR already open on branch, mirroring
@@ -391,17 +499,104 @@ func (e *Engine) classifyPRGitError(taskID string, step *Step, wfExec *Execution
 // lookup failure is treated as "no PR found" so create_pr proceeds rather than
 // getting stuck.
 func (e *Engine) findExistingPRForBranch(repo, branch string) (number int, ok bool) {
-	if e.prFinder == nil {
+	if e.pr.Finder == nil {
 		return 0, false
 	}
 	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
 	defer cancel()
-	num, found, err := e.prFinder.FindPRForBranch(ctx, repo, branch)
+	num, found, err := e.pr.Finder.FindPRForBranch(ctx, repo, branch)
 	if err != nil {
 		e.logger.Warn("workflow.create-pr.find-existing", "repo", repo, "head", branch, "err", err)
 		return 0, false
 	}
 	return num, found
+}
+
+func (e *Engine) handleExistingAnyStatePRForBranch(taskID string, step *Step, wtPath string, t TaskInfo, headArg string) (StepOutput, bool) {
+	if e.pr.AnyStateFinder == nil {
+		return StepOutput{}, false
+	}
+	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
+	defer cancel()
+	num, state, found, err := e.pr.AnyStateFinder.FindPRForBranchAnyState(ctx, t.ProjectID, headArg)
+	if err != nil {
+		e.logger.Warn("workflow.create-pr.find-any-state", "task_id", taskID, "repo", t.ProjectID, "head", headArg, "err", err)
+		return StepOutput{}, false
+	}
+	if !found {
+		return StepOutput{}, false
+	}
+	switch state {
+	case "OPEN":
+		if err := e.linkTaskPR(taskID, t, num); err != nil {
+			e.logger.Warn("workflow.create-pr.link-any-state-open", "task_id", taskID, "pr", num, "err", err)
+			return StepOutput{}, false
+		}
+		out, _ := stepDone(step, fmt.Sprintf("pr #%d already exists for branch", num))
+		return out, true
+	case "MERGED":
+		clean, cleanErr := branchPatchAlreadyAppliedToBase(ctx, wtPath)
+		if cleanErr != nil {
+			e.logger.Warn("workflow.create-pr.merged-branch-diff", "task_id", taskID, "pr", num, "err", cleanErr)
+			return StepOutput{}, false
+		}
+		if !clean {
+			e.logger.Info("workflow.create-pr.merged-branch-has-diff", "task_id", taskID, "pr", num)
+			return StepOutput{}, false
+		}
+		reason := fmt.Sprintf("branch already landed via merged PR #%d and has no remaining diff against base", num)
+		e.logger.Info("workflow.create-pr.merged-branch-done", "task_id", taskID, "pr", num)
+		out := StepOutput{StepID: step.ID, Status: "completed", Output: reason, TerminalStatus: taskstatus.Done, TerminalReason: reason}
+		return out, true
+	default:
+		return StepOutput{}, false
+	}
+}
+
+func branchPatchAlreadyAppliedToBase(ctx context.Context, wtPath string) (bool, error) {
+	baseRef := resolveOriginBase(ctx, wtPath)
+	mergeBase, err := gitStdout(ctx, wtPath, "merge-base", baseRef, "HEAD")
+	if err != nil {
+		return false, fmt.Errorf("git merge-base %s HEAD: %w", baseRef, err)
+	}
+	if mergeBase == "" {
+		return false, fmt.Errorf("git merge-base %s HEAD: empty output", baseRef)
+	}
+
+	// Raw (untrimmed) patch bytes — fed verbatim into `git apply` stdin below.
+	patch, err := gitexec.RawOutput(ctx, gitexec.Options{Dir: wtPath}, "diff", "--binary", mergeBase+"..HEAD", "--")
+	if err != nil {
+		return false, fmt.Errorf("git diff %s..HEAD: %w", mergeBase, err)
+	}
+	if len(bytes.TrimSpace(patch)) == 0 {
+		return true, nil
+	}
+
+	tmpDir, err := os.MkdirTemp("", "sybra-branch-base-*")
+	if err != nil {
+		return false, fmt.Errorf("create temp base tree: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+	baseTreeDir := filepath.Join(tmpDir, "base")
+
+	if _, err := gitCombinedOutput(ctx, wtPath, "worktree", "add", "--detach", baseTreeDir, baseRef); err != nil {
+		return false, err
+	}
+	defer func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), shellTimeout)
+		defer cleanupCancel()
+		_ = gitDo(cleanupCtx, wtPath, "worktree", "remove", "--force", baseTreeDir)
+	}()
+
+	_, err = gitexec.CombinedOutput(ctx, gitexec.Options{Dir: baseTreeDir, Stdin: bytes.NewReader(patch)},
+		"apply", "--check", "--reverse", "--whitespace=nowarn", "-")
+	if err == nil {
+		return true, nil
+	}
+	if code, ok := gitexec.ExitCode(err); ok && code == 1 {
+		return false, nil
+	}
+	return false, fmt.Errorf("git apply --reverse --check: %w", err)
 }
 
 // verifyPushedHead best-effort verifies the PR head now matches local HEAD
@@ -422,7 +617,7 @@ func (e *Engine) verifyPushedHead(taskID, wtPath string, t TaskInfo) {
 		}
 		shaCtx, shaCancel := context.WithTimeout(e.ctx, shellTimeout)
 		var shaErr error
-		remoteSHA, shaErr = e.prHeads.FetchPRHeadSHA(shaCtx, t.ProjectID, t.PRNumber)
+		remoteSHA, shaErr = e.pr.HeadFetcher.FetchPRHeadSHA(shaCtx, t.ProjectID, t.PRNumber)
 		shaCancel()
 		if shaErr == nil && remoteSHA == localSHA {
 			return
@@ -431,21 +626,21 @@ func (e *Engine) verifyPushedHead(taskID, wtPath string, t TaskInfo) {
 	e.logger.Warn("workflow.push-branch.head-mismatch", "task_id", taskID, "pr", t.PRNumber, "local", localSHA, "remote", remoteSHA)
 }
 
-// generatePRContent drafts a PR title/body via e.prContentGen, falling back
+// generatePRContent drafts a PR title/body via e.pr.ContentGenerator, falling back
 // to a minimal templated title/body (task title verbatim, task body under a
 // Motivation heading) when no generator is wired or the generation failed —
 // so create_pr always has something valid to hand `gh pr create`.
 func (e *Engine) generatePRContent(taskID, wtPath string, t TaskInfo) (title, body string) {
 	fallbackTitle := t.Title
 	fallbackBody := "## Motivation\n\n" + strings.TrimSpace(t.Body) + "\n\n## Implementation information\n\nSee commit history for " + t.Title + "."
-	if e.prContentGen == nil {
+	if e.pr.ContentGenerator == nil {
 		return fallbackTitle, fallbackBody
 	}
 
 	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
 	defer cancel()
 	subjects := commitSubjects(ctx, wtPath)
-	genTitle, genBody, genErr := e.prContentGen.GeneratePRContent(ctx, t.Title, t.Body, subjects)
+	genTitle, genBody, genErr := e.pr.ContentGenerator.GeneratePRContent(ctx, t.Title, t.Body, subjects)
 	if genErr != nil || strings.TrimSpace(genTitle) == "" || strings.TrimSpace(genBody) == "" {
 		e.logger.Warn("workflow.create-pr.content-fallback", "task_id", taskID, "err", genErr)
 		return fallbackTitle, fallbackBody
@@ -459,14 +654,12 @@ func (e *Engine) generatePRContent(taskID, wtPath string, t TaskInfo) (title, bo
 // content prompt just has less context to work with.
 func commitSubjects(ctx context.Context, wtPath string) []string {
 	base := resolveOriginBase(ctx, wtPath)
-	cmd := exec.CommandContext(ctx, "git", "log", "--format=%s", "--reverse", base+"..HEAD")
-	cmd.Dir = wtPath
-	out, err := cmd.Output()
+	out, err := gitStdout(ctx, wtPath, "log", "--format=%s", "--reverse", base+"..HEAD")
 	if err != nil {
 		return nil
 	}
 	var subjects []string
-	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		if line = strings.TrimSpace(line); line != "" {
 			subjects = append(subjects, line)
 		}

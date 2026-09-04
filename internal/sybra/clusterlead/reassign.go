@@ -58,6 +58,8 @@ func mayHaveLiveAgent(t task.Task) bool {
 // the push then fails, the move is rolled back so the task is never left
 // pointing at a node that never received it.
 func (a *Assigner) Reassign(ctx context.Context, taskID, node string) error {
+	unlock := a.lockOwnership(taskID)
+	defer unlock()
 	node = strings.TrimSpace(node)
 	if node == "" {
 		return fmt.Errorf("%w: %q", ErrUnknownNode, node)
@@ -77,36 +79,40 @@ func (a *Assigner) Reassign(ctx context.Context, taskID, node string) error {
 		return fmt.Errorf("%w: %q (trusted=%v encrypted=%v)", ErrConfidentiality, home.Name, home.Trusted, home.Encrypted)
 	}
 
-	previous := t.AssignedNode
-	previousOverride := t.NodeOverride
-	if previous == home.Name {
+	previousNode := t.AssignedNode
+	if previousNode == home.Name {
 		return a.pinOverride(taskID, node)
 	}
-	if previous == "" && a.stopLocalAgents == nil && mayHaveLiveAgent(t) {
+	if previousNode == "" && a.stopLocalAgents == nil && mayHaveLiveAgent(t) {
 		return fmt.Errorf("%w: %s is running on the leader and this caller cannot stop its agents; reassign it from the board",
 			ErrCannotDrainLocal, taskID)
 	}
-	a.drainTask(ctx, previous, t)
+	a.drainTask(ctx, previousNode, t)
 
 	moved, err := a.stampNode(taskID, node, home.Name)
 	if err != nil {
 		return err
 	}
 	if home.Local {
-		a.logger.Info("cluster.reassign", "task", taskID, "from", previous, "to", config.LocalNodeName)
+		a.logger.Info("cluster.reassign", "task", taskID, "from", previousNode, "to", config.LocalNodeName)
 		return nil
 	}
 
 	client, ok := a.roster.Client(home.Name)
 	if !ok || client == nil {
-		a.rollbackNode(taskID, previous, previousOverride, moved)
+		a.rollbackNode(taskID, t, moved)
 		return fmt.Errorf("clusterlead: no follower client for node %q", home.Name)
 	}
-	if err := client.AssignTask(ctx, moved); err != nil {
-		a.rollbackNode(taskID, previous, previousOverride, moved)
+	push, err := a.transferAttachments(ctx, client, moved)
+	if err != nil {
+		a.rollbackNode(taskID, t, moved)
+		return fmt.Errorf("clusterlead: transfer attachments for %s to %s: %w", taskID, home.Name, err)
+	}
+	if err := client.AssignTask(ctx, push); err != nil {
+		a.rollbackNode(taskID, t, moved)
 		return fmt.Errorf("clusterlead: assign %s to %s: %w", taskID, home.Name, err)
 	}
-	a.logger.Info("cluster.reassign", "task", taskID, "from", previous, "to", home.Name)
+	a.logger.Info("cluster.reassign", "task", taskID, "from", previousNode, "to", home.Name)
 	return nil
 }
 
@@ -119,7 +125,7 @@ func (a *Assigner) pinOverride(taskID, override string) error {
 		return nil
 	}
 	cur.NodeOverride = override
-	if _, _, err := a.tasks.Put(cur); err != nil {
+	if _, _, err := a.tasks.PutBy(cur, "clusterlead.assigner.pin_override"); err != nil {
 		return fmt.Errorf("clusterlead: pin node on %s: %w", taskID, err)
 	}
 	return nil
@@ -133,31 +139,42 @@ func (a *Assigner) stampNode(taskID, override, assigned string) (task.Task, erro
 	cur.NodeOverride = override
 	cur.AssignedNode = assigned
 	cur.WorktreeDir = ""
+	// Advance the persisted ownership revision even when an ABA move returns
+	// to the same node name. UpdatedAt records the ordinary task write.
+	cur.AssignmentRev++
+	cur.UpdatedAt = time.Now().UTC()
 	cur.MirrorRev = 0
 	cur.MirrorUpdatedAt = nil
-	saved, _, err := a.tasks.Put(cur)
+	saved, _, err := a.tasks.PutBy(cur, "clusterlead.assigner.stamp_node")
 	if err != nil {
 		return task.Task{}, fmt.Errorf("clusterlead: stamp node on %s: %w", taskID, err)
 	}
 	return saved, nil
 }
 
-func (a *Assigner) rollbackNode(taskID, previous, previousOverride string, moved task.Task) {
+func (a *Assigner) rollbackNode(taskID string, previous, moved task.Task) {
 	cur, err := a.tasks.Get(taskID)
 	if err != nil {
 		a.logger.Error("cluster.reassign.rollback.failed", "task", taskID, "err", err)
 		return
 	}
-	if cur.AssignedNode != moved.AssignedNode {
+	if cur.AssignedNode != moved.AssignedNode || cur.AssignmentRev != moved.AssignmentRev {
 		return
 	}
-	cur.AssignedNode = previous
-	cur.NodeOverride = previousOverride
-	if _, _, err := a.tasks.Put(cur); err != nil {
+	cur.AssignedNode = previous.AssignedNode
+	// A rollback is still an ownership change. Advance the revision so an
+	// RPC response from the failed assignment cannot apply afterwards.
+	cur.AssignmentRev++
+	cur.UpdatedAt = time.Now().UTC()
+	cur.NodeOverride = previous.NodeOverride
+	cur.WorktreeDir = previous.WorktreeDir
+	cur.MirrorRev = previous.MirrorRev
+	cur.MirrorUpdatedAt = previous.MirrorUpdatedAt
+	if _, _, err := a.tasks.PutBy(cur, "clusterlead.assigner.rollback_node"); err != nil {
 		a.logger.Error("cluster.reassign.rollback.failed", "task", taskID, "err", err)
 		return
 	}
-	a.logger.Warn("cluster.reassign.rolled_back", "task", taskID, "node", previous)
+	a.logger.Warn("cluster.reassign.rolled_back", "task", taskID, "node", previous.AssignedNode)
 }
 
 func (a *Assigner) drainTask(ctx context.Context, node string, t task.Task) {
@@ -177,8 +194,9 @@ func (a *Assigner) drainTask(ctx context.Context, node string, t task.Task) {
 		a.logger.Warn("cluster.reassign.drain.unreachable", "task", t.ID, "node", node, "err", err)
 		return
 	}
-	for _, ag := range agents {
-		if ag == nil || ag.TaskID != t.ID {
+	for i := range agents {
+		ag := &agents[i]
+		if ag.TaskID != t.ID {
 			continue
 		}
 		if err := client.StopAgent(drainCtx, ag.ID); err != nil {

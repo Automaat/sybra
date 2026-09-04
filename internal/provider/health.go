@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/clock"
 	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/providerid"
 )
@@ -23,16 +24,17 @@ type Status struct {
 
 // Config controls the Checker's probe schedule and failover policy.
 type Config struct {
-	Interval           time.Duration
-	ClaudeEnabled      bool
-	CodexEnabled       bool
-	CopilotEnabled     bool
-	OpenCodeEnabled    bool
-	AutoFailover       bool
-	ClaudeRLCooldown   time.Duration
-	CodexRLCooldown    time.Duration
-	CopilotRLCooldown  time.Duration
-	OpenCodeRLCooldown time.Duration
+	Interval            time.Duration
+	ClaudeEnabled       bool
+	CodexEnabled        bool
+	CopilotEnabled      bool
+	OpenCodeEnabled     bool
+	AutoFailover        bool
+	ClaudeRLCooldown    time.Duration
+	CodexRLCooldown     time.Duration
+	CopilotRLCooldown   time.Duration
+	OpenCodeRLCooldown  time.Duration
+	AuthFailureCooldown time.Duration
 	// ProbeErrorThreshold is the number of consecutive generic probe_error
 	// results required before a provider is marked unhealthy. Auth and
 	// rate-limit states still apply immediately.
@@ -47,6 +49,10 @@ var failoverPriority = providerid.All()
 
 const defaultProbeErrorThreshold = 2
 
+const defaultAuthFailureCooldown = 15 * time.Minute
+
+const authFailureReason = "logged_out"
+
 // HealthGate is the small surface the agent Manager depends on. Kept minimal
 // so tests can supply a fake without spinning up a Checker.
 type HealthGate interface {
@@ -59,7 +65,7 @@ type HealthGate interface {
 	Failover(unhealthy string) string
 	Reason(provider string) string
 	ReportAuthFailure(provider, reason string)
-	ReportRateLimit(provider string, retryAfter time.Duration, reason string)
+	ReportRateLimit(provider string, retryAfter time.Duration, reason string, source CooldownSource)
 }
 
 // HealthEvent is the payload emitted on state flips to the frontend.
@@ -70,6 +76,7 @@ type HealthEvent struct {
 	Detail           string    `json:"detail,omitempty"`
 	LastCheck        time.Time `json:"lastCheck"`
 	RateLimitedUntil time.Time `json:"ratelimitedUntil,omitzero"`
+	AuthHeldUntil    time.Time `json:"authHeldUntil,omitzero"`
 	FailoverActive   bool      `json:"failoverActive"`
 }
 
@@ -87,6 +94,8 @@ type Checker struct {
 	// one is treated as a soft failure so a transient local CLI hiccup does not
 	// flash a global provider outage or gate otherwise-working agents.
 	probeFailures map[string]int
+	authHeldUntil map[string]time.Time
+	authRunFailed map[string]bool
 
 	emit   func(event string, data any)
 	logger *slog.Logger
@@ -95,8 +104,13 @@ type Checker struct {
 	probeCodex    func(ctx context.Context) (Status, error)
 	probeCopilot  func(ctx context.Context) (Status, error)
 	probeOpenCode func(ctx context.Context) (Status, error)
-	now           func() time.Time
+
+	// clock drives the rate-limit cooldown windows. Set once at construction
+	// (or by a test during setup) and read without the mutex.
+	clock clock.Clock
 }
+
+func (c *Checker) now() time.Time { return clock.Or(c.clock).Now() }
 
 // New constructs a Checker. Zero-value config fields are filled with defaults.
 func New(cfg Config, emit func(string, any), logger *slog.Logger) *Checker {
@@ -115,6 +129,9 @@ func New(cfg Config, emit func(string, any), logger *slog.Logger) *Checker {
 	if cfg.OpenCodeRLCooldown <= 0 {
 		cfg.OpenCodeRLCooldown = 15 * time.Minute
 	}
+	if cfg.AuthFailureCooldown <= 0 {
+		cfg.AuthFailureCooldown = defaultAuthFailureCooldown
+	}
 	if cfg.ProbeErrorThreshold <= 0 {
 		cfg.ProbeErrorThreshold = defaultProbeErrorThreshold
 	}
@@ -128,13 +145,15 @@ func New(cfg Config, emit func(string, any), logger *slog.Logger) *Checker {
 		cfg:           cfg,
 		statuses:      make(map[string]*Status),
 		probeFailures: make(map[string]int),
+		authHeldUntil: make(map[string]time.Time),
+		authRunFailed: make(map[string]bool),
 		emit:          emit,
 		logger:        logger,
 		probeClaude:   ProbeClaude,
 		probeCodex:    ProbeCodex,
 		probeCopilot:  ProbeCopilot,
 		probeOpenCode: ProbeOpenCode,
-		now:           time.Now,
+		clock:         clock.System{},
 	}
 	// Seed defaults so Snapshot returns something meaningful before first probe.
 	// Healthy is always seeded false, even for an enabled provider: "enabled"
@@ -144,10 +163,10 @@ func New(cfg Config, emit func(string, any), logger *slog.Logger) *Checker {
 	// real probe confirms it — see the incident that motivated this: a
 	// pre-probe seed of Healthy=true let quota-based failover route runs to
 	// an uninstalled copilot CLI, crashing every one of them.
-	c.statuses["claude"] = &Status{Provider: "claude", Healthy: false, Reason: initialReason(cfg.ClaudeEnabled)}
-	c.statuses["codex"] = &Status{Provider: "codex", Healthy: false, Reason: initialReason(cfg.CodexEnabled)}
-	c.statuses["copilot"] = &Status{Provider: "copilot", Healthy: false, Reason: initialReason(cfg.CopilotEnabled)}
-	c.statuses["opencode"] = &Status{Provider: "opencode", Healthy: false, Reason: initialReason(cfg.OpenCodeEnabled)}
+	c.statuses[providerid.Claude] = &Status{Provider: providerid.Claude, Healthy: false, Reason: initialReason(cfg.ClaudeEnabled)}
+	c.statuses[providerid.Codex] = &Status{Provider: providerid.Codex, Healthy: false, Reason: initialReason(cfg.CodexEnabled)}
+	c.statuses[providerid.Copilot] = &Status{Provider: providerid.Copilot, Healthy: false, Reason: initialReason(cfg.CopilotEnabled)}
+	c.statuses[providerid.OpenCode] = &Status{Provider: providerid.OpenCode, Healthy: false, Reason: initialReason(cfg.OpenCodeEnabled)}
 	return c
 }
 
@@ -226,16 +245,16 @@ func (c *Checker) checkAll(ctx context.Context) {
 
 	results := make([]probeResult, 0, 4)
 	if doClaude {
-		results = append(results, probeResult{provider: "claude", status: claudeStatus, err: claudeErr})
+		results = append(results, probeResult{provider: providerid.Claude, status: claudeStatus, err: claudeErr})
 	}
 	if doCodex {
-		results = append(results, probeResult{provider: "codex", status: codexStatus, err: codexErr})
+		results = append(results, probeResult{provider: providerid.Codex, status: codexStatus, err: codexErr})
 	}
 	if doCopilot {
-		results = append(results, probeResult{provider: "copilot", status: copilotStatus, err: copilotErr})
+		results = append(results, probeResult{provider: providerid.Copilot, status: copilotStatus, err: copilotErr})
 	}
 	if doOpenCode {
-		results = append(results, probeResult{provider: "opencode", status: openCodeStatus, err: openCodeErr})
+		results = append(results, probeResult{provider: providerid.OpenCode, status: openCodeStatus, err: openCodeErr})
 	}
 	c.applyProbeResults(ctx, results)
 }
@@ -333,6 +352,9 @@ func (c *Checker) clearExpiredRateLimits() {
 func (c *Checker) clearExpiredRateLimitsLocked(now time.Time) []Status {
 	var toEmit []Status
 	for _, s := range c.statuses {
+		if c.authHeldLocked(s.Provider) || c.authRunFailed[s.Provider] {
+			continue
+		}
 		if !s.RateLimitedUntil.IsZero() && now.After(s.RateLimitedUntil) {
 			s.RateLimitedUntil = time.Time{}
 			if s.Reason == RateLimitReason {
@@ -378,6 +400,28 @@ func (c *Checker) setStatusLocked(name string, next Status, fromProbe bool) (Sta
 	}
 	var flip bool
 	if fromProbe {
+		// Copilot and OpenCode probes only execute `--version`; unlike the
+		// Claude/Codex auth-status probes, that proves liveness but says nothing
+		// about credentials. Do not let it resurrect a provider a real run just
+		// reported as logged out.
+		if next.Healthy && livenessOnlyProbe(name) && c.authRunFailed[name] {
+			// Keep the auth failure authoritative, while still recording that the
+			// liveness probe completed successfully for diagnostics/UI freshness.
+			changed := prev.Healthy || prev.Reason != authFailureReason
+			prev.LastCheck = next.LastCheck
+			prev.Healthy = false
+			if prev.Reason != authFailureReason {
+				// The detail explains the reason being replaced, not the auth
+				// failure, so an operator is never shown one beside the other.
+				prev.Detail = ""
+			}
+			prev.Reason = authFailureReason
+			return *prev, changed
+		}
+		if next.Healthy && c.authHeldLocked(name) {
+			prev.LastCheck = next.LastCheck
+			return *prev, false
+		}
 		// Active probes overwrite unconditionally, but preserve an in-flight
 		// rate-limit window when the probe still reports healthy — the window
 		// should be cleared by clearExpiredRateLimits or a newer passive signal.
@@ -385,6 +429,9 @@ func (c *Checker) setStatusLocked(name string, next Status, fromProbe bool) (Sta
 			next.Healthy = false
 			next.Reason = RateLimitReason
 			next.RateLimitedUntil = prev.RateLimitedUntil
+		}
+		if next.Healthy {
+			delete(c.authHeldUntil, name)
 		}
 		flip = statusChanged(prev, &next)
 		*prev = next
@@ -395,7 +442,14 @@ func (c *Checker) setStatusLocked(name string, next Status, fromProbe bool) (Sta
 		}
 		// Passive failures only upgrade severity; they never mark a provider
 		// healthy and they never overwrite a more-recent probe result.
-		if !prev.Healthy && prev.Reason == next.Reason && prev.RateLimitedUntil.Equal(next.RateLimitedUntil) {
+		held := false
+		if next.Reason == authFailureReason {
+			if livenessOnlyProbe(name) {
+				c.authRunFailed[name] = true
+			}
+			held = c.holdAuthLocked(name)
+		}
+		if !held && !prev.Healthy && prev.Reason == next.Reason && prev.RateLimitedUntil.Equal(next.RateLimitedUntil) {
 			return Status{}, false
 		}
 		prev.Healthy = false
@@ -409,6 +463,29 @@ func (c *Checker) setStatusLocked(name string, next Status, fromProbe bool) (Sta
 	}
 	snapshot := *prev
 	return snapshot, flip
+}
+
+func (c *Checker) authHeldLocked(name string) bool {
+	until, ok := c.authHeldUntil[name]
+	return ok && c.now().Before(until)
+}
+
+func (c *Checker) holdAuthLocked(name string) bool {
+	cooldown := c.cfg.AuthFailureCooldown
+	if cooldown <= 0 {
+		cooldown = defaultAuthFailureCooldown
+	}
+	until := c.now().Add(cooldown)
+	if prev, ok := c.authHeldUntil[name]; ok && !until.After(prev) {
+		return false
+	}
+	c.authHeldUntil[name] = until
+	c.logger.Info("provider.auth_failure.hold", "provider", name, "until", until)
+	return true
+}
+
+func livenessOnlyProbe(provider string) bool {
+	return provider == providerid.Copilot || provider == providerid.OpenCode
 }
 
 func statusChanged(a, b *Status) bool {
@@ -425,12 +502,14 @@ func (c *Checker) healthEventLocked(s Status) HealthEvent {
 		Detail:           s.Detail,
 		LastCheck:        s.LastCheck,
 		RateLimitedUntil: s.RateLimitedUntil,
+		AuthHeldUntil:    c.authHeldUntil[s.Provider],
 		FailoverActive:   c.failoverActiveLocked(s.Provider),
 	}
 }
 
 func (c *Checker) emitHealthEvents(ctx context.Context, events []HealthEvent) {
-	for _, ev := range events {
+	for i := range events {
+		ev := &events[i]
 		metrics.ProviderHealthFlip(ctx, ev.Provider, ev.Healthy)
 		args := []any{
 			"provider", ev.Provider,
@@ -441,7 +520,7 @@ func (c *Checker) emitHealthEvents(ctx context.Context, events []HealthEvent) {
 			args = append(args, "detail", ev.Detail)
 		}
 		c.logger.Info("provider.health.flip", args...)
-		c.emit(ProviderHealthEvent, ev)
+		c.emit(ProviderHealthEvent, *ev)
 	}
 }
 
@@ -545,13 +624,13 @@ func (c *Checker) failoverLocked(unhealthy string) string {
 // failover. Caller must hold c.mu.
 func (c *Checker) providerEnabledLocked(provider string) bool {
 	switch provider {
-	case "claude":
+	case providerid.Claude:
 		return c.cfg.ClaudeEnabled
-	case "codex":
+	case providerid.Codex:
 		return c.cfg.CodexEnabled
-	case "copilot":
+	case providerid.Copilot:
 		return c.cfg.CopilotEnabled
-	case "opencode":
+	case providerid.OpenCode:
 		return c.cfg.OpenCodeEnabled
 	default:
 		return false
@@ -567,20 +646,22 @@ func (c *Checker) ReportAuthFailure(provider, reason string) {
 	if c == nil {
 		return
 	}
-	if reason == "" {
-		reason = "logged_out"
+	detail := reason
+	if detail == authFailureReason {
+		detail = ""
 	}
 	c.setStatus(provider, Status{
 		Provider:  provider,
 		Healthy:   false,
-		Reason:    reason,
+		Reason:    authFailureReason,
+		Detail:    detail,
 		LastCheck: c.now(),
 	}, false)
 }
 
 // ReportRateLimit marks a provider as rate-limited. retryAfter zero falls back
 // to the per-provider configured cooldown.
-func (c *Checker) ReportRateLimit(provider string, retryAfter time.Duration, reason string) {
+func (c *Checker) ReportRateLimit(provider string, retryAfter time.Duration, reason string, source CooldownSource) {
 	// See ReportAuthFailure: the metric is a provider event and survives a nil
 	// checker; the cooldown it would record has nowhere to live without one.
 	metrics.ProviderRateLimit(provider)
@@ -591,13 +672,13 @@ func (c *Checker) ReportRateLimit(provider string, retryAfter time.Duration, rea
 	if cooldown <= 0 {
 		c.mu.RLock()
 		switch provider {
-		case "claude":
+		case providerid.Claude:
 			cooldown = c.cfg.ClaudeRLCooldown
-		case "codex":
+		case providerid.Codex:
 			cooldown = c.cfg.CodexRLCooldown
-		case "copilot":
+		case providerid.Copilot:
 			cooldown = c.cfg.CopilotRLCooldown
-		case "opencode":
+		case providerid.OpenCode:
 			cooldown = c.cfg.OpenCodeRLCooldown
 		default:
 			cooldown = 15 * time.Minute
@@ -608,6 +689,17 @@ func (c *Checker) ReportRateLimit(provider string, retryAfter time.Duration, rea
 		reason = RateLimitReason
 	}
 	until := c.now().Add(cooldown)
+	// Without this a 3-day park is byte-identical in the log to a 900s one:
+	// the health.flip line carries only provider/healthy/reason, so an
+	// over-long park would be undiagnosable in production.
+	if c.logger != nil {
+		c.logger.Info("provider.rate_limit.park",
+			"provider", provider,
+			"reason", reason,
+			"cooldown", cooldown.String(),
+			"until", until,
+			"source", string(source))
+	}
 	c.setStatus(provider, Status{
 		Provider:         provider,
 		Healthy:          false,
@@ -636,18 +728,41 @@ func (c *Checker) SetAutoFailover(v bool) {
 	c.mu.Unlock()
 }
 
+// ProviderEnabled reports whether a provider participates in probing and
+// failover. Exposed so callers can tell "no capacity" from "not configured"
+// without reaching into Config.
+func (c *Checker) ProviderEnabled(provider string) bool {
+	if c == nil {
+		return false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	switch provider {
+	case providerid.Claude:
+		return c.cfg.ClaudeEnabled
+	case providerid.Codex:
+		return c.cfg.CodexEnabled
+	case providerid.Copilot:
+		return c.cfg.CopilotEnabled
+	case providerid.OpenCode:
+		return c.cfg.OpenCodeEnabled
+	default:
+		return false
+	}
+}
+
 // SetProviderEnabled toggles per-provider probing and participation in failover.
 func (c *Checker) SetProviderEnabled(provider string, v bool) {
 	c.mu.Lock()
 	var prev bool
 	switch provider {
-	case "claude":
+	case providerid.Claude:
 		prev, c.cfg.ClaudeEnabled = c.cfg.ClaudeEnabled, v
-	case "codex":
+	case providerid.Codex:
 		prev, c.cfg.CodexEnabled = c.cfg.CodexEnabled, v
-	case "copilot":
+	case providerid.Copilot:
 		prev, c.cfg.CopilotEnabled = c.cfg.CopilotEnabled, v
-	case "opencode":
+	case providerid.OpenCode:
 		prev, c.cfg.OpenCodeEnabled = c.cfg.OpenCodeEnabled, v
 	default:
 		c.mu.Unlock()
@@ -666,8 +781,11 @@ func (c *Checker) SetProviderEnabled(provider string, v bool) {
 	if !v {
 		s.Healthy = false
 		s.Reason = "disabled"
-	} else if s.Reason == "disabled" {
-		s.Reason = "unknown"
+	} else {
+		delete(c.authRunFailed, provider)
+		if s.Reason == "disabled" || s.Reason == authFailureReason {
+			s.Reason = "unknown"
+		}
 	}
 	c.probeFailures[provider] = 0
 	snapshot := *s

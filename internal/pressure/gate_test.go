@@ -108,6 +108,45 @@ func TestAdmit(t *testing.T) {
 	}
 }
 
+func TestAdmitRemoteUsesAbsoluteLeaderReserveOnly(t *testing.T) {
+	cfg := config.PressureConfig{
+		Enabled:                true,
+		MinDiskFreePercent:     5,
+		MinMemAvailablePercent: 8,
+		MaxLoadPerCPU:          8,
+		RemoteMinDiskFreeBytes: 2 << 30,
+		SampleIntervalSeconds:  15,
+	}
+
+	t.Run("local percentage memory and load do not block a remote provider", func(t *testing.T) {
+		g := testGate(t, cfg, Sample{
+			DiskFreePct: 1, DiskFreeBytes: 10 << 30, MemAvailablePct: 1, LoadPerCPU: 99,
+		})
+		if ok, reason := g.AdmitRemote(); !ok || reason != "" {
+			t.Fatalf("AdmitRemote() = (%v, %q), want (true, empty)", ok, reason)
+		}
+	})
+
+	t.Run("absolute reserve protects leader control and handback state", func(t *testing.T) {
+		g := testGate(t, cfg, Sample{
+			DiskFreePct: 1, DiskFreeBytes: 1 << 30, MemAvailablePct: 50, LoadPerCPU: 1,
+		})
+		ok, reason := g.AdmitRemote()
+		if ok || !strings.Contains(reason, "remote reserve") {
+			t.Fatalf("AdmitRemote() = (%v, %q), want reserve denial", ok, reason)
+		}
+	})
+
+	t.Run("unreadable absolute signal fails open", func(t *testing.T) {
+		g := testGate(t, cfg, Sample{
+			DiskFreePct: math.NaN(), DiskFreeBytes: math.NaN(), MemAvailablePct: 50, LoadPerCPU: 1,
+		})
+		if ok, reason := g.AdmitRemote(); !ok || reason != "" {
+			t.Fatalf("AdmitRemote() = (%v, %q), want fail-open", ok, reason)
+		}
+	})
+}
+
 func TestAdmitFailsOpenOnSamplerError(t *testing.T) {
 	g := New(config.PressureConfig{Enabled: true, MaxLoadPerCPU: 8, SampleIntervalSeconds: 15}, "/tmp", nil)
 	if g == nil {

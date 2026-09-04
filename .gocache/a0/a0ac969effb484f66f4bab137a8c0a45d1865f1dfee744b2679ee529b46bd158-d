@@ -1,0 +1,15 @@
+./csidriver.go
+./csidriverspec.go
+./csinode.go
+./csinodedriver.go
+./csinodespec.go
+./csistoragecapacity.go
+./storageclass.go
+./tokenrequest.go
+./volumeattachment.go
+./volumeattachmentsource.go
+./volumeattachmentspec.go
+./volumeattachmentstatus.go
+./volumeattributesclass.go
+./volumeerror.go
+./volumenoderesources.go

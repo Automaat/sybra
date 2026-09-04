@@ -48,7 +48,8 @@ type dispatcherTasksStub struct {
 	err  error
 }
 
-func (d dispatcherTasksStub) List() ([]task.Task, error) { return nil, nil }
+func (d dispatcherTasksStub) List() ([]task.Task, error)       { return nil, nil }
+func (d dispatcherTasksStub) ListActive() ([]task.Task, error) { return nil, nil }
 func (d dispatcherTasksStub) Get(id string) (task.Task, error) {
 	if d.err != nil {
 		return task.Task{}, d.err
@@ -58,10 +59,13 @@ func (d dispatcherTasksStub) Get(id string) (task.Task, error) {
 	}
 	return d.task, nil
 }
-func (d dispatcherTasksStub) Update(string, task.Update) (task.Task, error) {
+func (d dispatcherTasksStub) UpdateBy(string, string, task.Update) (task.Task, error) {
 	return task.Task{}, errors.New("not implemented")
 }
-func (d dispatcherTasksStub) UpdateRun(string, string, task.RunPatch) error {
+func (d dispatcherTasksStub) ApplyStatusEffect(string, task.StatusEffect) (task.Task, error) {
+	return task.Task{}, errors.New("not implemented")
+}
+func (d dispatcherTasksStub) UpdateRunBy(string, string, string, task.RunPatch) error {
 	return errors.New("not implemented")
 }
 
@@ -101,6 +105,9 @@ func TestDispatcher_BoardWideAnomalyRunsInRepoDir(t *testing.T) {
 	if cfg.TaskID != "" {
 		t.Errorf("board-wide anomaly should have empty TaskID, got %q", cfg.TaskID)
 	}
+	if cfg.Role != agent.RoleMonitor {
+		t.Errorf("role: want %q, got %q", agent.RoleMonitor, cfg.Role)
+	}
 	if cfg.Dir != "/repo" {
 		t.Errorf("dir: want /repo, got %q", cfg.Dir)
 	}
@@ -109,9 +116,6 @@ func TestDispatcher_BoardWideAnomalyRunsInRepoDir(t *testing.T) {
 	}
 	if cfg.Model != "sonnet" {
 		t.Errorf("model: want sonnet, got %q", cfg.Model)
-	}
-	if !cfg.IgnoreConcurrencyLimit {
-		t.Errorf("IgnoreConcurrencyLimit must be true for monitor dispatches")
 	}
 	if !equalStrings(cfg.AllowedTools, []string{"Bash", "Read"}) {
 		t.Errorf("allowed tools: want [Bash Read], got %v", cfg.AllowedTools)
@@ -149,6 +153,9 @@ func TestDispatcher_PRGapUsesWorktreePath(t *testing.T) {
 	cfg := rr.last()
 	if cfg.TaskID != "abc123" {
 		t.Errorf("task id: want abc123, got %q", cfg.TaskID)
+	}
+	if cfg.Role != agent.RoleMonitor {
+		t.Errorf("role: want %q, got %q", agent.RoleMonitor, cfg.Role)
 	}
 	if cfg.Dir != "/worktrees/fix-login-abc123" {
 		t.Errorf("dir: want worktree, got %q", cfg.Dir)

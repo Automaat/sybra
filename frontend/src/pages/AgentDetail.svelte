@@ -1,23 +1,28 @@
 <script lang="ts">
+  import { untrack } from 'svelte'
   import { ChevronLeft } from '@lucide/svelte'
   import type { Agent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
   import { EventsOn, RespondEscalation } from '$lib/api'
+  import { getAgentForNode } from '$lib/api-cluster'
   import { agentStore } from '../stores/agents.svelte.js'
-  import { convoStore } from '../stores/convo.svelte.js'
   import { taskStore } from '../stores/tasks.svelte.js'
   import { agentState, agentEscalation, agentError, agentPluginErrors } from '../lib/events.js'
   import AgentErrorBanner from '../components/AgentErrorBanner.svelte'
   import { getAgentPhase } from '$lib/agent-phases.js'
-  import { buildStreamTimeline, buildConvoTimeline } from '$lib/timeline.js'
-  import { extractLatestPlanSteps, extractLatestPlanStepsFromConvo } from '$lib/plan-steps.js'
+  import { buildStreamTimeline } from '$lib/timeline.js'
+  import { extractLatestPlanSteps } from '$lib/plan-steps.js'
   import AgentHeader from '../components/agent-view/AgentHeader.svelte'
   import AgentViewBody from '../components/agent-view/AgentViewBody.svelte'
   import type { ToolUseSignal } from '$lib/workspace-tabs.js'
 
   interface EscalationEvent {
     reason: string
+    guardrail?: string
+    measurement?: string
+    costSource?: string
     turnCount?: number
     costUsd?: number
+    measuredValue?: number
     limit: number
   }
 
@@ -70,40 +75,19 @@
 
   // Timeline entries — reactive to store changes
   const streamOutputs = $derived(agentStore.outputs.get(agentId) ?? [])
-  const convoEvents = $derived(convoStore.conversations.get(agentId) ?? [])
-  const timelineEntries = $derived(
-    a?.mode === 'interactive'
-      ? buildConvoTimeline(convoEvents)
-      : buildStreamTimeline(streamOutputs),
-  )
-
-  const planSteps = $derived(
-    a?.mode === 'interactive'
-      ? extractLatestPlanStepsFromConvo(convoEvents)
-      : extractLatestPlanSteps(streamOutputs),
-  )
-
+  const timelineEntries = $derived(buildStreamTimeline(streamOutputs))
+  const planSteps = $derived(extractLatestPlanSteps(streamOutputs))
   const allAgents = $derived(agentStore.list)
 
   const latestToolUse = $derived.by<ToolUseSignal | undefined>(() => {
-    if (a?.mode === 'interactive') {
-      for (let i = convoEvents.length - 1; i >= 0; i--) {
-        const ev = convoEvents[i]
-        if (ev.type === 'assistant' && ev.toolUses?.length) {
-          const tu = ev.toolUses[ev.toolUses.length - 1]
-          return { id: tu.id, name: tu.name, ts: new Date(ev.timestamp) }
-        }
-      }
-    } else {
-      for (let i = streamOutputs.length - 1; i >= 0; i--) {
-        const ev = streamOutputs[i].event
-        if (ev.type === 'assistant' && ev.content) {
-          const lines = ev.content.split('\n')
-          for (let j = lines.length - 1; j >= 0; j--) {
-            const m = lines[j].match(/^\[(\w+)\]\s+(.+)$/)
-            if (m) {
-              return { id: `stream-${i}-${j}`, name: m[1], ts: streamOutputs[i].receivedAt }
-            }
+    for (let i = streamOutputs.length - 1; i >= 0; i--) {
+      const ev = streamOutputs[i].event
+      if (ev.type === 'assistant' && ev.content) {
+        const lines = ev.content.split('\n')
+        for (let j = lines.length - 1; j >= 0; j--) {
+          const m = lines[j].match(/^\[(\w+)\]\s+(.+)$/)
+          if (m) {
+            return { id: `stream-${i}-${j}`, name: m[1], ts: streamOutputs[i].receivedAt }
           }
         }
       }
@@ -112,30 +96,55 @@
   })
 
   $effect(() => {
+    const id = agentId
+    const cached = agentStore.agents.get(id)
+    if (!cached) return
+    const current = untrack(() => a)
+    a = {
+      ...current,
+      ...cached,
+      prompt: cached.prompt || current?.prompt,
+      command: cached.command || current?.command,
+      logPath: cached.logPath || current?.logPath,
+    } as Agent
+    pluginErrors = cached.pluginErrors ?? []
+  })
+
+  $effect(() => {
+    const id = agentId
     pluginErrors = []
-    const cached = agentStore.agents.get(agentId)
+    const cached = untrack(() => agentStore.agents.get(id))
+    a = cached
     if (cached) {
-      a = cached
       pluginErrors = cached.pluginErrors ?? []
     }
-
-    const unsubState = EventsOn(agentState(agentId), (data: Agent) => {
+    void getAgentForNode(cached?.node, id).then((data) => {
+      if (agentId !== id) return
       a = data
-      agentStore.updateAgent(agentId, data)
+      agentStore.updateAgent(id, data)
+      pluginErrors = data.pluginErrors ?? []
+    }).catch(() => { /* retained agents may expire before detail hydration */ })
+  })
+
+  $effect(() => {
+    const id = agentId
+    const unsubState = EventsOn(agentState(id), (data: Agent) => {
+      a = data
+      agentStore.updateAgent(id, data)
       pluginErrors = data.pluginErrors ?? []
     })
 
-    const unsubError = EventsOn(agentError(agentId), (data: AgentErrorEvent) => {
+    const unsubError = EventsOn(agentError(id), (data: AgentErrorEvent) => {
       agentErr = data
       errorDismissed = false
     })
 
-    const unsubEscalation = EventsOn(agentEscalation(agentId), (data: EscalationEvent) => {
+    const unsubEscalation = EventsOn(agentEscalation(id), (data: EscalationEvent) => {
       escalation = data
       escalationResponding = false
     })
 
-    const unsubPluginErrors = EventsOn(agentPluginErrors(agentId), (data: PluginErrorsEvent) => {
+    const unsubPluginErrors = EventsOn(agentPluginErrors(id), (data: PluginErrorsEvent) => {
       pluginErrors = data.errors ?? []
       pluginErrorsDismissed = false
     })
@@ -262,14 +271,22 @@
         </span>
         {#if escalation.reason === 'turns'}
           <span class="text-sm font-medium text-surface-800 dark:text-surface-200">
-            Turn limit reached — {escalation.turnCount} turns (limit: {escalation.limit})
+            Assistant-event ceiling reached — {escalation.turnCount} events (limit: {escalation.limit})
           </span>
         {:else}
           <span class="text-sm font-medium text-surface-800 dark:text-surface-200">
-            Cost limit exceeded — ${escalation.costUsd?.toFixed(2)} (limit: ${escalation.limit.toFixed(2)})
+            Post-result cost ceiling exceeded — ${escalation.costUsd?.toFixed(2)} (limit: ${escalation.limit.toFixed(2)}, source: {escalation.costSource ?? 'estimated'})
           </span>
         {/if}
       </div>
+      {#if escalation.guardrail}
+        <p class="mb-3 text-xs text-surface-600 dark:text-surface-300">
+          {escalation.guardrail}
+          {#if escalation.measuredValue !== undefined && escalation.measurement}
+            {' '}breached at {escalation.measuredValue}{escalation.measurement === 'post_result_usd' ? ' USD' : ` ${escalation.measurement}`}
+          {/if}
+        </p>
+      {/if}
       <div class="flex items-center gap-2">
         {#if escalation.reason === 'turns'}
           <button
@@ -309,7 +326,6 @@
         {a}
         {linkedTask}
         {streamOutputs}
-        {convoEvents}
         {timelineEntries}
         {planSteps}
         {selectedIndex}

@@ -16,9 +16,7 @@
 
   let title = $state('')
   let body = $state('')
-  let headless = $state(true)
   let reasoningEffort = $state('')
-  let taskType = $state('normal')
   let selectedProject = $state('')
   let projectSearch = $state('')
   let projectDropdownOpen = $state(false)
@@ -59,9 +57,7 @@
   function reset() {
     title = ''
     body = ''
-    headless = true
     reasoningEffort = ''
-    taskType = 'normal'
     selectedProject = ''
     projectSearch = ''
     projectDropdownOpen = false
@@ -79,14 +75,8 @@
     submitting = true
     error = ''
     try {
-      // debug/research task types force the agent mode; ignore checkbox.
-      const effectiveMode =
-        taskType === 'debug' ? 'interactive'
-        : taskType === 'research' ? 'headless'
-        : (headless ? 'headless' : 'interactive')
-      let t = await taskStore.create(title.trim(), body, effectiveMode)
+      let t = await taskStore.create(title.trim(), body, 'headless')
       const updates: Record<string, unknown> = {}
-      if (taskType !== 'normal') updates.task_type = taskType
       if (selectedProject) updates.project_id = selectedProject
       if (reasoningEffort) updates.reasoning_effort = reasoningEffort
       if (Object.keys(updates).length > 0) {
@@ -182,43 +172,17 @@
         {/if}
 
         <label class="flex flex-col gap-1">
-          <span class="text-sm font-medium">Type</span>
+          <span class="text-sm font-medium">Reasoning effort</span>
           <select
-            bind:value={taskType}
+            bind:value={reasoningEffort}
             class="rounded-lg border border-surface-300 bg-surface-100 px-3 py-2 text-sm dark:border-surface-600 dark:bg-surface-700"
           >
-            <option value="normal">normal</option>
-            <option value="debug">debug (interactive, per-tool perms)</option>
-            <option value="research">research (headless, research-machine)</option>
+            <option value="">model default</option>
+            {#each reasoningEffortOptions as option}
+              <option value={option.value}>{option.label}</option>
+            {/each}
           </select>
-          <span class="text-xs text-surface-400">
-            Sets how the agent runs. Normal is the default; debug and research
-            force a specific execution mode.
-          </span>
         </label>
-
-        {#if taskType === 'normal'}
-          <label class="flex items-center gap-2">
-            <input
-              type="checkbox"
-              bind:checked={headless}
-              class="rounded border-surface-300 dark:border-surface-600"
-            />
-            <span class="text-sm font-medium">Headless</span>
-          </label>
-          <label class="flex flex-col gap-1">
-            <span class="text-sm font-medium">Reasoning effort</span>
-            <select
-              bind:value={reasoningEffort}
-              class="rounded-lg border border-surface-300 bg-surface-100 px-3 py-2 text-sm dark:border-surface-600 dark:bg-surface-700"
-            >
-              <option value="">model default</option>
-              {#each reasoningEffortOptions as option}
-                <option value={option.value}>{option.label}</option>
-              {/each}
-            </select>
-          </label>
-        {/if}
 
         <label class="flex flex-col gap-1">
           <span class="text-sm font-medium">Description</span>

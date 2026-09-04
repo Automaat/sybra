@@ -10,9 +10,9 @@ import (
 func TestDiffConfig_NoChange(t *testing.T) {
 	t.Parallel()
 	cfg := config.DefaultConfig()
-	hot, restart := diffConfig(*cfg, *cfg)
-	if len(hot) != 0 || len(restart) != 0 {
-		t.Errorf("identical configs: hot=%v restart=%v, want empty", hot, restart)
+	got := diffConfig(*cfg, *cfg)
+	if len(got.Applied) != 0 || len(got.RestartRequired) != 0 || len(got.Rejected) != 0 {
+		t.Errorf("identical configs: got %+v, want empty change sets", got)
 	}
 }
 
@@ -23,16 +23,16 @@ func TestDiffConfig_HotOnly(t *testing.T) {
 	next.Agent.MaxConcurrent = 7
 	next.Logging.Level = "debug"
 
-	hot, restart := diffConfig(*old, next)
+	got := diffConfig(*old, next)
 
-	if !slices.Contains(hot, "agent.max_concurrent") {
-		t.Errorf("expected agent.max_concurrent in hot, got %v", hot)
+	if !slices.Contains(got.Applied, "agent") {
+		t.Errorf("expected agent in applied, got %+v", got)
 	}
-	if !slices.Contains(hot, "logging.level") {
-		t.Errorf("expected logging.level in hot, got %v", hot)
+	if !slices.Contains(got.Applied, "logging.level") {
+		t.Errorf("expected logging.level in applied, got %+v", got)
 	}
-	if len(restart) != 0 {
-		t.Errorf("expected no restart keys, got %v", restart)
+	if len(got.RestartRequired) != 0 {
+		t.Errorf("expected no restart keys, got %+v", got)
 	}
 }
 
@@ -42,13 +42,13 @@ func TestDiffConfig_RestartOnly(t *testing.T) {
 	next := *old
 	next.Providers.HealthCheck.IntervalSeconds = 600
 
-	hot, restart := diffConfig(*old, next)
+	got := diffConfig(*old, next)
 
-	if !slices.Contains(restart, "providers") {
-		t.Errorf("expected providers in restart, got %v", restart)
+	if !slices.Contains(got.RestartRequired, "providers.health_check") {
+		t.Errorf("expected providers.health_check in restart, got %+v", got)
 	}
-	if slices.Contains(hot, "providers") {
-		t.Errorf("providers must not appear in hot, got %v", hot)
+	if slices.Contains(got.Applied, "providers.health_check") {
+		t.Errorf("providers.health_check must not appear in applied, got %+v", got)
 	}
 }
 
@@ -59,13 +59,13 @@ func TestDiffConfig_Mixed(t *testing.T) {
 	next.Agent.Provider = "codex"
 	next.Monitor.Enabled = false
 
-	hot, restart := diffConfig(*old, next)
+	got := diffConfig(*old, next)
 
-	if !slices.Contains(hot, "agent.provider") {
-		t.Errorf("expected agent.provider in hot, got %v", hot)
+	if !slices.Contains(got.Applied, "agent") {
+		t.Errorf("expected agent in applied, got %+v", got)
 	}
-	if !slices.Contains(restart, "monitor") {
-		t.Errorf("expected monitor in restart, got %v", restart)
+	if !slices.Contains(got.RestartRequired, "monitor") {
+		t.Errorf("expected monitor in restart, got %+v", got)
 	}
 }
 
@@ -79,19 +79,10 @@ func TestDiffConfig_GuardrailsHot(t *testing.T) {
 	disabled := false
 	next.Agent.CheckpointOnTurnCeiling = &disabled
 
-	hot, _ := diffConfig(*old, next)
+	got := diffConfig(*old, next)
 
-	if !slices.Contains(hot, "agent.max_cost_usd") {
-		t.Errorf("expected agent.max_cost_usd in hot, got %v", hot)
-	}
-	if !slices.Contains(hot, "agent.max_turns") {
-		t.Errorf("expected agent.max_turns in hot, got %v", hot)
-	}
-	if !slices.Contains(hot, "agent.max_checkpoints") {
-		t.Errorf("expected agent.max_checkpoints in hot, got %v", hot)
-	}
-	if !slices.Contains(hot, "agent.checkpoint_on_turn_ceiling") {
-		t.Errorf("expected agent.checkpoint_on_turn_ceiling in hot, got %v", hot)
+	if !slices.Contains(got.Applied, "agent") {
+		t.Errorf("expected agent in applied, got %+v", got)
 	}
 }
 
@@ -101,11 +92,10 @@ func TestDiffConfig_MetricsRestart(t *testing.T) {
 	next := *old
 	next.Metrics.Enabled = true
 
-	hot, restart := diffConfig(*old, next)
-	_ = hot
+	got := diffConfig(*old, next)
 
-	if !slices.Contains(restart, "metrics") {
-		t.Errorf("expected metrics in restart, got %v", restart)
+	if !slices.Contains(got.RestartRequired, "metrics") {
+		t.Errorf("expected metrics in restart, got %+v", got)
 	}
 }
 
@@ -113,14 +103,84 @@ func TestDiffConfig_BrowserRestart(t *testing.T) {
 	t.Parallel()
 	old := config.DefaultConfig()
 	next := *old
+	enabled := true
+	next.Browser.InApp = &enabled
+
+	got := diffConfig(*old, next)
+	if len(got.Applied) != 0 {
+		t.Errorf("expected no applied keys, got %+v", got)
+	}
+	if !slices.Contains(got.RestartRequired, "browser") {
+		t.Errorf("expected browser in restart, got %+v", got)
+	}
+}
+
+func TestDiffConfig_BrowserOmittedAndExplicitFalseMatch(t *testing.T) {
+	t.Parallel()
+	old := config.DefaultConfig()
+	next := *old
 	disabled := false
 	next.Browser.InApp = &disabled
 
-	hot, restart := diffConfig(*old, next)
-	if len(hot) != 0 {
-		t.Errorf("expected no hot keys, got %v", hot)
+	got := diffConfig(*old, next)
+	if len(got.Applied) != 0 || len(got.RestartRequired) != 0 || len(got.Rejected) != 0 {
+		t.Errorf("omitted and explicit false should match effective browser config, got %+v", got)
 	}
-	if !slices.Contains(restart, "browser") {
-		t.Errorf("expected browser in restart, got %v", restart)
+}
+
+// TestDiffConfig_EvidenceChildOverridesAgentParent locks in that flipping the
+// restart-policy child agent.evidence does NOT also fire the hot agent parent:
+// the workflow engine caches agent.evidence once at init, so a hot apply of it
+// would silently diverge the live engine from the stored/UI value. The change
+// must land as restart-required only.
+func TestDiffConfig_EvidenceChildOverridesAgentParent(t *testing.T) {
+	t.Parallel()
+	old := config.DefaultConfig()
+	next := *old
+	next.Agent.Evidence.Enabled = !old.Agent.Evidence.Enabled
+
+	got := diffConfig(*old, next)
+
+	if !slices.Contains(got.RestartRequired, "agent.evidence") {
+		t.Errorf("expected agent.evidence in restartRequired, got %+v", got)
+	}
+	if slices.Contains(got.Applied, "agent") {
+		t.Errorf("agent must not be applied when only the restart-policy child changed, got %+v", got)
+	}
+	if slices.Contains(got.appliedLeaves, "agent.evidence.enabled") {
+		t.Errorf("restart-policy leaf must not be scheduled for hot copy, got %+v", got.appliedLeaves)
+	}
+}
+
+// TestDiffConfig_AgentHotChangeExcludesEvidenceLeaf ensures a genuine hot agent
+// change still applies, but never carries the restart-policy evidence child
+// along in the hot copy set even when both change at once.
+func TestDiffConfig_AgentHotChangeExcludesEvidenceLeaf(t *testing.T) {
+	t.Parallel()
+	old := config.DefaultConfig()
+	next := *old
+	next.Agent.MaxConcurrent = old.Agent.MaxConcurrent + 4
+	next.Agent.Evidence.Enabled = !old.Agent.Evidence.Enabled
+
+	got := diffConfig(*old, next)
+
+	if !slices.Contains(got.Applied, "agent") {
+		t.Errorf("expected agent in applied, got %+v", got)
+	}
+	if !slices.Contains(got.RestartRequired, "agent.evidence") {
+		t.Errorf("expected agent.evidence in restartRequired, got %+v", got)
+	}
+	if slices.Contains(got.appliedLeaves, "agent.evidence.enabled") {
+		t.Errorf("evidence leaf must be excluded from hot copy, got %+v", got.appliedLeaves)
+	}
+}
+
+func TestConfigRegistryCoversEveryConfigLeaf(t *testing.T) {
+	t.Parallel()
+
+	for _, path := range configRegistryCoveragePaths() {
+		if !coveredByRegistry(path) {
+			t.Fatalf("config leaf %q lacks reload metadata", path)
+		}
 	}
 }

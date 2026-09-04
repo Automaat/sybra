@@ -148,7 +148,6 @@
 
   function navTaskDetail(id: string) { navStore.navigate({ kind: 'task-detail', taskId: id }) }
   function navAgentDetail(id: string) { navStore.navigate({ kind: 'agent-detail', agentId: id }) }
-  function navChatDetail(id: string) { navStore.navigate({ kind: 'chat-detail', agentId: id }) }
   function navProjectDetail(id: string) { navStore.navigate({ kind: 'project-detail', projectId: id }) }
   function navWorkflowDetail(id: string) { navStore.navigate({ kind: 'workflow-detail', workflowId: id }) }
 </script>
@@ -168,7 +167,6 @@
     onfocusedtaskchange={(id) => (focusedTaskIdFromList = id)}
     navTaskDetail={navTaskDetail}
     navAgentDetail={navAgentDetail}
-    navChatDetail={navChatDetail}
     navProjectDetail={navProjectDetail}
     navWorkflowDetail={navWorkflowDetail}
     onnewTask={() => (quickAddOpen = true)}

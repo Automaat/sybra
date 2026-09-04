@@ -18,6 +18,12 @@ type pathExecer struct {
 	err       error
 }
 
+type restRecordingExecer struct {
+	args []string
+	body string
+	err  error
+}
+
 func (p *pathExecer) run(args ...string) ([]byte, error) {
 	if p.err != nil {
 		return nil, p.err
@@ -27,6 +33,14 @@ func (p *pathExecer) run(args ...string) ([]byte, error) {
 		return []byte(body), nil
 	}
 	return nil, fmt.Errorf("no stub for endpoint %q (args: %s)", endpoint, strings.Join(args, " "))
+}
+
+func (r *restRecordingExecer) run(args ...string) ([]byte, error) {
+	r.args = append([]string(nil), args...)
+	if r.err != nil {
+		return nil, r.err
+	}
+	return []byte(r.body), nil
 }
 
 // ghFlagsWithValue lists the `gh api` flags that consume the following argv
@@ -64,6 +78,27 @@ func restAPIEndpoint(args []string) string {
 	return strings.Join(args, " ")
 }
 
+func restAPIArg(args []string) string {
+	for i, a := range args {
+		if a != "api" {
+			continue
+		}
+		for j := i + 1; j < len(args); {
+			cur := args[j]
+			if ghFlagsWithValue[cur] {
+				j += 2
+				continue
+			}
+			if strings.HasPrefix(cur, "-") {
+				j++
+				continue
+			}
+			return cur
+		}
+	}
+	return strings.Join(args, " ")
+}
+
 func TestRestMergeable(t *testing.T) {
 	t.Parallel()
 	cases := map[string]string{
@@ -80,6 +115,21 @@ func TestRestMergeable(t *testing.T) {
 		if got := restMergeable(in); got != want {
 			t.Errorf("restMergeable(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestFetchCheckRunsCtxWith_RequestsFullPage(t *testing.T) {
+	t.Parallel()
+
+	e := &restRecordingExecer{body: `{"check_runs":[]}`}
+	if _, fetched := fetchCheckRunsCtxWith(t.Context(), e, "o", "r", "abc", "all"); !fetched {
+		t.Fatal("fetchCheckRunsCtxWith() fetched = false, want true")
+	}
+
+	endpoint := restAPIArg(e.args)
+	want := "repos/o/r/commits/abc/check-runs?per_page=100&filter=all"
+	if endpoint != want {
+		t.Fatalf("endpoint = %q, want %q", endpoint, want)
 	}
 }
 
@@ -414,6 +464,54 @@ func TestFetchCIStatusViaREST_OK(t *testing.T) {
 	}
 	if status != "SUCCESS" || pending || flaky {
 		t.Errorf("status=%q pending=%v flaky=%v, want SUCCESS/false/false", status, pending, flaky)
+	}
+}
+
+func TestFetchCIStatusViaREST_PaginatesCheckRuns(t *testing.T) {
+	t.Parallel()
+	firstPage := make([]string, 100)
+	for i := range firstPage {
+		firstPage[i] = fmt.Sprintf(`{"name":"green-%d","status":"completed","conclusion":"success"}`, i)
+	}
+	e := &sequenceExecer{outputs: [][]byte{
+		fmt.Appendf(nil, `{"total_count":101,"check_runs":[%s]}`, strings.Join(firstPage, ",")),
+		[]byte(`{"total_count":101,"check_runs":[{"name":"late-failure","status":"completed","conclusion":"failure"}]}`),
+		[]byte(`{"total_count":0,"statuses":[]}`),
+	}}
+
+	status, pending, flaky, ok := fetchCIStatusViaREST(e, "o", "r", "sha")
+	if !ok || status != "FAILURE" || pending || flaky {
+		t.Fatalf("status=%q pending=%v flaky=%v ok=%v, want FAILURE/false/false/true", status, pending, flaky, ok)
+	}
+	if e.calls != 3 {
+		t.Fatalf("calls = %d, want two check-run pages and one status page", e.calls)
+	}
+	if endpoint := restAPIArg(e.args[1]); !strings.Contains(endpoint, "page=2") {
+		t.Fatalf("second endpoint = %q, want page=2", endpoint)
+	}
+}
+
+func TestFetchCIStatusViaREST_PaginatesLegacyStatuses(t *testing.T) {
+	t.Parallel()
+	firstPage := make([]string, 100)
+	for i := range firstPage {
+		firstPage[i] = fmt.Sprintf(`{"context":"green-%d","state":"success"}`, i)
+	}
+	e := &sequenceExecer{outputs: [][]byte{
+		[]byte(`{"total_count":0,"check_runs":[]}`),
+		fmt.Appendf(nil, `{"total_count":101,"statuses":[%s]}`, strings.Join(firstPage, ",")),
+		[]byte(`{"total_count":101,"statuses":[{"context":"late-failure","state":"failure"}]}`),
+	}}
+
+	status, pending, flaky, ok := fetchCIStatusViaREST(e, "o", "r", "sha")
+	if !ok || status != "FAILURE" || pending || flaky {
+		t.Fatalf("status=%q pending=%v flaky=%v ok=%v, want FAILURE/false/false/true", status, pending, flaky, ok)
+	}
+	if e.calls != 3 {
+		t.Fatalf("calls = %d, want one check-run page and two status pages", e.calls)
+	}
+	if endpoint := restAPIArg(e.args[2]); !strings.Contains(endpoint, "page=2") {
+		t.Fatalf("third endpoint = %q, want page=2", endpoint)
 	}
 }
 

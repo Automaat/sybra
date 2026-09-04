@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/providerid"
 	"gopkg.in/yaml.v3"
 )
 
@@ -72,6 +73,9 @@ func TestAgentRecordMappingRoundTrip(t *testing.T) {
 	a.requirePermissions = true
 	a.sandboxMode = "enforce"
 	a.SetForkSubagent(true)
+	a.steerCommandIDs = map[string]struct{}{"command-a": {}, "command-b": {}}
+	a.steerDispatching = true
+	a.unthrottledOutputEvents = true
 	a.EnqueuePrompt("queued turn 1")
 	a.EnqueuePrompt("queued turn 2")
 
@@ -98,7 +102,7 @@ func TestAgentRecordMappingRoundTrip(t *testing.T) {
 	if !restored.isDetached() {
 		t.Fatal("fromRecord must mark the skeleton agent detached")
 	}
-	if restored.cancel != nil || restored.done != nil || restored.hasPromptChannel() || restored.GetCmd() != nil {
+	if restored.cancel != nil || restored.done != nil || restored.convo.hasStdinPipe() || restored.GetCmd() != nil {
 		t.Fatal("fromRecord must leave live runtime wiring to reattach callers")
 	}
 
@@ -169,16 +173,27 @@ func recordMappingStartedAt() time.Time {
 
 func recordMappingAgent(started time.Time) *Agent {
 	return &Agent{
-		ID:                      "a-map",
-		TaskID:                  "task-map",
-		Name:                    "mapper",
-		Mode:                    "interactive",
-		Provider:                "codex",
-		Model:                   "gpt-5.3-codex",
-		ExperimentID:            "exp-1",
-		VariantID:               "variant-a",
-		AssignmentUnit:          "task",
-		AssignmentKey:           "task-map",
+		ID:              "a-map",
+		TaskID:          "task-map",
+		Name:            "mapper",
+		Role:            RoleMonitor,
+		Mode:            "interactive",
+		Provider:        "codex",
+		Model:           "gpt-5.3-codex",
+		RequestedModel:  "opus",
+		ExperimentID:    "exp-1",
+		VariantID:       "variant-a",
+		RoutingReason:   "ab",
+		AssignmentUnit:  "task",
+		AssignmentKey:   "task-map",
+		DecisionVersion: 3,
+		attemptIntent: AttemptIntent{
+			IntentID: "intent-map", TaskID: "task-map", TaskGeneration: 4,
+			Worktree: "/tmp/sybra/worktrees/task-map", WorktreeGeneration: 5,
+			Access: AttemptAccessObserve, Role: RoleMonitor, Provider: "codex",
+			CapabilityCertified: true,
+		},
+		attemptLease:            AttemptLease{ID: "lease-map", Version: 6},
 		PID:                     12345,
 		SessionID:               "sess-map",
 		LogPath:                 "/tmp/sybra/agents/a-map.ndjson",
@@ -207,13 +222,25 @@ func recordMappingRecord(started time.Time) Record {
 		ID:                      "a-map",
 		TaskID:                  "task-map",
 		Name:                    "mapper",
+		Role:                    RoleMonitor,
 		Mode:                    "interactive",
-		Provider:                "codex",
+		Provider:                providerid.Codex,
 		Model:                   "gpt-5.3-codex",
+		RequestedModel:          "opus",
 		ExperimentID:            "exp-1",
 		VariantID:               "variant-a",
+		RoutingReason:           "ab",
 		AssignmentUnit:          "task",
 		AssignmentKey:           "task-map",
+		DecisionVersion:         3,
+		AttemptIntentID:         "intent-map",
+		AttemptTaskKey:          "task-map",
+		AttemptTaskGen:          4,
+		AttemptWorktree:         "/tmp/sybra/worktrees/task-map",
+		AttemptWorkGen:          5,
+		AttemptAccess:           AttemptAccessObserve,
+		AttemptLeaseID:          "lease-map",
+		AttemptVersion:          6,
 		PID:                     12345,
 		SessionID:               "sess-map",
 		LogPath:                 "/tmp/sybra/agents/a-map.ndjson",
@@ -222,6 +249,9 @@ func recordMappingRecord(started time.Time) Record {
 		StartedAt:               started,
 		StdinPath:               "/tmp/sybra/agents/a-map.stdin",
 		PendingPrompts:          []string{"queued turn 1", "queued turn 2"},
+		SteerCommandIDs:         []string{"command-a", "command-b"},
+		SteerDispatching:        true,
+		UnthrottledOutputEvents: true,
 		OneShot:                 true,
 		MaxTurns:                7,
 		RequirePermissions:      true,
@@ -414,17 +444,23 @@ func TestManagerRunPersistsAndReattachesLiveHeadlessAgent(t *testing.T) {
 	t.Cleanup(func() { reattachPIDPoll.Store(prev) })
 
 	binDir := t.TempDir()
+	// The child must still be alive when ReattachAll runs. Staying up for a
+	// fixed span raced a loaded runner — the process exited first and
+	// reattach correctly found nothing — so it blocks on a sentinel the test
+	// writes once it is done with the live process. The iteration cap only
+	// stops a leak if the test dies before releasing it.
+	releaseFile := filepath.Join(t.TempDir(), "release")
 	fakeClaude := filepath.Join(binDir, "claude")
-	if err := os.WriteFile(fakeClaude, []byte(`#!/bin/sh
+	if err := os.WriteFile(fakeClaude, fmt.Appendf(nil, `#!/bin/sh
 trap 'exit 130' INT TERM
-printf '%s\n' '{"type":"system","subtype":"init","session_id":"sess-lifecycle"}'
+printf '%%s\n' '{"type":"system","subtype":"init","session_id":"sess-lifecycle"}'
 i=0
-while [ "$i" -lt 5 ]; do
-  sleep 0.1
+while [ ! -f %q ] && [ "$i" -lt 1200 ]; do
+  sleep 0.05
   i=$((i + 1))
 done
-printf '%s\n' '{"type":"result","result":"done","session_id":"sess-lifecycle","total_cost_usd":0}'
-`), 0o755); err != nil {
+printf '%%s\n' '{"type":"result","result":"done","session_id":"sess-lifecycle","total_cost_usd":0}'
+`, releaseFile), 0o755); err != nil {
 		t.Fatalf("write fake claude: %v", err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -491,7 +527,10 @@ printf '%s\n' '{"type":"result","result":"done","session_id":"sess-lifecycle","t
 		t.Fatal("expected reattached agent to rehydrate output from log")
 	}
 
-	waitForAgentDone(t, got, 5*time.Second)
+	if err := os.WriteFile(releaseFile, nil, 0o644); err != nil {
+		t.Fatalf("release fake claude: %v", err)
+	}
+	waitForAgentDone(t, got, scaledDeadline(15*time.Second))
 	if got.GetState() != StateStopped {
 		t.Fatalf("completed reattached state = %s, want %s", got.GetState(), StateStopped)
 	}

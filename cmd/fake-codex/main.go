@@ -513,6 +513,11 @@ func runCodexWriteSidecarSuccessNoReceipt(taskID string) {
 func runCodexPlanCriticSuccess(taskID string) {
 	emitAgentMessage("Critiquing plan...")
 	runCLI(taskID, "update", taskID, "--plan-critique", "# Plan Critique\n\n## Verdict: REFINE\n\n- Consider edge case X.\n")
+	// The critique_plan step's output_schema forces the final message to be
+	// the bare JSON verdict object (see ExtractPlanCritiqueVerdict) — a plain
+	// prose result here reads as a malformed verdict and sends the workflow
+	// into its bounded retry/escalate path instead of review_plan.
+	emitAgentMessage(`{"verdict":"REFINE"}`)
 	emitTurnCompleted(100, 20)
 }
 
@@ -652,6 +657,7 @@ func fakePlanContract(taskID string) string {
     {"path": "internal/sybra/e2e_workflow_test.go", "purpose": "test"}
   ],
   "steps": ["drive the fake workflow"],
+  "expected_deletions": [],
   "verification": [
     {"command": "go test ./internal/sybra", "expected": "tests pass"}
   ],

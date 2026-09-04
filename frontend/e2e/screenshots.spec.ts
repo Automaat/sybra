@@ -11,17 +11,33 @@ import { mockGitHub } from './lib/github-mocks.js'
 import { mockProjects } from './lib/project-mocks.js'
 import { mockProviderHealth } from './lib/provider-mocks.js'
 import { mockReviewComments } from './lib/review-mocks.js'
-import { copyFile, mkdir } from 'node:fs/promises'
-import { existsSync } from 'node:fs'
+import { copyFile, mkdir, readFile } from 'node:fs/promises'
+import { load as parseYAML } from 'js-yaml'
 import { join } from 'node:path'
 
 import { isolatedSybraHome } from './lib/sybra-home'
+import { apiCall } from './lib/api'
 
 const SYBRA_HOME = isolatedSybraHome()
 const TASKS_DIR = join(SYBRA_HOME, 'tasks')
-const WORKFLOWS_DIR = join(SYBRA_HOME, 'workflows')
 
 const OUT_DIR = join(import.meta.dirname, '..', '..', 'docs', 'screenshots')
+
+/**
+ * Seed the workflow fixture through the API rather than the workflows
+ * directory.
+ *
+ * The directory is only the store under the `file` backend. Writing a YAML
+ * there after the server booted is invisible to every other backend, because
+ * those read rows and the one-time file import has already run by then —
+ * see frontend/e2e/workflow-editor.spec.ts for the suite that first hit this.
+ */
+async function seedWorkflowFixture() {
+  const src = join(import.meta.dirname, 'fixtures', 'wf-editor-e2e.yaml')
+  await apiCall(SYBRA_HOME, 'WorkflowService', 'SaveWorkflow', [
+    parseYAML(await readFile(src, 'utf8')),
+  ])
+}
 
 async function shot(page: Page, theme: 'light' | 'dark', name: string) {
   await page.screenshot({
@@ -49,21 +65,13 @@ test.beforeAll(async () => {
   await mkdir(join(OUT_DIR, 'light'), { recursive: true })
   await mkdir(join(OUT_DIR, 'dark'), { recursive: true })
 
-  // Ensure task fixtures are present
   for (const f of ['auth0001.md', 'test0001.md', 'db0001.md', 'plan0001.md']) {
     const src = join(import.meta.dirname, 'fixtures', f)
     const dst = join(TASKS_DIR, f)
     await copyFile(src, dst)
   }
 
-  // Ensure workflow fixture is present
-  if (!existsSync(WORKFLOWS_DIR)) {
-    await mkdir(WORKFLOWS_DIR, { recursive: true })
-  }
-  await copyFile(
-    join(import.meta.dirname, 'fixtures', 'wf-editor-e2e.yaml'),
-    join(WORKFLOWS_DIR, 'wf-editor-e2e.yaml'),
-  )
+  await seedWorkflowFixture()
 })
 
 // Run every screenshot block in both themes
@@ -165,37 +173,6 @@ for (const theme of ['light', 'dark'] as const) {
       // Wait for the seeded comment to render inline under its line
       await page.getByText('Should we also migrate the middleware package?').waitFor({ timeout: 5_000 })
       await shot(page, theme, 'reviews-plan-with-comment')
-    })
-
-    // ─── Chats ────────────────────────────────────────────────────────────────
-
-    test('chats', async ({ page }) => {
-      await page.goto('/')
-      await page.locator('[data-part="trigger"]', { hasText: /Chats/ }).click()
-      await page.locator('h2', { hasText: 'Chats' }).waitFor()
-      await shot(page, theme, 'chats')
-    })
-
-    test('chats-new-chat-dialog', async ({ page }) => {
-      await page.goto('/')
-      await page.locator('[data-part="trigger"]', { hasText: /Chats/ }).click()
-      await page.locator('h2', { hasText: 'Chats' }).waitFor()
-      await page.getByRole('main').getByRole('button', { name: /New Chat/ }).first().click()
-      await page.getByRole('dialog').waitFor()
-      await shot(page, theme, 'chats-new-chat-dialog')
-    })
-
-    test('chat-detail', async ({ page }) => {
-      await page.goto('/')
-      await page.locator('[data-part="trigger"]', { hasText: /Chats/ }).click()
-      await page.locator('h2', { hasText: 'Chats' }).waitFor()
-      // Open the first existing chat session if present
-      const firstChat = page.getByRole('main').getByRole('listitem').first()
-      if (await firstChat.count() > 0 && await firstChat.isVisible()) {
-        await firstChat.click()
-        await page.waitForTimeout(800)
-      }
-      await shot(page, theme, 'chat-detail')
     })
 
     // ─── Agents ───────────────────────────────────────────────────────────────

@@ -63,7 +63,7 @@ func TestE2E_NewChecksFireThroughChecker(t *testing.T) {
 	tasks := task.NewManager(store, nil)
 
 	silent := slog.New(slog.DiscardHandler)
-	c := New(auditDir, tasks, home, silent, nil, nil)
+	c := New(auditDirReaderForTest(auditDir), tasks, home, silent, nil, nil)
 	c.docker = func(context.Context) ([]byte, error) {
 		return []byte(`{"Size":"30GiB","Reclaimable":"24GiB (80%)"}`), nil
 	}
@@ -196,7 +196,7 @@ func TestE2E_GoodScoreWhenNothingFires(t *testing.T) {
 	}
 	tasks := task.NewManager(store, nil)
 	silent := slog.New(slog.DiscardHandler)
-	c := New(auditDir, tasks, home, silent, nil, nil)
+	c := New(auditDirReaderForTest(auditDir), tasks, home, silent, nil, nil)
 
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
@@ -270,7 +270,7 @@ func TestE2E_SandboxCleanupFailureSurfacesHealthFinding(t *testing.T) {
 	}
 	tasks := task.NewManager(store, nil)
 
-	c := New(auditDir, tasks, home, slog.New(slog.DiscardHandler), nil, nil)
+	c := New(auditDirReaderForTest(auditDir), tasks, home, slog.New(slog.DiscardHandler), nil, nil)
 	c.SetSandboxQuarantine(mgr.QuarantinedEntries)
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -364,7 +364,7 @@ func TestE2E_PressureTelemetryPersistsLastReclaim(t *testing.T) {
 	tasks := task.NewManager(store, nil)
 
 	ranAt := time.Date(2026, 7, 16, 21, 0, 0, 0, time.UTC)
-	c := New(auditDir, tasks, home, slog.New(slog.DiscardHandler), nil, nil)
+	c := New(auditDirReaderForTest(auditDir), tasks, home, slog.New(slog.DiscardHandler), nil, nil)
 	c.SetPressureStatus(func() *PressureStatus {
 		return &PressureStatus{
 			DiskFreePct:         12.5,

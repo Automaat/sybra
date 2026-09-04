@@ -10,6 +10,7 @@
 //	SYBRA_HOST       HTTP listen host (default: all interfaces; a configured
 //	                   cluster.bind_addr(s) wins over this)
 //	SYBRA_AUTH_TOKEN Bearer token for the HTTP control plane
+//	SYBRA_GITHUB_WEBHOOK_SECRET GitHub App webhook signing secret
 //	SYBRA_STATIC_DIR Directory to serve as /; set to frontend/dist for SPA
 //	                   (optional — omit to skip static file serving)
 package main
@@ -18,21 +19,18 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
-	"io/fs"
 	"log"
 	"log/slog"
 	"net"
 	"net/http"
-	"net/http/pprof"
 	"os"
 	"os/signal"
-	"path"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -41,16 +39,30 @@ import (
 	"github.com/Automaat/sybra/internal/autoupdate"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/httpapi"
+	"github.com/Automaat/sybra/internal/httpserve"
 	"github.com/Automaat/sybra/internal/logging"
 	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/skills"
 	"github.com/Automaat/sybra/internal/sse"
 	"github.com/Automaat/sybra/internal/sybra"
 	"github.com/Automaat/sybra/internal/task"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {
+	// Unattended: an unset agent.sandbox_mode resolves to "report", which
+	// never wraps the spawn, so an omitted key is indistinguishable from a
+	// deliberately unsandboxed one. Set before any config load so the
+	// requirement covers startup, -check-config, and every later hot reload
+	// through the same validator — a boot-only check is defeated by the
+	// config watcher re-applying an edited file.
+	config.RequireExplicitSandboxMode(true)
+
+	checkConfig := flag.Bool("check-config", false, "load and validate the live config (SYBRA_HOME/config.yaml), then exit without starting the server: 0 if valid, 1 otherwise")
+	flag.Parse()
+	if *checkConfig {
+		os.Exit(runCheckConfig())
+	}
+
 	code, err := run()
 	if err != nil {
 		println("fatal:", err.Error())
@@ -61,6 +73,29 @@ func main() {
 	if code != 0 {
 		os.Exit(code)
 	}
+}
+
+// runCheckConfig is the deploy-time preflight entry point (see deploy/bin/
+// sybra-build.sh): it exercises the exact same config resolution/validation
+// path run() does — including the unknown-key rejection in
+// validateKnownConfigKeys and ValidateCluster — against the live
+// SYBRA_HOME/config.yaml, but never binds a port, starts background
+// pollers, or touches other process-level side effects. LoadNoPersist (not
+// Load) is deliberate: a preflight run must never mutate the live
+// config.yaml (migration rewrite, generated auth token, tightened perms) —
+// only the eventual real startup should do that.
+func runCheckConfig() int {
+	cfg, err := config.LoadNoPersist()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "config: invalid:", err)
+		return 1
+	}
+	if err := cfg.ValidateCluster(); err != nil {
+		fmt.Fprintln(os.Stderr, "config: invalid:", err)
+		return 1
+	}
+	fmt.Println("config: ok")
+	return 0
 }
 
 func run() (int, error) {
@@ -97,29 +132,39 @@ func run() (int, error) {
 	broker := sse.New()
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 	defer rootCancel()
+	shutdownCh := make(chan struct{}, 1)
+	signalCh := make(chan os.Signal, 1)
+	signal.Notify(signalCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(signalCh)
 	var restartRequested atomic.Bool
 
 	app := sybra.NewApp(logger, levelVar, cfg,
 		sybra.WithEmit(broker.Emit),
 		sybra.WithSkillsFS(skills.FS),
-		sybra.WithRestartRequest(func() {
-			restartRequested.Store(true)
-			rootCancel()
-		}),
+		sybra.WithRestartRequest(newRestartRequest(shutdownCh, &restartRequested)),
 	)
 
-	ctx, stop := signal.NotifyContext(rootCtx, syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+	// Before Startup, not after: Startup's recovery pass dispatches agents for
+	// runs it finds stale, and an agent that starts before its board is named
+	// gets no target at all — a whole paid run whose every CLI call refuses.
+	// The address comes from configuration, not from the listener, so it is
+	// known this early; the listener follows a few lines down.
+	app.SetAgentBoard(agentBoardTarget(cfg), cfg.Server.AuthToken, agentBoardCA(cfg))
 
-	if err := app.Startup(ctx); err != nil {
+	if err := app.Startup(rootCtx); err != nil {
 		return 1, fmt.Errorf("startup: %w", err)
 	}
-	defer app.Shutdown(ctx)
+	shutdownApp := true
+	defer func() {
+		if shutdownApp {
+			app.Shutdown(context.Background())
+		}
+	}()
 	if restartRequested.Load() {
 		return autoupdate.RestartExitCode, nil
 	}
 
-	webhookSrv, webhookErrCh, err := startWebhookServer(ctx, cfg, app, logger)
+	webhookSrv, webhookErrCh, err := startWebhookServer(rootCtx, cfg, app, logger)
 	if err != nil {
 		return 1, err
 	}
@@ -134,29 +179,24 @@ func run() (int, error) {
 	// reaching it.
 	handler := cspMiddleware(corsMiddleware(cfg.Server.AllowedOrigins, authMiddleware(cfg.Server.AuthToken, logger, mux)))
 
-	srv, errCh, err := serveAll(ctx, cfg, handler, logger)
+	srv, errCh, err := serveAll(rootCtx, cfg, handler, logger)
 	if err != nil {
 		shutdownBackgroundServer(webhookSrv, logger, "webhook")
 		return 1, err
 	}
 
+	// Agents reach task state through sybra-cli, which has no filesystem path
+	// to it. Name the board now that it is listening; loopback, so the token
+	// never leaves the host.
 	select {
-	case <-ctx.Done():
-		logger.Info("server.shutdown")
-		go forceExitAfter(logger, shutdownHardDeadline, &restartRequested)
-		// 30s window covers the agent manager's 20s grace (giving SIGTERM'd
-		// claude/codex processes a chance to flush their final result event)
-		// plus headroom for HTTP handlers to drain. Previously 10s, which
-		// caused server.shutdown.err: context deadline exceeded on every
-		// restart because HTTP + agent drains both ran inside that window.
-		shutCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if shutErr := srv.Shutdown(shutCtx); shutErr != nil {
-			logger.Error("server.shutdown.err", "err", shutErr)
-		}
-		if shutErr := shutdownHTTPServer(shutCtx, webhookSrv); shutErr != nil {
-			logger.Error("webhook.shutdown.err", "err", shutErr)
-		}
+	case sig := <-signalCh:
+		logger.Info("server.signal", "signal", sig.String())
+		shutdownApp = false
+		runGracefulShutdown(logger, app, srv, webhookSrv, &restartRequested)
+	case <-shutdownCh:
+		logger.Info("server.restart.requested")
+		shutdownApp = false
+		runGracefulShutdown(logger, app, srv, webhookSrv, &restartRequested)
 	case serveErr := <-errCh:
 		if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
 			return 1, fmt.Errorf("serve: %w", serveErr)
@@ -172,7 +212,49 @@ func run() (int, error) {
 	return 0, nil
 }
 
-const shutdownHardDeadline = 60 * time.Second
+const (
+	drainAdmissionWindow  = 1 * time.Second
+	httpShutdownDeadline  = 15 * time.Second
+	webhookShutdownBudget = 4 * time.Second
+	shutdownHardDeadline  = 40 * time.Second
+)
+
+func newRestartRequest(shutdownCh chan<- struct{}, restart *atomic.Bool) func() {
+	return func() {
+		restart.Store(true)
+		notifyShutdown(shutdownCh)
+	}
+}
+
+func notifyShutdown(ch chan<- struct{}) {
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}
+
+func runGracefulShutdown(logger *slog.Logger, app *sybra.App, srv, webhookSrv *http.Server, restart *atomic.Bool) {
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownHardDeadline)
+	defer cancel()
+	app.BeginDrain()
+	logger.Info("server.shutdown", "restart", restart.Load(), "deadline", shutdownHardDeadline.String(), "drain_window", drainAdmissionWindow.String())
+	go forceExitAfter(logger, shutdownHardDeadline, restart)
+	time.Sleep(drainAdmissionWindow)
+	shutdownServer(shutdownCtx, logger, "server", srv, httpShutdownDeadline)
+	shutdownServer(shutdownCtx, logger, "webhook", webhookSrv, webhookShutdownBudget)
+	app.Shutdown(shutdownCtx)
+}
+
+func shutdownServer(ctx context.Context, logger *slog.Logger, name string, srv *http.Server, grace time.Duration) {
+	if srv == nil {
+		return
+	}
+	shutCtx, cancel := context.WithTimeout(ctx, grace)
+	defer cancel()
+	if err := shutdownHTTPServer(shutCtx, srv); err != nil {
+		logger.Error(name+".shutdown.err", "err", err)
+	}
+}
 
 func forceExitAfter(logger *slog.Logger, d time.Duration, restart *atomic.Bool) {
 	time.Sleep(d)
@@ -189,186 +271,96 @@ func forceExitAfter(logger *slog.Logger, d time.Duration, restart *atomic.Bool) 
 // reflection-based /api/{service}/{method} dispatcher, and an optional SPA
 // static file server. Extracted from run() so run() stays under the 100-line
 // funlen cap without losing the explicit route declaration layout.
+// buildMux, the middleware chain, and the SPA handler live in
+// internal/httpserve so the desktop app serves the same surface. These aliases
+// keep the server's own call sites and tests pointed at one name.
 func buildMux(logger *slog.Logger, broker *sse.Broker, app *sybra.App) *http.ServeMux {
-	mux := http.NewServeMux()
-
-	// Health check endpoint for container orchestration.
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"status":"ok"}`)
-	})
-
-	// Prometheus scrape endpoint (opt-in via config.metrics.enabled). The
-	// OTel Prometheus exporter registers instruments into the default
-	// prometheus/client_golang registry, so promhttp.Handler serves them.
-	if metrics.Enabled() {
-		mux.Handle("GET /metrics", promhttp.Handler())
-		logger.Info("metrics.listen", "path", "/metrics")
-	}
-
-	// pprof scrape endpoints (opt-in via SYBRA_PPROF=1). Mounted on the main
-	// mux so perf tooling can pull heap / goroutine profiles over the same
-	// port without opening a second listener. Off by default to avoid leaking
-	// internals on shared deployments.
-	if v := os.Getenv("SYBRA_PPROF"); v == "1" || v == "true" {
-		mux.HandleFunc("GET /debug/pprof/", pprof.Index)
-		mux.HandleFunc("GET /debug/pprof/cmdline", pprof.Cmdline)
-		mux.HandleFunc("GET /debug/pprof/profile", pprof.Profile)
-		mux.HandleFunc("GET /debug/pprof/symbol", pprof.Symbol)
-		mux.HandleFunc("GET /debug/pprof/trace", pprof.Trace)
-		logger.Info("pprof.listen", "path", "/debug/pprof/")
-	}
-
-	// Multiplexed SSE stream: all events over a single connection.
-	mux.HandleFunc("GET /events", broker.ServeAll)
-
-	// Per-event SSE endpoint (kept for debugging / backward compat).
-	mux.HandleFunc("GET /api/events/{eventName}", broker.ServeHTTP)
-
-	// API dispatch: POST /api/{service}/{method}
-	httpapi.Mount(mux, sybra.ServiceRegistry(app), logger)
-
-	// Optional SPA static files.
-	if staticDir := os.Getenv("SYBRA_STATIC_DIR"); staticDir != "" {
-		sub, err := fs.Sub(os.DirFS(staticDir), ".")
-		if err != nil {
-			logger.Error("static.dir", "err", err)
-		} else {
-			fileServer := http.FileServer(http.FS(sub))
-			mux.Handle("GET /", spaHandler{fileServer, staticDir})
-		}
-	}
-
-	return mux
+	return httpserve.BuildMux(serveOptions(logger, broker, app))
 }
 
-// spaHandler serves static files and falls back to index.html for unknown paths
-// (supports client-side routing).
-type spaHandler struct {
-	fs        http.Handler
-	staticDir string
+func serveOptions(logger *slog.Logger, broker *sse.Broker, app *sybra.App) httpserve.Options {
+	return httpserve.Options{
+		Logger:        logger,
+		Broker:        broker,
+		Services:      sybra.ServiceRegistry(app),
+		Admit:         app.HTTPAdmission,
+		StaticDir:     os.Getenv("SYBRA_STATIC_DIR"),
+		EnablePprof:   httpserve.PprofEnabled(),
+		Home:          config.HomeDir(),
+		WorkerControl: sybra.WorkerControlHandler(app),
+		// No SelfOrigin and no Token: a browser reaching this over the network
+		// gets the origin alone and asks its operator for the token.
+	}
 }
 
-func (h spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	urlPath := r.URL.Path
-	if urlPath == "" {
-		urlPath = "/"
-	}
-	if _, err := os.Stat(h.staticDir + urlPath); os.IsNotExist(err) {
-		// Paths with a file extension (e.g. /favicon.ico) are static asset
-		// requests, not SPA routes — return 404 so browsers don't treat an
-		// HTML index.html response as a broken asset.
-		if strings.Contains(path.Base(urlPath), ".") {
-			http.NotFound(w, r)
-			return
-		}
-		r2 := *r
-		r2.URL.Path = "/"
-		h.fs.ServeHTTP(w, &r2)
-		return
-	}
-	h.fs.ServeHTTP(w, r)
-}
+type spaHandler = httpserve.SPAHandler
 
-func cspMiddleware(next http.Handler) http.Handler {
-	const policy = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss:; font-src 'self'; manifest-src 'self'; frame-ancestors 'none'"
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Security-Policy", policy)
-		next.ServeHTTP(w, r)
-	})
-}
+var (
+	cspMiddleware  = httpserve.CSPMiddleware
+	corsMiddleware = httpserve.CORSMiddleware
+	authMiddleware = httpserve.AuthMiddleware
+)
 
-// corsMiddleware echoes CORS headers back only for an Origin present in
-// allowedOrigins (exact match) — no wildcard. Requests without a matching
-// Origin still reach next (non-browser callers don't need CORS headers at
-// all), they just won't be readable cross-origin from an unlisted site.
-func corsMiddleware(allowedOrigins []string, next http.Handler) http.Handler {
-	allowed := make(map[string]struct{}, len(allowedOrigins))
-	for _, o := range allowedOrigins {
-		allowed[o] = struct{}{}
-	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if origin := r.Header.Get("Origin"); origin != "" {
-			if _, ok := allowed[origin]; ok {
-				w.Header().Set("Access-Control-Allow-Origin", origin)
-				w.Header().Add("Vary", "Origin")
-				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+// agentBoardTarget is the address of the board this process serves, as an
+// agent's own sybra-cli should dial it.
+//
+// Loopback first among several binds, so the token an agent sends never leaves
+// the machine. Taking merely the first listed skipped a usable loopback
+// listener sitting behind a LAN one and left every agent on that deployment
+// refusing its own task CRUD, because a cleartext client declines a
+// non-loopback target outright.
+//
+// A wildcard or unset bind answers on loopback; a concrete one does not, so an
+// operator who locked the control plane to one interface is named there.
+func agentBoardTarget(cfg *config.Config) string {
+	addrs, _ := cfg.ListenAddrs(os.Getenv("SYBRA_HOST"), os.Getenv("SYBRA_PORT"))
+	host, port := "127.0.0.1", config.DefaultServerPort
+	if addr := preferredBoardBind(addrs); addr != "" {
+		if h, p, err := net.SplitHostPort(addr); err == nil && strings.TrimSpace(p) != "" {
+			port = p
+			if strings.TrimSpace(h) != "" && h != "0.0.0.0" && h != "::" {
+				host = h
 			}
 		}
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
+	}
+	if cfg.ServesTLS() {
+		return "https://" + net.JoinHostPort(host, port)
+	}
+	return net.JoinHostPort(host, port)
 }
 
-// authMiddleware gates only the HTTP control plane behind a shared-secret
-// bearer token: `/api/*`, `/events`, `/api/events/*`, `/metrics`, and
-// `/debug/pprof/*`. Browser EventSource cannot set request headers, so the
-// SSE endpoints additionally accept the token as a `?token=` query param.
-// Static SPA assets stay public so normal browser navigations can load the
-// app shell before JS starts issuing authenticated API calls. A blank token
-// fails every protected request closed rather than treating it as "auth
-// disabled" — config.Load always generates one, so an empty value here means
-// misconfiguration, not intent.
-func authMiddleware(token string, logger *slog.Logger, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !requestRequiresAuth(r) {
-			next.ServeHTTP(w, r)
-			return
+// preferredBoardBind picks the bind an agent should dial: a loopback or
+// wildcard one if this process listens on any, else the first.
+func preferredBoardBind(addrs []string) string {
+	for _, addr := range addrs {
+		host, _, err := net.SplitHostPort(addr)
+		if err != nil {
+			continue
 		}
-		if !requestAuthorized(r, token) {
-			logger.Warn("server.auth.denied", "path", r.URL.Path, "remote", r.RemoteAddr)
-			w.Header().Set("WWW-Authenticate", `Bearer realm="sybra"`)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = fmt.Fprint(w, `{"error":"unauthorized","code":"unauthorized"}`)
-			return
+		host = strings.Trim(strings.TrimSpace(host), "[]")
+		if host == "" || host == "0.0.0.0" || host == "::" {
+			return addr
 		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-func requestRequiresAuth(r *http.Request) bool {
-	switch {
-	case r.Method == http.MethodGet && r.URL.Path == "/health":
-		return false
-	case r.URL.Path == "/events":
-		return true
-	case r.URL.Path == "/metrics":
-		return true
-	case strings.HasPrefix(r.URL.Path, "/api/"):
-		return true
-	case strings.HasPrefix(r.URL.Path, "/debug/pprof/"):
-		return true
-	default:
-		return false
-	}
-}
-
-func requestAuthorized(r *http.Request, token string) bool {
-	if token == "" {
-		return false
-	}
-	if bearer, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok && tokensEqual(bearer, token) {
-		return true
-	}
-	if isSSEPath(r.URL.Path) {
-		if qt := r.URL.Query().Get("token"); qt != "" && tokensEqual(qt, token) {
-			return true
+		if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+			return addr
+		}
+		if strings.EqualFold(host, "localhost") {
+			return addr
 		}
 	}
-	return false
+	if len(addrs) > 0 {
+		return addrs[0]
+	}
+	return ""
 }
 
-func isSSEPath(p string) bool {
-	return p == "/events" || strings.HasPrefix(p, "/api/events/")
-}
-
-func tokensEqual(a, b string) bool {
-	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+// agentBoardCA is the certificate an agent must pin to reach a TLS board, or
+// empty when the board serves cleartext.
+func agentBoardCA(cfg *config.Config) string {
+	if !cfg.ServesTLS() {
+		return ""
+	}
+	return cfg.Cluster.TLS.CertFile
 }
 
 type slogWriter struct{ logger *slog.Logger }
@@ -382,7 +374,10 @@ const webhookSignatureHeader = "X-Sybra-Signature"
 
 type webhookTaskCreator interface {
 	CreateTaskWithInit(title, body, mode string, init task.Update) (task.Task, error)
+	ListTasks() ([]task.Task, error)
 }
+
+type webhookAdmissionFunc func() error
 
 type webhookTaskRequest struct {
 	Title     string   `json:"title"`
@@ -413,9 +408,31 @@ func resolveWebhookTaskCreator(app *sybra.App) (webhookTaskCreator, error) {
 	return creator, nil
 }
 
-func newWebhookHandler(logger *slog.Logger, secret string, creator webhookTaskCreator) http.Handler {
+func newWebhookHandler(logger *slog.Logger, secret string, creator webhookTaskCreator, admit webhookAdmissionFunc) http.Handler {
+	return newWebhookMux(logger, secret, true, config.GitHubConfig{}, creator, admit)
+}
+
+func newWebhookHandlerWithGitHub(
+	logger *slog.Logger,
+	secret string,
+	githubCfg config.GitHubConfig,
+	creator webhookTaskCreator,
+	admit webhookAdmissionFunc,
+) http.Handler {
+	taskRouteEnabled := githubCfg.Webhook.TaskEnabled || strings.TrimSpace(secret) != ""
+	return newWebhookMux(logger, secret, taskRouteEnabled, githubCfg, creator, admit)
+}
+
+func newWebhookMux(
+	logger *slog.Logger,
+	secret string,
+	taskRouteEnabled bool,
+	githubCfg config.GitHubConfig,
+	creator webhookTaskCreator,
+	admit webhookAdmissionFunc,
+) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/webhook/task", func(w http.ResponseWriter, r *http.Request) {
+	taskHandler := func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeWebhookError(w, logger, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 			return
@@ -435,6 +452,12 @@ func newWebhookHandler(logger *slog.Logger, secret string, creator webhookTaskCr
 			writeWebhookError(w, logger, http.StatusUnauthorized, "unauthorized", "invalid webhook signature")
 			return
 		}
+		if admit != nil {
+			if err := admit(); err != nil {
+				writeWebhookAdmissionError(w, logger, err)
+				return
+			}
+		}
 
 		var req webhookTaskRequest
 		if err := json.Unmarshal(body, &req); err != nil {
@@ -450,7 +473,7 @@ func newWebhookHandler(logger *slog.Logger, secret string, creator webhookTaskCr
 		if mode == "" {
 			mode = task.AgentModeHeadless
 		}
-		if _, err := task.ValidateAgentMode(mode); err != nil {
+		if _, err := task.ValidateMintableAgentMode(mode); err != nil {
 			writeWebhookError(w, logger, http.StatusBadRequest, "validation_error", err.Error())
 			return
 		}
@@ -470,7 +493,11 @@ func newWebhookHandler(logger *slog.Logger, secret string, creator webhookTaskCr
 			return
 		}
 		writeWebhookJSON(w, http.StatusCreated, webhookTaskResponse{TaskID: created.ID})
-	})
+	}
+	if taskRouteEnabled {
+		mux.HandleFunc("/webhook/task", taskHandler)
+	}
+	mux.Handle("/webhook/github", newGitHubWebhookHandler(logger, githubCfg, creator, admit))
 	return mux
 }
 
@@ -518,18 +545,36 @@ func writeWebhookError(w http.ResponseWriter, logger *slog.Logger, status int, c
 	writeWebhookJSON(w, status, webhookErrorEnvelope{Error: message, Code: code})
 }
 
+func writeWebhookAdmissionError(w http.ResponseWriter, logger *slog.Logger, err error) {
+	var clientErr httpapi.ClientError
+	if errors.As(err, &clientErr) {
+		code := "validation_error"
+		if clientErr.HTTPStatus() == http.StatusServiceUnavailable {
+			code = string(httpapi.ErrCodeUnavailable)
+		}
+		writeWebhookError(w, logger, clientErr.HTTPStatus(), code, clientErr.Error())
+		return
+	}
+	logger.Warn("webhook.admission.error", "err", err)
+	writeWebhookError(w, logger, http.StatusInternalServerError, "internal_error", "internal error")
+}
+
 func startWebhookServer(ctx context.Context, cfg *config.Config, app *sybra.App, logger *slog.Logger) (*http.Server, chan error, error) {
-	if cfg == nil || !cfg.Webhook.Enabled {
+	if cfg == nil || !cfg.GitHub.Webhook.Enabled {
 		return nil, nil, nil
 	}
 	creator, err := resolveWebhookTaskCreator(app)
 	if err != nil {
 		return nil, nil, fmt.Errorf("webhook: %w", err)
 	}
-	return startWebhookServerWithHandler(ctx, cfg.Webhook, newWebhookHandler(logger, cfg.Webhook.Secret, creator), logger)
+	admit := func() error {
+		return app.HTTPAdmission("TaskService", "CreateTask", httpapi.MethodMeta{})
+	}
+	handler := newWebhookHandlerWithGitHub(logger, cfg.GitHub.Webhook.TaskSecret, cfg.GitHub, creator, admit)
+	return startWebhookServerWithHandler(ctx, cfg.GitHub.Webhook, handler, logger)
 }
 
-func startWebhookServerWithHandler(ctx context.Context, cfg config.WebhookConfig, handler http.Handler, logger *slog.Logger) (*http.Server, chan error, error) {
+func startWebhookServerWithHandler(ctx context.Context, cfg config.GitHubWebhookConfig, handler http.Handler, logger *slog.Logger) (*http.Server, chan error, error) {
 	if !cfg.Enabled {
 		return nil, nil, nil
 	}

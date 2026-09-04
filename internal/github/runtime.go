@@ -2,10 +2,13 @@ package github
 
 import (
 	"context"
+	"encoding/json"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Automaat/sybra/internal/errclass"
 )
 
 const (
@@ -13,6 +16,7 @@ const (
 	ghLowBudgetThreshold  = 150
 	ghOptionalCooldown    = 30 * time.Second
 	ghFallbackRateBackoff = 1 * time.Minute
+	ghMaxRateLimitWait    = 2 * time.Minute
 	ghMaxRetries          = 2
 	ghRetryBaseBackoff    = 500 * time.Millisecond
 
@@ -47,21 +51,11 @@ var ghRetrySleep = func(attempt int) {
 // via notBefore backoff, and retrying them immediately would only make things
 // worse.
 func isTransientGHError(out []byte, err error) bool {
-	if err == nil || isRateLimitedMessage(string(out)) {
+	resp := parseGHHTTPResponse(out)
+	if err == nil || isRateLimitedResponse(resp) {
 		return false
 	}
-	msg := strings.ToLower(string(out))
-	for _, sig := range []string{
-		"http 502", "http 503", "http 504",
-		"operation timed out", "i/o timeout", "deadline exceeded",
-		"connection reset", "connection refused",
-		"stream error", "unexpected eof", "tls handshake",
-	} {
-		if strings.Contains(msg, sig) {
-			return true
-		}
-	}
-	return false
+	return errclass.Classify(string(out), errclass.GHCommandEscalationBiased) == errclass.Transient
 }
 
 type ttlCache[T any] struct {
@@ -214,24 +208,105 @@ func newGHRequestGate() *ghRequestGate {
 	}
 }
 
-func (g *ghRequestGate) execute(run func() ([]byte, error)) ([]byte, error) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
+// ctx is used only to scope the auth-health observation's own recovery work
+// (a force-refresh mint triggered by a failure seen here, see
+// ObserveCallResultCtx) — it is never passed to run, whose closure already
+// carries whatever context its own exec.CommandContext needs.
+func (g *ghRequestGate) execute(ctx context.Context, run func() ([]byte, error)) ([]byte, error) {
+	out, suppressed, retryAfter, err := g.runGated(ctx, run)
+	if suppressed {
+		RecordSuppressedCall()
+		return nil, NewAuthCircuitOpenError(retryAfter)
+	}
 
-	waitUntil := g.notBefore
-	if next := g.lastRun.Add(ghRequestSpacing); next.After(waitUntil) {
-		waitUntil = next
-	}
-	if sleep := time.Until(waitUntil); sleep > 0 {
-		time.Sleep(sleep)
-	}
-
-	out, err := run()
-	g.lastRun = time.Now()
-	if err != nil && isRateLimitedMessage(string(out)) {
-		g.bumpLocked(g.lastRun.Add(ghFallbackRateBackoff))
-	}
+	// Observe outside g.mu. On an auth-classified failure this synchronously
+	// force-refreshes a token mint under the mint client's 15s http timeout;
+	// holding g.mu — the sole process-wide gh serialization lock — across it
+	// would block every queued caller (including latency-sensitive ghRunCtx
+	// callers) for the full mint duration regardless of their own context
+	// deadline, defeating that mechanism's intent.
+	ObserveCallResultCtx(ctx, out, err)
 	return out, err
+}
+
+// runGated runs the gh invocation under g.mu (circuit check, request spacing,
+// rate-limit bookkeeping) and reports the result so execute can observe the
+// outcome — which may trigger a slow token mint — after the lock is released.
+func (g *ghRequestGate) runGated(ctx context.Context, run func() ([]byte, error)) (out []byte, suppressed bool, retryAfter time.Time, err error) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, false, time.Time{}, err
+		}
+		if err := g.lockContext(ctx); err != nil {
+			return nil, false, time.Time{}, err
+		}
+		// Circuit breaker: while GitHub auth is misconfigured, unavailable, or
+		// rate-limited, skip shelling out entirely rather than repeat a doomed
+		// request every ghRequestSpacing tick. AuthCircuitOpen re-opens the gate
+		// on its own backoff schedule, so ambient poll/task traffic naturally
+		// re-probes for recovery without a dedicated prober goroutine.
+		if open, ra := AuthCircuitOpen(); open {
+			g.mu.Unlock()
+			return nil, true, ra, nil
+		}
+
+		waitUntil := g.notBefore
+		if next := g.lastRun.Add(ghRequestSpacing); next.After(waitUntil) {
+			waitUntil = next
+		}
+		if wait := time.Until(waitUntil); wait > 0 {
+			if g.notBefore.Equal(waitUntil) && wait > ghMaxRateLimitWait {
+				g.mu.Unlock()
+				return nil, false, time.Time{}, NewRateLimitWallError(waitUntil)
+			}
+			g.mu.Unlock()
+			timer := time.NewTimer(wait)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, false, time.Time{}, ctx.Err()
+			case <-timer.C:
+			}
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			g.mu.Unlock()
+			return nil, false, time.Time{}, err
+		}
+
+		out, err = run()
+		g.lastRun = time.Now()
+		if err != nil && isRateLimitedResponse(parseGHHTTPResponse(out)) {
+			g.bumpLocked(g.lastRun.Add(ghFallbackRateBackoff))
+		}
+		g.mu.Unlock()
+		return out, false, time.Time{}, err
+	}
+}
+
+func (g *ghRequestGate) lockContext(ctx context.Context) error {
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for !g.mu.TryLock() {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+	return nil
+}
+
+const rateLimitWallMarker = errclass.GitHubRateLimitWallMarker
+
+type rateLimitWallError struct{ retryAfter time.Time }
+
+func (e *rateLimitWallError) Error() string {
+	return rateLimitWallMarker + ": suppressing gh calls until " + e.retryAfter.UTC().Format(time.RFC3339)
+}
+
+func NewRateLimitWallError(retryAfter time.Time) error {
+	return &rateLimitWallError{retryAfter: retryAfter}
 }
 
 func (g *ghRequestGate) observe(resp ghHTTPResponse, err error) {
@@ -269,7 +344,7 @@ func (g *ghRequestGate) observe(resp ghHTTPResponse, err error) {
 		}
 	}
 
-	if (err != nil || isGraphQLRateLimitBody(resp.body)) && isRateLimitedMessage(string(resp.body)) {
+	if isGraphQLRateLimitBody(resp.body) {
 		g.bumpLocked(now.Add(ghFallbackRateBackoff))
 	}
 }
@@ -347,17 +422,47 @@ func (g *ghRequestGate) pressure() (fraction float64, known bool) {
 }
 
 func isRateLimitedMessage(msg string) bool {
-	lower := strings.ToLower(msg)
-	return strings.Contains(lower, "secondary rate limit") ||
-		strings.Contains(lower, "api rate limit exceeded") ||
-		strings.Contains(lower, "rate limit exceeded") ||
-		strings.Contains(lower, "rate_limit") ||
-		strings.Contains(lower, "retry after")
+	return errclass.Classify(msg, errclass.MonitorCooldownBiased) == errclass.RateLimited
 }
 
 func isGraphQLRateLimitBody(body []byte) bool {
-	lower := strings.ToLower(string(body))
-	return strings.Contains(lower, `"errors"`) && strings.Contains(lower, "rate")
+	var response struct {
+		Errors []struct {
+			Type string `json:"type"`
+		} `json:"errors"`
+	}
+	if json.Unmarshal(body, &response) != nil {
+		return false
+	}
+	for _, graphqlErr := range response.Errors {
+		if strings.EqualFold(graphqlErr.Type, "RATE_LIMITED") {
+			return true
+		}
+	}
+	return false
+}
+
+func isRateLimitedResponse(resp ghHTTPResponse) bool {
+	if resp.statusCode == 429 {
+		return true
+	}
+	if resp.statusCode != 403 {
+		return isGraphQLRateLimitBody(resp.body)
+	}
+	if strings.TrimSpace(resp.headers["retry-after"]) != "" {
+		return true
+	}
+	remaining, err := strconv.Atoi(strings.TrimSpace(resp.headers["x-ratelimit-remaining"]))
+	if err == nil && remaining == 0 {
+		return true
+	}
+	var envelope struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(resp.body, &envelope) != nil {
+		return false
+	}
+	return errclass.Classify(envelope.Message, errclass.MonitorCooldownBiased) == errclass.RateLimited
 }
 
 func runGHAPIWith(e execer, cacheTTL string, args ...string) (ghHTTPResponse, error) {

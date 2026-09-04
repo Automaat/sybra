@@ -453,7 +453,85 @@ func TestOnAgentComplete_FixReviewPushDivergedEscalatesToHuman(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusBlocked)
+	}
+}
+
+func TestOnAgentComplete_FixReviewSkipsPushForPRReviewTask(t *testing.T) {
+	// Given a task whose worktree sits on the branch of a PR it only reviews
+	h, taskMgr, barePath, src := setupFixReviewPushTest(t)
+	branch, err := project.DefaultBranch(context.Background(), barePath)
+	if err != nil {
+		t.Fatalf("default branch: %v", err)
+	}
+
+	tk, err := taskMgr.Create("Review: their work", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tk, err = taskMgr.Update(tk.ID, task.Update{
+		ProjectID: task.Ptr("testowner/testrepo"),
+		PRNumber:  task.Ptr(42),
+		Status:    task.Ptr(task.StatusInReview),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wtPath, err := h.worktrees.PrepareForFix(context.Background(), tk, 42)
+	if err != nil {
+		t.Fatalf("PrepareForFix: %v", err)
+	}
+	tags := []string{task.TagReview}
+	if _, err := taskMgr.Update(tk.ID, task.Update{Tags: &tags, Branch: task.Ptr(branch)}); err != nil {
+		t.Fatal(err)
+	}
+
+	upstream := filepath.Join(t.TempDir(), "upstream.git")
+	if out, err := exec.Command("git", "clone", "--bare", src, upstream).CombinedOutput(); err != nil {
+		t.Fatalf("clone bare upstream: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-c", "safe.bareRepository=all", "-C", barePath, "remote", "set-url", "origin", upstream).CombinedOutput(); err != nil {
+		t.Fatalf("point origin at the bare upstream: %v: %s", err, out)
+	}
+	remoteBefore, err := exec.Command("git", "-c", "safe.bareRepository=all", "-C", upstream, "rev-parse", "refs/heads/"+branch).Output()
+	if err != nil {
+		t.Fatalf("upstream head: %v", err)
+	}
+	for _, args := range [][]string{
+		{"-C", wtPath, "config", "user.email", "test@test.com"},
+		{"-C", wtPath, "config", "user.name", "Test"},
+		{"-C", wtPath, "commit", "--allow-empty", "-m", "chore: local work on the reviewed branch"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	if err := taskMgr.AddRun(tk.ID, task.AgentRun{
+		AgentID:   "agent-1",
+		Role:      string(agent.RoleFixReview),
+		Mode:      "headless",
+		State:     string(agent.StateRunning),
+		StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// When the fix-review completion hook runs
+	h.OnComplete(&agent.Agent{
+		ID:        "agent-1",
+		TaskID:    tk.ID,
+		Mode:      "headless",
+		Name:      agent.RoleFixReview.AgentName(tk.Title),
+		StartedAt: time.Now(),
+	})
+
+	// Then the reviewed branch is left where it was
+	remoteAfter, err := exec.Command("git", "-c", "safe.bareRepository=all", "-C", upstream, "rev-parse", "refs/heads/"+branch).Output()
+	if err != nil {
+		t.Fatalf("upstream head: %v", err)
+	}
+	if got, want := strings.TrimSpace(string(remoteAfter)), strings.TrimSpace(string(remoteBefore)); got != want {
+		t.Fatalf("reviewed branch moved on the upstream: %s -> %s", want, got)
 	}
 }

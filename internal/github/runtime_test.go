@@ -1,7 +1,9 @@
 package github
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -148,4 +150,119 @@ func containsArg(args []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// TestGHRequestGateExecute_SuppressesCallsWhileAuthCircuitOpen asserts the
+// gate's chokepoint (shared by every gh invocation in this package) skips
+// shelling out entirely while the centralized auth circuit is open, instead
+// of repeating a doomed request every ghRequestSpacing tick.
+func TestGHRequestGateExecute_SuppressesCallsWhileAuthCircuitOpen(t *testing.T) {
+	t.Cleanup(resetAuthHealthForTest)
+	resetAuthHealthForTest()
+	authHealth.setState(AuthUnavailable, "test")
+
+	g := newGHRequestGate()
+	calls := 0
+	out, err := g.execute(context.Background(), func() ([]byte, error) {
+		calls++
+		return []byte("should not run"), nil
+	})
+	if calls != 0 {
+		t.Fatalf("run() invoked %d times, want 0 while circuit is open", calls)
+	}
+	if out != nil {
+		t.Fatalf("out = %q, want nil", out)
+	}
+	if !IsAuthError(err) {
+		t.Fatalf("err = %v, want an auth-classified circuit-open error", err)
+	}
+	if got := AuthHealthSnapshot().SuppressedCalls; got != 1 {
+		t.Fatalf("SuppressedCalls = %d, want 1", got)
+	}
+}
+
+func TestGHRequestGateExecute_RateWallDoesNotBlockMutex(t *testing.T) {
+	g := newGHRequestGate()
+	g.notBefore = time.Now().Add(time.Hour)
+	started := time.Now()
+	_, err := g.execute(context.Background(), func() ([]byte, error) { t.Fatal("run must be suppressed"); return nil, nil })
+	if !strings.Contains(err.Error(), rateLimitWallMarker) {
+		t.Fatalf("err = %v, want rate-limit wall", err)
+	}
+	if time.Since(started) > time.Second {
+		t.Fatal("rate wall blocked caller")
+	}
+	done := make(chan struct{})
+	go func() { _ = g.shouldSkipOptional("core", priorityMergePath); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("rate wall held gate mutex")
+	}
+}
+
+func TestGHRequestGateExecute_WaitHonorsContext(t *testing.T) {
+	g := newGHRequestGate()
+	g.lastRun = time.Now()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	ran := make(chan struct{}, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := g.execute(ctx, func() ([]byte, error) { ran <- struct{}{}; return nil, nil })
+		errCh <- err
+	}()
+	time.Sleep(10 * time.Millisecond)
+	cancel()
+	err := <-errCh
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context canceled", err)
+	}
+	select {
+	case <-ran:
+		t.Fatal("run must not start")
+	default:
+	}
+}
+
+func TestGHRequestGateExecute_CanceledContextNeverRuns(t *testing.T) {
+	g := newGHRequestGate()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := g.execute(ctx, func() ([]byte, error) { t.Fatal("run must not start"); return nil, nil })
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context canceled", err)
+	}
+}
+
+func TestGHRequestGateExecute_LockHonorsContext(t *testing.T) {
+	g := newGHRequestGate()
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	_, err := g.execute(ctx, func() ([]byte, error) { t.Fatal("run must not start"); return nil, nil })
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want deadline exceeded", err)
+	}
+}
+
+// TestGHRequestGateExecute_ObservesCallResult asserts a real (non-suppressed)
+// call result flows into the shared auth-health tracker, so a caller that
+// never explicitly wires ObserveCallResult still gets auth-failure detection
+// for free by going through the gate.
+func TestGHRequestGateExecute_ObservesCallResult(t *testing.T) {
+	t.Cleanup(resetAuthHealthForTest)
+	t.Cleanup(DisableAppAuth)
+	resetAuthHealthForTest()
+	DisableAppAuth()
+
+	g := newGHRequestGate()
+	_, _ = g.execute(context.Background(), func() ([]byte, error) {
+		return []byte("gh: HTTP 401: Bad credentials"), fmt.Errorf("exit status 1")
+	})
+
+	if got := AuthHealthSnapshot().State; got != AuthUnavailable {
+		t.Fatalf("State after a 401 through execute() = %q, want unavailable", got)
+	}
 }

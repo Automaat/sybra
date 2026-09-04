@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent } from '@testing-library/svelte'
 
 const mockGetSettings = vi.fn()
+const mockGetPathExplanations = vi.fn()
 const mockGetDefaultSettings = vi.fn()
 const mockUpdateSettings = vi.fn()
 const mockGetRawConfig = vi.fn()
@@ -18,6 +19,7 @@ const mockEventsOn = vi.fn((..._args: any[]) => vi.fn())
 
 vi.mock('$lib/api', () => ({
   GetSettings: (...args: unknown[]) => mockGetSettings(...args),
+  GetPathExplanations: (...args: unknown[]) => mockGetPathExplanations(...args),
   GetDefaultSettings: (...args: unknown[]) => mockGetDefaultSettings(...args),
   UpdateSettings: (...args: unknown[]) => mockUpdateSettings(...args),
   GetRawConfig: (...args: unknown[]) => mockGetRawConfig(...args),
@@ -49,7 +51,7 @@ function uninstallNotification() {
   delete (window as unknown as { Notification?: unknown }).Notification
 }
 
-function baseSettings() {
+function baseSettings(): any {
   return {
     agent: {
       provider: 'claude',
@@ -69,8 +71,31 @@ function baseSettings() {
       claude: { enabled: true },
       codex: { enabled: false },
       copilot: { enabled: true },
+      opencode: { enabled: false },
+      limits: {
+        enabled: true,
+        sessionThresholdPercent: 85,
+        weeklyThresholdPercent: 90,
+        preferUnderused: true,
+        backfillDays: 14,
+      },
       autoFailover: false,
       healthCheck: { intervalSeconds: 30 },
+    },
+    providerRouting: {
+      abTestingEnabled: false,
+      abTestingMinSamplesPerVariant: 20,
+      summary: {
+        providerPreference: 'claude',
+        abTestingEnabled: false,
+        abTestingExplicit: false,
+        adaptiveRoutingEnabled: false,
+        autoFailoverEnabled: false,
+        providerLimitsEnabled: true,
+        precedence: ['agent.provider', 'providers.limits'],
+        eligibleVariants: [],
+        warnings: [],
+      },
     },
     github: { enabled: false, app: {} },
     monitor: { enabled: false },
@@ -95,9 +120,31 @@ async function goTo(name: string) {
   await fireEvent.click(screen.getByRole('button', { name }))
 }
 
+async function waitForSettingsLoaded() {
+  await goTo('Defaults')
+  await vi.waitFor(() => expect((screen.getByLabelText('Max concurrent') as HTMLInputElement).value).toBe('3'))
+  await goTo('Appearance')
+}
+
+function getCheckboxByLabelText(text: string): HTMLInputElement {
+  const label = getLabelByText(text)
+  if (!label) throw new Error(`label not found for ${text}`)
+  const input = label.querySelector('input[type="checkbox"]')
+  if (!(input instanceof HTMLInputElement)) throw new Error(`checkbox not found for ${text}`)
+  return input
+}
+
+function getLabelByText(text: string): HTMLLabelElement {
+  const label = screen.getByText(text).closest('label')
+  if (!(label instanceof HTMLLabelElement)) throw new Error(`label not found for ${text}`)
+  return label
+}
+
 describe('Settings', () => {
   beforeEach(() => {
     mockGetSettings.mockReset()
+    mockGetPathExplanations.mockReset()
+    mockGetPathExplanations.mockResolvedValue([])
     mockGetDefaultSettings.mockReset()
     mockGetDefaultSettings.mockResolvedValue(baseSettings())
     mockUpdateSettings.mockReset()
@@ -211,8 +258,10 @@ describe('Settings', () => {
       ['GitHub', 'GitHub'],
       ['Monitor', 'Monitor'],
       ['Renovate', 'Renovate'],
-      ['Machine & Testing', 'Machine routing'],
+      ['Machine routing', 'Machine routing'],
+      ['Testing', 'Testing'],
       ['Logging & Audit', 'Logging & audit'],
+      ['Experience & Metrics', 'Experience memory & metrics'],
       ['Version', 'Version'],
       ['Directories', 'Directories'],
     ]
@@ -315,6 +364,52 @@ describe('Settings', () => {
     expect(screen.getByRole('group', { name: 'Color scheme' })).toBeDefined()
   })
 
+  it('shows the in-app browser toggle as inherited-disabled when browser.inApp is omitted', async () => {
+    mockGetSettings.mockResolvedValue(baseSettings())
+    render(Settings)
+    await waitForSettingsLoaded()
+    await vi.waitFor(() => expect(getCheckboxByLabelText('Open links in-app').checked).toBe(false))
+  })
+
+  it('shows the in-app browser toggle as enabled when browser.inApp is explicitly true', async () => {
+    const settings = baseSettings()
+    settings.browser.inApp = true
+    mockGetSettings.mockResolvedValue(settings)
+    render(Settings)
+    await waitForSettingsLoaded()
+    await vi.waitFor(() => expect(getCheckboxByLabelText('Open links in-app').checked).toBe(true))
+  })
+
+  it('saves browser.inApp=true when enabling the in-app browser toggle', async () => {
+    mockGetSettings.mockResolvedValue(baseSettings())
+    mockUpdateSettings.mockResolvedValue(undefined)
+    render(Settings)
+    await waitForSettingsLoaded()
+    await vi.waitFor(() => expect(getCheckboxByLabelText('Open links in-app').checked).toBe(false))
+    await fireEvent.click(getLabelByText('Open links in-app'))
+    await fireEvent.click(screen.getByText('Save'))
+    await vi.waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalled()
+      expect(mockUpdateSettings.mock.calls.at(-1)?.[0]?.browser?.inApp).toBe(true)
+      expect(localStorage.getItem('inAppBrowser')).toBe('true')
+    })
+  })
+
+  it('Reset restores the inherited-disabled browser state', async () => {
+    mockGetSettings.mockResolvedValue(baseSettings())
+    render(Settings)
+    await waitForSettingsLoaded()
+    await vi.waitFor(() => expect(getCheckboxByLabelText('Open links in-app').checked).toBe(false))
+    await fireEvent.click(getLabelByText('Open links in-app'))
+    await vi.waitFor(() => expect(screen.getByText('Reset')).toBeDefined())
+    await fireEvent.click(screen.getByText('Reset'))
+    await vi.waitFor(() => {
+      expect(getCheckboxByLabelText('Open links in-app').checked).toBe(false)
+      expect(localStorage.getItem('inAppBrowser')).toBe('false')
+      expect((screen.getByText('Save') as HTMLButtonElement).disabled).toBe(true)
+    })
+  })
+
   it('shows Providers pane when providerHealthEnabled is true', async () => {
     mockGetSettings.mockResolvedValue(baseSettings())
     mockProviderHealthEnabled.mockResolvedValue(true)
@@ -325,6 +420,9 @@ describe('Settings', () => {
     await vi.waitFor(() => screen.getByRole('button', { name: 'Providers' }))
     await goTo('Providers')
     await vi.waitFor(() => expect(screen.getByRole('heading', { name: 'Providers' })).toBeDefined())
+    expect(screen.getByText('A/B provider routing opt-in')).toBeDefined()
+    expect(screen.getByText(/Provider preference:/)).toBeDefined()
+    expect(screen.getByText(/Precedence:/)).toBeDefined()
   })
 
   it('hides the Providers rail entry when provider health is disabled', async () => {
@@ -585,7 +683,7 @@ describe('Settings', () => {
   it('switches model options when provider changes to codex', async () => {
     mockGetSettings.mockResolvedValue(baseSettings())
     mockGetCodexModels.mockResolvedValue([
-      { slug: 'gpt-5.4', display_name: 'GPT-5.4' },
+      { slug: 'gpt-5.6-terra', display_name: 'GPT-5.6 Terra' },
     ])
     render(Settings)
     await vi.waitFor(() => screen.getByRole('button', { name: 'Defaults' }))
@@ -593,7 +691,7 @@ describe('Settings', () => {
     const providerSelect = screen.getByLabelText('Agent type') as HTMLSelectElement
     await fireEvent.change(providerSelect, { target: { value: 'codex' } })
     await vi.waitFor(() => {
-      expect(screen.getByText('GPT-5.4')).toBeDefined()
+      expect(screen.getByText('GPT-5.6 Terra')).toBeDefined()
     })
   })
 

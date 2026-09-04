@@ -5,7 +5,50 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/limits"
+	"github.com/Automaat/sybra/internal/textutil"
 )
+
+// claudeEventToConvoEvent converts a shared ClaudeEvent into a ConvoEvent for
+// conversational mode. Tool result content is truncated to 2000 chars.
+func claudeEventToConvoEvent(e ClaudeEvent) ConvoEvent {
+	ev := ConvoEvent{
+		Type:      e.Type,
+		Subtype:   e.Subtype,
+		SessionID: e.SessionID,
+		Timestamp: time.Now().UTC(),
+		Raw:       e.Raw,
+	}
+	switch e.Type {
+	case "system":
+		ev.BackgroundTaskIDs = e.BackgroundTaskIDs
+	case "assistant":
+		if e.Message != nil {
+			ev.Text = e.Message.Text
+			ev.ToolUses = e.Message.ToolUses
+		}
+	case "user":
+		if e.Message != nil {
+			results := make([]ToolResultBlock, len(e.Message.ToolResults))
+			copy(results, e.Message.ToolResults)
+			for i := range results {
+				results[i].Content = textutil.TruncateBytes(results[i].Content, 2000, "...")
+			}
+			ev.ToolResults = results
+		}
+	case "result":
+		if e.Result != nil {
+			ev.Text = e.Result.Text
+			ev.SessionID = e.Result.SessionID
+			ev.CostUSD = e.Result.CostUSD
+			ev.InputTokens = e.Result.InputTokens
+			ev.OutputTokens = e.Result.OutputTokens
+			ev.CacheCreationInputTokens = e.Result.CacheCreationInputTokens
+			ev.CacheReadInputTokens = e.Result.CacheReadInputTokens
+			ev.ReasoningTokens = e.Result.ReasoningTokens
+		}
+	}
+	return ev
+}
 
 // ConvoEvent is a rich event for conversational mode, preserving full tool
 // call structure for the chat UI.
@@ -54,9 +97,10 @@ type ToolResultBlock struct {
 
 // ApprovalRequest is sent to the frontend when a tool needs user approval.
 type ApprovalRequest struct {
-	ToolUseID string         `json:"toolUseId"`
-	ToolName  string         `json:"toolName"`
-	Input     map[string]any `json:"input"`
+	ToolUseID   string         `json:"toolUseId"`
+	ToolName    string         `json:"toolName"`
+	Input       map[string]any `json:"input"`
+	Fingerprint string         `json:"fingerprint,omitempty"`
 }
 
 // ApprovalResponse carries the user's decision from the frontend.

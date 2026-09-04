@@ -1,100 +1,41 @@
 package sybra
 
 import (
-	"slices"
+	"fmt"
 
-	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/config"
 )
 
 // ReloadFromDisk re-reads ~/.sybra/config.yaml, validates it, diffs against
-// the in-memory config, and applies hot-reloadable changes. Returns the list
-// of hot-reloadable keys that changed. On any error the in-memory config is
-// left unchanged. Never writes to disk.
-func (s *ConfigService) ReloadFromDisk() (changedHot []string, err error) {
+// the persisted intent snapshot, and applies only hot-reloadable changes.
+// Restart-required values stay pending until process restart. If an external
+// writer leaves config.yaml unreadable or invalid, restore the last-known-good
+// file so the process does not stay wedged on a broken operator config.
+func (s *ConfigService) ReloadFromDisk() (ConfigMutationResult, error) {
 	next, err := config.LoadNoPersist()
 	if err != nil {
-		return nil, err
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	hot, restart := diffConfig(*s.cfg, *next)
-
-	// Always update s.cfg to match disk — including restart-required fields —
-	// so subsequent reloads with the same content produce no diff and no
-	// repeated restart warnings. The renovate coordinator holds &s.cfg.Renovate,
-	// so assign its fields in-place rather than replacing the whole struct.
-	s.cfg.Agent = next.Agent
-	s.cfg.Notification = next.Notification
-	s.cfg.Orchestrator = next.Orchestrator
-	s.cfg.Logging.Level = next.Logging.Level
-	s.cfg.Logging.MaxSizeMB = next.Logging.MaxSizeMB
-	s.cfg.Logging.MaxFiles = next.Logging.MaxFiles
-	s.cfg.Audit = next.Audit
-	s.cfg.Renovate.Enabled = next.Renovate.Enabled
-	s.cfg.Renovate.Author = next.Renovate.Author
-	s.cfg.Providers = next.Providers
-	s.cfg.GitHub = next.GitHub
-	s.cfg.Umbrella = next.Umbrella
-	s.cfg.Triage = next.Triage
-	s.cfg.Monitor = next.Monitor
-	s.cfg.SelfMonitor = next.SelfMonitor
-	s.cfg.HarnessEvolve = next.HarnessEvolve
-	s.cfg.PromptLab = next.PromptLab
-	s.cfg.ABTesting = next.ABTesting
-	s.cfg.Metrics = next.Metrics
-	s.cfg.Server = next.Server
-	s.cfg.AutoUpdate = next.AutoUpdate
-	s.cfg.Browser = next.Browser
-	s.cfg.ProjectTypes = next.ProjectTypes
-	if err := s.refreshAgentRuntimeConfig(*next); err != nil {
-		return nil, err
-	}
-
-	// Selectively call live setters only for fields that actually changed.
-	// This avoids restarting services on every config write when nothing
-	// relevant changed (e.g. UI saves unrelated settings).
-	for _, k := range hot {
-		switch k {
-		case "notification.desktop":
-			s.notifier.SetDesktop(next.Notification.Desktop)
-		case "logging.level":
-			if s.logLevel != nil {
-				s.logLevel.Set(next.Logging.SlogLevel())
+		result := ConfigMutationResult{}
+		if restoreErr := config.RestoreLastKnownGoodConfig(); restoreErr != nil {
+			result.Recovery = &ConfigRecovery{
+				Message: fmt.Sprintf("config reload failed and last-known-good restore failed: %v", restoreErr),
 			}
+			return result, err
 		}
-	}
-	// SetGuardrails once if any guardrail field changed.
-	guardrailFields := []string{
-		"agent.max_cost_usd",
-		"agent.max_turns",
-		"agent.max_checkpoints",
-		"agent.checkpoint_on_turn_ceiling",
-		"agent.turn_cost_fraction",
-		"agent.turn_multiplier",
-	}
-	if slices.ContainsFunc(guardrailFields, func(f string) bool { return slices.Contains(hot, f) }) {
-		s.agents.SetGuardrails(agent.Guardrails{
-			MaxCostUSD:              next.Agent.MaxCostUSD,
-			MaxTurns:                next.Agent.MaxTurns,
-			MaxCheckpoints:          next.MaxCheckpoints(),
-			TurnCostFraction:        next.Agent.TurnCostFraction,
-			TurnMultiplier:          next.Agent.TurnMultiplier,
-			CheckpointOnTurnCeiling: next.CheckpointOnTurnCeilingEnabled(),
-		})
-		if s.workflowEngine != nil {
-			s.workflowEngine.SetMaxCheckpoints(next.MaxCheckpoints())
+		result.Recovery = &ConfigRecovery{
+			RestoredLastKnownGood: true,
+			Message:               "restored config.yaml from last-known-good after reload failure",
 		}
-	}
-	if s.logger != nil {
-		for _, k := range restart {
-			s.logger.Warn("config.reload.restart_required", "field", k)
-		}
+		return result, err
 	}
 
-	return hot, nil
+	result, pending, err := func() (ConfigMutationResult, pendingNotify, error) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.mutateLocked(next, nil)
+	}()
+	// Outside the lock: subscribers may read config back through this service.
+	pending.run()
+	return result, err
 }
 
 // configToSettings converts a *config.Config into AppSettings for validation
@@ -110,10 +51,16 @@ func configToSettings(c *config.Config) AppSettings {
 			MaxSizeMB: c.Logging.MaxSizeMB,
 			MaxFiles:  c.Logging.MaxFiles,
 		},
-		Audit:        c.Audit,
-		Renovate:     c.Renovate,
-		Providers:    c.Providers,
-		GitHub:       c.GitHub,
+		Attachments: c.Attachments,
+		Audit:       c.Audit,
+		Renovate:    c.Renovate,
+		Providers:   c.Providers,
+		ProviderRouting: ProviderRoutingSettings{
+			ABTestingEnabled:              c.ABTesting.Enabled,
+			ABTestingMinSamplesPerVariant: c.ABTesting.MinSamplesPerVariant,
+			Summary:                       config.BuildRoutingSummary(c),
+		},
+		GitHub:       githubSettingsWithoutSecrets(c.GitHub),
 		Monitor:      c.Monitor,
 		SelfMonitor:  c.SelfMonitor,
 		Triage:       c.Triage,

@@ -72,8 +72,8 @@ func TestValidateTaskType_Invalid(t *testing.T) {
 func TestAllTaskTypes(t *testing.T) {
 	t.Parallel()
 	types := AllTaskTypes()
-	if len(types) != 5 {
-		t.Errorf("got %d types, want 5", len(types))
+	if len(types) != 1 {
+		t.Errorf("got %d types, want 1", len(types))
 	}
 }
 

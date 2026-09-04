@@ -1,0 +1,3 @@
+./client.go
+./groupversion.go
+./typeconverter.go

@@ -15,9 +15,9 @@ jobs:
     env:
       SYBRA_HOME: /tmp/sybra-screenshots
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
-      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+      - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
 
       - name: Install frontend deps
         run: cd frontend && npm ci
@@ -27,13 +27,17 @@ jobs:
 
       - name: Seed fixtures
         run: |
-          mkdir -p "$SYBRA_HOME/tasks" "$SYBRA_HOME/workflows"
+          mkdir -p "$SYBRA_HOME/tasks"
           cp frontend/e2e/fixtures/*.md "$SYBRA_HOME/tasks/"
-          cp frontend/e2e/fixtures/wf-editor-e2e.yaml "$SYBRA_HOME/workflows/"
           # Marker proving this is a disposable e2e home; the suite refuses
           # destructive task cleanup without it (#1576).
           touch "$SYBRA_HOME/.sybra-e2e-home"
           cat > "$SYBRA_HOME/config.yaml" <<EOF
+          agent:
+            # sybra-server refuses to start without an explicit posture. "off"
+            # is correct here: this job only screenshots the UI and starts no
+            # agent subprocess.
+            sandbox_mode: "off"
           server:
             auth_token: e2e-test-token
           EOF
@@ -81,7 +85,7 @@ jobs:
           retention-days: 3
 
       - name: Checkout sybra-website
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           repository: Automaat/sybra-website
           path: sybra-website

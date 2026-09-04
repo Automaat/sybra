@@ -19,7 +19,7 @@
 
 <Section title="Logging & audit" description="Log verbosity, rotation, and audit-trail retention.">
   <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
-    <SelectField id="log-level" label="Log level" keyPath="logging.level"
+    <SelectField id="log-level" label="Log level" keyPath="observability.logging.level"
       options={[
         { value: 'debug', label: 'Debug' },
         { value: 'info', label: 'Info' },
@@ -29,23 +29,23 @@
       bind:value={settings.logging.level}
       modified={l.level !== ld.level}
       onreset={() => (settings.logging.level = ld.level)} />
-    <NumberField id="log-max-size" label="Max log size (MB)" keyPath="logging.max_size_mb" min={1} max={500}
+    <NumberField id="log-max-size" label="Max log size (MB)" keyPath="observability.logging.max_size_mb" min={1} max={500}
       description="1–500 MB"
       bind:value={settings.logging.maxSizeMB}
       modified={l.maxSizeMB !== ld.maxSizeMB}
       onreset={() => (settings.logging.maxSizeMB = ld.maxSizeMB)} />
-    <NumberField id="log-max-files" label="Max log files" keyPath="logging.max_files" min={1} max={50}
+    <NumberField id="log-max-files" label="Max log files" keyPath="observability.logging.max_files" min={1} max={50}
       description="1–50 files"
       bind:value={settings.logging.maxFiles}
       modified={l.maxFiles !== ld.maxFiles}
       onreset={() => (settings.logging.maxFiles = ld.maxFiles)} />
-    <NumberField id="audit-retention" label="Audit retention (days)" keyPath="audit.retention_days" min={1} max={365}
+    <NumberField id="audit-retention" label="Audit retention (days)" keyPath="observability.audit.retention_days" min={1} max={365}
       description="1–365 days"
       bind:value={settings.audit.retentionDays}
       modified={au.retentionDays !== ad.retentionDays}
       onreset={() => (settings.audit.retentionDays = ad.retentionDays)} />
   </div>
-  <ToggleField label="Enable audit logging" keyPath="audit.enabled"
+  <ToggleField label="Enable audit logging" keyPath="observability.audit.enabled"
     bind:checked={settings.audit.enabled}
     modified={au.enabled !== ad.enabled}
     onreset={() => (settings.audit.enabled = ad.enabled)} />

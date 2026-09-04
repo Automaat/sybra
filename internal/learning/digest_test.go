@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/provider"
+
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
@@ -29,12 +31,12 @@ func (f fakeAudit) Read(audit.Query) ([]audit.Event, error) { return f.events, f
 // deterministic "summarizer unavailable" failure with no process spawned.
 type alwaysBlockGate struct{}
 
-func (alwaysBlockGate) IsHealthy(string) bool                         { return false }
-func (alwaysBlockGate) RateLimited(string) bool                       { return false }
-func (alwaysBlockGate) Failover(string) string                        { return "" }
-func (alwaysBlockGate) Reason(string) string                          { return "blocked for test" }
-func (alwaysBlockGate) ReportAuthFailure(string, string)              {}
-func (alwaysBlockGate) ReportRateLimit(string, time.Duration, string) {}
+func (alwaysBlockGate) IsHealthy(string) bool                                                  { return false }
+func (alwaysBlockGate) RateLimited(string) bool                                                { return false }
+func (alwaysBlockGate) Failover(string) string                                                 { return "" }
+func (alwaysBlockGate) Reason(string) string                                                   { return "blocked for test" }
+func (alwaysBlockGate) ReportAuthFailure(string, string)                                       {}
+func (alwaysBlockGate) ReportRateLimit(string, time.Duration, string, provider.CooldownSource) {}
 
 func newTestService(t *testing.T, d Deps) *Service {
 	t.Helper()

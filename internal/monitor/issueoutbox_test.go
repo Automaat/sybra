@@ -3,6 +3,7 @@ package monitor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"sync"
@@ -20,6 +21,37 @@ type fakeSubmitter struct {
 	calls   int
 	err     error
 	healthy bool
+}
+
+type fakeIncidentSubmitter struct {
+	fakeSubmitter
+	incidentRevisions []int
+}
+
+func (f *fakeIncidentSubmitter) ApplyIncident(_ context.Context, in Incident, _ IncidentChange, _ string) (bool, IncidentArtifact, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	if !f.healthy {
+		return false, IncidentArtifact{}, f.err
+	}
+	f.incidentRevisions = append(f.incidentRevisions, in.Revision)
+	return false, IncidentArtifact{Number: 1}, nil
+}
+
+func (f *fakeIncidentSubmitter) ResolveIncident(_ context.Context, in Incident, _ string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	if !f.healthy {
+		return false, f.err
+	}
+	f.incidentRevisions = append(f.incidentRevisions, in.Revision)
+	return true, nil
+}
+
+func (f *fakeIncidentSubmitter) MapDuplicateIncidents(context.Context, Incident, []int, string) error {
+	return nil
 }
 
 func (f *fakeSubmitter) SubmitIssue(_ context.Context, title, _ string, _ []string) (created bool, url string, err error) {
@@ -77,6 +109,24 @@ func TestDurableGHIssueSink_AuthFailurePersistsAndLaterRetrySucceeds(t *testing.
 	}
 	if d.store.depth() != 0 {
 		t.Fatalf("want 0 pending outbox items after recovery flush, got %d", d.store.depth())
+	}
+}
+
+func TestDurableGHIssueSink_StaleIncidentCannotOverwriteNewerDesiredState(t *testing.T) {
+	inner := &fakeIncidentSubmitter{fakeSubmitter: fakeSubmitter{err: errAuthFailed}}
+	d, _ := newTestDurableSink(t, inner)
+	newer := Incident{Fingerprint: "incident:one", Revision: 2, State: IncidentResolved}
+	older := Incident{Fingerprint: newer.Fingerprint, Revision: 1, State: IncidentActive}
+	if _, err := d.ResolveIncident(context.Background(), newer, "resolved"); err == nil {
+		t.Fatal("expected auth failure")
+	}
+	if _, _, err := d.ApplyIncident(context.Background(), older, IncidentOpened, "stale"); err == nil {
+		t.Fatal("expected auth failure")
+	}
+	inner.markHealthy()
+	d.ReplayPending(context.Background())
+	if fmt.Sprint(inner.incidentRevisions) != "[2]" {
+		t.Fatalf("replayed revisions = %v, want [2]", inner.incidentRevisions)
 	}
 }
 
@@ -219,6 +269,69 @@ func TestDurableGHIssueSink_BoundedDepth(t *testing.T) {
 	}
 }
 
+func TestDurableGHIssueSink_ReplayPendingDrainsOutboxAndCountsReplays(t *testing.T) {
+	inner := &fakeSubmitter{err: errAuthFailed}
+	d, _ := newTestDurableSink(t, inner)
+
+	if _, _, err := d.SubmitIssue(context.Background(), "queued anomaly", "body", nil); err == nil {
+		t.Fatal("expected auth failure")
+	}
+	if got := d.Depth(); got != 1 {
+		t.Fatalf("Depth() = %d, want 1", got)
+	}
+	if got := d.OldestPendingAge(time.Now()); got <= 0 {
+		t.Fatalf("OldestPendingAge() = %v, want > 0 for a queued item", got)
+	}
+	if got := d.ReplayedTotal(); got != 0 {
+		t.Fatalf("ReplayedTotal() = %d, want 0 before recovery", got)
+	}
+
+	// Simulate the github.OnAuthRecovered hook firing: credentials recover
+	// and ReplayPending is invoked directly, without waiting for another
+	// SubmitIssue call.
+	inner.markHealthy()
+	d.ReplayPending(context.Background())
+
+	if got := d.Depth(); got != 0 {
+		t.Fatalf("Depth() after replay = %d, want 0", got)
+	}
+	if got := d.ReplayedTotal(); got != 1 {
+		t.Fatalf("ReplayedTotal() after replay = %d, want 1", got)
+	}
+	if got := d.OldestPendingAge(time.Now()); got != 0 {
+		t.Fatalf("OldestPendingAge() after drain = %v, want 0", got)
+	}
+}
+
+func TestDurableGHIssueSink_ReplayPendingConcurrentWithSubmitIssueNeverDoubleFiles(t *testing.T) {
+	inner := &fakeSubmitter{err: errAuthFailed}
+	d, _ := newTestDurableSink(t, inner)
+
+	if _, _, err := d.SubmitIssue(context.Background(), "racy anomaly", "body", nil); err == nil {
+		t.Fatal("expected auth failure")
+	}
+	inner.markHealthy()
+
+	// A recovery-triggered ReplayPending racing with the sink's own
+	// opportunistic flush (via a concurrent SubmitIssue for an unrelated
+	// title) must not file the same pending item twice.
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); d.ReplayPending(context.Background()) }()
+	go func() {
+		defer wg.Done()
+		_, _, _ = d.SubmitIssue(context.Background(), "unrelated anomaly", "body2", nil)
+	}()
+	wg.Wait()
+
+	if got := d.Depth(); got != 0 {
+		t.Fatalf("Depth() = %d, want 0 after both flushes settle", got)
+	}
+	if got := d.ReplayedTotal(); got != 1 {
+		t.Fatalf("ReplayedTotal() = %d, want exactly 1 (no double-file)", got)
+	}
+}
+
 func TestDurableGHIssueSink_SubmitDelegatesToAnomalyShapedSubmitIssue(t *testing.T) {
 	inner := &fakeSubmitter{healthy: true}
 	d, _ := newTestDurableSink(t, inner)
@@ -230,6 +343,36 @@ func TestDurableGHIssueSink_SubmitDelegatesToAnomalyShapedSubmitIssue(t *testing
 	}
 	if !created {
 		t.Fatal("expected created=true from the healthy fake")
+	}
+}
+
+func TestDurableGHIssueSink_IncidentOutboxCoalescesLatestDesiredRevision(t *testing.T) {
+	inner := &fakeIncidentSubmitter{fakeSubmitter: fakeSubmitter{err: errAuthFailed}}
+	d, _ := newTestDurableSink(t, inner)
+	in := Incident{Fingerprint: "incident:abc", Revision: 1, State: IncidentActive}
+
+	if _, _, err := d.ApplyIncident(context.Background(), in, IncidentOpened, "opened"); err == nil {
+		t.Fatal("expected auth failure")
+	}
+	in.Revision = 2
+	if _, err := d.ResolveIncident(context.Background(), in, "resolved"); err == nil {
+		t.Fatal("expected auth failure")
+	}
+	if got := d.Depth(); got != 1 {
+		t.Fatalf("latest desired incident state should replace the older one, depth=%d", got)
+	}
+	queued := d.store.load(slog.Default())
+	if len(queued) != 1 || queued[0].Title != IncidentTitle(in) {
+		t.Fatalf("queued incident title = %+v, want %q", queued, IncidentTitle(in))
+	}
+
+	inner.markHealthy()
+	d.ReplayPending(context.Background())
+	inner.mu.Lock()
+	revisions := append([]int(nil), inner.incidentRevisions...)
+	inner.mu.Unlock()
+	if len(revisions) != 1 || revisions[0] != 2 {
+		t.Fatalf("replayed incident revisions = %v, want only revision 2", revisions)
 	}
 }
 

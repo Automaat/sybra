@@ -15,16 +15,41 @@ const (
 	EventAgentStarted         = "agent.started"
 	EventAgentCompleted       = "agent.completed"
 	EventAgentFailed          = "agent.failed"
+	EventRunGrantIssued       = "run_grant.issued"
+	EventRunGrantUsed         = "run_grant.used"
+	EventRunGrantRevoked      = "run_grant.revoked"
 	EventTriageCompleted      = "triage.completed"
 	EventTriageClassified     = "triage.classified"
 	EventPlanCompleted        = "plan.completed"
 	EventPlanApproved         = "plan.approved"
 	EventPlanRejected         = "plan.rejected"
 	EventEvalCompleted        = "eval.completed"
-	EventOrchestratorStart    = "orchestrator.started"
-	EventOrchestratorStop     = "orchestrator.stopped"
-	EventPRConflictDetected   = "pr_monitor.conflict_detected"
-	EventPRCIFailureDetected  = "pr_monitor.ci_failure_detected"
+	// EventAdmissionDecided records the workflow engine's admission_preflight
+	// step outcome (internal/workflow/engine_steps_admission.go) — "admitted"
+	// or "blocked" — plus the task's declared risk_tier/permission_tier and,
+	// on a block, the blocker.Kind and reason. Recorded on every dispatch,
+	// not just blocks, so evaluation can correlate predicted risk/clarity
+	// against actual task outcome.
+	EventAdmissionDecided               = "admission.decided"
+	EventRunEnvironmentCertified        = "runenv.certified"
+	EventRunEnvironmentRepair           = "runenv.repair"
+	EventRunEnvironmentQuarantined      = "runenv.quarantined"
+	EventRunEnvironmentScopeQuarantined = "runenv.scope_quarantined"
+	// EventCompletionEvidenceVerified records the workflow engine's
+	// require_evidence step (internal/workflow/engine_steps_evidence.go)
+	// finding every applicable criterion present, passing, and fresh for the
+	// task's current HEAD — the deterministic gate that lets a task proceed
+	// to PR landing.
+	EventCompletionEvidenceVerified = "completion_evidence.verified"
+	// EventCompletionEvidenceBlocked records require_evidence flipping a task
+	// to human-required because at least one required criterion was missing,
+	// failed, or stale (recorded against a revision other than current HEAD).
+	// Data carries the unmet criteria, never agent output.
+	EventCompletionEvidenceBlocked = "completion_evidence.blocked"
+	EventOrchestratorStart         = "orchestrator.started"
+	EventOrchestratorStop          = "orchestrator.stopped"
+	EventPRConflictDetected        = "pr_monitor.conflict_detected"
+	EventPRCIFailureDetected       = "pr_monitor.ci_failure_detected"
 	// EventPRCIFlakyDetected records that a ci_failure issue's failing check
 	// names all also show a passing outcome for the same head commit (see
 	// github.flakyOnlyFailure) — noise, not a deterministic regression. The
@@ -69,21 +94,42 @@ const (
 	// failing at or above the configured success-rate threshold. Logged
 	// instead of dispatching a fix agent or escalating to human-required.
 	// Data carries pr, repo, and the flaky check names — never agent output.
-	EventPRCIFlakeDetected   = "pr_monitor.ci_flake_detected"
-	EventReviewStarted       = "review.agent_started"
-	EventFixReviewStarted    = "fix_review.agent_started"
-	EventReviewPublished     = "review.published"
-	EventRenovateCIFix       = "renovate.ci_fix_started"
-	EventHealthReport        = "health.report"
-	EventAgentStartFailed    = "agent.start_failed"
-	EventProviderGateBlocked = "provider.gate_blocked"
-	EventHumanReviewSpawned  = "human_review.spawned"
-	EventHumanReviewVerdict  = "human_review.verdict"
-	EventHumanReviewIssue    = "human_review.issue_filed"
-	EventHumanReviewSkipped  = "human_review.skipped"
-	EventExperienceRecorded  = "experience.recorded"
-	EventExperienceSkipped   = "experience.skipped"
-	EventExperienceInjected  = "experience.injected"
+	EventPRCIFlakeDetected = "pr_monitor.ci_flake_detected"
+	EventReviewStarted     = "review.agent_started"
+	EventFixReviewStarted  = "fix_review.agent_started"
+	EventReviewPublished   = "review.published"
+	// EventReviewSelfApprovalDismissed records that our own bot identity's
+	// approval on an inbound review task's PR was detected and dismissed —
+	// the outcome-based backstop under the gh shim (#2198). Data carries pr
+	// and repo, never agent output.
+	EventReviewSelfApprovalDismissed = "review.self_approval_dismissed"
+	EventRenovateCIFix               = "renovate.ci_fix_started"
+	EventHealthReport                = "health.report"
+	EventAgentStartFailed            = "agent.start_failed"
+	EventProviderGateBlocked         = "provider.gate_blocked"
+	EventProviderModelIncompatible   = "provider.model_incompatible"
+	EventHumanReviewSpawned          = "human_review.spawned"
+	EventHumanReviewVerdict          = "human_review.verdict"
+	EventHumanReviewIssue            = "human_review.issue_filed"
+	EventHumanReviewSkipped          = "human_review.skipped"
+	// EventHumanReviewRetriesExhausted marks a recovery that was scheduled and
+	// then dropped: the dispatch claim or worktree never freed up within the
+	// retry ladder. Distinct from Skipped, which is a decision not to spawn —
+	// this is a spawn that was wanted and never happened, and nothing else
+	// re-triggers it.
+	EventHumanReviewRetriesExhausted = "human_review.retries_exhausted"
+	EventExperienceRecorded          = "experience.recorded"
+	EventExperienceSkipped           = "experience.skipped"
+	EventExperienceInjected          = "experience.injected"
+	// EventInterventionRecorded records that a genuine human-required unblock
+	// was captured as a normalized intervention record (see
+	// internal/intervention). Data carries the record's fingerprint plus
+	// project_id (public) or project_key (work, opaque).
+	EventInterventionRecorded = "intervention.recorded"
+	// EventInterventionSkipped records that an unblock did not produce an
+	// intervention record — Data.reason is "project_unresolved" or
+	// "write_failed".
+	EventInterventionSkipped = "intervention.skipped"
 
 	// EventTaskLanded records a task's terminal outcome (merged/closed) with
 	// queue-inclusive and work-based timing for the evaluation scorecard.
@@ -138,6 +184,23 @@ const (
 	// raw error message — so failures are observable without exposing content.
 	EventCodexHookFailed = "codex.hook.failed"
 
+	// EventRoutingReweighted records one adaptive-routing tick (internal/routing)
+	// that produced a changed weight plan: a new overlay generation, the
+	// per-experiment/variant weights it set, and the score inputs that drove
+	// them. Emitted every generation, including shadow-mode (routing.enabled:
+	// false) ticks that compute and audit but never apply — so the audit log
+	// stays the full explainability trail regardless of rollout posture. Data
+	// carries only experiment/variant IDs and numeric score inputs — never
+	// prompts, provider CLI arguments, or task content.
+	EventRoutingReweighted = "routing.reweighted"
+	// EventRoutingRolledBack records a tick that discarded any adaptive
+	// weight shift and reset the overlay to base (declared) weights because
+	// the evaluation report backing it was untrustworthy (schema-version
+	// mismatch or stale — see evaluation.Trustworthy). Data carries the new
+	// overlay version, whether it was applied live, and a categorical reason
+	// string — never prompts or task content.
+	EventRoutingRolledBack = "routing.rolled_back"
+
 	// EventLearningDigest records a successful Learning Digest generation
 	// (internal/learning) with provider/model/duration/cost in Data.
 	EventLearningDigest = "learning.digest"
@@ -145,6 +208,10 @@ const (
 	// Data.reason carries an actionable, categorical explanation; the
 	// previous digest is left intact.
 	EventLearningDigestFailed = "learning.digest_failed"
+	// EventAutoUpdateTransition records one autoupdate candidate transition:
+	// seen, waiting, rejected, approved, applied, or superseded. Data carries
+	// only SHAs/reasons for deployment state explainability.
+	EventAutoUpdateTransition = "autoupdate.transition"
 
 	// EventUmbrellaRecovery records one outcome of the async degraded-umbrella
 	// auto-recovery pass (internal/umbrella.RecoverDegraded): attempted,
@@ -168,6 +235,24 @@ const (
 	// failed preflight parks the task in human-required immediately, so this
 	// event fires on every occurrence, not just the first.
 	EventGHPushAuthFailed = "gh_push.auth_failed"
+	// Monitor incident events are scrub-safe typed projections. They never
+	// contain anomaly prose, raw work project identifiers, or task content.
+	EventMonitorIncidentObserved    = "monitor.incident_observed"
+	EventMonitorIncidentRemediation = "monitor.incident_remediation"
+	EventMonitorIncidentResolved    = "monitor.incident_resolved"
+	EventMonitorIncidentSuperseded  = "monitor.incident_superseded"
+	EventReconciliationDecided      = "reconciliation.decided"
+	EventAttemptLeasesReconciled    = "attempt_leases.reconciled"
+	// EventReconciliationRepairAttempted records the outcome of the
+	// conflict-recovery callback post-run reconciliation invokes when
+	// reconcile.Decide returns ActionRepair (see completion.Handler's
+	// reconcileAuthorCompletion). Without this, a reconciliation.repair
+	// incident's RemediationAttempts stays permanently empty — the decision
+	// is audited via EventReconciliationDecided, but the actual repair
+	// attempt that follows it never was. Data carries "result": "started"
+	// (conflict recovery launched) or "held" (no recovery hook available, or
+	// it declined).
+	EventReconciliationRepairAttempted = "reconciliation.repair_attempted"
 )
 
 type Event struct {

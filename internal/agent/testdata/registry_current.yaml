@@ -1,13 +1,25 @@
 id: a-map
 task_id: task-map
 name: mapper
+role: monitor
 mode: interactive
 provider: codex
 model: gpt-5.3-codex
+requested_model: opus
 experiment_id: exp-1
 variant_id: variant-a
+routing_reason: ab
 assignment_unit: task
 assignment_key: task-map
+decision_version: 3
+attempt_intent_id: intent-map
+attempt_task_key: task-map
+attempt_task_generation: 4
+attempt_worktree: /tmp/sybra/worktrees/task-map
+attempt_worktree_generation: 5
+attempt_access: observe
+attempt_lease_id: lease-map
+attempt_version: 6
 pid: 12345
 session_id: sess-map
 log_path: /tmp/sybra/agents/a-map.ndjson
@@ -19,6 +31,11 @@ stdin_path: /tmp/sybra/agents/a-map.stdin
 pending_prompts:
     - queued turn 1
     - queued turn 2
+steer_command_ids:
+    - command-a
+    - command-b
+steer_dispatching: true
+unthrottled_output_events: true
 one_shot: true
 max_turns: 7
 require_permissions: true

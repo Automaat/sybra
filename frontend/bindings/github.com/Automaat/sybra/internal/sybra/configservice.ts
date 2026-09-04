@@ -26,6 +26,12 @@ export function GetDefaultSettings(): $CancellablePromise<$models.AppSettings> {
     });
 }
 
+export function GetPathExplanations(): $CancellablePromise<$models.ConfigPathExplanation[]> {
+    return $Call.ByID(2065145936).then(($result: any) => {
+        return $$createType2($result);
+    });
+}
+
 /**
  * GetRawConfig returns the raw config.yaml text for the Advanced (YAML) editor.
  * Unlike GetSettings this is NOT redacted — it is the user's own local file,
@@ -46,13 +52,14 @@ export function GetSettings(): $CancellablePromise<$models.AppSettings> {
 
 /**
  * ReloadFromDisk re-reads ~/.sybra/config.yaml, validates it, diffs against
- * the in-memory config, and applies hot-reloadable changes. Returns the list
- * of hot-reloadable keys that changed. On any error the in-memory config is
- * left unchanged. Never writes to disk.
+ * the persisted intent snapshot, and applies only hot-reloadable changes.
+ * Restart-required values stay pending until process restart. If an external
+ * writer leaves config.yaml unreadable or invalid, restore the last-known-good
+ * file so the process does not stay wedged on a broken operator config.
  */
-export function ReloadFromDisk(): $CancellablePromise<string[]> {
+export function ReloadFromDisk(): $CancellablePromise<$models.ConfigMutationResult> {
     return $Call.ByID(742653545).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType3($result);
     });
 }
 
@@ -68,10 +75,14 @@ export function SaveRawConfig(raw: string): $CancellablePromise<void> {
 /**
  * UpdateSettings validates, persists, and hot-reloads the provided settings.
  */
-export function UpdateSettings(settings: $models.AppSettings): $CancellablePromise<void> {
-    return $Call.ByID(659336121, settings);
+export function UpdateSettings(settings: $models.AppSettings): $CancellablePromise<$models.ConfigMutationResult> {
+    return $Call.ByID(659336121, settings).then(($result: any) => {
+        return $$createType3($result);
+    });
 }
 
 // Private type creation functions
 const $$createType0 = $models.AppSettings.createFrom;
-const $$createType1 = $Create.Array($Create.Any);
+const $$createType1 = $models.ConfigPathExplanation.createFrom;
+const $$createType2 = $Create.Array($$createType1);
+const $$createType3 = $models.ConfigMutationResult.createFrom;

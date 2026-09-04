@@ -8,49 +8,70 @@ import { Create as $Create } from "@wailsio/runtime";
 export class AgentDefaults {
     "provider": string;
     "model": string;
-    "mode": string;
     "maxConcurrent": number;
     "researchMachineDir": string;
-    "maxCostUsd": number;
-    "maxTurns": number;
+
+    /**
+     * PostResultCostUSD is a reactive per-run USD circuit breaker: Sybra checks
+     * it only when the provider emits a terminal result event, after that spend
+     * is already incurred. 0 (default in raw zero values, 5 in fresh installs)
+     * disables the breaker.
+     */
+    "postResultCostUsd": number;
+
+    /**
+     * MaxAssistantEvents caps top-level assistant stream events per run, not
+     * provider CLI turns. 0 disables the ceiling.
+     */
+    "maxAssistantEvents": number;
 
     /**
      * MaxCheckpoints bounds how many times a single workflow step may
-     * checkpoint-and-handoff after hitting the per-run turn ceiling. 0 means
-     * use DefaultMaxCheckpoints (3).
+     * checkpoint-and-handoff after hitting the per-run assistant-event ceiling.
+     * 0 means use DefaultMaxCheckpoints (3).
      */
     "maxCheckpoints": number;
 
     /**
-     * CheckpointOnTurnCeiling swaps the legacy raise-MaxTurns auto-continue for
-     * a checkpoint-and-handoff to a fresh run when an eligible code-author
-     * headless run hits its per-run turn ceiling. nil means not configured
-     * (defaults to true). Set false to restore the legacy in-process
-     * auto-continue behavior with no code revert.
+     * CheckpointOnTurnCeiling swaps the legacy raise-the-assistant-event-ceiling
+     * auto-continue for a checkpoint-and-handoff to a fresh run when an
+     * eligible code-author headless run hits its per-run assistant-event
+     * ceiling. nil means not configured (defaults to true). Set false to
+     * restore the legacy in-process auto-continue behavior with no code revert.
      */
     "checkpointOnTurnCeiling": boolean | null;
 
     /**
      * MaxTaskCostUSD caps the cumulative USD cost across every AgentRun a task
-     * has ever had (unlike MaxCostUSD, which resets every run). Closes the gap
-     * where each retry stays under the per-run cap but the task's total spend
-     * still balloons unbounded. Checked once per dispatch, before an agent is
-     * started — StartAgentWithAssignment refuses to start and flips the task
-     * to human-required when the task's already-recorded AgentRuns.CostUSD sum
-     * meets or exceeds this. 0 (default) disables the check.
+     * has ever had (unlike PostResultCostUSD, which resets every run). Closes
+     * the gap where each retry stays under the per-run cap but the task's total
+     * spend still balloons unbounded. Checked once per dispatch, before an
+     * agent is started — StartAgentWithAssignment refuses to start and flips
+     * the task to human-required when the task's already-recorded
+     * AgentRuns.CostUSD sum meets or exceeds this. 0 (default) disables the
+     * check.
      */
     "maxTaskCostUsd": number;
 
     /**
-     * TurnCostFraction is the fraction of MaxCostUSD below which a turns
-     * escalation is auto-continued. Default 0.8 when unset.
+     * TurnCostFraction is the fraction of PostResultCostUSD below which an
+     * assistant-event escalation is auto-continued. Default 0.8 when unset.
      */
     "turnCostFraction": number;
 
     /**
-     * TurnMultiplier scales the turn limit on each auto-continuation. Default 2 when unset.
+     * TurnMultiplier scales the assistant-event ceiling on each
+     * auto-continuation. Default 2 when unset.
      */
     "turnMultiplier": number;
+
+    /**
+     * MaxSubagentEvents caps forked-subagent assistant events (CLAUDE_CODE_FORK_SUBAGENT
+     * parent_tool_use_id turns) per run, independent of MaxAssistantEvents which
+     * only counts top-level turns. 0 disables the ceiling. A breach hard-stops
+     * the run outright — there is no auto-continue/human-escalation path.
+     */
+    "maxSubagentEvents": number;
 
     /**
      * RequirePermissions sets the default permission requirement for agents.
@@ -60,16 +81,38 @@ export class AgentDefaults {
     "requirePermissions": boolean | null;
 
     /**
+     * CommitSigning declares this deployment's posture on GPG-signing agent
+     * commits: "auto" (default — sign when the host resolves a signing key),
+     * "never", or "require". Empty means auto. An explicit "never" is what
+     * keeps a keyless unattended host from ever being told to pass -S, and
+     * keeps that guarantee from silently flipping if a key later appears on
+     * the host.
+     */
+    "commitSigning": string;
+
+    /**
      * ReviewUntilClean keeps simple-task-review cycling review→fix→review
      * until the reviewer returns a CLEAN verdict, so the fix agent's diff is
-     * never the last word. nil means not configured (falls back to true).
-     * The cycle is uncapped by design — a round cap would censor the
-     * review-rounds distribution the stats page reports — and is bounded only
-     * by MaxTaskCostUSD, which is enforced before every dispatch. false falls
-     * back to a single review pass per task: cheaper and more predictable when
-     * no per-task budget is configured.
+     * never the last word. nil means not configured (falls back to true). false
+     * falls back to a single review pass per task: cheaper and more
+     * predictable when no per-task budget is configured. The cycle itself is
+     * bounded by ReviewRoundsPerHour below — the same durable budget the
+     * inbound PR-review dispatcher enforces — not a separate knob here.
      */
     "reviewUntilClean": boolean | null;
+
+    /**
+     * ReviewRoundsPerHour caps automated review-role agent dispatches one task
+     * may receive in a rolling hour before it is parked for a human. Shared by
+     * both the inbound PR-review dispatcher and simple-task-review's own
+     * review→fix loop (reviewbudget.Budget is their single owner) — it bounds
+     * "how much automated review is too much" regardless of whether a PR
+     * exists yet, which is why it lives here rather than under GitHubConfig.
+     * 0 uses the default; negative disables the hourly cap. A fixed lifetime
+     * ceiling still applies through the shared review budget so long-lived churn
+     * cannot run forever.
+     */
+    "reviewRoundsPerHour": number;
 
     /**
      * BashTimeoutSeconds sets the per-bash-tool-call timeout passed to
@@ -145,8 +188,8 @@ export class AgentDefaults {
      * ApprovalPort pins the localhost port of the PreToolUse approval
      * server. The hook URL is baked into a permission-gated agent's
      * --settings at spawn, so a fixed port lets a detached agent's approval
-     * requests still resolve after a restart. 0 (default) binds a random
-     * port (no cross-restart approval survival).
+     * requests still resolve after a restart. 0 (default) selects a random
+     * port once and persists it for subsequent starts.
      */
     "approvalPort": number;
 
@@ -163,8 +206,7 @@ export class AgentDefaults {
      * DispatchJitterMs bounds a uniform random delay applied before headless
      * agent dispatch, so a wave of concurrently ready tasks does not all
      * probe the provider health gate in the same tick. 0 disables jitter.
-     * Never applied to interactive/chat dispatch. Default 1000 — set 0 to
-     * disable.
+     * Default 1000 — set 0 to disable.
      */
     "dispatchJitterMs": number;
 
@@ -178,9 +220,22 @@ export class AgentDefaults {
      * never the default rollout posture. "enforce" actually wraps the spawn
      * and blocks writes outside that allowlist, failing the spawn closed if
      * the wrapper is unavailable.
-     * Empty treated as "report".
+     * Empty treated as "report". Independent verifier roles always override
+     * this to "enforce" and fail closed because their evidence must not depend
+     * on the rollout posture selected for author agents.
      */
     "sandboxMode": string;
+
+    /**
+     * SandboxReadMode layers read-visibility on top of SandboxMode: "off"
+     * (default) leaves reads unrestricted, "report" logs the resolved read
+     * allowlist without restricting the spawn, "enforce" denies reads outside
+     * it. Kept separate from sandbox_mode so upgrading a write-enforcing
+     * deployment cannot silently escalate it into the highest-breakage tier,
+     * where one missing read path fails the run closed. Consulted only when
+     * SandboxMode is "enforce". Empty treated as "off".
+     */
+    "sandboxReadMode": string;
 
     /**
      * HeadlessSteerable controls whether headless claude runs launch with the
@@ -232,6 +287,32 @@ export class AgentDefaults {
      */
     "queue": QueueConfig;
 
+    /**
+     * ClassReservations reserves a configurable minimum number of concurrent
+     * slots per workload class ("implementation", "completion", "system" —
+     * see agent.Role.WorkloadClass), so one class saturating the shared pool
+     * (e.g. a retry storm of system/monitor work) cannot starve another. Keys
+     * outside the known class set, or a sum exceeding MaxConcurrent, fail
+     * config validation. Empty/nil (the default) reproduces the pre-class-
+     * isolation single shared pool exactly — this feature is opt-in.
+     */
+    "classReservations": { [_ in string]?: number };
+
+    /**
+     * Evidence gates the workflow engine's require_evidence completion gate
+     * (agent.evidence.enabled — see config_evidence.go).
+     */
+    "evidence": EvidenceConfig;
+
+    /**
+     * VerifyChecksMaxConcurrent bounds how many verify_checks suites (the
+     * project's `checks.verify` commands) run at once across the whole
+     * process. 0 (default) falls back to a CPU-derived value — see
+     * (*Config).VerifyChecksMaxConcurrent. Full verify suites are CPU-heavy,
+     * so this stays well below agent.max_concurrent rather than matching it.
+     */
+    "verifyChecksMaxConcurrent": number;
+
     /** Creates a new AgentDefaults instance. */
     constructor($$source: Partial<AgentDefaults> = {}) {
         if (!("provider" in $$source)) {
@@ -240,20 +321,17 @@ export class AgentDefaults {
         if (!("model" in $$source)) {
             this["model"] = "";
         }
-        if (!("mode" in $$source)) {
-            this["mode"] = "";
-        }
         if (!("maxConcurrent" in $$source)) {
             this["maxConcurrent"] = 0;
         }
         if (!("researchMachineDir" in $$source)) {
             this["researchMachineDir"] = "";
         }
-        if (!("maxCostUsd" in $$source)) {
-            this["maxCostUsd"] = 0;
+        if (!("postResultCostUsd" in $$source)) {
+            this["postResultCostUsd"] = 0;
         }
-        if (!("maxTurns" in $$source)) {
-            this["maxTurns"] = 0;
+        if (!("maxAssistantEvents" in $$source)) {
+            this["maxAssistantEvents"] = 0;
         }
         if (!("maxCheckpoints" in $$source)) {
             this["maxCheckpoints"] = 0;
@@ -270,11 +348,20 @@ export class AgentDefaults {
         if (!("turnMultiplier" in $$source)) {
             this["turnMultiplier"] = 0;
         }
+        if (!("maxSubagentEvents" in $$source)) {
+            this["maxSubagentEvents"] = 0;
+        }
         if (!("requirePermissions" in $$source)) {
             this["requirePermissions"] = null;
         }
+        if (!("commitSigning" in $$source)) {
+            this["commitSigning"] = "";
+        }
         if (!("reviewUntilClean" in $$source)) {
             this["reviewUntilClean"] = null;
+        }
+        if (!("reviewRoundsPerHour" in $$source)) {
+            this["reviewRoundsPerHour"] = 0;
         }
         if (!("bashTimeoutSeconds" in $$source)) {
             this["bashTimeoutSeconds"] = 0;
@@ -312,6 +399,9 @@ export class AgentDefaults {
         if (!("sandboxMode" in $$source)) {
             this["sandboxMode"] = "";
         }
+        if (!("sandboxReadMode" in $$source)) {
+            this["sandboxReadMode"] = "";
+        }
         if (!("headlessSteerable" in $$source)) {
             this["headlessSteerable"] = null;
         }
@@ -330,6 +420,15 @@ export class AgentDefaults {
         if (!("queue" in $$source)) {
             this["queue"] = (new QueueConfig());
         }
+        if (!("classReservations" in $$source)) {
+            this["classReservations"] = {};
+        }
+        if (!("evidence" in $$source)) {
+            this["evidence"] = (new EvidenceConfig());
+        }
+        if (!("verifyChecksMaxConcurrent" in $$source)) {
+            this["verifyChecksMaxConcurrent"] = 0;
+        }
 
         Object.assign(this, $$source);
     }
@@ -338,24 +437,60 @@ export class AgentDefaults {
      * Creates a new AgentDefaults instance from a string or object.
      */
     static createFrom($$source: any = {}): AgentDefaults {
-        const $$createField28_0 = $$createType0;
-        const $$createField29_0 = $$createType1;
-        const $$createField30_0 = $$createType2;
-        const $$createField31_0 = $$createType3;
+        const $$createField31_0 = $$createType0;
+        const $$createField32_0 = $$createType1;
+        const $$createField33_0 = $$createType2;
+        const $$createField34_0 = $$createType3;
+        const $$createField35_0 = $$createType4;
+        const $$createField36_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("roleEffort" in $$parsedSource) {
-            $$parsedSource["roleEffort"] = $$createField28_0($$parsedSource["roleEffort"]);
+            $$parsedSource["roleEffort"] = $$createField31_0($$parsedSource["roleEffort"]);
         }
         if ("playwrightMcp" in $$parsedSource) {
-            $$parsedSource["playwrightMcp"] = $$createField29_0($$parsedSource["playwrightMcp"]);
+            $$parsedSource["playwrightMcp"] = $$createField32_0($$parsedSource["playwrightMcp"]);
         }
         if ("k8sJobs" in $$parsedSource) {
-            $$parsedSource["k8sJobs"] = $$createField30_0($$parsedSource["k8sJobs"]);
+            $$parsedSource["k8sJobs"] = $$createField33_0($$parsedSource["k8sJobs"]);
         }
         if ("queue" in $$parsedSource) {
-            $$parsedSource["queue"] = $$createField31_0($$parsedSource["queue"]);
+            $$parsedSource["queue"] = $$createField34_0($$parsedSource["queue"]);
+        }
+        if ("classReservations" in $$parsedSource) {
+            $$parsedSource["classReservations"] = $$createField35_0($$parsedSource["classReservations"]);
+        }
+        if ("evidence" in $$parsedSource) {
+            $$parsedSource["evidence"] = $$createField36_0($$parsedSource["evidence"]);
         }
         return new AgentDefaults($$parsedSource as Partial<AgentDefaults>);
+    }
+}
+
+/**
+ * AttachmentConfig controls local task attachment uploads.
+ */
+export class AttachmentConfig {
+    /**
+     * MaxSizeMB caps a single uploaded attachment's raw byte size before it is
+     * written to disk. 0 falls back to DefaultAttachmentMaxSizeMB.
+     */
+    "maxSizeMB": number;
+
+    /** Creates a new AttachmentConfig instance. */
+    constructor($$source: Partial<AttachmentConfig> = {}) {
+        if (!("maxSizeMB" in $$source)) {
+            this["maxSizeMB"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new AttachmentConfig instance from a string or object.
+     */
+    static createFrom($$source: any = {}): AttachmentConfig {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new AttachmentConfig($$parsedSource as Partial<AttachmentConfig>);
     }
 }
 
@@ -393,8 +528,9 @@ export class BrowserConfig {
     /**
      * InApp opens links in an in-app Sybra Browser webview window backed by a
      * persistent, app-wide cookie store, so a login is reused across windows
-     * and survives restarts. Nil/unset defaults to true (current behavior).
-     * Set to false to always open links in the default system browser instead.
+     * and survives restarts. Nil/unset defaults to false, so the built-in
+     * browser stays opt-in. Set to true to use the Sybra browser instead of the
+     * default system browser.
      */
     "inApp": boolean | null;
 
@@ -413,6 +549,44 @@ export class BrowserConfig {
     static createFrom($$source: any = {}): BrowserConfig {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new BrowserConfig($$parsedSource as Partial<BrowserConfig>);
+    }
+}
+
+/**
+ * EvidenceConfig gates the workflow engine's require_evidence step (see
+ * internal/workflow/engine_steps_evidence.go), the final deterministic
+ * completion gate that blocks a task from landing until every criterion
+ * applicable to it (verify_checks, detect_tampering, the test-runner
+ * verdict, review) has fresh, passing evidence recorded for the task's
+ * current HEAD. Lives under AgentDefaults — resolved config key
+ * agent.evidence.enabled.
+ */
+export class EvidenceConfig {
+    /**
+     * Enabled turns the require_evidence gate on. Defaults false (see
+     * applyEvidenceDefaults) — the underlying producers (verify_checks,
+     * detect_tampering, codegen_gate, focused_checks, the test-runner, and
+     * review) always record evidence regardless of this flag, so enabling it
+     * later gates against history that was already being collected rather
+     * than starting cold.
+     */
+    "enabled": boolean;
+
+    /** Creates a new EvidenceConfig instance. */
+    constructor($$source: Partial<EvidenceConfig> = {}) {
+        if (!("enabled" in $$source)) {
+            this["enabled"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new EvidenceConfig instance from a string or object.
+     */
+    static createFrom($$source: any = {}): EvidenceConfig {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new EvidenceConfig($$parsedSource as Partial<EvidenceConfig>);
     }
 }
 
@@ -500,17 +674,23 @@ export class GitHubConfig {
     "enabled": boolean;
 
     /**
+     * Polling is the primary stream-level control surface for GitHub polling.
+     * The legacy fields below remain as compatibility inputs during load but new
+     * code should read this block through the effective helper methods.
+     */
+    "polling": GitHubPollingConfig;
+
+    /**
      * IssuesEnabled gates the GitHub Issues fetcher specifically. Defaults to
-     * true (see DefaultConfig). Effective state is Enabled && IssuesEnabled —
-     * use RunsIssuesFetcher() rather than reading this field directly.
+     * true for legacy configs. Deprecated compatibility input for
+     * github.polling.issues.enabled.
      */
     "issuesEnabled": boolean;
 
     /**
      * ReviewsEnabled gates PR reviewer poll registration specifically.
-     * Defaults to true (see DefaultConfig). Effective state is
-     * Enabled && ReviewsEnabled — use RunsReviewer() rather than reading this
-     * field directly.
+     * Deprecated compatibility input for both github.polling.sybra_prs.enabled
+     * and github.polling.assigned_prs.enabled.
      */
     "reviewsEnabled": boolean;
 
@@ -527,18 +707,13 @@ export class GitHubConfig {
      * Poll-interval overrides in seconds. Zero falls back to the built-in
      * default. Raised defaults (vs. the original 1m/5m) cut steady-state request
      * volume; lower them only on a high-limit (App-token) instance.
+     * Deprecated compatibility input for both PR streams' active intervals.
      */
     "reviewsFastSeconds": number;
 
     /**
-     * ReviewRoundsPerHour caps automated review runs one PR may receive in a
-     * rolling hour before the task is parked for a human. 0 uses the default;
-     * negative disables the cap. Rate-based rather than a lifetime total so a
-     * long-lived PR that is legitimately re-reviewed after each push is never
-     * blocked, while a runaway loop is stopped within the hour (#2164 sustained
-     * ~5/hour for 23 hours).
+     * Deprecated compatibility input for both PR streams' idle intervals.
      */
-    "reviewRoundsPerHour": number;
     "reviewsSlowSeconds": number;
 
     /**
@@ -555,6 +730,10 @@ export class GitHubConfig {
      * backoff entirely.
      */
     "reviewsStableBackoffMaxTicks": number;
+
+    /**
+     * Deprecated compatibility input for github.polling.issues.interval.
+     */
     "issuesSeconds": number;
 
     /**
@@ -565,16 +744,31 @@ export class GitHubConfig {
      * installs see no behavior change.
      */
     "mentionTriggerPhrase": string;
+
+    /**
+     * Webhook configures the GitHub App webhook listener, authentication, and
+     * comment commands.
+     */
+    "webhook": GitHubWebhookConfig;
     "renovateFastSeconds": number;
     "renovateSlowSeconds": number;
 
     /**
      * App configures GitHub App installation-token auth. When enabled, Sybra
-     * mints a short-lived installation token and injects it into the gh
-     * subprocess (GH_TOKEN), raising the REST ceiling to 15k/hr. Unset = fall
-     * back to gh's own auth.
+     * mints short-lived installation tokens for GitHub subprocesses and the
+     * agent gh shim, raising the REST ceiling to 15k/hr without parking stale
+     * tokens in long-lived agent environments. Unset = fall back to gh's own auth.
      */
     "app": GitHubAppConfig;
+
+    /**
+     * AllowAmbientReviewAuth permits PR-review agents to use the machine's
+     * existing gh authentication when no restricted GitHub App verifier token
+     * is available. It is off by default: enabling it deliberately gives a
+     * verifier the operator's GitHub authority, although Sybra still blocks
+     * approval submissions and disables the verifier workspace's push remote.
+     */
+    "allowAmbientReviewAuth": boolean;
 
     /**
      * NativeAutoMerge is a kill-switch for arming GitHub's native
@@ -587,14 +781,23 @@ export class GitHubConfig {
     "nativeAutoMerge": boolean;
 
     /**
-     * AutoResolveCleanMerges is a kill-switch for the deterministic
-     * clean-merge fast-path: before dispatching a conflict-recovery agent,
-     * Sybra attempts a plain `git merge` of the PR's base branch in Go. When
-     * that merge creates a commit with no conflicting hunks, it is pushed and
-     * no agent is spawned; conflicts, no-op merges, and errors still fall
-     * through to the agent-assisted path. Default off (zero value = false).
+     * AutoResolveCleanMerges is a kill-switch for the deterministic clean-merge
+     * fast-path used only for a single conflict issue on a PR: Sybra attempts a
+     * plain `git merge` of the PR's base branch in Go. A merge that creates a
+     * commit with no conflicting hunks is pushed and no agent is spawned.
+     * Comments, CI failures, and coalesced issue sets never use this path; Sybra
+     * does not merge base just to refresh a stale branch. Conflicts, no-op
+     * merges, and errors always fall through to the agent-assisted path. Default
+     * off (zero value = false).
      */
     "autoResolveCleanMerges": boolean;
+
+    /**
+     * PRFixMaxRetries caps automated pr-fix attempts per task and PR issue kind
+     * before the PR monitor parks the task for a human. Zero falls back to the
+     * built-in default; a negative value disables this per-issue cap.
+     */
+    "prFixMaxRetries": number;
 
     /**
      * FlakyDetection is a kill-switch for same-commit CI flakiness
@@ -620,6 +823,9 @@ export class GitHubConfig {
         if (!("enabled" in $$source)) {
             this["enabled"] = false;
         }
+        if (!("polling" in $$source)) {
+            this["polling"] = (new GitHubPollingConfig());
+        }
         if (!("issuesEnabled" in $$source)) {
             this["issuesEnabled"] = false;
         }
@@ -631,9 +837,6 @@ export class GitHubConfig {
         }
         if (!("reviewsFastSeconds" in $$source)) {
             this["reviewsFastSeconds"] = 0;
-        }
-        if (!("reviewRoundsPerHour" in $$source)) {
-            this["reviewRoundsPerHour"] = 0;
         }
         if (!("reviewsSlowSeconds" in $$source)) {
             this["reviewsSlowSeconds"] = 0;
@@ -650,6 +853,9 @@ export class GitHubConfig {
         if (!("mentionTriggerPhrase" in $$source)) {
             this["mentionTriggerPhrase"] = "";
         }
+        if (!("webhook" in $$source)) {
+            this["webhook"] = (new GitHubWebhookConfig());
+        }
         if (!("renovateFastSeconds" in $$source)) {
             this["renovateFastSeconds"] = 0;
         }
@@ -659,11 +865,17 @@ export class GitHubConfig {
         if (!("app" in $$source)) {
             this["app"] = (new GitHubAppConfig());
         }
+        if (!("allowAmbientReviewAuth" in $$source)) {
+            this["allowAmbientReviewAuth"] = false;
+        }
         if (!("nativeAutoMerge" in $$source)) {
             this["nativeAutoMerge"] = false;
         }
         if (!("autoResolveCleanMerges" in $$source)) {
             this["autoResolveCleanMerges"] = false;
+        }
+        if (!("prFixMaxRetries" in $$source)) {
+            this["prFixMaxRetries"] = 0;
         }
         if (!("flakyDetection" in $$source)) {
             this["flakyDetection"] = false;
@@ -679,12 +891,189 @@ export class GitHubConfig {
      * Creates a new GitHubConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): GitHubConfig {
-        const $$createField13_0 = $$createType4;
+        const $$createField1_0 = $$createType6;
+        const $$createField11_0 = $$createType7;
+        const $$createField14_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("polling" in $$parsedSource) {
+            $$parsedSource["polling"] = $$createField1_0($$parsedSource["polling"]);
+        }
+        if ("webhook" in $$parsedSource) {
+            $$parsedSource["webhook"] = $$createField11_0($$parsedSource["webhook"]);
+        }
         if ("app" in $$parsedSource) {
-            $$parsedSource["app"] = $$createField13_0($$parsedSource["app"]);
+            $$parsedSource["app"] = $$createField14_0($$parsedSource["app"]);
         }
         return new GitHubConfig($$parsedSource as Partial<GitHubConfig>);
+    }
+}
+
+export class GitHubPRPollingConfig {
+    "enabled": boolean;
+    "activeIntervalSeconds": number;
+    "idleIntervalSeconds": number;
+
+    /** Creates a new GitHubPRPollingConfig instance. */
+    constructor($$source: Partial<GitHubPRPollingConfig> = {}) {
+        if (!("enabled" in $$source)) {
+            this["enabled"] = false;
+        }
+        if (!("activeIntervalSeconds" in $$source)) {
+            this["activeIntervalSeconds"] = 0;
+        }
+        if (!("idleIntervalSeconds" in $$source)) {
+            this["idleIntervalSeconds"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new GitHubPRPollingConfig instance from a string or object.
+     */
+    static createFrom($$source: any = {}): GitHubPRPollingConfig {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new GitHubPRPollingConfig($$parsedSource as Partial<GitHubPRPollingConfig>);
+    }
+}
+
+export class GitHubPollingConfig {
+    "issues": GitHubPollingStreamConfig;
+    "sybraPrs": GitHubPRPollingConfig;
+    "assignedPrs": GitHubPRPollingConfig;
+
+    /** Creates a new GitHubPollingConfig instance. */
+    constructor($$source: Partial<GitHubPollingConfig> = {}) {
+        if (!("issues" in $$source)) {
+            this["issues"] = (new GitHubPollingStreamConfig());
+        }
+        if (!("sybraPrs" in $$source)) {
+            this["sybraPrs"] = (new GitHubPRPollingConfig());
+        }
+        if (!("assignedPrs" in $$source)) {
+            this["assignedPrs"] = (new GitHubPRPollingConfig());
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new GitHubPollingConfig instance from a string or object.
+     */
+    static createFrom($$source: any = {}): GitHubPollingConfig {
+        const $$createField0_0 = $$createType9;
+        const $$createField1_0 = $$createType10;
+        const $$createField2_0 = $$createType10;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("issues" in $$parsedSource) {
+            $$parsedSource["issues"] = $$createField0_0($$parsedSource["issues"]);
+        }
+        if ("sybraPrs" in $$parsedSource) {
+            $$parsedSource["sybraPrs"] = $$createField1_0($$parsedSource["sybraPrs"]);
+        }
+        if ("assignedPrs" in $$parsedSource) {
+            $$parsedSource["assignedPrs"] = $$createField2_0($$parsedSource["assignedPrs"]);
+        }
+        return new GitHubPollingConfig($$parsedSource as Partial<GitHubPollingConfig>);
+    }
+}
+
+export class GitHubPollingStreamConfig {
+    "enabled": boolean;
+    "intervalSeconds": number;
+
+    /** Creates a new GitHubPollingStreamConfig instance. */
+    constructor($$source: Partial<GitHubPollingStreamConfig> = {}) {
+        if (!("enabled" in $$source)) {
+            this["enabled"] = false;
+        }
+        if (!("intervalSeconds" in $$source)) {
+            this["intervalSeconds"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new GitHubPollingStreamConfig instance from a string or object.
+     */
+    static createFrom($$source: any = {}): GitHubPollingStreamConfig {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new GitHubPollingStreamConfig($$parsedSource as Partial<GitHubPollingStreamConfig>);
+    }
+}
+
+/**
+ * GitHubWebhookConfig controls GitHub App deliveries sent to
+ * POST /webhook/github.
+ */
+export class GitHubWebhookConfig {
+    /**
+     * Enabled starts the inbound GitHub webhook listener.
+     */
+    "enabled": boolean;
+
+    /**
+     * Port is the dedicated webhook listener port.
+     */
+    "port": number;
+
+    /**
+     * Secret authenticates X-Hub-Signature-256. It is intentionally distinct
+     * from TaskSecret, which authenticates POST /webhook/task. Empty disables
+     * GitHub comment-command ingestion.
+     */
+    "secret": string;
+
+    /**
+     * CommandPrefix is the literal slash-command prefix accepted in issue and
+     * pull-request comments, for example "/sybra". The supported commands are
+     * "<prefix> ship" and "<prefix> review".
+     */
+    "commandPrefix": string;
+
+    /**
+     * TaskEnabled exposes the generic POST /webhook/task sibling route. Legacy
+     * top-level webhook.enabled configurations are migrated with this enabled.
+     */
+    "taskEnabled": boolean;
+
+    /**
+     * TaskSecret authenticates the generic route's X-Sybra-Signature header.
+     * A non-empty value also enables the route.
+     */
+    "taskSecret": string;
+
+    /** Creates a new GitHubWebhookConfig instance. */
+    constructor($$source: Partial<GitHubWebhookConfig> = {}) {
+        if (!("enabled" in $$source)) {
+            this["enabled"] = false;
+        }
+        if (!("port" in $$source)) {
+            this["port"] = 0;
+        }
+        if (!("secret" in $$source)) {
+            this["secret"] = "";
+        }
+        if (!("commandPrefix" in $$source)) {
+            this["commandPrefix"] = "";
+        }
+        if (!("taskEnabled" in $$source)) {
+            this["taskEnabled"] = false;
+        }
+        if (!("taskSecret" in $$source)) {
+            this["taskSecret"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new GitHubWebhookConfig instance from a string or object.
+     */
+    static createFrom($$source: any = {}): GitHubWebhookConfig {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new GitHubWebhookConfig($$parsedSource as Partial<GitHubWebhookConfig>);
     }
 }
 
@@ -851,10 +1240,10 @@ export class K8sJobsConfig {
      * Creates a new K8sJobsConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): K8sJobsConfig {
-        const $$createField3_0 = $$createType5;
-        const $$createField8_0 = $$createType7;
-        const $$createField9_0 = $$createType9;
-        const $$createField10_0 = $$createType11;
+        const $$createField3_0 = $$createType11;
+        const $$createField8_0 = $$createType13;
+        const $$createField9_0 = $$createType15;
+        const $$createField10_0 = $$createType17;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("command" in $$parsedSource) {
             $$parsedSource["command"] = $$createField3_0($$parsedSource["command"]);
@@ -919,6 +1308,34 @@ export class MonitorConfig {
     "issueLabel": string;
     "issueRepo": string;
 
+    /**
+     * LostAgentIssueAfterOccurrences is how many consecutive ticks a
+     * lost_agent anomaly must be detected for the same task before an issue
+     * is filed. The deterministic remediation (resetLostAgent) runs every
+     * tick regardless; a single recurrence just means recovery hasn't taken
+     * effect yet, not that it failed.
+     */
+    "lostAgentIssueAfterOccurrences": number;
+
+    /**
+     * LostAgentAutoCloseAfterClears is how many consecutive ticks a
+     * previously-filed lost_agent issue's task must stay clear (no longer
+     * detected as lost) before the issue is auto-closed.
+     */
+    "lostAgentAutoCloseAfterClears": number;
+
+    /**
+     * IncidentResolveGraceMinutes requires a successfully observed healthy
+     * detector result to remain stable before an incident is resolved.
+     */
+    "incidentResolveGraceMinutes": number;
+
+    /**
+     * IncidentReopenGraceMinutes suppresses noisy external updates immediately
+     * after resolution while retaining recurrence history in the same incident.
+     */
+    "incidentReopenGraceMinutes": number;
+
     /** Creates a new MonitorConfig instance. */
     constructor($$source: Partial<MonitorConfig> = {}) {
         if (!("enabled" in $$source)) {
@@ -957,6 +1374,18 @@ export class MonitorConfig {
         if (!("issueRepo" in $$source)) {
             this["issueRepo"] = "";
         }
+        if (!("lostAgentIssueAfterOccurrences" in $$source)) {
+            this["lostAgentIssueAfterOccurrences"] = 0;
+        }
+        if (!("lostAgentAutoCloseAfterClears" in $$source)) {
+            this["lostAgentAutoCloseAfterClears"] = 0;
+        }
+        if (!("incidentResolveGraceMinutes" in $$source)) {
+            this["incidentResolveGraceMinutes"] = 0;
+        }
+        if (!("incidentReopenGraceMinutes" in $$source)) {
+            this["incidentReopenGraceMinutes"] = 0;
+        }
 
         Object.assign(this, $$source);
     }
@@ -965,7 +1394,7 @@ export class MonitorConfig {
      * Creates a new MonitorConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): MonitorConfig {
-        const $$createField9_0 = $$createType12;
+        const $$createField9_0 = $$createType18;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("bottleneckHours" in $$parsedSource) {
             $$parsedSource["bottleneckHours"] = $$createField9_0($$parsedSource["bottleneckHours"]);
@@ -997,27 +1426,38 @@ export class NotificationConfig {
 
 /**
  * OrchestratorConfig gates and paces the self-starting automations. Role
- * "full" runs the orchestrator brain session and the auto-dispatch scheduler,
- * preserving single-node behavior. Role "agent-only" fails closed on both: it
- * serves the HTTP API and runs explicitly-started agents but never orchestrates
- * on its own — the posture for a secondary/test deployment (a Kubernetes
- * agent-only server, a scratch instance) that must not race a full instance.
+ * "full" (default) runs the deterministic auto-dispatch scheduler — the
+ * authoritative source of core autonomy: it has sole task, workflow, queue,
+ * and recovery state, and advances active tasks without any LLM session in
+ * the loop. Role "agent-only" fails closed on scheduling: the instance serves
+ * the HTTP API and runs explicitly-started agents but never dispatches on its
+ * own — the posture for a secondary/test deployment (a Kubernetes agent-only
+ * server, a scratch instance) that must not race a full instance.
+ * 
+ * The orchestrator brain session — a conversational LLM given a bounded
+ * advisory/steering role on top of the scheduler — is intentionally decoupled
+ * from Role and defaults off regardless of it (see Enabled). The scheduler
+ * already owns every state transition the brain would otherwise duplicate;
+ * auto-starting it is opt-in, not a Role-derived default.
  */
 export class OrchestratorConfig {
     /**
      * Role declares which self-starting automations this instance owns:
      * "full" (default) or "agent-only". An invalid value falls back to "full"
      * with a warning, so a typo never silently parks an instance that was meant
-     * to orchestrate.
+     * to orchestrate. Only gates the scheduler (see RunsScheduler) — it has no
+     * effect on the orchestrator brain (see Enabled).
      */
     "role": string;
 
     /**
-     * Enabled overrides Role for the orchestrator brain session — the
-     * conversational context auto-started while tasks are active. nil (default)
-     * derives from Role. Explicit true re-enables the brain on an agent-only
-     * instance; explicit false parks it on a full one. Never gates an
-     * operator's manual StartOrchestrator call.
+     * Enabled is the sole gate for auto-starting the orchestrator brain
+     * session — the conversational LLM context that would otherwise be
+     * auto-started while tasks are active. nil (default) and explicit false
+     * both mean disabled: an omitted key never silently restores automatic
+     * startup, on any Role. Set explicit true to opt an instance into an
+     * automatically-started brain. Never gates an operator's manual
+     * StartOrchestrator call, which stays available regardless of this value.
      */
     "enabled": boolean | null;
 
@@ -1092,12 +1532,91 @@ export class OrchestratorConfig {
      * Creates a new OrchestratorConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): OrchestratorConfig {
-        const $$createField6_0 = $$createType13;
+        const $$createField6_0 = $$createType19;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pressure" in $$parsedSource) {
             $$parsedSource["pressure"] = $$createField6_0($$parsedSource["pressure"]);
         }
         return new OrchestratorConfig($$parsedSource as Partial<OrchestratorConfig>);
+    }
+}
+
+export class PathDescriptor {
+    "path": string;
+    "runtimePath": string;
+    "queryPaths"?: string[];
+    "legacyPaths"?: string[];
+    "envVars"?: string[];
+    "secret": boolean;
+    "unit"?: string;
+    "constraints"?: string[];
+
+    /** Creates a new PathDescriptor instance. */
+    constructor($$source: Partial<PathDescriptor> = {}) {
+        if (!("path" in $$source)) {
+            this["path"] = "";
+        }
+        if (!("runtimePath" in $$source)) {
+            this["runtimePath"] = "";
+        }
+        if (!("secret" in $$source)) {
+            this["secret"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PathDescriptor instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PathDescriptor {
+        const $$createField2_0 = $$createType11;
+        const $$createField3_0 = $$createType11;
+        const $$createField4_0 = $$createType11;
+        const $$createField7_0 = $$createType11;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("queryPaths" in $$parsedSource) {
+            $$parsedSource["queryPaths"] = $$createField2_0($$parsedSource["queryPaths"]);
+        }
+        if ("legacyPaths" in $$parsedSource) {
+            $$parsedSource["legacyPaths"] = $$createField3_0($$parsedSource["legacyPaths"]);
+        }
+        if ("envVars" in $$parsedSource) {
+            $$parsedSource["envVars"] = $$createField4_0($$parsedSource["envVars"]);
+        }
+        if ("constraints" in $$parsedSource) {
+            $$parsedSource["constraints"] = $$createField7_0($$parsedSource["constraints"]);
+        }
+        return new PathDescriptor($$parsedSource as Partial<PathDescriptor>);
+    }
+}
+
+export class PathValue {
+    "declared": boolean;
+    "present": boolean;
+    "redacted"?: boolean;
+    "source"?: ValueSource;
+    "path"?: string;
+    "value"?: any;
+
+    /** Creates a new PathValue instance. */
+    constructor($$source: Partial<PathValue> = {}) {
+        if (!("declared" in $$source)) {
+            this["declared"] = false;
+        }
+        if (!("present" in $$source)) {
+            this["present"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PathValue instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PathValue {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PathValue($$parsedSource as Partial<PathValue>);
     }
 }
 
@@ -1135,7 +1654,7 @@ export class PlaywrightMCPConfig {
      * Creates a new PlaywrightMCPConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): PlaywrightMCPConfig {
-        const $$createField1_0 = $$createType5;
+        const $$createField1_0 = $$createType11;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("extraArgs" in $$parsedSource) {
             $$parsedSource["extraArgs"] = $$createField1_0($$parsedSource["extraArgs"]);
@@ -1194,6 +1713,16 @@ export class PressureConfig {
     "warningDiskFreePercent": number;
 
     /**
+     * RemoteMinDiskFreeBytes is the absolute emergency reserve the leader must
+     * retain before it may dispatch work to a remote execution daemon. Remote
+     * providers do not consume the leader's CPU or memory, so the ordinary local
+     * percentage/load thresholds do not apply to them; the leader still needs
+     * enough disk to persist control state and import the bounded handback. <=0
+     * disables this reserve. Default 2 GiB.
+     */
+    "remoteMinDiskFreeBytes": number;
+
+    /**
      * ReclaimCooldownSeconds rate-limits how often the warning-triggered safe
      * cleanup pass may run, so a host hovering right at the watermark doesn't
      * re-scan/re-delete on every dispatch tick. <=0 falls back to
@@ -1224,6 +1753,9 @@ export class PressureConfig {
         }
         if (!("warningDiskFreePercent" in $$source)) {
             this["warningDiskFreePercent"] = 0;
+        }
+        if (!("remoteMinDiskFreeBytes" in $$source)) {
+            this["remoteMinDiskFreeBytes"] = 0;
         }
         if (!("reclaimCooldownSeconds" in $$source)) {
             this["reclaimCooldownSeconds"] = 0;
@@ -1281,6 +1813,7 @@ export class ProviderEntryConfig {
 export class ProviderHealthCheckConfig {
     "enabled": boolean;
     "intervalSeconds": number;
+    "authFailureCooldownSeconds": number;
 
     /** Creates a new ProviderHealthCheckConfig instance. */
     constructor($$source: Partial<ProviderHealthCheckConfig> = {}) {
@@ -1289,6 +1822,9 @@ export class ProviderHealthCheckConfig {
         }
         if (!("intervalSeconds" in $$source)) {
             this["intervalSeconds"] = 0;
+        }
+        if (!("authFailureCooldownSeconds" in $$source)) {
+            this["authFailureCooldownSeconds"] = 0;
         }
 
         Object.assign(this, $$source);
@@ -1397,12 +1933,12 @@ export class ProvidersConfig {
      * Creates a new ProvidersConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): ProvidersConfig {
-        const $$createField0_0 = $$createType14;
-        const $$createField1_0 = $$createType15;
-        const $$createField2_0 = $$createType15;
-        const $$createField3_0 = $$createType15;
-        const $$createField4_0 = $$createType15;
-        const $$createField5_0 = $$createType16;
+        const $$createField0_0 = $$createType20;
+        const $$createField1_0 = $$createType21;
+        const $$createField2_0 = $$createType21;
+        const $$createField3_0 = $$createType21;
+        const $$createField4_0 = $$createType21;
+        const $$createField5_0 = $$createType22;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("healthCheck" in $$parsedSource) {
             $$parsedSource["healthCheck"] = $$createField0_0($$parsedSource["healthCheck"]);
@@ -1478,6 +2014,184 @@ export class RenovateConfig {
     static createFrom($$source: any = {}): RenovateConfig {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new RenovateConfig($$parsedSource as Partial<RenovateConfig>);
+    }
+}
+
+export class RoutingEligibleVariant {
+    "experimentId": string;
+    "variantId": string;
+    "provider": string;
+    "model": string;
+    "eligible": boolean;
+    "reason"?: string;
+
+    /** Creates a new RoutingEligibleVariant instance. */
+    constructor($$source: Partial<RoutingEligibleVariant> = {}) {
+        if (!("experimentId" in $$source)) {
+            this["experimentId"] = "";
+        }
+        if (!("variantId" in $$source)) {
+            this["variantId"] = "";
+        }
+        if (!("provider" in $$source)) {
+            this["provider"] = "";
+        }
+        if (!("model" in $$source)) {
+            this["model"] = "";
+        }
+        if (!("eligible" in $$source)) {
+            this["eligible"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new RoutingEligibleVariant instance from a string or object.
+     */
+    static createFrom($$source: any = {}): RoutingEligibleVariant {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new RoutingEligibleVariant($$parsedSource as Partial<RoutingEligibleVariant>);
+    }
+}
+
+export class RoutingSummary {
+    "providerPreference": string;
+    "abTestingEnabled": boolean;
+    "abTestingExplicit": boolean;
+    "adaptiveRoutingEnabled": boolean;
+    "autoFailoverEnabled": boolean;
+    "providerLimitsEnabled": boolean;
+    "precedence": string[];
+    "eligibleVariants"?: RoutingEligibleVariant[];
+    "warnings"?: string[];
+
+    /** Creates a new RoutingSummary instance. */
+    constructor($$source: Partial<RoutingSummary> = {}) {
+        if (!("providerPreference" in $$source)) {
+            this["providerPreference"] = "";
+        }
+        if (!("abTestingEnabled" in $$source)) {
+            this["abTestingEnabled"] = false;
+        }
+        if (!("abTestingExplicit" in $$source)) {
+            this["abTestingExplicit"] = false;
+        }
+        if (!("adaptiveRoutingEnabled" in $$source)) {
+            this["adaptiveRoutingEnabled"] = false;
+        }
+        if (!("autoFailoverEnabled" in $$source)) {
+            this["autoFailoverEnabled"] = false;
+        }
+        if (!("providerLimitsEnabled" in $$source)) {
+            this["providerLimitsEnabled"] = false;
+        }
+        if (!("precedence" in $$source)) {
+            this["precedence"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new RoutingSummary instance from a string or object.
+     */
+    static createFrom($$source: any = {}): RoutingSummary {
+        const $$createField6_0 = $$createType11;
+        const $$createField7_0 = $$createType24;
+        const $$createField8_0 = $$createType11;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("precedence" in $$parsedSource) {
+            $$parsedSource["precedence"] = $$createField6_0($$parsedSource["precedence"]);
+        }
+        if ("eligibleVariants" in $$parsedSource) {
+            $$parsedSource["eligibleVariants"] = $$createField7_0($$parsedSource["eligibleVariants"]);
+        }
+        if ("warnings" in $$parsedSource) {
+            $$parsedSource["warnings"] = $$createField8_0($$parsedSource["warnings"]);
+        }
+        return new RoutingSummary($$parsedSource as Partial<RoutingSummary>);
+    }
+}
+
+/**
+ * SLOTargets are the rolling autonomy/reliability targets Sybra holds
+ * itself to (see #2441). Defined here rather than in internal/evaluation
+ * because config cannot import evaluation (evaluation already imports
+ * config); internal/evaluation/slo.go aliases this type so evaluation code
+ * reads naturally as evaluation.SLOTargets.
+ */
+export class SLOTargets {
+    /**
+     * MinAutonomyRate is the minimum fraction of landed tasks that must
+     * reach done without a human in the loop.
+     */
+    "minAutonomyRate": number;
+
+    /**
+     * MinCIFirstPassRate is the minimum fraction of landed tasks that must
+     * pass CI on the first push (no CI-fix agent needed).
+     */
+    "minCiFirstPassRate": number;
+
+    /**
+     * MaxReworkRate is the maximum fraction of landed tasks allowed to
+     * bounce between statuses (a repeated status transition).
+     */
+    "maxReworkRate": number;
+
+    /**
+     * MaxIdenticalRetryCap is the maximum number of failed agent runs a
+     * single task may accumulate in-window before it counts as a breach.
+     */
+    "maxIdenticalRetryCap": number;
+
+    /**
+     * MaxRestartsPerHour is the maximum rate of automatic human-required
+     * recovery restarts (monitor auto-retry, PR-monitor blocker
+     * reconciliation) the fleet may sustain.
+     */
+    "maxRestartsPerHour": number;
+
+    /**
+     * ThrottleOnBudgetExhausted enables a default-off dispatch clamp
+     * (internal/sybra/agentorch.effectiveMaxConcurrent) that narrows the
+     * concurrency ceiling for new workflow-driven implementation dispatch
+     * while the SLO error budget is exhausted. Recovery and
+     * interactive/operator dispatch are never throttled by this flag.
+     */
+    "throttleOnBudgetExhausted": boolean;
+
+    /** Creates a new SLOTargets instance. */
+    constructor($$source: Partial<SLOTargets> = {}) {
+        if (!("minAutonomyRate" in $$source)) {
+            this["minAutonomyRate"] = 0;
+        }
+        if (!("minCiFirstPassRate" in $$source)) {
+            this["minCiFirstPassRate"] = 0;
+        }
+        if (!("maxReworkRate" in $$source)) {
+            this["maxReworkRate"] = 0;
+        }
+        if (!("maxIdenticalRetryCap" in $$source)) {
+            this["maxIdenticalRetryCap"] = 0;
+        }
+        if (!("maxRestartsPerHour" in $$source)) {
+            this["maxRestartsPerHour"] = 0;
+        }
+        if (!("throttleOnBudgetExhausted" in $$source)) {
+            this["throttleOnBudgetExhausted"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SLOTargets instance from a string or object.
+     */
+    static createFrom($$source: any = {}): SLOTargets {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new SLOTargets($$parsedSource as Partial<SLOTargets>);
     }
 }
 
@@ -1558,7 +2272,7 @@ export class SelfMonitorConfig {
      * Creates a new SelfMonitorConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): SelfMonitorConfig {
-        const $$createField6_0 = $$createType5;
+        const $$createField6_0 = $$createType11;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("autoActCategories" in $$parsedSource) {
             $$parsedSource["autoActCategories"] = $$createField6_0($$parsedSource["autoActCategories"]);
@@ -1603,6 +2317,21 @@ export class TestingConfig {
      */
     "openPrOnUnrunnableGate": boolean | null;
 
+    /**
+     * VerifyTimeoutMinutes bounds one verify_checks run — every command in
+     * the repo's `checks.verify` list together. 0 falls back to
+     * DefaultVerifyTimeoutMinutes. The budget is stretched further on an
+     * oversubscribed host (see resolveWorkflowCheckTimeout), so raise this
+     * only when the suite itself has outgrown the default rather than to
+     * compensate for load.
+     * 
+     * It exists because a repo whose suite grows past the compiled-in
+     * default has no way to say so: the task blocks on a timeout that names
+     * slow tests, and the only documented escape is the `verify-blessed`
+     * tag, which skips verification for that task altogether.
+     */
+    "verifyTimeoutMinutes": number;
+
     /** Creates a new TestingConfig instance. */
     constructor($$source: Partial<TestingConfig> = {}) {
         if (!("maxConcurrent" in $$source)) {
@@ -1613,6 +2342,9 @@ export class TestingConfig {
         }
         if (!("openPrOnUnrunnableGate" in $$source)) {
             this["openPrOnUnrunnableGate"] = null;
+        }
+        if (!("verifyTimeoutMinutes" in $$source)) {
+            this["verifyTimeoutMinutes"] = 0;
         }
 
         Object.assign(this, $$source);
@@ -1715,21 +2447,41 @@ export class UmbrellaConfig {
     }
 }
 
+export enum ValueSource {
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero = "",
+
+    ValueSourceDefault = "default",
+    ValueSourceFile = "file",
+    ValueSourceEnv = "env",
+    ValueSourceGenerated = "generated",
+};
+
 // Private type creation functions
 const $$createType0 = $Create.Map($Create.Any, $Create.Any);
 const $$createType1 = PlaywrightMCPConfig.createFrom;
 const $$createType2 = K8sJobsConfig.createFrom;
 const $$createType3 = QueueConfig.createFrom;
-const $$createType4 = GitHubAppConfig.createFrom;
-const $$createType5 = $Create.Array($Create.Any);
-const $$createType6 = K8sJobEnvVar.createFrom;
-const $$createType7 = $Create.Array($$createType6);
-const $$createType8 = K8sJobSecretEnvVar.createFrom;
-const $$createType9 = $Create.Array($$createType8);
-const $$createType10 = K8sJobVolume.createFrom;
-const $$createType11 = $Create.Array($$createType10);
-const $$createType12 = $Create.Map($Create.Any, $Create.Any);
-const $$createType13 = PressureConfig.createFrom;
-const $$createType14 = ProviderHealthCheckConfig.createFrom;
-const $$createType15 = ProviderEntryConfig.createFrom;
-const $$createType16 = ProviderLimitsConfig.createFrom;
+const $$createType4 = $Create.Map($Create.Any, $Create.Any);
+const $$createType5 = EvidenceConfig.createFrom;
+const $$createType6 = GitHubPollingConfig.createFrom;
+const $$createType7 = GitHubWebhookConfig.createFrom;
+const $$createType8 = GitHubAppConfig.createFrom;
+const $$createType9 = GitHubPollingStreamConfig.createFrom;
+const $$createType10 = GitHubPRPollingConfig.createFrom;
+const $$createType11 = $Create.Array($Create.Any);
+const $$createType12 = K8sJobEnvVar.createFrom;
+const $$createType13 = $Create.Array($$createType12);
+const $$createType14 = K8sJobSecretEnvVar.createFrom;
+const $$createType15 = $Create.Array($$createType14);
+const $$createType16 = K8sJobVolume.createFrom;
+const $$createType17 = $Create.Array($$createType16);
+const $$createType18 = $Create.Map($Create.Any, $Create.Any);
+const $$createType19 = PressureConfig.createFrom;
+const $$createType20 = ProviderHealthCheckConfig.createFrom;
+const $$createType21 = ProviderEntryConfig.createFrom;
+const $$createType22 = ProviderLimitsConfig.createFrom;
+const $$createType23 = RoutingEligibleVariant.createFrom;
+const $$createType24 = $Create.Array($$createType23);

@@ -32,7 +32,7 @@ func TestWeaknesses_FlagsShortfalls(t *testing.T) {
 			{Key: "claude", Runs: 10, ResolvedRuns: 10, FailureRate: 0.3},
 		},
 	}
-	ws := Weaknesses(r)
+	ws := Weaknesses(r, DefaultSLOTargets())
 	for _, m := range []string{"autonomy", "ci_first_pass", "rework", "failure_rate", "provider:codex"} {
 		if !hasMetric(ws, m) {
 			t.Errorf("expected weakness %q, got %+v", m, ws)
@@ -52,13 +52,41 @@ func TestWeaknesses_FlagsShortfalls(t *testing.T) {
 	}
 }
 
+func TestWeaknesses_CostPerMergeRegression(t *testing.T) {
+	r := Report{
+		Overall: Scorecard{
+			Merged:           5,
+			CostPerMergedUSD: 13.0, // vs 10.0 baseline = +30% > 20% margin
+		},
+		CostPerMergedBaseline: &CostBaseline{CostPerMergedUSD: 10.0, MergedPRs: 5},
+	}
+	ws := Weaknesses(r, DefaultSLOTargets())
+	if !hasMetric(ws, "cost_per_merge") {
+		t.Errorf("expected cost_per_merge weakness, got %+v", ws)
+	}
+}
+
+func TestWeaknesses_CostPerMergeRegressionGatedOnSampleSize(t *testing.T) {
+	r := Report{
+		Overall: Scorecard{
+			Merged:           1, // below minMergedForSignal
+			CostPerMergedUSD: 100.0,
+		},
+		CostPerMergedBaseline: &CostBaseline{CostPerMergedUSD: 1.0, MergedPRs: 5},
+	}
+	ws := Weaknesses(r, DefaultSLOTargets())
+	if hasMetric(ws, "cost_per_merge") {
+		t.Errorf("expected no cost_per_merge weakness with too few current merges, got %+v", ws)
+	}
+}
+
 func TestWeaknesses_HealthyAndLowData(t *testing.T) {
 	// Healthy fleet with enough data → no weaknesses.
 	healthy := Report{Overall: Scorecard{
 		TasksLanded: 10, AutonomyRate: 0.95, CIFirstPassRate: 0.9, ReworkTasks: 0,
 		AgentRuns: 20, AgentResolvedRuns: 20, FailureRate: 0.05,
 	}}
-	if ws := Weaknesses(healthy); len(ws) != 0 {
+	if ws := Weaknesses(healthy, DefaultSLOTargets()); len(ws) != 0 {
 		t.Errorf("healthy fleet flagged: %+v", ws)
 	}
 
@@ -67,7 +95,7 @@ func TestWeaknesses_HealthyAndLowData(t *testing.T) {
 		TasksLanded: 1, AutonomyRate: 0, CIFirstPassRate: 0, ReworkTasks: 1,
 		AgentRuns: 1, AgentResolvedRuns: 1, FailureRate: 1,
 	}}
-	if ws := Weaknesses(sparse); len(ws) != 0 {
+	if ws := Weaknesses(sparse, DefaultSLOTargets()); len(ws) != 0 {
 		t.Errorf("sparse window flagged (should be gated): %+v", ws)
 	}
 }
@@ -87,7 +115,7 @@ func TestWeaknesses_GateCountsResolvedRunsNotStalls(t *testing.T) {
 			{Key: "codex", Runs: 10, Stalled: 9, ResolvedRuns: 1, Failures: 1, FailureRate: 1},
 		},
 	}
-	if ws := Weaknesses(r); len(ws) != 0 {
+	if ws := Weaknesses(r, DefaultSLOTargets()); len(ws) != 0 {
 		t.Errorf("Weaknesses = %+v, want none: 4 resolved fleet runs and 1 resolved codex run are below the signal gate", ws)
 	}
 }
@@ -101,7 +129,7 @@ func TestWeaknesses_StallsDoNotBlockAGenuineSignal(t *testing.T) {
 			{Key: "codex", Runs: 20, Stalled: 10, ResolvedRuns: 10, Failures: 6, FailureRate: 0.6},
 		},
 	}
-	ws := Weaknesses(r)
+	ws := Weaknesses(r, DefaultSLOTargets())
 	if !hasMetric(ws, "failure_rate") || !hasMetric(ws, "provider:codex") {
 		t.Errorf("Weaknesses = %+v, want failure_rate and provider:codex flagged", ws)
 	}
@@ -114,7 +142,7 @@ func TestWeaknesses_StallsDoNotBlockAGenuineSignal(t *testing.T) {
 
 func TestWeaknesses_SuggestionsPresent(t *testing.T) {
 	r := Report{Overall: Scorecard{TasksLanded: 10, AutonomyRate: 0.1, CIFirstPassRate: 1, AgentRuns: 10}}
-	ws := Weaknesses(r)
+	ws := Weaknesses(r, DefaultSLOTargets())
 	if len(ws) == 0 {
 		t.Fatal("expected at least one weakness")
 	}

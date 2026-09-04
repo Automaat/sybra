@@ -5,6 +5,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Automaat/sybra/internal/backoff"
+	"github.com/Automaat/sybra/internal/task"
 )
 
 // MaxParallelTagPrefix carries the planner's max-parallel value on the tracker
@@ -18,6 +21,11 @@ const MaxParallelTagPrefix = "umbrella-max-parallel:"
 // silently masked.
 const FallbackTag = "umbrella-planner-fallback"
 
+// ExpandingTag marks a tracker whose child DAG is still being materialized.
+// The app gate holds release/rollup while this is present so a tracker created
+// before all children exist cannot expose a partial DAG to the orchestrator.
+const ExpandingTag = "umbrella-expanding"
+
 // MaxParallelTag renders the tracker tag encoding n.
 func MaxParallelTag(n int) string {
 	return MaxParallelTagPrefix + strconv.Itoa(n)
@@ -29,6 +37,64 @@ func MaxParallelTag(n int) string {
 // stub enrichment, `sybra-cli umbrella`) instead of living in one process's
 // memory.
 const ExpandFailTagPrefix = "umbrella-expand-fail:"
+
+// ExpandPhaseTagPrefix carries the umbrella expansion's resumable phase,
+// e.g. "umbrella-expand-phase:planning". Persisted on the tracker so the GUI
+// can show in-flight expansion and release/rollup can distinguish a complete
+// childless umbrella from one whose DAG is still being fetched/planned/
+// materialized.
+const ExpandPhaseTagPrefix = "umbrella-expand-phase:"
+
+// ExpandPhase is the coarse resumable phase of an umbrella expansion.
+type ExpandPhase string
+
+const (
+	ExpandPhaseFetched       ExpandPhase = "fetched"
+	ExpandPhasePlanning      ExpandPhase = "planning"
+	ExpandPhaseRepairing     ExpandPhase = "repairing"
+	ExpandPhaseCriticReask   ExpandPhase = "critic"
+	ExpandPhaseExhausted     ExpandPhase = "exhausted"
+	ExpandPhaseFallback      ExpandPhase = "fallback"
+	ExpandPhasePlanned       ExpandPhase = "planned"
+	ExpandPhaseMaterializing ExpandPhase = "materializing"
+)
+
+// ExpandPhaseTag renders the tracker tag encoding phase.
+func ExpandPhaseTag(phase ExpandPhase) string {
+	if phase == "" {
+		return ""
+	}
+	return ExpandPhaseTagPrefix + string(phase)
+}
+
+// ParseExpandPhase reads the persisted expansion phase from tags.
+func ParseExpandPhase(tags []string) ExpandPhase {
+	var phase ExpandPhase
+	for _, t := range tags {
+		rest, ok := strings.CutPrefix(t, ExpandPhaseTagPrefix)
+		if !ok {
+			continue
+		}
+		switch ExpandPhase(strings.TrimSpace(rest)) {
+		case ExpandPhaseFetched,
+			ExpandPhasePlanning,
+			ExpandPhaseRepairing,
+			ExpandPhaseCriticReask,
+			ExpandPhaseExhausted,
+			ExpandPhaseFallback,
+			ExpandPhasePlanned,
+			ExpandPhaseMaterializing:
+			phase = ExpandPhase(strings.TrimSpace(rest))
+		}
+	}
+	return phase
+}
+
+// HasActiveExpandPhase reports whether a tracker carries a resumable expansion
+// phase that means its DAG is not durably complete yet.
+func HasActiveExpandPhase(tags []string) bool {
+	return ParseExpandPhase(tags) != ""
+}
 
 // ExpandFailThreshold is how many consecutive Expand failures against an
 // already-materialized tracker are tolerated before Expand stops calling the
@@ -189,16 +255,7 @@ func HasRecoverExhaustedTag(tags []string) bool {
 // given the failure count after the attempt that just failed (1 for the
 // first failure). Doubles per failure from a 1 hour base, capped at 24 hours.
 func RecoverBackoff(failCount int) time.Duration {
-	if failCount < 1 {
-		failCount = 1
-	}
-	shift := failCount - 1
-	const maxShift = 10 // 1h<<10 already exceeds the 24h cap; bounds the shift against overflow
-	if shift > maxShift {
-		shift = maxShift
-	}
-	d := recoverBackoffBase * time.Duration(1<<uint(shift))
-	return min(d, recoverBackoffMax)
+	return backoff.ForAttempt(max(failCount, 1), recoverBackoffBase, recoverBackoffMax).Delay
 }
 
 // ReplaceTagPrefix returns tags with every entry sharing prefix removed and
@@ -220,13 +277,13 @@ func ReplaceTagPrefix(tags []string, prefix, newTag string) []string {
 // GitHub sub-issue's labels — they route the task into other automations
 // (reviews, handoff lanes, the gate itself, bug containment).
 var controlTags = map[string]bool{
-	"review":    true,
-	"blocked":   true,
-	"handoff":   true,
-	"umbrella":  true,
-	GatedTag:    true,
-	"sybra-bug": true,
-	"scrubbed":  true,
+	"review":                  true,
+	"blocked":                 true,
+	"handoff":                 true,
+	"umbrella":                true,
+	GatedTag:                  true,
+	string(task.FlagSybraBug): true,
+	string(task.FlagScrubbed): true,
 }
 
 // InheritableLabels filters a sub-issue's GitHub labels down to those safe to

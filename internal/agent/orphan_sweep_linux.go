@@ -10,19 +10,19 @@ import (
 	"strings"
 )
 
-func listProviderProcessesUnderRoots(ctx context.Context, roots []string) []providerProcess {
+func listProviderProcessesUnderRoots(ctx context.Context, roots []string) ([]providerProcess, bool) {
 	if ctx == nil {
-		return nil
+		return nil, false
 	}
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
-		return nil
+		return nil, false
 	}
 	out := make([]providerProcess, 0)
 	for _, entry := range entries {
 		select {
 		case <-ctx.Done():
-			return out
+			return out, false
 		default:
 		}
 		if !entry.IsDir() {
@@ -43,7 +43,7 @@ func listProviderProcessesUnderRoots(ctx context.Context, roots []string) []prov
 		}
 		out = append(out, providerProcess{PID: pid, Command: cmd, CWD: cwd, Owner: owner})
 	}
-	return out
+	return out, true
 }
 
 func linuxProcessName(ctx context.Context, pid string) string {

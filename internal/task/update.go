@@ -2,23 +2,45 @@ package task
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/autonomy"
+	"github.com/Automaat/sybra/internal/blocker"
+	"github.com/Automaat/sybra/internal/issueref"
+	"github.com/Automaat/sybra/internal/reject"
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
+// PlanDraftEntry names the one plan draft PlanDraftWrite sets. Unlike every
+// other sidecar field, PlanDrafts is a map (one entry per parallel planner),
+// so a single Update can only ever add or replace one named entry, never
+// express the whole map at once.
+type PlanDraftEntry struct {
+	Name    string
+	Content string
+}
+
 // Update carries optional field changes for Store.Update.
 // A nil pointer means "leave unchanged"; a non-nil pointer applies the new value.
-// For Workflow: nil = unchanged; non-nil = overwrite (even if pointed-to value is nil).
+// For Workflow: nil = unchanged; non-nil = overwrite. A clear goes through ClearWorkflow instead: a non-nil Workflow holding a nil inner pointer works in-process but not over the API, so it is never the right encoding.
 type Update struct {
-	Title                 *string
-	Slug                  *string
-	Status                *Status
-	StatusReason          *string
+	Title             *string
+	Slug              *string
+	Status            *Status
+	StatusReason      *string
+	ClearStatusReason *bool
+	Escalation        *autonomy.EscalationReason
+	AutonomyOutcome   *autonomy.Outcome
+	Blocker           *blocker.State
+	ClearBlocker      *bool
+	// ClearWorkflow removes the task's workflow execution, and is the only encoding of a clear that survives JSON. Workflow is a **Execution: a non-nil outer pointer holding a nil inner one marshals to null, and unmarshal then nils the outer pointer, so a clear sent over the API read back as "leave unchanged".
+	ClearWorkflow         *bool
 	BlockedByIssue        *string
 	UmbrellaIssue         *string
 	DependsOn             *[]string
+	DependsOnConditions   *[]DepCondition
 	AgentMode             *string
 	TaskType              *TaskType
 	Body                  *string
@@ -36,6 +58,7 @@ type Update struct {
 	ReviewPhase           *string
 	ReviewedHeadSHA       *string
 	ReviewedHeadAttempts  *int
+	ReconcileFailures     *int
 	PRPhase               *string
 	Priority              *Priority
 	DueDate               **time.Time
@@ -47,13 +70,21 @@ type Update struct {
 	PlanDecisions         *string
 	PlanBrief             *string
 	CodeReview            *string
+	CurrentTestFailures   *string
+	AcceptanceLedger      *string
+	SpecDecision          *string
+	PlanDraftWrite        *PlanDraftEntry
+	CodeReviewVerdict     *string
 	MaxTurns              *int
 	ForkSubagent          *bool
 	Sandbox               *bool
+	SandboxOffReason      *string
 	ReasoningEffort       *string
 	Outcome               *string
 	MergeCommit           *string
 	TestingCycleStartedAt *time.Time
+	Attachments           *[]Attachment
+	EffectLog             *[]workflow.EffectRecord
 }
 
 func (u Update) writesSidecar() bool {
@@ -63,7 +94,11 @@ func (u Update) writesSidecar() bool {
 		u.PlanResearch != nil ||
 		u.PlanDecisions != nil ||
 		u.PlanBrief != nil ||
-		u.CodeReview != nil
+		u.CodeReview != nil ||
+		u.CurrentTestFailures != nil ||
+		u.AcceptanceLedger != nil ||
+		u.SpecDecision != nil ||
+		u.PlanDraftWrite != nil
 }
 
 // Ptr returns a pointer to v. Convenience for building Update literals.
@@ -80,7 +115,9 @@ func UpdateFromMap(raw map[string]any) (Update, error) {
 	var u Update
 	for k, v := range raw {
 		if err := applyMapField(&u, k, v); err != nil {
-			return Update{}, err
+			// Every failure here is the caller's own key or value, so mark
+			// the whole boundary once rather than each field in turn.
+			return Update{}, reject.New("%w", err)
 		}
 	}
 	return u, nil
@@ -90,17 +127,22 @@ func applyMapField(u *Update, k string, v any) error {
 	switch k {
 	case "title", "slug", "status_reason", "blocked_by_issue", "umbrella_issue", "body",
 		"project_id", "branch", "worktree_dir", "issue", "ref_issue", "run_role", "plan", "plan_critique",
-		"plan_contract", "plan_research", "plan_decisions", "plan_brief", "code_review",
+		"plan_contract", "plan_research", "plan_decisions", "plan_brief", "code_review", "code_review_verdict",
+		"current_test_failures", "acceptance_ledger", "spec_decision",
 		"review_phase", "reviewed_head_sha", "pr_phase", "outcome", "merge_commit", "supervisor_steer":
 		return applyPlainStringField(u, k, v)
 	case "depends_on":
 		return applyDependsOnField(u, k, v)
+	case "depends_on_conditions":
+		return applyDependsOnConditionsField(u, k, v)
 	case "handoff_source_provider":
 		return applyAgentProviderField(u, k, v)
 	case "priority":
 		return applyPriorityField(u, v)
 	case "status":
 		return applyStatusField(u, k, v)
+	case "clear_status_reason", "clear_blocker":
+		return applyClearField(u, k, v)
 	case "agent_mode":
 		return applyAgentModeField(u, k, v)
 	case "task_type":
@@ -125,6 +167,12 @@ func applyMapField(u *Update, k string, v any) error {
 			return fmt.Errorf("field %q: want bool, got %T", k, v)
 		}
 		u.Sandbox = &b
+	case "sandbox_off_reason":
+		s, ok := v.(string)
+		if !ok {
+			return fmt.Errorf("field %q: want string, got %T", k, v)
+		}
+		u.SandboxOffReason = &s
 	case "reasoning_effort":
 		s, ok := v.(string)
 		if !ok {
@@ -149,9 +197,92 @@ func applyMapField(u *Update, k string, v any) error {
 			return fmt.Errorf("field %q: want *workflow.Execution, got %T", k, v)
 		}
 		u.Workflow = &wf
+	case "blocker":
+		return applyBlockerField(u, v)
 	default:
 		return fmt.Errorf("unknown task field %q", k)
 	}
+	return nil
+}
+
+func applyClearField(u *Update, k string, v any) error {
+	b, ok := v.(bool)
+	if !ok {
+		return fmt.Errorf("field %q: want bool, got %T", k, v)
+	}
+	switch k {
+	case "clear_status_reason":
+		u.ClearStatusReason = &b
+	case "clear_blocker":
+		u.ClearBlocker = &b
+	default:
+		return fmt.Errorf("unknown clear field %q", k)
+	}
+	return nil
+}
+
+// applyBlockerField builds a full-replacement blocker.State from a
+// map[string]any (as opposed to a partial merge) — this matches how every
+// blocker producer in internal/workflow and internal/sybra/review already
+// writes the field: the whole state is authored together by whichever
+// subsystem classified the blocking condition. Callers that want to change
+// one attribute (e.g. flip Exhausted) must resend the full state, seeded from
+// the task's current blocker if needed.
+func applyBlockerField(u *Update, v any) error {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return fmt.Errorf("field %q: want object, got %T", "blocker", v)
+	}
+	var st blocker.State
+	if raw, ok := m["kind"]; ok {
+		s, ok := raw.(string)
+		if !ok {
+			return fmt.Errorf("field %q: want string, got %T", "blocker.kind", raw)
+		}
+		st.Kind = blocker.Kind(s)
+	}
+	if raw, ok := m["actor"]; ok {
+		s, ok := raw.(string)
+		if !ok {
+			return fmt.Errorf("field %q: want string, got %T", "blocker.actor", raw)
+		}
+		st.Actor = blocker.Actor(s)
+	}
+	if raw, ok := m["code"]; ok {
+		s, ok := raw.(string)
+		if !ok {
+			return fmt.Errorf("field %q: want string, got %T", "blocker.code", raw)
+		}
+		st.Code = s
+	}
+	if raw, ok := m["next_action"]; ok {
+		s, ok := raw.(string)
+		if !ok {
+			return fmt.Errorf("field %q: want string, got %T", "blocker.next_action", raw)
+		}
+		st.NextAction = s
+	}
+	if raw, ok := m["retry_after"]; ok {
+		s, ok := raw.(string)
+		if !ok {
+			return fmt.Errorf("field %q: want string, got %T", "blocker.retry_after", raw)
+		}
+		if s != "" {
+			parsed, err := time.Parse(time.RFC3339, s)
+			if err != nil {
+				return fmt.Errorf("field %q: %w", "blocker.retry_after", err)
+			}
+			st.RetryAfter = &parsed
+		}
+	}
+	if raw, ok := m["exhausted"]; ok {
+		b, ok := raw.(bool)
+		if !ok {
+			return fmt.Errorf("field %q: want bool, got %T", "blocker.exhausted", raw)
+		}
+		st.Exhausted = b
+	}
+	u.Blocker = &st
 	return nil
 }
 
@@ -201,6 +332,14 @@ func applyPlainStringField(u *Update, k string, v any) error {
 		u.PlanBrief = &s
 	case "code_review":
 		u.CodeReview = &s
+	case "current_test_failures":
+		u.CurrentTestFailures = &s
+	case "acceptance_ledger":
+		u.AcceptanceLedger = &s
+	case "spec_decision":
+		u.SpecDecision = &s
+	case "code_review_verdict":
+		u.CodeReviewVerdict = &s
 	case "review_phase":
 		u.ReviewPhase = &s
 	case "reviewed_head_sha":
@@ -246,7 +385,7 @@ func applyAgentModeField(u *Update, k string, v any) error {
 	if !ok {
 		return fmt.Errorf("field %q: want string, got %T", k, v)
 	}
-	mode, err := ValidateAgentMode(s)
+	mode, err := ValidateMintableAgentMode(s)
 	if err != nil {
 		return err
 	}
@@ -335,6 +474,83 @@ func applyDependsOnField(u *Update, k string, v any) error {
 		u.DependsOn = &parts
 	default:
 		return fmt.Errorf("field %q: want []string or string, got %T", k, v)
+	}
+	return nil
+}
+
+// applyDependsOnConditionsField parses a full-replacement DependsOnConditions
+// list. This is the single validation boundary every caller goes through —
+// the CLI's --depends-on-condition flag, the HTTP API, and the Wails
+// binding — so a malformed or unknown Kind is rejected here at author time
+// rather than reaching a task file (see task.DepConditionKindLabel/Note and
+// holdUnmetConditions' fail-closed handling of the rare hand-edited-file case
+// that still slips past this).
+func applyDependsOnConditionsField(u *Update, k string, v any) error {
+	switch dv := v.(type) {
+	case []DepCondition:
+		conds := slices.Clone(dv)
+		if err := validateDepConditions(conds); err != nil {
+			return err
+		}
+		u.DependsOnConditions = &conds
+	case []any:
+		conds := make([]DepCondition, 0, len(dv))
+		for _, raw := range dv {
+			m, ok := raw.(map[string]any)
+			if !ok {
+				return fmt.Errorf("field %q: want object element, got %T", k, raw)
+			}
+			c, err := depConditionFromMap(m)
+			if err != nil {
+				return err
+			}
+			conds = append(conds, c)
+		}
+		if err := validateDepConditions(conds); err != nil {
+			return err
+		}
+		u.DependsOnConditions = &conds
+	case nil:
+		empty := []DepCondition{}
+		u.DependsOnConditions = &empty
+	default:
+		return fmt.Errorf("field %q: want an array of {ref,kind,value} objects, got %T", k, v)
+	}
+	return nil
+}
+
+func depConditionFromMap(m map[string]any) (DepCondition, error) {
+	ref, _ := m["ref"].(string)
+	kind, _ := m["kind"].(string)
+	value, _ := m["value"].(string)
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return DepCondition{}, fmt.Errorf("depends_on_conditions: ref is required")
+	}
+	if kind != DepConditionKindLabel && kind != DepConditionKindNote {
+		return DepCondition{}, fmt.Errorf("depends_on_conditions: unknown kind %q for ref %q (valid: %s, %s)", kind, ref, DepConditionKindLabel, DepConditionKindNote)
+	}
+	if strings.TrimSpace(value) == "" {
+		return DepCondition{}, fmt.Errorf("depends_on_conditions: value is required for ref %q", ref)
+	}
+	return DepCondition{Ref: ref, Kind: kind, Value: value}, nil
+}
+
+// validateDepConditions rejects more than one condition per Ref — the gate
+// (holdUnmetConditions) only ever evaluates the first condition it finds for
+// a given ref, so a silently-accepted second condition on the same ref would
+// be silently inert rather than erroring where the mistake is made. The dedup
+// key is normalized via issueref.Normalize so a URL and its "owner/repo#n"
+// shorthand collapse to the same ref — the same equivalence matchesDepRef uses
+// at gate time, otherwise two spellings of one dep slip past this check.
+func validateDepConditions(conds []DepCondition) error {
+	seen := make(map[string]bool, len(conds))
+	for _, c := range conds {
+		key := issueref.Normalize(c.Ref)
+		if seen[key] {
+			return fmt.Errorf("depends_on_conditions: duplicate ref %q — only one condition per ref is supported", c.Ref)
+		}
+		seen[key] = true
 	}
 	return nil
 }

@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/cleanup"
 	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
@@ -61,6 +62,7 @@ type Manager struct {
 	// to dockerChownNormalizer and fsutil.RemoveAllForce respectively.
 	normalizeOwnership ownershipNormalizer
 	removeAll          func(string) error
+	protected          *cleanup.ProtectedStore
 }
 
 // NewManager creates a Manager that stores per-task files under dataDir.
@@ -86,6 +88,12 @@ func (m *Manager) SetRetentionWindow(d time.Duration) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.retention = d
+}
+
+func (m *Manager) SetProtectedFindings(store *cleanup.ProtectedStore) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.protected = store
 }
 
 // Get returns the running instance for a task, or nil if none exists.
@@ -330,8 +338,13 @@ func cleanupEligible(s task.Status) bool {
 // they have been eligible for at least the configured retention window (see
 // SetRetentionWindow). Non-eligible tasks (active, in-review, etc.) always
 // keep their dirs. When hasAgent reports a live task agent, the dir is
-// preserved so cleanup never races an active run.
-func (m *Manager) CleanupOrphaned(ctx context.Context, tasks []task.Task, hasAgent func(string) bool) {
+// preserved so cleanup never races an active run. When hasUnpushedCommits
+// reports the task's git worktree still holds commits not on origin, the dir
+// is preserved regardless of status/age/deletion — status alone (e.g. a task
+// bounced to human-required by a failed push, then reset) is not proof the
+// work is safely recoverable elsewhere (#2593). hasUnpushedCommits may be nil,
+// in which case this signal is skipped (matches hasAgent's nil handling).
+func (m *Manager) CleanupOrphaned(ctx context.Context, tasks []task.Task, hasAgent, hasUnpushedCommits func(string) bool) {
 	entries, err := os.ReadDir(m.dataDir)
 	if err != nil {
 		return
@@ -344,7 +357,9 @@ func (m *Manager) CleanupOrphaned(ctx context.Context, tasks []task.Task, hasAge
 
 	m.mu.Lock()
 	retention := m.retention
+	protected := m.protected
 	m.mu.Unlock()
+	observedProtected := make(map[string]bool)
 
 	for _, e := range entries {
 		if !e.IsDir() {
@@ -361,6 +376,35 @@ func (m *Manager) CleanupOrphaned(ctx context.Context, tasks []task.Task, hasAge
 			// including a task record that's gone missing — an orphaned
 			// dir with a running agent is not orphaned, it's just
 			// unlinked from the (possibly stale) task list.
+			continue
+		case hasUnpushedCommits != nil && hasUnpushedCommits(taskID):
+			if protected == nil {
+				m.logger.Warn("sandbox.cleanup.protected", "event", "legacy", "task_id", taskID)
+				continue
+			}
+			taskDir := filepath.Join(m.dataDir, taskID)
+			size, _ := dirSize(taskDir)
+			finding, event, err := protected.Observe(cleanup.Observation{
+				Kind:          cleanup.ResourceSandbox,
+				TaskID:        taskID,
+				Path:          taskDir,
+				Reason:        cleanup.ReasonUnpushedCommits,
+				ObservedState: fmt.Sprintf("bytes=%d", size),
+				BytesRetained: size,
+			})
+			if err != nil {
+				m.logger.Warn("sandbox.cleanup.protected.observe", "task_id", taskID, "err", err)
+				continue
+			}
+			observedProtected[finding.ID] = true
+			if event.ShouldLog() {
+				m.logger.Warn("sandbox.cleanup.protected",
+					"event", event,
+					"task_id", taskID,
+					"path", taskDir,
+					"state", finding.ObservedState,
+					"bytes_retained", finding.BytesRetained)
+			}
 			continue
 		case !exists:
 			// Deleted task — remove regardless of age, and regardless of any
@@ -391,6 +435,11 @@ func (m *Manager) CleanupOrphaned(ctx context.Context, tasks []task.Task, hasAge
 			}
 		}
 		m.RemoveContext(ctx, taskID)
+	}
+	if protected != nil {
+		if err := protected.ResolveMissing(cleanup.ResourceSandbox, observedProtected); err != nil {
+			m.logger.Warn("sandbox.cleanup.protected.resolve", "err", err)
+		}
 	}
 }
 

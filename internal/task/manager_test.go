@@ -1,6 +1,7 @@
 package task
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,6 +48,47 @@ func newTestManager(t *testing.T) (*Manager, *recordingEmitter) {
 	return NewManager(store, emitter), emitter
 }
 
+func TestManager_PersistsToFileIsTrue(t *testing.T) {
+	m, _ := newTestManager(t)
+	if !m.PersistsToFile() {
+		t.Fatal("PersistsToFile() = false for a file-backed Manager, want true")
+	}
+}
+
+func TestMutationTransportIdentityStableAcrossProbeAndTracksPermissions(t *testing.T) {
+	m, _ := newTestManager(t)
+	created, err := m.Create("mutation identity", "body", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := m.MutationTransportIdentity(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ProbeMutationTransport(created.ID); err != nil {
+		t.Fatal(err)
+	}
+	after, err := m.MutationTransportIdentity(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after != before {
+		t.Fatalf("probe changed mutation identity\nbefore: %q\nafter:  %q", before, after)
+	}
+	dir := m.store.Dir()
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	readOnly, err := m.MutationTransportIdentity(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readOnly == before {
+		t.Fatal("permission change did not invalidate mutation identity")
+	}
+}
+
 func TestManagerCreateEmitsEvent(t *testing.T) {
 	t.Parallel()
 	m, emitter := newTestManager(t)
@@ -91,7 +133,7 @@ func TestManagerUpdateInvokesStatusHook(t *testing.T) {
 		id, from, to string
 	}
 	var got []change
-	m.SetStatusChangeHook(func(id, from, to string) {
+	m.SetStatusChangeHook(func(id, from, to string, _ Task) {
 		got = append(got, change{id, from, to})
 	})
 
@@ -121,6 +163,42 @@ func TestManagerUpdateInvokesStatusHook(t *testing.T) {
 	}
 	if got[0].id != task.ID {
 		t.Errorf("id = %q, want %q", got[0].id, task.ID)
+	}
+}
+
+func TestManagerStatusHookReceivesWrittenSnapshot(t *testing.T) {
+	m, _ := newTestManager(t)
+	created, err := m.Create("Title", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	captured := make(chan Task, 1)
+	m.SetStatusChangeHook(func(_ string, _, to string, snapshot Task) {
+		if to != string(StatusInProgress) {
+			return
+		}
+		close(entered)
+		<-release
+		captured <- snapshot
+	})
+	firstDone := make(chan error, 1)
+	go func() {
+		_, updateErr := m.Update(created.ID, Update{Status: Ptr(StatusInProgress)})
+		firstDone <- updateErr
+	}()
+	<-entered
+	if _, err := m.Update(created.ID, Update{Status: Ptr(StatusBlocked)}); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	if snapshot := <-captured; snapshot.Status != StatusInProgress {
+		t.Fatalf("first hook snapshot status = %q, want %q", snapshot.Status, StatusInProgress)
 	}
 }
 
@@ -194,7 +272,7 @@ func TestManagerOnExternalUpdateDoesNotDoubleFireRacingInProcessWrite(t *testing
 		mu   sync.Mutex
 		fire []string
 	)
-	m.SetStatusChangeHook(func(id, from, to string) {
+	m.SetStatusChangeHook(func(id, from, to string, _ Task) {
 		mu.Lock()
 		fire = append(fire, from+"->"+to)
 		mu.Unlock()
@@ -265,6 +343,38 @@ func TestManagerOnExternalUpdateInvalidatesJSONSidecar(t *testing.T) {
 	}
 }
 
+func TestManagerListActiveFiltersTerminalTasksOnFileBackend(t *testing.T) {
+	t.Parallel()
+	m, _ := newTestManager(t)
+
+	active, err := m.Create("active", "", AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed, err := m.Create("closed", "", AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Update(closed.ID, Update{Status: Ptr(StatusDone)}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := m.ListActive()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != active.ID {
+		t.Fatalf("ListActive = %+v, want only %s", got, active.ID)
+	}
+	all, err := m.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("List = %d tasks, want 2", len(all))
+	}
+}
+
 // TestManagerAppendBodyDoesNotDeadlockOnSelfRoutedEmit reproduces the
 // production wiring in app.go's emit closure, which routes every
 // task:updated event straight back into Manager.OnExternalUpdate on the
@@ -285,7 +395,7 @@ func TestManagerAppendBodyDoesNotDeadlockOnSelfRoutedEmit(t *testing.T) {
 	// OnExternalUpdate only takes lockFor(id) when a status-change hook is
 	// registered — without one it returns before locking and the reentrant
 	// path this test targets would never be exercised.
-	m.SetStatusChangeHook(func(string, string, string) {})
+	m.SetStatusChangeHook(func(string, string, string, Task) {})
 	m.emitter = EmitterFunc(func(event string, data any) {
 		if event != events.TaskUpdated {
 			return
@@ -321,7 +431,7 @@ func TestManagerAddRunWithStatusEmitsUpdatedAndHook(t *testing.T) {
 	}
 
 	var hookCalls int
-	m.SetStatusChangeHook(func(id, from, to string) {
+	m.SetStatusChangeHook(func(id, from, to string, _ Task) {
 		hookCalls++
 		if id != task.ID || from != string(StatusTodo) || to != string(StatusInProgress) {
 			t.Fatalf("hook got (%s,%s,%s)", id, from, to)
@@ -457,22 +567,17 @@ func TestManagerConcurrentDifferentIDsParallel(t *testing.T) {
 	}
 }
 
-func TestLockForTypeMismatchNoPanic(t *testing.T) {
+func TestManagerLocksReclaimedAfterBurst(t *testing.T) {
 	t.Parallel()
 	m, _ := newTestManager(t)
 
-	// Manually store a non-*sync.Mutex value to simulate type mismatch.
-	m.locks.Store("bad-id", "not-a-mutex")
-
-	// Must not panic; returned mutex must be usable.
-	mu := m.lockFor("bad-id")
-	if mu == nil {
-		t.Fatal("lockFor returned nil on type mismatch")
+	for i := range 200 {
+		unlock := m.lock(fmt.Sprintf("task-%d", i))
+		unlock()
 	}
-	func() {
-		mu.Lock()
-		defer mu.Unlock()
-	}()
+	if got := m.locks.Len(); got != 0 {
+		t.Fatalf("lock entries = %d, want burst keys reclaimed", got)
+	}
 }
 
 func TestNoopEmitter(t *testing.T) {
@@ -535,7 +640,7 @@ func TestManagerAppendBodyDoesNotDeadlockOnReentrantEmit(t *testing.T) {
 	}
 	m := NewManager(store, nil)
 	m.emitter = &reentrantEmitter{m: m}
-	m.SetStatusChangeHook(func(string, string, string) {})
+	m.SetStatusChangeHook(func(string, string, string, Task) {})
 
 	task, err := m.Create("Title", "", "headless")
 	if err != nil {
@@ -568,7 +673,7 @@ func TestManagerDeleteDoesNotDeadlockOnReentrantEmit(t *testing.T) {
 	}
 	m := NewManager(store, nil)
 	m.emitter = &reentrantEmitter{m: m}
-	m.SetStatusChangeHook(func(string, string, string) {})
+	m.SetStatusChangeHook(func(string, string, string, Task) {})
 
 	task, err := m.Create("Title", "", "headless")
 	if err != nil {
@@ -600,14 +705,13 @@ func TestManagerOnExternalUpdateWaitsForBusyWriterAndStillFires(t *testing.T) {
 		hookMu sync.Mutex
 		fired  []string
 	)
-	m.SetStatusChangeHook(func(_ string, from, to string) {
+	m.SetStatusChangeHook(func(_ string, from, to string, _ Task) {
 		hookMu.Lock()
 		fired = append(fired, from+"->"+to)
 		hookMu.Unlock()
 	})
 
-	mu := m.lockFor(task.ID)
-	mu.Lock()
+	unlock := m.lock(task.ID)
 
 	done := make(chan struct{})
 	go func() {
@@ -620,10 +724,10 @@ func TestManagerOnExternalUpdateWaitsForBusyWriterAndStillFires(t *testing.T) {
 		Status: Ptr(StatusInProgress),
 		Body:   &body,
 	}); err != nil {
-		mu.Unlock()
+		unlock()
 		t.Fatalf("UpdateWithPrev: %v", err)
 	}
-	mu.Unlock()
+	unlock()
 
 	select {
 	case <-done:
@@ -635,5 +739,154 @@ func TestManagerOnExternalUpdateWaitsForBusyWriterAndStillFires(t *testing.T) {
 	defer hookMu.Unlock()
 	if len(fired) != 1 || fired[0] != "todo->in-progress" {
 		t.Fatalf("hook calls = %v, want [todo->in-progress]", fired)
+	}
+}
+
+// TestMutationTransportIdentityStableAcrossTaskUpdate pins that an ordinary
+// task write does not invalidate the certificate the identity guards.
+//
+// The identity deliberately omits the store directory's mtime and size because
+// the probe's own create-remove write changes them. The task file needed the
+// same treatment for the same reason: a run patches its task constantly, so
+// including the file's size and mtime made every status change look like the
+// mutation route had been replaced underneath a healthy run.
+func TestMutationTransportIdentityStableAcrossTaskUpdate(t *testing.T) {
+	m, _ := newTestManager(t)
+	created, err := m.Create("mutation identity", "body", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := m.MutationTransportIdentity(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := StatusInProgress
+	body := created.Body + "\n\nmore body so the file size changes too"
+	if _, err := m.Update(created.ID, Update{Status: &status, Body: &body}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := m.MutationTransportIdentity(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after != before {
+		t.Fatalf("an ordinary task update changed the mutation identity\nbefore: %q\nafter:  %q", before, after)
+	}
+}
+
+// TestUpdateByPlanDraftWriteRoundTrips proves a named plan draft set through
+// UpdateBy's PlanDraftWrite is both persisted (readable via PlanDrafts()
+// directly, the file store's own accessor) and reflected on the returned
+// and re-read Task's PlanDrafts map — the file backend's counterpart to the
+// database backend's taskdb.SidecarsFromTask/ApplySidecars round trip.
+func TestUpdateByPlanDraftWriteRoundTrips(t *testing.T) {
+	m, _ := newTestManager(t)
+	created, err := m.Create("plan draft task", "body", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	saved, err := m.UpdateBy(created.ID, "test", Update{
+		PlanDraftWrite: &PlanDraftEntry{Name: "alpha", Content: "first draft"},
+	})
+	if err != nil {
+		t.Fatalf("UpdateBy: %v", err)
+	}
+	if saved.PlanDrafts["alpha"] != "first draft" {
+		t.Fatalf("returned task PlanDrafts = %+v, want claude=first draft", saved.PlanDrafts)
+	}
+
+	got, err := m.Get(created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.PlanDrafts["alpha"] != "first draft" {
+		t.Fatalf("re-read PlanDrafts = %+v, want claude=first draft", got.PlanDrafts)
+	}
+
+	// A second draft under a different name must not clobber the first —
+	// PlanDraftWrite is a merge-add, not a whole-map replace.
+	saved, err = m.UpdateBy(created.ID, "test", Update{
+		PlanDraftWrite: &PlanDraftEntry{Name: "beta", Content: "second draft"},
+	})
+	if err != nil {
+		t.Fatalf("second UpdateBy: %v", err)
+	}
+	if saved.PlanDrafts["alpha"] != "first draft" || saved.PlanDrafts["beta"] != "second draft" {
+		t.Fatalf("PlanDrafts after second write = %+v, want both entries", saved.PlanDrafts)
+	}
+}
+
+// TestCreateFullByPlanDraftWriteWritesSidecarFile proves a plan draft set at
+// create time (via CreateFullBy's init Update, not a follow-up UpdateBy) is
+// actually written to its own sidecar file — CreatePrebuilt's own path,
+// separate from UpdateWithPrev, must not silently drop it.
+func TestCreateFullByPlanDraftWriteWritesSidecarFile(t *testing.T) {
+	m, _ := newTestManager(t)
+	created, err := m.CreateFullBy("plan draft at create", "body", "headless", "test", Update{
+		PlanDraftWrite: &PlanDraftEntry{Name: "alpha", Content: "draft content"},
+	})
+	if err != nil {
+		t.Fatalf("CreateFullBy: %v", err)
+	}
+	if created.PlanDrafts["alpha"] != "draft content" {
+		t.Fatalf("returned task PlanDrafts = %+v, want alpha=draft content", created.PlanDrafts)
+	}
+
+	drafts, err := m.PlanDrafts().List(created.ID)
+	if err != nil {
+		t.Fatalf("PlanDrafts().List: %v", err)
+	}
+	if drafts["alpha"] != "draft content" {
+		t.Fatalf("PlanDraftStore has %+v, want alpha=draft content — sidecar file was not written", drafts)
+	}
+
+	got, err := m.Get(created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.PlanDrafts["alpha"] != "draft content" {
+		t.Fatalf("re-read PlanDrafts = %+v, want alpha=draft content", got.PlanDrafts)
+	}
+}
+
+// TestUpdateByPlanDraftWriteEmptyContentClearsEntry proves an empty-content
+// PlanDraftWrite deletes the map entry rather than leaving a "" value behind
+// — PlanDraftStore.Write already deletes the sidecar file for empty content,
+// so the in-memory Task must agree or a caller inspecting the returned
+// snapshot sees a draft that the sidecar store itself no longer has.
+func TestUpdateByPlanDraftWriteEmptyContentClearsEntry(t *testing.T) {
+	m, _ := newTestManager(t)
+	created, err := m.Create("plan draft clear task", "body", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	saved, err := m.UpdateBy(created.ID, "test", Update{
+		PlanDraftWrite: &PlanDraftEntry{Name: "alpha", Content: "first draft"},
+	})
+	if err != nil {
+		t.Fatalf("UpdateBy write: %v", err)
+	}
+	if saved.PlanDrafts["alpha"] != "first draft" {
+		t.Fatalf("PlanDrafts after write = %+v, want alpha=first draft", saved.PlanDrafts)
+	}
+
+	saved, err = m.UpdateBy(created.ID, "test", Update{
+		PlanDraftWrite: &PlanDraftEntry{Name: "alpha", Content: ""},
+	})
+	if err != nil {
+		t.Fatalf("UpdateBy clear: %v", err)
+	}
+	if _, ok := saved.PlanDrafts["alpha"]; ok {
+		t.Fatalf("PlanDrafts after clear = %+v, want no alpha key", saved.PlanDrafts)
+	}
+
+	got, err := m.Get(created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if _, ok := got.PlanDrafts["alpha"]; ok {
+		t.Fatalf("re-read PlanDrafts = %+v, want no alpha key", got.PlanDrafts)
 	}
 }

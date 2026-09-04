@@ -4,28 +4,54 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"reflect"
+	"slices"
 	"strings"
 	"sync"
 
+	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/notification"
+	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/workflow"
 	"gopkg.in/yaml.v3"
 )
 
 // ConfigService exposes settings read/write as Wails-bound methods.
 type ConfigService struct {
-	mu             sync.RWMutex
+	mu sync.RWMutex
+	// subscribers receive every hot apply; see configSubscriber.
+	subscribers []configSubscriber
+	// notifyMu serialises subscriber callbacks. They run outside mu, so
+	// without this two concurrent mutations could interleave and leave a sink
+	// holding an older value than the live config.
+	notifyMu       sync.Mutex
 	cfg            *config.Config
+	persisted      *config.Config
 	logLevel       *slog.LevelVar
 	notifier       *notification.Emitter
 	agents         *agent.Manager
 	limits         *limits.Store
+	providerHealth *provider.Checker
 	workflowEngine *workflow.Engine
 	logger         *slog.Logger
 	policy         func() limits.Policy
+	applyRuntime   func(config.Config) error
+	// publishConfig atomically exposes a successfully applied immutable
+	// snapshot to App runtime readers. It is set by App wiring; standalone
+	// ConfigService tests intentionally leave it nil.
+	publishConfig func(*config.Config)
+	// reapplyRouting re-merges the persisted routing overlay on top of the
+	// freshly hot-reloaded base A/B config and fans it back out to every
+	// selection site. Called after an ab_testing hot change so a base edit
+	// does not silently drop the live overlay until the next routing tick.
+	reapplyRouting func()
+	// applyABTestingBase publishes an operator-authored ab_testing hot reload
+	// to direct dispatch sites before any persisted routing overlay is remerged.
+	applyABTestingBase func(abtest.Config)
 }
 
 // GetSettings returns the current app settings for the config UI.
@@ -33,6 +59,9 @@ func (s *ConfigService) GetSettings() AppSettings {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	c := s.cfg
+	if s.persisted != nil {
+		c = s.persisted
+	}
 	return AppSettings{
 		Agent:        c.Agent,
 		Notification: c.Notification,
@@ -42,10 +71,16 @@ func (s *ConfigService) GetSettings() AppSettings {
 			MaxSizeMB: c.Logging.MaxSizeMB,
 			MaxFiles:  c.Logging.MaxFiles,
 		},
-		Audit:        c.Audit,
-		Renovate:     c.Renovate,
-		Providers:    c.Providers,
-		GitHub:       c.GitHub,
+		Attachments: c.Attachments,
+		Audit:       c.Audit,
+		Renovate:    c.Renovate,
+		Providers:   c.Providers,
+		ProviderRouting: ProviderRoutingSettings{
+			ABTestingEnabled:              c.ABTesting.Enabled,
+			ABTestingMinSamplesPerVariant: c.ABTesting.MinSamplesPerVariant,
+			Summary:                       config.BuildRoutingSummary(c),
+		},
+		GitHub:       githubSettingsWithoutSecrets(c.GitHub),
 		Monitor:      c.Monitor,
 		SelfMonitor:  c.SelfMonitor,
 		Triage:       c.Triage,
@@ -57,6 +92,12 @@ func (s *ConfigService) GetSettings() AppSettings {
 		ProjectTypes: c.ProjectTypes,
 		Directories:  c.Directories(),
 	}
+}
+
+func (s *ConfigService) GetPathExplanations() ([]ConfigPathExplanation, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return LoadConfigPathExplanations(s.cfg, s.persisted)
 }
 
 // GetDefaultSettings returns the settings an empty config file resolves to. The
@@ -83,8 +124,15 @@ func (s *ConfigService) SaveRawConfig(raw string) error {
 	saveRaw := []byte(raw)
 	var err error
 	s.mu.RLock()
-	preserveServerToken := serverAuthTokenForRawSave(s.cfg)
+	base := s.cfg
+	if s.persisted != nil {
+		base = s.persisted
+	}
 	s.mu.RUnlock()
+	preserveServerToken, err := serverAuthTokenForRawSave(base)
+	if err != nil {
+		return validationError(fmt.Sprintf("invalid config: %s", err))
+	}
 	if preserveServerToken != "" {
 		saveRaw, err = ensureServerAuthTokenInRawConfig(saveRaw, preserveServerToken)
 		if err != nil {
@@ -95,21 +143,45 @@ func (s *ConfigService) SaveRawConfig(raw string) error {
 	if err != nil {
 		return validationError(fmt.Sprintf("invalid config: %s", err))
 	}
-	if _, err := config.ResolveFromCurrentEnvironment(fileCfg, config.ResolveOptions{}); err != nil {
+	resolved, err := config.ResolveFromCurrentEnvironment(fileCfg, config.ResolveOptions{})
+	if err != nil {
 		return validationError(err.Error())
 	}
-	if err := config.WriteRawConfig(saveRaw); err != nil {
-		return err
-	}
-	_, err = s.ReloadFromDisk()
+	pending, err := func() (pendingNotify, error) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		_, pending, err := s.mutateLocked(resolved.Config, func() error {
+			return config.WriteRawConfig(saveRaw)
+		})
+		return pending, err
+	}()
+	// Outside the lock: subscribers may read config back through this service.
+	pending.run()
 	return err
 }
 
-func serverAuthTokenForRawSave(cfg *config.Config) string {
+// serverAuthTokenForRawSave returns the server auth token a raw save must
+// preserve, but only when the operator's own config.yaml already declares
+// server.auth_token explicitly. cfg.Server.AuthToken is also resolved from
+// the SYBRA_AUTH_TOKEN env var or the generated server_auth_token file (see
+// ensureServerAuthToken) — neither of those sources belongs in config.yaml,
+// so an edit that omits the key must never materialize it there.
+func serverAuthTokenForRawSave(cfg *config.Config) (string, error) {
 	if cfg == nil || strings.TrimSpace(os.Getenv("SYBRA_AUTH_TOKEN")) != "" {
-		return ""
+		return "", nil
 	}
-	return strings.TrimSpace(cfg.Server.AuthToken)
+	existing, err := config.ReadRawConfig()
+	if err != nil {
+		return "", err
+	}
+	existingFileCfg, err := config.ParseFileConfig([]byte(existing))
+	if err != nil {
+		return "", err
+	}
+	if !existingFileCfg.Has("server", "auth_token") {
+		return "", nil
+	}
+	return strings.TrimSpace(cfg.Server.AuthToken), nil
 }
 
 func ensureServerAuthTokenInRawConfig(raw []byte, token string) ([]byte, error) {
@@ -219,78 +291,212 @@ func yamlScalar(s string) string {
 }
 
 // UpdateSettings validates, persists, and hot-reloads the provided settings.
-func (s *ConfigService) UpdateSettings(settings AppSettings) error {
+func (s *ConfigService) UpdateSettings(settings AppSettings) (ConfigMutationResult, error) {
+	result, pending, err := s.updateSettingsLocked(settings)
+	// Outside the lock: subscribers may read config back through this service.
+	pending.run()
+	return result, err
+}
+
+func (s *ConfigService) updateSettingsLocked(settings AppSettings) (ConfigMutationResult, pendingNotify, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if err := s.validateSettings(settings); err != nil {
-		return err
+		return ConfigMutationResult{}, pendingNotify{}, err
 	}
-	if err := s.applyFromConfig(settingsToConfig(s.cfg, settings)); err != nil {
-		return err
+	base := s.cfg
+	if s.persisted != nil {
+		base = s.persisted
 	}
-	return s.cfg.Save()
+	next := settingsToConfig(base, settings)
+	raw, err := config.ReadRawConfig()
+	if err != nil {
+		return ConfigMutationResult{}, pendingNotify{}, err
+	}
+	patched, err := patchSettingsRawConfig([]byte(raw), base, &next)
+	if err != nil {
+		return ConfigMutationResult{}, pendingNotify{}, err
+	}
+	return s.mutateLocked(&next, func() error {
+		return config.WriteRawConfig(patched)
+	})
 }
 
 // validateSettings checks all editable fields for validity.
 func (s *ConfigService) validateSettings(settings AppSettings) error {
-	next := settingsToConfig(s.cfg, settings)
+	base := s.cfg
+	if s.persisted != nil {
+		base = s.persisted
+	}
+	next := settingsToConfig(base, settings)
 	if err := config.ValidateResolvedConfig(&next); err != nil {
+		return validationError(err.Error())
+	}
+	if err := config.ValidateUnattendedPosture(&next); err != nil {
 		return validationError(err.Error())
 	}
 	return nil
 }
 
-// applyFromConfig assigns all hot-reloadable fields from next into s.cfg and
-// pushes the manager settings that are intentionally live. s.mu must be held by the caller.
-// This never writes to disk — callers that need persistence must call s.cfg.Save().
-func (s *ConfigService) applyFromConfig(next config.Config) error {
-	s.cfg.Agent = next.Agent
-	s.cfg.Notification = next.Notification
-	s.cfg.Orchestrator = next.Orchestrator
-	s.cfg.Logging.Level = next.Logging.Level
-	s.cfg.Logging.MaxSizeMB = next.Logging.MaxSizeMB
-	s.cfg.Logging.MaxFiles = next.Logging.MaxFiles
-	s.cfg.Audit = next.Audit
-	// In-place field assignment: the renovate coordinator holds &s.cfg.Renovate.
-	s.cfg.Renovate.Enabled = next.Renovate.Enabled
-	s.cfg.Renovate.Author = next.Renovate.Author
-	s.cfg.Providers = next.Providers
-	s.cfg.GitHub = next.GitHub
-	s.cfg.Triage = next.Triage
-	s.cfg.Monitor = next.Monitor
-	s.cfg.SelfMonitor = next.SelfMonitor
-	s.cfg.Umbrella = next.Umbrella
-	s.cfg.Testing = next.Testing
-	s.cfg.Experience = next.Experience
-	s.cfg.Browser = next.Browser
-	s.cfg.ABTesting = next.ABTesting
-	s.cfg.Metrics = next.Metrics
-	s.cfg.ProjectTypes = next.ProjectTypes
-	s.notifier.SetDesktop(next.Notification.Desktop)
-	if err := s.refreshAgentRuntimeConfig(next); err != nil {
-		return err
+// mutateLocked returns the subscriber callbacks the caller must run once it
+// has released s.mu. They are deliberately not invoked here: a subscriber is
+// app-layer code that can read config back through this service, and calling
+// it under the write lock deadlocks.
+func (s *ConfigService) mutateLocked(candidate *config.Config, persist func() error) (ConfigMutationResult, pendingNotify, error) {
+	current := cloneConfig(s.cfg)
+	intent := cloneConfig(s.cfg)
+	if s.persisted != nil {
+		intent = cloneConfig(s.persisted)
 	}
+	result := diffConfig(*intent, *candidate)
+	if len(result.Rejected) > 0 {
+		return result, pendingNotify{}, configMutationErrorf(result, "rejected immutable config paths: %s", strings.Join(result.Rejected, ", "))
+	}
+	nextActive := cloneConfig(current)
+	// Copy the exact changed leaves, not the registry-entry paths: a hot ancestor
+	// entry (e.g. "agent") can cover a restart-policy child (e.g. "agent.evidence")
+	// whose change must stay pending until restart. appliedLeaves already excludes
+	// those child leaves.
+	for _, path := range result.appliedLeaves {
+		copyConfigPath(nextActive, candidate, path)
+	}
+	if persist != nil {
+		if err := persist(); err != nil {
+			return result, pendingNotify{}, err
+		}
+	}
+	pending, err := s.applyHotChangesLocked(result, nextActive)
+	if err != nil {
+		if persist != nil {
+			if restoreErr := config.RestoreLastKnownGoodConfig(); restoreErr != nil {
+				result.Recovery = &ConfigRecovery{
+					Message: fmt.Sprintf("hot apply failed and last-known-good restore failed: %v", restoreErr),
+				}
+				return result, pendingNotify{}, fmt.Errorf("%w; restore last-known-good: %w", err, restoreErr)
+			}
+			result.Recovery = &ConfigRecovery{
+				RestoredLastKnownGood: true,
+				Message:               "restored config.yaml from last-known-good after hot apply failure",
+			}
+		}
+		return result, pendingNotify{}, &configMutationError{result: result, cause: err}
+	}
+	// Do not overwrite the shared object: lock-free App readers retain old
+	// snapshots while a reload publishes this complete replacement.
+	s.cfg = nextActive
+	if s.publishConfig != nil {
+		s.publishConfig(nextActive)
+	}
+	s.persisted = cloneConfig(candidate)
+	if slices.Contains(result.Applied, "ab_testing") && s.applyABTestingBase != nil {
+		s.applyABTestingBase(nextActive.ABTesting)
+	}
+	// A base ab_testing hot change replaces live routing weights with the plain
+	// operator-saved base. Re-merge the persisted overlay on top of that new
+	// base now so every selection site stays weight-consistent instead of
+	// drifting on unweighted base until the next routing tick.
+	if s.reapplyRouting != nil && slices.Contains(result.Applied, "ab_testing") {
+		s.reapplyRouting()
+	}
+	if s.logger != nil {
+		for _, path := range result.RestartRequired {
+			s.logger.Warn("config.reload.restart_required", "field", path)
+		}
+	}
+	return result, pending, nil
+}
+
+func copyConfigPath(dst, src *config.Config, path string) {
+	dstField := fieldByYAMLPath(reflect.ValueOf(dst), path)
+	srcField := fieldByYAMLPath(reflect.ValueOf(src), path)
+	dstField.Set(srcField)
+}
+
+// applyHotChangesLocked returns the subscriber callbacks the caller must run
+// once it has released s.mu; see collectSubscribersLocked.
+func (s *ConfigService) applyHotChangesLocked(result ConfigMutationResult, nextActive *config.Config) (pendingNotify, error) {
+	for _, group := range configApplyGroups(result.Applied) {
+		switch group {
+		case configApplyNone:
+			continue
+		case configApplyAgentRuntime:
+			if err := s.refreshAgentRuntimeConfig(*nextActive); err != nil {
+				return pendingNotify{}, err
+			}
+		case configApplyGuardrails:
+			s.applyAgentGuardrails(*nextActive)
+		case configApplyNotification:
+			if s.notifier != nil {
+				s.notifier.SetDesktop(nextActive.Notification.Desktop)
+			}
+		case configApplyLogLevel:
+			if s.logLevel != nil {
+				s.logLevel.Set(nextActive.Logging.SlogLevel())
+			}
+		}
+	}
+	if slices.Contains(result.Applied, "agent") {
+		s.applyAgentGuardrails(*nextActive)
+	}
+	if providerHealthRuntimeChanged(result.Applied) {
+		s.applyProviderHealthRuntime(*nextActive)
+	}
+	// Captured under the lock, run by the caller after it unlocks: the single
+	// chokepoint every hot apply passes through. Registering there is what
+	// makes a "hot" declaration true.
+	return s.collectSubscribersLocked(result.Applied, *nextActive), nil
+}
+
+func providerHealthRuntimeChanged(paths []string) bool {
+	for _, path := range paths {
+		switch path {
+		case "providers.auto_failover", "providers.claude", "providers.codex", "providers.copilot", "providers.opencode":
+			return true
+		}
+	}
+	return false
+}
+
+func (s *ConfigService) applyProviderHealthRuntime(cfg config.Config) {
+	if s.providerHealth == nil {
+		return
+	}
+	s.providerHealth.SetAutoFailover(cfg.Providers.AutoFailover)
+	s.providerHealth.SetProviderEnabled(providerid.Claude, cfg.Providers.Claude.Enabled)
+	s.providerHealth.SetProviderEnabled(providerid.Codex, cfg.Providers.Codex.Enabled)
+	s.providerHealth.SetProviderEnabled(providerid.Copilot, cfg.Providers.Copilot.Enabled)
+	s.providerHealth.SetProviderEnabled(providerid.OpenCode, cfg.Providers.OpenCode.Enabled)
+}
+
+func (s *ConfigService) applyAgentGuardrails(cfg config.Config) {
 	if s.agents != nil {
 		s.agents.SetGuardrails(agent.Guardrails{
-			MaxCostUSD:              next.Agent.MaxCostUSD,
-			MaxTurns:                next.Agent.MaxTurns,
-			MaxCheckpoints:          next.MaxCheckpoints(),
-			TurnCostFraction:        next.Agent.TurnCostFraction,
-			TurnMultiplier:          next.Agent.TurnMultiplier,
-			CheckpointOnTurnCeiling: next.CheckpointOnTurnCeilingEnabled(),
+			MaxCostUSD:              cfg.Agent.MaxCostUSD,
+			MaxTurns:                cfg.Agent.MaxTurns,
+			MaxCheckpoints:          cfg.MaxCheckpoints(),
+			TurnCostFraction:        cfg.Agent.TurnCostFraction,
+			TurnMultiplier:          cfg.Agent.TurnMultiplier,
+			CheckpointOnTurnCeiling: cfg.CheckpointOnTurnCeilingEnabled(),
+			MaxSubagentEvents:       cfg.Agent.MaxSubagentEvents,
 		})
 	}
-	if s.workflowEngine != nil {
-		s.workflowEngine.SetMaxCheckpoints(next.MaxCheckpoints())
+	s.applyWorkflowGuardrails(cfg)
+}
+
+func (s *ConfigService) applyWorkflowGuardrails(cfg config.Config) {
+	if s.workflowEngine == nil {
+		return
 	}
-	if s.logLevel != nil {
-		s.logLevel.Set(s.cfg.Logging.SlogLevel())
-	}
-	return nil
+	s.workflowEngine.SetMaxCheckpoints(cfg.MaxCheckpoints())
+	s.workflowEngine.SetReviewUntilClean(cfg.ReviewUntilClean())
+	s.workflowEngine.SetReviewRoundsPerHour(cfg.Agent.ReviewRoundsPerHourLimit())
 }
 
 func (s *ConfigService) refreshAgentRuntimeConfig(next config.Config) error {
+	if s.applyRuntime != nil {
+		return s.applyRuntime(next)
+	}
 	if s.agents == nil {
 		return nil
 	}
@@ -302,6 +508,14 @@ func (s *ConfigService) managerRuntimeConfig(cfg config.Config) agent.ManagerRun
 	if s.policy != nil {
 		policy = s.policy()
 	}
+	policy.Enabled = cfg.Providers.Limits.Enabled
+	if policy.ProviderEnabled == nil {
+		policy.ProviderEnabled = map[string]bool{}
+	}
+	policy.ProviderEnabled[limits.ProviderClaude] = cfg.Providers.Claude.Enabled
+	policy.ProviderEnabled[limits.ProviderCodex] = cfg.Providers.Codex.Enabled
+	policy.ProviderEnabled[limits.ProviderCopilot] = cfg.Providers.Copilot.Enabled
+	policy.ProviderEnabled[limits.ProviderOpenCode] = cfg.Providers.OpenCode.Enabled
 	return agent.ManagerRuntimeConfig{
 		MaxConcurrent:          cfg.Agent.MaxConcurrent,
 		DefaultProvider:        cfg.Agent.Provider,
@@ -315,10 +529,13 @@ func (s *ConfigService) managerRuntimeConfig(cfg config.Config) agent.ManagerRun
 		DispatchJitterMs:       cfg.Agent.DispatchJitterMs,
 		HeadlessSteerable:      cfg.DefaultHeadlessSteerable(),
 		SandboxMode:            cfg.DefaultSandboxMode(),
+		SandboxReadMode:        cfg.DefaultSandboxReadMode(),
 		PlaywrightMCPEnabled:   cfg.PlaywrightMCPEnabled(),
 		PlaywrightMCPExtraArgs: cfg.PlaywrightMCPExtraArgs(),
 		K8sJobsEnabled:         cfg.Agent.K8sJobs.Enabled,
 		K8sJobs:                k8sJobRunnerConfigFromConfig(cfg.Agent.K8sJobs),
+		RoleEffort:             cfg.Agent.RoleEffort,
+		ClassReservations:      agent.ParseClassReservations(cfg.Agent.ClassReservations),
 	}
 }
 
@@ -333,9 +550,28 @@ func settingsToConfig(existing *config.Config, settings AppSettings) config.Conf
 	next.Logging.MaxSizeMB = settings.Logging.MaxSizeMB
 	next.Logging.MaxFiles = settings.Logging.MaxFiles
 	next.Audit = settings.Audit
+	next.Attachments = settings.Attachments
+	if next.Attachments.MaxSizeMB == 0 {
+		next.Attachments.MaxSizeMB = existing.Attachments.MaxSizeMB
+		if next.Attachments.MaxSizeMB == 0 {
+			next.Attachments.MaxSizeMB = config.DefaultAttachmentMaxSizeMB
+		}
+	}
 	next.Renovate = settings.Renovate
 	next.Providers = settings.Providers
+	if settings.ProviderRouting.ABTestingEnabled != nil {
+		next.ABTesting.Enabled = settings.ProviderRouting.ABTestingEnabled
+	}
+	if settings.ProviderRouting.ABTestingMinSamplesPerVariant > 0 {
+		next.ABTesting.MinSamplesPerVariant = settings.ProviderRouting.ABTestingMinSamplesPerVariant
+	}
 	next.GitHub = settings.GitHub
+	if next.GitHub.Webhook.Secret == config.RedactedPlaceholder {
+		next.GitHub.Webhook.Secret = existing.GitHub.Webhook.Secret
+	}
+	if next.GitHub.Webhook.TaskSecret == config.RedactedPlaceholder {
+		next.GitHub.Webhook.TaskSecret = existing.GitHub.Webhook.TaskSecret
+	}
 	next.Monitor = settings.Monitor
 	next.SelfMonitor = settings.SelfMonitor
 	next.Triage = settings.Triage

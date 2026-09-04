@@ -1,27 +1,25 @@
 <script lang="ts">
   import { fly } from 'svelte/transition'
   import { FolderOpen, GitBranch, GitPullRequest, ChevronDown, ChevronUp } from '@lucide/svelte'
-  import type { Agent, ConvoEvent } from '../../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
+  import type { Agent } from '../../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
   import type { Task } from '../../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import type { TimestampedStreamEvent } from '$lib/timeline.js'
   import { OpenWorktree } from '$lib/api.js'
   import { summarizeAgent } from '$lib/agent-summary.js'
   import StreamOutput from '../StreamOutput.svelte'
-  import ChatView from '../ChatView.svelte'
 
   interface Props {
     a: Agent
     linkedTask?: Task | null
     streamOutputs: TimestampedStreamEvent[]
-    convoEvents: ConvoEvent[]
   }
 
-  const { a, linkedTask, streamOutputs, convoEvents }: Props = $props()
+  const { a, linkedTask, streamOutputs }: Props = $props()
 
   let activityOpen = $state(false)
   let openError = $state('')
 
-  const summary = $derived(summarizeAgent(streamOutputs, convoEvents))
+  const summary = $derived(summarizeAgent(streamOutputs))
 
   async function handleOpenWorktree() {
     if (!linkedTask?.id) return
@@ -104,11 +102,7 @@
 
     {#if activityOpen}
       <div class="mt-3" in:fly={{ y: 4, duration: 120 }}>
-        {#if a.mode === 'interactive'}
-          <ChatView agentId={a.id} agentState={a.state} costUsd={a.costUsd} inputTokens={a.inputTokens ?? 0} outputTokens={a.outputTokens ?? 0} />
-        {:else}
-          <StreamOutput agentId={a.id} />
-        {/if}
+        <StreamOutput agentId={a.id} />
       </div>
     {/if}
   </div>

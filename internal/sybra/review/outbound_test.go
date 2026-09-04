@@ -10,8 +10,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/intervention"
 	"github.com/Automaat/sybra/internal/poll"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
@@ -62,7 +65,7 @@ func newOutboundWorkflowTestHandler(t *testing.T) (*Handler, *task.Manager) {
 	if _, err := projects.CreateMeta("https://github.com/Automaat/sybra", project.ProjectTypePet); err != nil {
 		t.Fatal(err)
 	}
-	engine := workflow.NewEngine(wfStore,
+	engine := workflow.NewTestEngine(wfStore,
 		&taskAdapter{tasks: tasks},
 		&agentAdapter{agents: agents, tasks: tasks},
 		logger,
@@ -125,7 +128,7 @@ func TestCancelSettledImplementationWorkflows(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		r.cancelSettledImplementationWorkflows(all, []github.PullRequest{{
+		r.cancelSettledImplementationWorkflows(context.Background(), all, []github.PullRequest{{
 			Number:      42,
 			Repository:  "Automaat/sybra",
 			HeadRefName: "feat/watchdog-pr",
@@ -173,7 +176,7 @@ func TestCancelSettledImplementationWorkflows(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		r.cancelSettledImplementationWorkflows(all, []github.PullRequest{{
+		r.cancelSettledImplementationWorkflows(context.Background(), all, []github.PullRequest{{
 			Number:      77,
 			Repository:  "Automaat/sybra",
 			HeadRefName: "feat/branch-only",
@@ -233,7 +236,7 @@ func TestCancelSettledImplementationWorkflows(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		r.cancelSettledImplementationWorkflows(all, []github.PullRequest{{
+		r.cancelSettledImplementationWorkflows(context.Background(), all, []github.PullRequest{{
 			Number:      42,
 			Repository:  "Automaat/sybra",
 			HeadRefName: "feat/watchdog-pr",
@@ -284,7 +287,7 @@ func TestCancelSettledImplementationWorkflows(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		r.cancelSettledImplementationWorkflows(all, []github.PullRequest{{
+		r.cancelSettledImplementationWorkflows(context.Background(), all, []github.PullRequest{{
 			Number:           55,
 			Repository:       "Automaat/sybra",
 			HeadRefName:      "feat/not-green",
@@ -336,7 +339,7 @@ func TestCancelSettledImplementationWorkflows(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		r.cancelSettledImplementationWorkflows(all, []github.PullRequest{{
+		r.cancelSettledImplementationWorkflows(context.Background(), all, []github.PullRequest{{
 			Number:         66,
 			Repository:     "Automaat/sybra",
 			HeadRefName:    "feat/rest-ci-unknown",
@@ -365,7 +368,9 @@ func TestCancelSettledImplementationWorkflows(t *testing.T) {
 func TestPollKnownTaskPRs_CancelsBranchOnlySettledImplementationWorkflow(t *testing.T) {
 	r, tasks := newOutboundWorkflowTestHandler(t)
 	r.authCircuit = poll.NewAuthCircuit("reviews", r.logger)
-	r.cfg = &config.Config{GitHub: config.GitHubConfig{PollerRole: "secondary"}}
+	gh := testGitHubConfig()
+	gh.PollerRole = "secondary"
+	r.cfg = &config.Config{GitHub: gh}
 
 	created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
 	if err != nil {
@@ -567,7 +572,7 @@ func TestReconcilePRPhases(t *testing.T) {
 		{Number: 42, ReviewDecision: "APPROVED", Mergeable: "MERGEABLE", CIStatus: "SUCCESS"},
 		{Number: 7, ReviewDecision: "CHANGES_REQUESTED"},
 	}
-	r.reconcilePRPhases(all, prs)
+	r.reconcilePRPhases(context.Background(), all, prs)
 
 	got, err := tasks.Get(own.ID)
 	if err != nil {
@@ -612,7 +617,7 @@ func TestReconcilePRPhasesClearsStaleWhenIneligible(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.reconcilePRPhases(all, []github.PullRequest{{Number: 42, CIStatus: "SUCCESS"}})
+	r.reconcilePRPhases(context.Background(), all, []github.PullRequest{{Number: 42, CIStatus: "SUCCESS"}})
 
 	got, err := tasks.Get(created.ID)
 	if err != nil {
@@ -642,6 +647,68 @@ func TestLinkedOwnPRHumanRequiredDrift(t *testing.T) {
 	}
 }
 
+func TestLinkedOwnPRHumanRequiredDriftIncludesPRFix(t *testing.T) {
+	completedAt := time.Now().UTC()
+	ts := completedAt.Add(-time.Minute)
+	drifted := &task.Task{
+		Status:       task.StatusHumanRequired,
+		PRNumber:     42,
+		UpdatedAt:    ts,
+		StatusReason: "",
+		Workflow: &workflow.Execution{
+			WorkflowID:  "pr-fix",
+			State:       workflow.ExecCompleted,
+			CompletedAt: &completedAt,
+		},
+	}
+	if !linkedOwnPRHumanRequiredDrift(drifted, true) {
+		t.Fatal("expected completed pr-fix workflow to count as linked PR drift")
+	}
+}
+
+func TestReconcilePRPhasesReactivatesEmptyReasonAfterPRFix(t *testing.T) {
+	r, tasks := newOutboundTestHandler(t)
+
+	created := mkOwnPRTask(t, tasks, 42, nil)
+	completedAt := time.Now().UTC().Add(time.Minute)
+	wf := &workflow.Execution{
+		WorkflowID:  "pr-fix",
+		State:       workflow.ExecCompleted,
+		CompletedAt: &completedAt,
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr(""),
+		Workflow:        &wf,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.reconcilePRPhases(context.Background(), all, []github.PullRequest{{
+		Number:         42,
+		ReviewDecision: "APPROVED",
+		Mergeable:      "MERGEABLE",
+		CIStatus:       "SUCCESS",
+	}})
+
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusInReview {
+		t.Errorf("status = %q, want in-review", got.Status)
+	}
+	if got.StatusReason != "" {
+		t.Errorf("statusReason = %q, want cleared", got.StatusReason)
+	}
+}
+
 func TestReconcilePRPhasesDoesNotReactivateFreshManualHumanRequired(t *testing.T) {
 	r, tasks := newOutboundTestHandler(t)
 
@@ -653,9 +720,11 @@ func TestReconcilePRPhasesDoesNotReactivateFreshManualHumanRequired(t *testing.T
 		CompletedAt: &completedAt,
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(""),
-		Workflow:     &wf,
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr(""),
+		Workflow:        &wf,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -664,7 +733,7 @@ func TestReconcilePRPhasesDoesNotReactivateFreshManualHumanRequired(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.reconcilePRPhases(all, []github.PullRequest{{Number: 42, ReviewDecision: "APPROVED", Mergeable: "MERGEABLE", CIStatus: "SUCCESS"}})
+	r.reconcilePRPhases(context.Background(), all, []github.PullRequest{{Number: 42, ReviewDecision: "APPROVED", Mergeable: "MERGEABLE", CIStatus: "SUCCESS"}})
 
 	got, err := tasks.Get(created.ID)
 	if err != nil {
@@ -687,9 +756,11 @@ func TestReconcilePRPhasesDoesNotReactivateReasonedHumanRequired(t *testing.T) {
 		CompletedAt: &now,
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: &reason,
-		Workflow:     &wf,
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    &reason,
+		Workflow:        &wf,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -698,7 +769,7 @@ func TestReconcilePRPhasesDoesNotReactivateReasonedHumanRequired(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.reconcilePRPhases(all, []github.PullRequest{{Number: 42, ReviewDecision: "APPROVED", Mergeable: "MERGEABLE", CIStatus: "SUCCESS"}})
+	r.reconcilePRPhases(context.Background(), all, []github.PullRequest{{Number: 42, ReviewDecision: "APPROVED", Mergeable: "MERGEABLE", CIStatus: "SUCCESS"}})
 
 	got, err := tasks.Get(created.ID)
 	if err != nil {
@@ -723,9 +794,11 @@ func TestReconcilePRPhasesDoesNotReactivateLaterManualHumanRequired(t *testing.T
 		CompletedAt: &completedAt,
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(""),
-		Workflow:     &wf,
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr(""),
+		Workflow:        &wf,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -734,7 +807,7 @@ func TestReconcilePRPhasesDoesNotReactivateLaterManualHumanRequired(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.reconcilePRPhases(all, []github.PullRequest{{Number: 42, ReviewDecision: "APPROVED", Mergeable: "MERGEABLE", CIStatus: "SUCCESS"}})
+	r.reconcilePRPhases(context.Background(), all, []github.PullRequest{{Number: 42, ReviewDecision: "APPROVED", Mergeable: "MERGEABLE", CIStatus: "SUCCESS"}})
 
 	got, err := tasks.Get(created.ID)
 	if err != nil {
@@ -756,9 +829,11 @@ func TestReconcilePRPhasesDoesNotReactivateWithoutLivePR(t *testing.T) {
 		CompletedAt: &now,
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(""),
-		Workflow:     &wf,
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr(""),
+		Workflow:        &wf,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -767,7 +842,7 @@ func TestReconcilePRPhasesDoesNotReactivateWithoutLivePR(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.reconcilePRPhases(all, nil)
+	r.reconcilePRPhases(context.Background(), all, nil)
 
 	got, err := tasks.Get(created.ID)
 	if err != nil {
@@ -838,7 +913,6 @@ func TestHumanRequiredBlockerReconcilable(t *testing.T) {
 		{"comments exhaustion needs a human", &task.Task{Status: task.StatusHumanRequired, PRNumber: 42, StatusReason: exhaustedFixReason(3, github.PRIssueComments)}, "", false},
 		{"review-tagged task is inbound", &task.Task{Status: task.StatusHumanRequired, PRNumber: 42, StatusReason: ciReason, Tags: []string{"review"}}, "", false},
 		{"latched task does not re-reconcile", &task.Task{Status: task.StatusHumanRequired, PRNumber: 42, StatusReason: ciReason, Tags: []string{reconciledLatchTag}}, "", false},
-		{"chat task never own-PR", &task.Task{TaskType: task.TaskTypeChat, Status: task.StatusHumanRequired, PRNumber: 42, StatusReason: ciReason}, "", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -874,11 +948,13 @@ func mkHumanRequiredBlockerTask(t *testing.T, tasks *task.Manager, prNumber int,
 		t.Fatalf("create: %v", err)
 	}
 	updated, err := tasks.Update(created.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(reason),
-		PRNumber:     task.Ptr(prNumber),
-		ProjectID:    task.Ptr("Automaat/sybra"),
-		Tags:         &tags,
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr(reason),
+		PRNumber:        task.Ptr(prNumber),
+		ProjectID:       task.Ptr("Automaat/sybra"),
+		Tags:            &tags,
 	})
 	if err != nil {
 		t.Fatalf("update: %v", err)
@@ -1012,7 +1088,7 @@ func TestReconcileHumanRequiredBlockersNoDoubleMoveWithReactivateLinkedOwnPR(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.reconcilePRPhases(all, []github.PullRequest{{Number: 42, Mergeable: "MERGEABLE", CIStatus: "SUCCESS"}})
+	r.reconcilePRPhases(context.Background(), all, []github.PullRequest{{Number: 42, Mergeable: "MERGEABLE", CIStatus: "SUCCESS"}})
 	afterPhases, err := tasks.Get(parked.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -1069,6 +1145,81 @@ func TestReconcileHumanRequiredBlockersClearsOnCleanPR(t *testing.T) {
 	}
 	if !hasLatch {
 		t.Error("expected reconciledLatchTag after blocker reconciliation")
+	}
+}
+
+// TestReconcileHumanRequiredBlockersRecordsIntervention proves the
+// sybra#2468 plan-critic finding is fixed: reconcileHumanRequiredBlockers is
+// one of two automated exit paths from human-required that bypassed the
+// original single-hook design entirely, making the auto_recovery
+// classification unreachable. It must now record an intervention itself.
+func TestReconcileHumanRequiredBlockersRecordsIntervention(t *testing.T) {
+	r, tasks := newOutboundTestHandler(t)
+	r.prTracker = github.NewIssueTracker(0)
+
+	projStore, err := project.NewStore(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	proj, err := projStore.CreateMeta("https://github.com/Automaat/sybra.git", project.ProjectTypePet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.projects = projStore
+	r.cfg = &config.Config{Intervention: config.InterventionConfig{Enabled: true}}
+	auditDir := t.TempDir()
+	al, err := audit.NewLogger(auditDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer al.Close()
+	r.audit = al
+	store, err := intervention.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.intervention = store
+
+	mkHumanRequiredBlockerTask(t, tasks, 42, exhaustedFixReason(3, github.PRIssueCIFailure), nil)
+
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	prs := []github.PullRequest{{Number: 42, Mergeable: "MERGEABLE", CIStatus: "SUCCESS"}}
+	r.reconcileHumanRequiredBlockers(all, prs)
+
+	records, err := store.Query(intervention.ProjectKey(proj), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("len(records) = %d, want 1: %+v", len(records), records)
+	}
+	if records[0].OperatorActionClass != intervention.OperatorActionAutoRecovery {
+		t.Fatalf("OperatorActionClass = %q, want %q", records[0].OperatorActionClass, intervention.OperatorActionAutoRecovery)
+	}
+	if records[0].ToStatus != string(task.StatusInReview) {
+		t.Fatalf("ToStatus = %q, want %q", records[0].ToStatus, task.StatusInReview)
+	}
+
+	// The evaluation scorecard (issue #2727) reads operator_action_class off
+	// the audit event itself, not the intervention store — an automated
+	// reconciliation must be durably distinguishable there too, not just on
+	// the persisted Record.
+	events, err := audit.Read(auditDir, audit.Query{
+		Since: time.Now().Add(-time.Hour),
+		Until: time.Now().Add(time.Hour),
+		Type:  audit.EventInterventionRecorded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("len(EventInterventionRecorded) = %d, want 1: %+v", len(events), events)
+	}
+	if got := events[0].Data["operator_action_class"]; got != string(intervention.OperatorActionAutoRecovery) {
+		t.Errorf("Data[operator_action_class] = %v, want %q", got, intervention.OperatorActionAutoRecovery)
 	}
 }
 
@@ -1148,10 +1299,12 @@ func TestReconcileHumanRequiredBlockersIgnoresUnrelatedHumanRequiredReasons(t *t
 		t.Fatalf("create: %v", err)
 	}
 	parked, err := tasks.Update(created.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr("Draft review ready — verify & submit on GitHub"),
-		PRNumber:     task.Ptr(42),
-		ProjectID:    task.Ptr("Automaat/sybra"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr("Draft review ready — verify & submit on GitHub"),
+		PRNumber:        task.Ptr(42),
+		ProjectID:       task.Ptr("Automaat/sybra"),
 	})
 	if err != nil {
 		t.Fatalf("update: %v", err)
@@ -1200,7 +1353,9 @@ func TestPollKnownTaskPRs_ReconcilesHumanRequiredBlocker(t *testing.T) {
 	r, tasks := newOutboundTestHandler(t)
 	r.prTracker = github.NewIssueTracker(0)
 	r.authCircuit = poll.NewAuthCircuit("reviews", r.logger)
-	r.cfg = &config.Config{GitHub: config.GitHubConfig{PollerRole: "secondary"}}
+	gh := testGitHubConfig()
+	gh.PollerRole = "secondary"
+	r.cfg = &config.Config{GitHub: gh}
 
 	parked := mkHumanRequiredBlockerTask(t, tasks, 42, exhaustedFixReason(3, github.PRIssueCIFailure), nil)
 
@@ -1234,6 +1389,228 @@ func TestPollKnownTaskPRs_ReconcilesHumanRequiredBlocker(t *testing.T) {
 	}
 }
 
+func TestPollKnownTaskPRs_MergesReconciledReviewedPetPRSameCycle(t *testing.T) {
+	r, tasks := newOutboundTestHandler(t)
+	r.prTracker = github.NewIssueTracker(0)
+	r.authCircuit = poll.NewAuthCircuit("reviews", r.logger)
+	gh := testGitHubConfig()
+	gh.PollerRole = "secondary"
+	r.cfg = &config.Config{GitHub: gh}
+
+	projDir := t.TempDir()
+	projStore, err := project.NewStore(projDir, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	mustWriteProjectYAML(t, projDir, "pet-owner/pet-repo", project.ProjectTypePet)
+	r.projects = projStore
+
+	created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	reviewed := true
+	parked, err := tasks.Update(created.ID, task.Update{
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr(exhaustedFixReason(3, github.PRIssueCIFailure)),
+		PRNumber:        task.Ptr(42),
+		ProjectID:       task.Ptr("pet-owner/pet-repo"),
+		Reviewed:        &reviewed,
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	var mergedRepo string
+	var mergedNum int
+	r.mergePR = func(repo string, number int) error {
+		mergedRepo, mergedNum = repo, number
+		return nil
+	}
+	r.fetchKnownPRsFn = func(refs []github.PRRef) []github.MonitorPRResult {
+		results := make([]github.MonitorPRResult, len(refs))
+		for i, ref := range refs {
+			results[i] = github.MonitorPRResult{
+				Repo: ref.Repo, Number: ref.Number, Open: true,
+				PR: github.PullRequest{
+					Number:     ref.Number,
+					Repository: ref.Repo,
+					HeadSHA:    "sha42",
+					Mergeable:  "MERGEABLE",
+					CIStatus:   "SUCCESS",
+				},
+			}
+		}
+		return results
+	}
+
+	r.Poll(t.Context())
+
+	if mergedRepo != "pet-owner/pet-repo" || mergedNum != 42 {
+		t.Fatalf("merged = %q#%d, want pet-owner/pet-repo#42", mergedRepo, mergedNum)
+	}
+	got, err := tasks.Get(parked.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusInReview {
+		t.Errorf("status = %q, want in-review after reconciliation", got.Status)
+	}
+}
+
+// TestPollAndMonitorPRs_MergesReconciledReviewedPetPRSameCycle mirrors
+// TestPollKnownTaskPRs_MergesReconciledReviewedPetPRSameCycle for the primary
+// search-backed poller path (pollAndMonitorPRs). reconcileHumanRequiredBlockers'
+// same-cycle ready_to_merge followups must reach handleAutoMerge from both
+// pollers, not just the secondary/known-PR one.
+func TestPollAndMonitorPRs_MergesReconciledReviewedPetPRSameCycle(t *testing.T) {
+	r, tasks := newOutboundTestHandler(t)
+	r.emit = func(string, any) {}
+	r.prTracker = github.NewIssueTracker(0)
+	r.authCircuit = poll.NewAuthCircuit("reviews", r.logger)
+
+	projDir := t.TempDir()
+	projStore, err := project.NewStore(projDir, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	mustWriteProjectYAML(t, projDir, "pet-owner/pet-repo", project.ProjectTypePet)
+	r.projects = projStore
+
+	created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	reviewed := true
+	parked, err := tasks.Update(created.ID, task.Update{
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr(exhaustedFixReason(3, github.PRIssueCIFailure)),
+		PRNumber:        task.Ptr(42),
+		ProjectID:       task.Ptr("pet-owner/pet-repo"),
+		Reviewed:        &reviewed,
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	var mergedRepo string
+	var mergedNum int
+	r.mergePR = func(repo string, number int) error {
+		mergedRepo, mergedNum = repo, number
+		return nil
+	}
+	r.fetchReviewsFn = func() (github.ReviewSummary, error) {
+		return github.ReviewSummary{
+			CreatedByMe: []github.PullRequest{{
+				Number:     42,
+				Repository: "pet-owner/pet-repo",
+				HeadSHA:    "sha42",
+				Mergeable:  "MERGEABLE",
+				CIStatus:   "SUCCESS",
+			}},
+		}, nil
+	}
+
+	r.Poll(t.Context())
+
+	if mergedRepo != "pet-owner/pet-repo" || mergedNum != 42 {
+		t.Fatalf("merged = %q#%d, want pet-owner/pet-repo#42", mergedRepo, mergedNum)
+	}
+	got, err := tasks.Get(parked.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusInReview {
+		t.Errorf("status = %q, want in-review after reconciliation", got.Status)
+	}
+}
+
+// TestMergeReconciledReady_SkipsTaskWithRunningAgent covers Copilot's #2292
+// review point: a same-cycle ready_to_merge followup must respect the same
+// running-agent gate handleTaskPRIssues applies to every other issue kind,
+// not call handleAutoMerge unconditionally.
+func TestMergeReconciledReady_SkipsTaskWithRunningAgent(t *testing.T) {
+	r, tasks := newOutboundTestHandler(t)
+	projDir := t.TempDir()
+	projStore, err := project.NewStore(projDir, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	mustWriteProjectYAML(t, projDir, "pet-owner/pet-repo", project.ProjectTypePet)
+	r.projects = projStore
+
+	created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	claim, ok := r.agents.TryClaimDispatch(created.ID)
+	if !ok {
+		t.Fatal("claim dispatch")
+	}
+	defer claim.Release()
+
+	var merged bool
+	r.mergePR = func(string, int) error { merged = true; return nil }
+
+	issue := github.PRIssue{
+		Kind: github.PRIssueReadyToMerge, TaskID: created.ID,
+		PR: github.PullRequest{Number: 42, Repository: "pet-owner/pet-repo", Mergeable: "MERGEABLE", CIStatus: "SUCCESS"},
+	}
+	got := r.mergeReconciledReady(context.Background(), []github.PRIssue{issue}, nil)
+
+	if merged {
+		t.Fatal("handleAutoMerge ran while an agent is live for the task")
+	}
+	if len(got) != 0 {
+		t.Fatalf("issues = %v, want empty — a gated followup must not be folded in", got)
+	}
+}
+
+// TestMergeReconciledReady_SkipsTaskWithActiveWorkflow mirrors the running-
+// agent case for a workflow that is live but has no agent process currently
+// attached (e.g. parked in verify_commits between an agent exiting and the
+// workflow's tail steps advancing).
+func TestMergeReconciledReady_SkipsTaskWithActiveWorkflow(t *testing.T) {
+	r, tasks := newOutboundWorkflowTestHandler(t)
+
+	created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	wf := &workflow.Execution{
+		WorkflowID:  "simple-task-implement",
+		CurrentStep: "verify_commits",
+		State:       workflow.ExecWaiting,
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		ProjectID: task.Ptr("Automaat/sybra"),
+		Workflow:  &wf,
+	}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	var merged bool
+	r.mergePR = func(string, int) error { merged = true; return nil }
+
+	issue := github.PRIssue{
+		Kind: github.PRIssueReadyToMerge, TaskID: created.ID,
+		PR: github.PullRequest{Number: 42, Repository: "Automaat/sybra", Mergeable: "MERGEABLE", CIStatus: "SUCCESS"},
+	}
+	got := r.mergeReconciledReady(context.Background(), []github.PRIssue{issue}, nil)
+
+	if merged {
+		t.Fatal("handleAutoMerge ran while the task's workflow is still active")
+	}
+	if len(got) != 0 {
+		t.Fatalf("issues = %v, want empty — a gated followup must not be folded in", got)
+	}
+}
+
 func TestReconcileHumanRequiredBlockersSkipsCrossRepoBranchCollision(t *testing.T) {
 	r, tasks := newOutboundTestHandler(t)
 	r.prTracker = github.NewIssueTracker(0)
@@ -1243,11 +1620,13 @@ func TestReconcileHumanRequiredBlockersSkipsCrossRepoBranchCollision(t *testing.
 		t.Fatalf("create: %v", err)
 	}
 	parked, err := tasks.Update(created.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(exhaustedFixReason(3, github.PRIssueCIFailure)),
-		PRNumber:     task.Ptr(42),
-		Branch:       task.Ptr("renovate/lock-file-maintenance"),
-		ProjectID:    task.Ptr("Automaat/sybra"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr(exhaustedFixReason(3, github.PRIssueCIFailure)),
+		PRNumber:        task.Ptr(42),
+		Branch:          task.Ptr("renovate/lock-file-maintenance"),
+		ProjectID:       task.Ptr("Automaat/sybra"),
 	})
 	if err != nil {
 		t.Fatalf("update: %v", err)
@@ -1296,5 +1675,75 @@ func TestApplyPRPhaseSkipsNoOp(t *testing.T) {
 	}
 	if after.Status != task.StatusInReview {
 		t.Errorf("applyPRPhase changed status to %q", after.Status)
+	}
+}
+
+func TestHandleTaskPRIssues_SkipsAPausedTask(t *testing.T) {
+	r, tasks := newOutboundTestHandler(t)
+	projDir := t.TempDir()
+	projStore, err := project.NewStore(projDir, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	mustWriteProjectYAML(t, projDir, "pet-owner/pet-repo", project.ProjectTypePet)
+	r.projects = projStore
+
+	created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := tasks.Apply(task.TransitionIntent{
+		TaskID: created.ID, ToStatus: task.StatusBlocked, Actor: "test",
+		Extra: task.Update{
+			ProjectID:       task.Ptr("pet-owner/pet-repo"),
+			StatusReason:    task.Ptr("automatic status loop detected; task paused"),
+			AutonomyOutcome: task.QuarantinedOutcome(),
+		},
+		OperatorOverride: true,
+	}); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+
+	var merged bool
+	r.mergePR = func(string, int) error { merged = true; return nil }
+	r.handleTaskPRIssues(t.Context(), created.ID, []github.PRIssue{{
+		Kind: github.PRIssueReadyToMerge, TaskID: created.ID,
+		PR: github.PullRequest{Number: 7, Repository: "pet-owner/pet-repo", Mergeable: "MERGEABLE", CIStatus: "SUCCESS"},
+	}})
+
+	if merged {
+		t.Fatal("a paused task was acted on, so the pause neither stopped the work nor survived it")
+	}
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Status != task.StatusBlocked || got.AutonomyOutcome != autonomy.OutcomeQuarantined {
+		t.Fatalf("status/outcome = %q/%q, want the pause intact", got.Status, got.AutonomyOutcome)
+	}
+}
+
+func TestTaskIsPaused_OnlyMatchesADeliberateQuarantine(t *testing.T) {
+	t.Parallel()
+	cases := map[string]struct {
+		status  task.Status
+		outcome autonomy.Outcome
+		want    bool
+	}{
+		"paused for a loop":            {task.StatusBlocked, autonomy.OutcomeQuarantined, true},
+		"blocked awaiting repair":      {task.StatusBlocked, "", false},
+		"blocked after a retry":        {task.StatusBlocked, autonomy.OutcomeRetried, false},
+		"quarantined but running":      {task.StatusInProgress, autonomy.OutcomeQuarantined, false},
+		"quarantined and back in test": {task.StatusTesting, autonomy.OutcomeQuarantined, false},
+		"ordinary in-review":           {task.StatusInReview, "", false},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			got := taskIsPaused(task.Task{Status: tc.status, AutonomyOutcome: tc.outcome})
+			if got != tc.want {
+				t.Fatalf("taskIsPaused = %v, want %v — a wrong answer either strands work or lets a pause be overwritten", got, tc.want)
+			}
+		})
 	}
 }

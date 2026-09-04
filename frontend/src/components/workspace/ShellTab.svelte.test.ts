@@ -31,25 +31,25 @@ describe('ShellTab', () => {
   })
 
   it('shows empty state when no activities', () => {
-    render(ShellTab, { props: { streamOutputs: [], convoEvents: [] } })
+    render(ShellTab, { props: { streamOutputs: [] } })
     expect(screen.getByText('No shell activity yet')).toBeDefined()
   })
 
   it('shows command when activities exist', () => {
     vi.mocked(extractBashActivity).mockReturnValue([makeActivity({ command: 'npm test' })])
-    render(ShellTab, { props: { streamOutputs: [], convoEvents: [] } })
+    render(ShellTab, { props: { streamOutputs: [] } })
     expect(screen.getByText('npm test')).toBeDefined()
   })
 
   it('shows "running…" label for running activities', () => {
     vi.mocked(extractBashActivity).mockReturnValue([makeActivity({ status: 'running' })])
-    render(ShellTab, { props: { streamOutputs: [], convoEvents: [] } })
+    render(ShellTab, { props: { streamOutputs: [] } })
     expect(screen.getByText('running…')).toBeDefined()
   })
 
   it('shows output details section when output exists', () => {
     vi.mocked(extractBashActivity).mockReturnValue([makeActivity({ output: 'file1.ts\nfile2.ts' })])
-    render(ShellTab, { props: { streamOutputs: [], convoEvents: [] } })
+    render(ShellTab, { props: { streamOutputs: [] } })
     expect(screen.getByText('Output')).toBeDefined()
   })
 
@@ -58,7 +58,7 @@ describe('ShellTab', () => {
       makeActivity({ id: 'a1', command: 'cmd-one' }),
       makeActivity({ id: 'a2', command: 'cmd-two' }),
     ])
-    render(ShellTab, { props: { streamOutputs: [], convoEvents: [] } })
+    render(ShellTab, { props: { streamOutputs: [] } })
     expect(screen.getByText('cmd-one')).toBeDefined()
     expect(screen.getByText('cmd-two')).toBeDefined()
   })

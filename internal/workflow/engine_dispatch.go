@@ -7,6 +7,9 @@ import (
 	"maps"
 	"slices"
 	"time"
+
+	"github.com/Automaat/sybra/internal/blocker"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 // ErrWorkflowAlreadyActive is returned by DispatchEvent when the target task
@@ -85,7 +88,7 @@ func (e *Engine) startWorkflowCore(taskID, workflowID, startStepID string, vars 
 	// The gate lives here, not on the exported Start*/Replace* entries: every
 	// one of them funnels through this function, so a caller cannot start a
 	// workflow by reaching past it.
-	if e.dispatchDisabled {
+	if e.dispatchDisabled.Load() {
 		return nil, ErrAutoDispatchDisabled
 	}
 	// Guard against sequential duplicate starts: the starting map only prevents
@@ -126,12 +129,18 @@ func (e *Engine) startWorkflowCore(taskID, workflowID, startStepID string, vars 
 	maps.Copy(variables, vars)
 
 	wfExec := &Execution{
-		WorkflowID:  workflowID,
-		CurrentStep: start.ID,
-		State:       ExecRunning,
-		Variables:   variables,
-		StartedAt:   time.Now().UTC(),
+		WorkflowID:     workflowID,
+		DefinitionHash: "",
+		CurrentStep:    start.ID,
+		State:          ExecRunning,
+		Variables:      variables,
+		StartedAt:      e.now(),
 	}
+	defHash, err := e.store.SaveSnapshot(def)
+	if err != nil {
+		return nil, fmt.Errorf("save workflow snapshot %s: %w", workflowID, err)
+	}
+	wfExec.DefinitionHash = defHash
 
 	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
 		return nil, fmt.Errorf("set workflow on task: %w", err)
@@ -139,6 +148,7 @@ func (e *Engine) startWorkflowCore(taskID, workflowID, startStepID string, vars 
 
 	e.logger.Info("workflow.start", "task_id", taskID, "workflow", workflowID, "step", start.ID)
 	comp, err := e.executeSteps(taskID, &def, start, wfExec)
+	err = normalizeExecuteStepsErr(err)
 	if errors.Is(err, errBestOfNParked) {
 		return nil, errBestOfNParked
 	}
@@ -149,7 +159,7 @@ func (e *Engine) startWorkflowCore(taskID, workflowID, startStepID string, vars 
 }
 
 func taskRequiresTamperBless(t TaskInfo) bool {
-	return t.Status == "human-required" && IsTamperFlaggedReason(t.StatusReason)
+	return t.Status == taskstatus.HumanRequired && t.Blocker.Kind == blocker.KindTamperDetected
 }
 
 // surfaceInitialDispatchFailure classifies and escalates a run_agent dispatch
@@ -236,7 +246,7 @@ func (e *Engine) matchWorkflow(t TaskInfo, event string, extra map[string]string
 // want to replace an active workflow should use ReplaceWorkflow or
 // ReplaceWorkflowForEvent.
 func (e *Engine) DispatchEvent(taskID, event string, extraFields, vars map[string]string) (string, error) {
-	if e.dispatchDisabled {
+	if e.dispatchDisabled.Load() {
 		return "", ErrAutoDispatchDisabled
 	}
 	// Serialize event-driven workflow dispatch attempts per task. The shared

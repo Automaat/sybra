@@ -1,12 +1,11 @@
 <script lang="ts">
   import { PanelLeft } from '@lucide/svelte'
-  import type { Agent, ConvoEvent } from '../../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
+  import type { Agent } from '../../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
   import type { TimelineEntry } from '$lib/timeline.js'
   import type { PlanStep } from '$lib/plan-steps.js'
   import type { TimestampedStreamEvent } from '$lib/timeline.js'
   import type { ToolUseSignal } from '$lib/workspace-tabs.js'
   import StreamOutput from '../StreamOutput.svelte'
-  import ChatView from '../ChatView.svelte'
   import ChatInput from '../ChatInput.svelte'
   import ActionTimeline from '../ActionTimeline.svelte'
   import ThreePanelLayout from './ThreePanelLayout.svelte'
@@ -21,7 +20,6 @@
     selectedIndex: number | null
     onselect: (i: number) => void
     streamOutputs: TimestampedStreamEvent[]
-    convoEvents: ConvoEvent[]
     allAgents: Agent[]
     latestToolUse: ToolUseSignal | undefined
     onnavigate: (id: string) => void
@@ -34,7 +32,6 @@
     selectedIndex,
     onselect,
     streamOutputs,
-    convoEvents,
     allAgents,
     latestToolUse,
     onnavigate,
@@ -97,45 +94,36 @@
         </div>
       {/if}
       <div class="min-w-0 flex-1">
-        {#if a.mode === 'interactive'}
-          <ChatView
-            agentId={a.id}
-            agentState={a.state}
-            costUsd={a.costUsd}
-            inputTokens={a.inputTokens ?? 0}
-            outputTokens={a.outputTokens ?? 0}
-            highlightIndex={selectedIndex}
-            onvisibleindex={(i) => { if (selectedIndex === null) onselect(i) }}
-          />
-        {:else}
-          <StreamOutput
-            agentId={a.id}
-            highlightIndex={selectedIndex}
-            onvisibleindex={(i) => { if (selectedIndex === null) onselect(i) }}
-          />
-          {#if isSteerableHeadless}
-            <div class="mt-2 rounded-lg border border-surface-300 dark:border-surface-700">
-              <div class="flex items-center justify-between px-3 pt-2">
-                <span class="text-xs font-medium text-surface-500">Steer agent</span>
-                <button
-                  type="button"
-                  title="Send a cooperative pause instruction — the agent finishes its current step, then waits"
-                  onclick={handlePause}
-                  class="rounded px-1.5 py-0.5 text-[10px] font-medium text-surface-500 transition-colors
-                    hover:bg-surface-200 dark:hover:bg-surface-700"
-                >
-                  Pause
-                </button>
-              </div>
-              {#if pauseError}
-                <p class="px-3 pt-1 text-xs text-error-600 dark:text-error-400">{pauseError}</p>
-              {/if}
-              <ChatInput
-                placeholder="Send guidance to the running agent..."
-                onsend={handleSend}
-              />
+        <!-- Live runs are always steerable headless now (interactive mode is no
+             longer a dispatchable transport), so a running agent renders its
+             StreamOutput plus the steer controls when it has a live stdin pipe. -->
+        <StreamOutput
+          agentId={a.id}
+          highlightIndex={selectedIndex}
+          onvisibleindex={(i) => { if (selectedIndex === null) onselect(i) }}
+        />
+        {#if isSteerableHeadless}
+          <div class="mt-2 rounded-lg border border-surface-300 dark:border-surface-700">
+            <div class="flex items-center justify-between px-3 pt-2">
+              <span class="text-xs font-medium text-surface-500">Steer agent</span>
+              <button
+                type="button"
+                title="Send a cooperative pause instruction — the agent finishes its current step, then waits"
+                onclick={handlePause}
+                class="rounded px-1.5 py-0.5 text-[10px] font-medium text-surface-500 transition-colors
+                  hover:bg-surface-200 dark:hover:bg-surface-700"
+              >
+                Pause
+              </button>
             </div>
-          {/if}
+            {#if pauseError}
+              <p class="px-3 pt-1 text-xs text-error-600 dark:text-error-400">{pauseError}</p>
+            {/if}
+            <ChatInput
+              placeholder="Send guidance to the running agent..."
+              onsend={handleSend}
+            />
+          </div>
         {/if}
       </div>
     </div>
@@ -146,7 +134,6 @@
       agentId={a.id}
       taskId={a.taskId}
       {streamOutputs}
-      {convoEvents}
       {planSteps}
       {latestToolUse}
     />

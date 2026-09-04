@@ -11,11 +11,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"sync"
 	"time"
+
+	"github.com/Automaat/sybra/internal/errclass"
 )
 
 // AppCredentials identifies a GitHub App installation. The private key stays on
@@ -35,10 +38,23 @@ type appTokenSource struct {
 	key    *rsa.PrivateKey
 	client *http.Client
 
-	mu      sync.RWMutex
-	token   string
-	expires time.Time
-	slug    string
+	mu              sync.RWMutex
+	token           string
+	expires         time.Time
+	verifierToken   string
+	verifierExpires time.Time
+	slug            string
+
+	// refreshMu/refreshing/refreshErr collapse concurrent mint attempts into
+	// one HTTP call. Without this, N goroutines that each observe a 401 at
+	// roughly the same time (e.g. N concurrent `git push` credential
+	// preflights across worktrees) would each mint their own installation
+	// token — wasteful, and it defeats "force-refresh once" as a signal of
+	// what actually happened. See #2453.
+	refreshMu         sync.Mutex
+	refreshing        chan struct{}
+	refreshErr        error
+	verifierRefreshMu sync.Mutex
 }
 
 const appTokenRenewBefore = 5 * time.Minute
@@ -52,7 +68,29 @@ var appAPIBaseURL = "https://api.github.com"
 var (
 	appSourceMu sync.RWMutex
 	appSource   *appTokenSource
+
+	appTokenChangeMu   sync.RWMutex
+	appTokenChangeHook func()
 )
+
+// SetAppTokenChangeHook registers a process-local observer for changes to the
+// cached author token. The server uses it to republish credentials to helpers
+// immediately after both scheduled and forced refreshes. Passing nil clears
+// the observer.
+func SetAppTokenChangeHook(hook func()) {
+	appTokenChangeMu.Lock()
+	appTokenChangeHook = hook
+	appTokenChangeMu.Unlock()
+}
+
+func notifyAppTokenChange() {
+	appTokenChangeMu.RLock()
+	hook := appTokenChangeHook
+	appTokenChangeMu.RUnlock()
+	if hook != nil {
+		hook()
+	}
+}
 
 // EnableAppAuth configures GitHub App installation-token auth. It loads and
 // validates the private key so a misconfiguration fails loudly at startup
@@ -74,6 +112,7 @@ func EnableAppAuth(creds AppCredentials) error {
 	appSourceMu.Lock()
 	appSource = src
 	appSourceMu.Unlock()
+	notifyAppTokenChange()
 	// The viewer identity is auth-mode-dependent (<slug>[bot] under App auth,
 	// the /user login otherwise), so a mode switch must not inherit the
 	// previous mode's cached login.
@@ -87,6 +126,7 @@ func DisableAppAuth() {
 	appSourceMu.Lock()
 	appSource = nil
 	appSourceMu.Unlock()
+	notifyAppTokenChange()
 	resetCachedViewer()
 }
 
@@ -104,7 +144,8 @@ func RefreshAppToken(ctx context.Context) error {
 	if src == nil {
 		return nil
 	}
-	return src.refresh(ctx, false)
+	_, err := src.refresh(ctx, false)
+	return err
 }
 
 // ForceRefreshAppToken always mints a new installation token when App auth is
@@ -114,9 +155,20 @@ func RefreshAppToken(ctx context.Context) error {
 // this process still believes is fresh; a plain RefreshAppToken would no-op
 // and repeat the same failure. A no-op when App auth is disabled.
 func ForceRefreshAppToken(ctx context.Context) error {
+	_, err := forceRefreshAppTokenLeader(ctx)
+	return err
+}
+
+// forceRefreshAppTokenLeader is ForceRefreshAppToken's core, additionally
+// reporting whether this call performed the mint (leader) or was collapsed by
+// singleflight into another caller's in-flight mint. The auth-health observer
+// uses leader so N concurrent 401s that share one mint drive one backoff step,
+// not N (see onAuthFailureObserved). A no-op (leader=false) when App auth is
+// disabled.
+func forceRefreshAppTokenLeader(ctx context.Context) (leader bool, err error) {
 	src := currentAppSource()
 	if src == nil {
-		return nil
+		return false, nil
 	}
 	return src.refresh(ctx, true)
 }
@@ -126,6 +178,35 @@ func ForceRefreshAppToken(ctx context.Context) error {
 // so the request gate is never stalled on a token mint.
 func CurrentAppToken() string {
 	return cachedAppToken()
+}
+
+// RefreshVerifierAppToken mints the least-privilege installation token used by
+// independent review agents. It can publish PR feedback but has read-only
+// repository contents, so possessing it cannot promote a verifier commit.
+func RefreshVerifierAppToken(ctx context.Context) error {
+	src := currentAppSource()
+	if src == nil {
+		return nil
+	}
+	return src.refreshVerifier(ctx)
+}
+
+func CurrentVerifierAppToken() string {
+	src := currentAppSource()
+	if src == nil {
+		return ""
+	}
+	src.mu.RLock()
+	defer src.mu.RUnlock()
+	if src.verifierToken == "" || time.Now().After(src.verifierExpires) {
+		return ""
+	}
+	return src.verifierToken
+}
+
+// AppAuthEnabled reports whether GitHub App credentials are configured.
+func AppAuthEnabled() bool {
+	return currentAppSource() != nil
 }
 
 func cachedAppToken() string {
@@ -141,26 +222,93 @@ func cachedAppToken() string {
 	return src.token
 }
 
-func (s *appTokenSource) refresh(ctx context.Context, force bool) error {
+// refresh mints or renews the token. leader reports whether this call actually
+// performed the mint (true) versus being singleflight-collapsed into another
+// in-flight mint or short-circuited by a still-fresh cache (false). Callers
+// that drive failure accounting off the result use leader to attribute one
+// shared mint outcome to a single step — see onAuthFailureObserved.
+func (s *appTokenSource) refresh(ctx context.Context, force bool) (leader bool, err error) {
 	if !force {
 		s.mu.RLock()
 		fresh := s.token != "" && time.Until(s.expires) > appTokenRenewBefore
 		s.mu.RUnlock()
 		if fresh {
-			return nil
+			return false, nil
 		}
 	}
 
+	s.refreshMu.Lock()
+	if ch := s.refreshing; ch != nil {
+		// A mint is already in flight — wait for it instead of starting a
+		// second, redundant one.
+		s.refreshMu.Unlock()
+		<-ch
+		s.refreshMu.Lock()
+		waitErr := s.refreshErr
+		s.refreshMu.Unlock()
+		return false, waitErr
+	}
+	ch := make(chan struct{})
+	s.refreshing = ch
+	s.refreshMu.Unlock()
+	leader = true
+
+	// Always publish the result and close the channel, even if doRefresh
+	// panics — otherwise s.refreshing stays non-nil and every subsequent
+	// refresh() blocks forever on <-ch. Convert a panic into an error so
+	// singleflight-waiting callers observe a failure instead of a deadlock.
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("app token mint panicked: %v", r)
+		}
+		s.refreshMu.Lock()
+		s.refreshErr = err
+		s.refreshing = nil
+		s.refreshMu.Unlock()
+		close(ch)
+	}()
+
+	err = s.doRefresh(ctx)
+	return leader, err
+}
+
+func (s *appTokenSource) doRefresh(ctx context.Context) error {
 	jwt, err := s.signJWT(time.Now())
 	if err != nil {
 		return err
 	}
-	token, expires, err := s.mintInstallationToken(ctx, jwt)
+	token, expires, err := s.mintInstallationToken(ctx, jwt, nil)
 	if err != nil {
 		return err
 	}
 	s.mu.Lock()
 	s.token, s.expires = token, expires
+	s.mu.Unlock()
+	notifyAppTokenChange()
+	return nil
+}
+
+func (s *appTokenSource) refreshVerifier(ctx context.Context) error {
+	s.verifierRefreshMu.Lock()
+	defer s.verifierRefreshMu.Unlock()
+	s.mu.RLock()
+	fresh := s.verifierToken != "" && time.Until(s.verifierExpires) > appTokenRenewBefore
+	s.mu.RUnlock()
+	if fresh {
+		return nil
+	}
+	jwt, err := s.signJWT(time.Now())
+	if err != nil {
+		return err
+	}
+	token, expires, err := s.mintInstallationToken(ctx, jwt, map[string]string{
+		"contents": "read", "pull_requests": "write",
+	})
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.verifierToken, s.verifierExpires = token, expires
 	s.mu.Unlock()
 	return nil
 }
@@ -184,19 +332,30 @@ func (s *appTokenSource) signJWT(now time.Time) (string, error) {
 	return signingInput + "." + base64.RawURLEncoding.EncodeToString(sig), nil
 }
 
-func (s *appTokenSource) mintInstallationToken(ctx context.Context, jwt string) (string, time.Time, error) {
+func (s *appTokenSource) mintInstallationToken(ctx context.Context, jwt string, permissions map[string]string) (string, time.Time, error) {
 	url := fmt.Sprintf("%s/app/installations/%d/access_tokens", appAPIBaseURL, s.creds.InstallationID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(nil))
+	var payload []byte
+	var err error
+	if len(permissions) > 0 {
+		payload, err = json.Marshal(map[string]any{"permissions": permissions})
+		if err != nil {
+			return "", time.Time{}, err
+		}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
 		return "", time.Time{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+jwt)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	if len(payload) > 0 {
+		req.Header.Set("Content-Type", "application/json")
+	}
 
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return "", time.Time{}, fmt.Errorf("mint installation token: %w", err)
+		return "", time.Time{}, &mintError{cause: fmt.Errorf("mint installation token: %w", err)}
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -206,10 +365,14 @@ func (s *appTokenSource) mintInstallationToken(ctx context.Context, jwt string) 
 		Message   string `json:"message"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return "", time.Time{}, fmt.Errorf("decode installation token: %w", err)
+		return "", time.Time{}, &mintError{cause: fmt.Errorf("decode installation token: %w", err)}
 	}
 	if resp.StatusCode != http.StatusCreated || body.Token == "" {
-		return "", time.Time{}, fmt.Errorf("mint installation token: HTTP %d: %s", resp.StatusCode, body.Message)
+		return "", time.Time{}, &mintError{
+			statusCode: resp.StatusCode,
+			message:    body.Message,
+			cause:      fmt.Errorf("mint installation token: HTTP %d: %s", resp.StatusCode, body.Message),
+		}
 	}
 	expires, err := time.Parse(time.RFC3339, body.ExpiresAt)
 	if err != nil {
@@ -220,11 +383,10 @@ func (s *appTokenSource) mintInstallationToken(ctx context.Context, jwt string) 
 }
 
 // appLogin returns the App's bot login as it appears on GitHub artifacts —
-// "<slug>[bot]", e.g. "sybra-app[bot]". This is the App-auth answer to "who am
-// I?": /user (see ViewerLogin) is a user-to-server endpoint and always 403s for
-// installation tokens, so it can never identify an App. GET /app is JWT-authed
-// and returns the slug, which is immutable for the lifetime of the App and so
-// is cached indefinitely.
+// "<slug>[bot]", e.g. "sybra-app[bot]". This is the App-auth branch viewerLoginE
+// (client.go) delegates to for "who am I?" — see that function's doc for why
+// /user can never answer this. GET /app is JWT-authed and returns the slug,
+// which is immutable for the lifetime of the App and so is cached indefinitely.
 func (s *appTokenSource) appLogin(ctx context.Context) (string, error) {
 	if s == nil {
 		return "", fmt.Errorf("app login: app auth is disabled")
@@ -301,6 +463,44 @@ func loadPrivateKey(path string) (*rsa.PrivateKey, error) {
 	return rsaKey, nil
 }
 
+// mintError carries enough of a failed installation-token mint to classify
+// it as a permanent misconfiguration versus a transient blip, without every
+// caller re-parsing "HTTP %d" out of an error string. cause is non-nil
+// whenever the failure happened before an HTTP response was available (a
+// network error, a JSON decode failure) — those are transient by
+// construction, since there was no server-issued verdict to classify.
+type mintError struct {
+	statusCode int
+	message    string
+	cause      error
+}
+
+func (e *mintError) Error() string { return e.cause.Error() }
+func (e *mintError) Unwrap() error { return e.cause }
+
+// classifyMintError maps a failed token mint to an AuthState. Only a
+// well-understood, permanent-credential-shaped HTTP status is classified as
+// misconfigured — everything else (network errors, 5xx, an unrecognized 4xx)
+// defaults to unavailable so a self-healing transient blip never pages an
+// operator as if it needed a credential rotation.
+func classifyMintError(err error) AuthState {
+	var me *mintError
+	if !errors.As(err, &me) || me.statusCode == 0 {
+		return AuthUnavailable
+	}
+	switch me.statusCode {
+	case http.StatusUnauthorized, http.StatusNotFound, http.StatusUnprocessableEntity:
+		return AuthMisconfigured
+	case http.StatusForbidden:
+		if errclass.Classify(me.message, errclass.GitHubTokenMintCooldownBiased) == errclass.RateLimited {
+			return AuthRateLimited
+		}
+		return AuthMisconfigured
+	default:
+		return AuthUnavailable
+	}
+}
+
 func base64URL(b []byte) string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
@@ -331,12 +531,11 @@ func GHEnv() []string {
 // ambient GH_TOKEN carrying one, or ambient user gh auth. Performs a live
 // lookup, so it's meant for a startup/periodic preflight, not a hot path.
 //
-// Deliberately does NOT use ViewerLogin()/gh api user: /user is a
-// user-to-server endpoint that always 403s for GitHub App installation
-// tokens even when they're fully functional for issue filing, which made
-// the preflight false-positive on exactly the credential type it exists to
-// support (see #2032). /rate_limit is reachable by every credential type gh
-// supports, so probe that instead.
+// Deliberately does NOT use ViewerLogin()/gh api user — see viewerLoginE's
+// doc (client.go) for why /user 403s under App auth (#2032) and made this
+// preflight false-positive on exactly the credential type it exists to
+// support. /rate_limit is reachable by every credential type gh supports, so
+// probe that instead.
 func Authenticated() bool {
 	return authenticated(defaultExecer)
 }

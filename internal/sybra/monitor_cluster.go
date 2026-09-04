@@ -43,12 +43,11 @@ func (l monitorAgentLister) ListAgents() []*agent.Agent {
 			}
 			continue
 		}
-		for _, ag := range agents {
-			if ag == nil {
-				continue
-			}
-			ag.Node = name
-			out = append(out, ag)
+		for i := range agents {
+			view := &agents[i]
+			out = append(out, &agent.Agent{
+				ID: view.ID, TaskID: view.TaskID, State: view.State, Node: name,
+			})
 		}
 	}
 	return out

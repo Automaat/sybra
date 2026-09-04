@@ -13,6 +13,7 @@ type Config struct {
 	SchemaVersion  int                  `yaml:"schema_version,omitempty" json:"schemaVersion"`
 	Logging        LoggingConfig        `yaml:"logging" json:"logging"`
 	Audit          AuditConfig          `yaml:"audit" json:"audit"`
+	Attachments    AttachmentConfig     `yaml:"attachments" json:"attachments"`
 	Trash          TrashConfig          `yaml:"trash" json:"trash"`
 	Sandbox        SandboxConfig        `yaml:"sandbox" json:"sandbox"`
 	TaskSnapshot   TaskSnapshotConfig   `yaml:"task_snapshot" json:"taskSnapshot"`
@@ -26,6 +27,7 @@ type Config struct {
 	Triage         TriageConfig         `yaml:"triage" json:"triage"`
 	HumanReview    HumanReviewConfig    `yaml:"human_review" json:"humanReview"`
 	ReviewHold     ReviewHoldConfig     `yaml:"review_hold" json:"reviewHold"`
+	Admission      AdmissionConfig      `yaml:"admission" json:"admission"`
 	Monitor        MonitorConfig        `yaml:"monitor" json:"monitor"`
 	Watchdog       WatchdogConfig       `yaml:"watchdog" json:"watchdog"`
 	SelfMonitor    SelfMonitorConfig    `yaml:"self_monitor" json:"selfMonitor"`
@@ -34,11 +36,13 @@ type Config struct {
 	HarnessEvolve  HarnessEvolveConfig  `yaml:"harness_evolution" json:"harnessEvolution"`
 	PromptLab      PromptLabConfig      `yaml:"prompt_lab" json:"promptLab"`
 	Experience     ExperienceConfig     `yaml:"experience" json:"experience"`
+	Intervention   InterventionConfig   `yaml:"intervention" json:"intervention"`
 	ABTesting      abtest.Config        `yaml:"ab_testing" json:"abTesting"`
+	Routing        RoutingConfig        `yaml:"routing" json:"routing"`
 	Providers      ProvidersConfig      `yaml:"providers" json:"providers"`
 	Metrics        MetricsConfig        `yaml:"metrics" json:"metrics"`
+	Database       DatabaseConfig       `yaml:"database" json:"database"`
 	Server         ServerConfig         `yaml:"server" json:"server"`
-	Webhook        WebhookConfig        `yaml:"webhook" json:"webhook"`
 	Cluster        ClusterConfig        `yaml:"cluster" json:"cluster"`
 	AutoUpdate     AutoUpdateConfig     `yaml:"auto_update" json:"autoUpdate"`
 	Browser        BrowserConfig        `yaml:"browser" json:"browser"`

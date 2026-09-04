@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Automaat/sybra/internal/enrichment"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/promptlab"
 	"github.com/Automaat/sybra/internal/task"
@@ -82,6 +83,32 @@ func TestApplyPreservesEscapeHatchTags(t *testing.T) {
 	}
 	if !slices.Contains(updated.Tags, "noplan") {
 		t.Errorf("noplan escape-hatch tag dropped by triage; got %v", updated.Tags)
+	}
+}
+
+func TestApplyPreservesSybraBugRoutingTags(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create("fix(workflow): local tracker", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	created.Tags = []string{"sybra-bug", "scrubbed"}
+
+	v := Verdict{
+		Title: "fix(workflow): local tracker",
+		Tags:  []string{"backend", "medium", "bug"},
+		Size:  "medium",
+		Type:  "bug",
+		Mode:  "headless",
+	}
+	updated, err := Apply(mgr, created, v, nil)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	for _, want := range []string{"sybra-bug", "scrubbed"} {
+		if !slices.Contains(updated.Tags, want) {
+			t.Fatalf("tags = %v, want preserved %q", updated.Tags, want)
+		}
 	}
 }
 
@@ -163,9 +190,36 @@ func TestApplyPreservesUmbrellaGatedTag(t *testing.T) {
 	}
 }
 
+func TestApplyPreservesEnrichPendingTag(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create("https://github.com/Automaat/sybra/issues/2774", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	created.Tags = []string{enrichment.PendingTag}
+
+	// The classifier vocabulary does not include enrich-pending. Triage must
+	// not drop it, because the reconcile loop uses it to finish URL enrichment
+	// and detect umbrella issues before any flat implementation can dispatch.
+	v := Verdict{
+		Title: "chore(engine): finish state kernel",
+		Tags:  []string{"backend", "medium", "chore"},
+		Size:  "medium",
+		Type:  "chore",
+		Mode:  "headless",
+	}
+	updated, err := Apply(mgr, created, v, nil)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !slices.Contains(updated.Tags, enrichment.PendingTag) {
+		t.Errorf("enrich-pending tag dropped by triage; got %v", updated.Tags)
+	}
+}
+
 func TestApplyPreservesPromptLabProposalTagsAndStatus(t *testing.T) {
 	mgr := newTestManager(t)
-	created, err := mgr.Create("Prompt Lab: tighten instructions for role review", "proposal body", task.AgentModeInteractive)
+	created, err := mgr.Create("Prompt Lab: tighten instructions for role review", "proposal body", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -208,8 +262,8 @@ func TestApplyPreservesPromptLabProposalTagsAndStatus(t *testing.T) {
 	if updated.StatusReason != "" {
 		t.Errorf("status_reason: got %q, want empty (untouched)", updated.StatusReason)
 	}
-	if updated.AgentMode != task.AgentModeInteractive {
-		t.Errorf("agent_mode: got %q, want unchanged interactive", updated.AgentMode)
+	if updated.AgentMode != task.AgentModeHeadless {
+		t.Errorf("agent_mode: got %q, want unchanged headless", updated.AgentMode)
 	}
 	if updated.ProjectID != "" {
 		t.Errorf("project_id: got %q, want unchanged empty", updated.ProjectID)
@@ -228,15 +282,15 @@ func TestApplyGuardsUmbrellaTitledTaskWithNormalType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if created.TaskType != task.TaskTypeNormal {
-		t.Fatalf("precondition: want task_type=normal, got %s", created.TaskType)
+	if created.TaskType != "" {
+		t.Fatalf("precondition: want no task_type, got %s", created.TaskType)
 	}
 	v := Verdict{
 		Title: created.Title,
 		Tags:  []string{"backend", "infra", "large", "refactor"},
 		Size:  "large",
 		Type:  "refactor",
-		Mode:  "interactive",
+		Mode:  "headless",
 	}
 	updated, err := Apply(mgr, created, v, nil)
 	if err != nil {
@@ -624,6 +678,72 @@ func TestApplyRejectsUnregisteredClassifierGuess(t *testing.T) {
 	}
 	if updated.ProjectID != "" {
 		t.Errorf("project_id: got %q, want empty (unregistered classifier guess must not be persisted)", updated.ProjectID)
+	}
+}
+
+func TestApplySybraBugTaskDefaultsToSybraProjectBeforeBodyMatch(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create(
+		"fix(workflow): assign project before dispatching Sybra bug tasks",
+		"Local tracker for a Sybra bug seen while handling https://github.com/Automaat/synapse/issues/7.",
+		task.AgentModeHeadless,
+	)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	created.Tags = []string{"sybra-bug", "scrubbed"}
+	projects := []project.Project{
+		{ID: "Automaat/sybra", Owner: "Automaat", Repo: "sybra", Type: project.ProjectTypePet},
+		{ID: "Automaat/synapse", Owner: "Automaat", Repo: "synapse", Type: project.ProjectTypeWork},
+	}
+	v := Verdict{
+		Title: "fix(workflow): assign project before dispatching Sybra bug tasks",
+		Size:  "medium",
+		Type:  "bug",
+		Mode:  "headless",
+		Tags:  []string{"backend", "medium", "bug"},
+	}
+	updated, err := Apply(mgr, created, v, projects)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if updated.ProjectID != "Automaat/sybra" {
+		t.Fatalf("project_id = %q, want Automaat/sybra", updated.ProjectID)
+	}
+	if !slices.Contains(updated.Tags, "sybra-bug") || !slices.Contains(updated.Tags, "scrubbed") {
+		t.Fatalf("tags = %v, want sybra-bug and scrubbed preserved", updated.Tags)
+	}
+}
+
+func TestApplySybraBugTaskUsesConfiguredProjectBeforeBodyMatch(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create(
+		"fix(workflow): assign project before dispatching Sybra bug tasks",
+		"Local tracker for a Sybra bug seen while handling https://github.com/Automaat/synapse/issues/7.",
+		task.AgentModeHeadless,
+	)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	created.Tags = []string{"sybra-bug", "scrubbed"}
+	projects := []project.Project{
+		{ID: "fork/sybra", Owner: "fork", Repo: "sybra", Type: project.ProjectTypePet},
+		{ID: "Automaat/sybra", Owner: "Automaat", Repo: "sybra", Type: project.ProjectTypePet},
+		{ID: "Automaat/synapse", Owner: "Automaat", Repo: "synapse", Type: project.ProjectTypeWork},
+	}
+	v := Verdict{
+		Title: "fix(workflow): assign project before dispatching Sybra bug tasks",
+		Size:  "medium",
+		Type:  "bug",
+		Mode:  "headless",
+		Tags:  []string{"backend", "medium", "bug"},
+	}
+	updated, err := ApplyWithOptions(mgr, created, v, projects, ApplyOptions{SybraBugProjectID: "fork/sybra"})
+	if err != nil {
+		t.Fatalf("ApplyWithOptions: %v", err)
+	}
+	if updated.ProjectID != "fork/sybra" {
+		t.Fatalf("project_id = %q, want fork/sybra", updated.ProjectID)
 	}
 }
 

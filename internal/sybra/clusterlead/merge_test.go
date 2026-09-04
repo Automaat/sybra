@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -12,15 +13,16 @@ func TestMergeAuthoritySplit(t *testing.T) {
 	t1 := t0.Add(time.Hour)
 
 	canonical := task.Task{
-		ID:           "task-1",
-		ProjectID:    "owner/repo",
-		AssignedNode: "pet-box",
-		Title:        "leader ingested title",
-		Issue:        "https://github.com/owner/repo/issues/9",
-		Status:       task.StatusTodo,
-		CreatedAt:    t0,
-		UpdatedAt:    t0,
-		MirrorRev:    4,
+		ID:            "task-1",
+		ProjectID:     "owner/repo",
+		AssignedNode:  "pet-box",
+		Title:         "leader ingested title",
+		Issue:         "https://github.com/owner/repo/issues/9",
+		Status:        task.StatusTodo,
+		CreatedAt:     t0,
+		UpdatedAt:     t0,
+		AssignmentRev: 6,
+		MirrorRev:     4,
 	}
 	follower := task.Task{
 		ID:            "task-1",
@@ -42,7 +44,15 @@ func TestMergeAuthoritySplit(t *testing.T) {
 		PlanDecisions: "# Decisions\n\nNo open decisions.",
 		PlanBrief:     "the brief",
 		CodeReview:    "the review",
-		UpdatedAt:     t1,
+		Attachments: []task.Attachment{{
+			ID:          "att_1",
+			FileName:    "evidence.txt",
+			ContentType: "text/plain",
+			SizeBytes:   8,
+			Path:        "/leader/local/attachments/task-1/att_1/evidence.txt",
+			CreatedAt:   t1,
+		}},
+		UpdatedAt: t1,
 	}
 
 	out, ok := Merge(canonical, follower)
@@ -55,6 +65,9 @@ func TestMergeAuthoritySplit(t *testing.T) {
 		!out.CreatedAt.Equal(t0) {
 		t.Errorf("identity fields must stay leader-authoritative: %+v", out)
 	}
+	if out.AssignmentRev != canonical.AssignmentRev {
+		t.Errorf("AssignmentRev = %d, want leader-owned %d", out.AssignmentRev, canonical.AssignmentRev)
+	}
 
 	if out.Status != task.StatusInReview || out.StatusReason != "review drafted" ||
 		out.Branch != "feat/x" || out.WorktreeDir != "/wt/task-1" || out.PRNumber != 42 ||
@@ -64,7 +77,10 @@ func TestMergeAuthoritySplit(t *testing.T) {
 		out.PlanResearch != "the research" ||
 		out.PlanDecisions != "# Decisions\n\nNo open decisions." ||
 		out.PlanBrief != "the brief" ||
-		out.CodeReview != "the review" {
+		out.CodeReview != "the review" ||
+		len(out.Attachments) != 1 ||
+		out.Attachments[0].ID != "att_1" ||
+		out.Attachments[0].Path != "/leader/local/attachments/task-1/att_1/evidence.txt" {
 		t.Errorf("execution fields must be follower-authoritative: %+v", out)
 	}
 
@@ -150,5 +166,44 @@ func TestMergeCarriesReviewGuard(t *testing.T) {
 	if out.ReviewedHeadAttempts != follower.ReviewedHeadAttempts {
 		t.Errorf("ReviewedHeadAttempts = %d, want %d — the review budget would reset on reassign",
 			out.ReviewedHeadAttempts, follower.ReviewedHeadAttempts)
+	}
+}
+
+func TestMergeCarriesAndClearsTypedEscalationEvidence(t *testing.T) {
+	t0 := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	canonical := task.Task{
+		ID: "task-1", Status: task.StatusTodo, UpdatedAt: t0,
+		Escalation: autonomy.NewEscalation(
+			"stale.reason", autonomy.FailureOwnerOperatorDecision,
+			autonomy.ProvenanceControlPlane, "stale"),
+		AutonomyOutcome: autonomy.OutcomeHumanRequired,
+	}
+	reason := autonomy.NewEscalation(
+		"operator.choose", autonomy.FailureOwnerOperatorDecision,
+		autonomy.ProvenanceControlPlane, "choose")
+	follower := task.Task{
+		ID: "task-1", Status: task.StatusHumanRequired, UpdatedAt: t0.Add(time.Minute),
+		Escalation: reason, AutonomyOutcome: autonomy.OutcomeHumanRequired,
+	}
+
+	escalated, ok := Merge(canonical, follower)
+	if !ok {
+		t.Fatal("typed follower update was rejected")
+	}
+	if escalated.Escalation.Code != reason.Code || escalated.AutonomyOutcome != autonomy.OutcomeHumanRequired {
+		t.Fatalf("mirrored evidence = %#v / %q", escalated.Escalation, escalated.AutonomyOutcome)
+	}
+
+	clearedFollower := follower
+	clearedFollower.Status = task.StatusTodo
+	clearedFollower.UpdatedAt = follower.UpdatedAt.Add(time.Minute)
+	clearedFollower.Escalation = autonomy.EscalationReason{}
+	clearedFollower.AutonomyOutcome = ""
+	cleared, ok := Merge(escalated, clearedFollower)
+	if !ok {
+		t.Fatal("clearing follower update was rejected")
+	}
+	if !cleared.Escalation.IsZero() || cleared.AutonomyOutcome != "" {
+		t.Fatalf("stale mirrored evidence survived clear: %#v / %q", cleared.Escalation, cleared.AutonomyOutcome)
 	}
 }

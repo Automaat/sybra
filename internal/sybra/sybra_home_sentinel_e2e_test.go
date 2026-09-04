@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -21,7 +22,12 @@ const defaultE2ETimeout = 10 * time.Second
 // agent.Manager.Run (the actual dispatch chokepoint, not a mocked config),
 // must (a) resolve its own default SYBRA_HOME to the per-task sandbox rather
 // than any real Sybra home, and (b) still reach the real operator task store
-// through SYBRA_CONTROL_HOME for its own task's `sybra-cli update` call.
+// for its own task's `sybra-cli update` call.
+//
+// (b) is what changed: the CLI no longer opens the operator home's files, so
+// reaching the real store means reaching the board that owns it. The wipe this
+// test guards is unaffected — a stray default write still has to land in the
+// sandbox, and now there is no file path out of it at all.
 func TestSybraHomeSentinel_DefaultLandsInSandbox_ControlHomeReachesRealStore(t *testing.T) {
 	binDir := buildTestBinaries(t)
 	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
@@ -77,6 +83,8 @@ func TestSybraHomeSentinel_DefaultLandsInSandbox_ControlHomeReachesRealStore(t *
 		ControlHome: realHome,
 	})
 
+	serveE2EBoard(t, agentMgr, realHome, realTasks, artifact.New(filepath.Join(realHome, "artifacts")))
+
 	dir := t.TempDir()
 	a, err := agentMgr.Run(agent.RunConfig{
 		TaskID: tk.ID,
@@ -101,8 +109,8 @@ func TestSybraHomeSentinel_DefaultLandsInSandbox_ControlHomeReachesRealStore(t *
 	})
 
 	// (b) Bare `sybra-cli update` (no --home) reached the real operator store
-	// via SYBRA_CONTROL_HOME.
-	waitFor(t, defaultE2ETimeout, "real task flips to in-review via SYBRA_CONTROL_HOME", func() bool {
+	// through its board.
+	waitFor(t, defaultE2ETimeout, "real task flips to in-review through the operator board", func() bool {
 		got, getErr := realTasks.Get(tk.ID)
 		return getErr == nil && got.Status == task.StatusInReview
 	})

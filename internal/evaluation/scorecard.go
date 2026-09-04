@@ -11,12 +11,16 @@ import (
 	"math"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/modeltier"
+	"github.com/Automaat/sybra/internal/runacct"
 	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/stats"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 // Skill-conformance cohort buckets. See skillConformanceBucket.
@@ -73,6 +77,22 @@ func agentModelCohortKey(r stats.RunRecord) string {
 	return r.Provider + ":" + r.Model + ":" + r.ReasoningEffort + ":" + normalizedRole(r.Role) + ":" + skillConformanceBucket(r.SkillConformance)
 }
 
+// costTierCohortKey groups by provider/role/model-tier — coarser than
+// agentModelCohortKey (no reasoning effort or skill-conformance split) — for
+// Report.ByCostTier, the segmentation the tier-cascade rollout is judged
+// against. Empty when the provider/model is unset or the model doesn't
+// resolve to a known tier, mirroring agentModelCohortKey's skip semantics.
+func costTierCohortKey(r stats.RunRecord) string {
+	if r.Provider == "" || r.Model == "" {
+		return ""
+	}
+	tier, ok := modeltier.InferTier(r.Model)
+	if !ok {
+		return ""
+	}
+	return r.Provider + ":" + normalizedRole(r.Role) + ":" + string(tier)
+}
+
 // Scorecard holds the aggregate metrics over one time window.
 //
 // Landing-derived metrics read task.landed audit events; reliability and
@@ -94,9 +114,25 @@ type Scorecard struct {
 	CycleTimeP90H   float64 `json:"cycleTimeP90H"` //
 
 	// Autonomy: did landed work reach done without a human in the loop?
-	AutonomousLandings   int     `json:"autonomousLandings"`
-	HumanTouchedLandings int     `json:"humanTouchedLandings"`
-	AutonomyRate         float64 `json:"autonomyRate"` // autonomous / landed
+	// human-required is a request for intervention, not evidence one
+	// happened — HumanTouchedLandings only counts a landing whose resolution
+	// carries a durably-attributed operator action (an explicit approve/
+	// reject, a dispatch/edit out of human-required, or a human PR edit).
+	// A landing that asked for intervention but whose resolution carries no
+	// such provenance (typically event history predating this
+	// classification, see ScorecardSchemaVersion) is neither autonomous nor
+	// human-touched — it lands in AutonomyUnknownLandings instead of being
+	// forced into one bucket on a guess (issue #2727).
+	AutonomousLandings      int     `json:"autonomousLandings"`
+	HumanTouchedLandings    int     `json:"humanTouchedLandings"`
+	AutonomyUnknownLandings int     `json:"autonomyUnknownLandings"`
+	AutonomyRate            float64 `json:"autonomyRate"` // autonomous / (autonomous + humanTouched); unknown landings excluded from both numerator and denominator
+	// Typed autonomy control-plane signals. These maps preserve stable codes
+	// from task.status_changed audit events; display text is intentionally not
+	// copied into evaluation output or parsed for policy.
+	AutonomyOutcomes map[string]int `json:"autonomyOutcomes,omitempty"`
+	FailureOwners    map[string]int `json:"failureOwners,omitempty"`
+	EscalationCodes  map[string]int `json:"escalationCodes,omitempty"`
 
 	// Reliability (from stats run outcomes). AgentRuns counts every run;
 	// AgentStalls the retried subset (stats.OutcomeStalled); AgentResolvedRuns
@@ -118,6 +154,17 @@ type Scorecard struct {
 	TurnsPerLanded float64 `json:"turnsPerLanded"`
 	ToolsPerLanded float64 `json:"toolsPerLanded"`
 	ReworkTasks    int     `json:"reworkTasks"` // tasks with a repeated status transition
+
+	// TotalTokens sums every token category (input, output, cache
+	// creation/read, reasoning) across in-window runs.
+	TotalTokens int `json:"totalTokens"`
+	// CostPerMergedUSD and TokensPerMergedPR are the fleet's cost-efficiency
+	// north star: unlike CostPerLanded (denominator includes closed-without-
+	// merging landings), these divide by Merged+MergedWithEdits — a run that
+	// never merges is 100% waste, and this is the metric a tier-cascade or
+	// guardrail/parallelism change should be judged against.
+	CostPerMergedUSD  float64 `json:"costPerMergedUsd"`
+	TokensPerMergedPR float64 `json:"tokensPerMergedPr"`
 }
 
 // Breakdown is the per-dimension (provider, role) slice of the effort and
@@ -155,47 +202,56 @@ const (
 )
 
 type ComparisonBreakdown struct {
-	Key                       string          `json:"key"`
-	AttributionMode           string          `json:"attributionMode"`
-	Provider                  string          `json:"provider,omitempty"`
-	Model                     string          `json:"model,omitempty"`
-	Role                      string          `json:"role,omitempty"`
-	ReasoningEffort           string          `json:"reasoningEffort,omitempty"`
-	ExperimentID              string          `json:"experimentId,omitempty"`
-	VariantID                 string          `json:"variantId,omitempty"`
-	Kind                      string          `json:"kind,omitempty"`
-	Subject                   *abtest.Subject `json:"subject,omitempty"`
-	Runs                      int             `json:"runs"`
-	Failures                  int             `json:"failures"`
-	Stalled                   int             `json:"stalled"`
-	ResolvedRuns              int             `json:"resolvedRuns"`
-	FailureRate               float64         `json:"failureRate"`
-	FailureEstimate           RateEstimate    `json:"failureEstimate"`
-	Landed                    int             `json:"landed"`
-	LandedEstimate            RateEstimate    `json:"landedEstimate"`
-	Merged                    int             `json:"merged"`
-	MergedWithEdits           int             `json:"mergedWithEdits"`
-	Closed                    int             `json:"closed"`
-	MergeRate                 float64         `json:"mergeRate"`
-	MergedWithEditsRate       float64         `json:"mergedWithEditsRate"`
-	CIFirstPassRate           float64         `json:"ciFirstPassRate"`
-	ReworkRate                float64         `json:"reworkRate"`
-	RevertRate                float64         `json:"revertRate"`
-	MergeEstimate             RateEstimate    `json:"mergeEstimate"`
-	CIFirstPassEstimate       RateEstimate    `json:"ciFirstPassEstimate"`
-	MergedWithEditsEstimate   RateEstimate    `json:"mergedWithEditsEstimate"`
-	ReworkEstimate            RateEstimate    `json:"reworkEstimate"`
-	RevertEstimate            RateEstimate    `json:"revertEstimate"`
-	DurationP50S              float64         `json:"durationP50S"`
-	DurationP90S              float64         `json:"durationP90S"`
-	TotalCostUSD              float64         `json:"totalCostUsd"`
-	CostPerLanded             float64         `json:"costPerLanded"`
-	PremiumRequests           float64         `json:"premiumRequests"`
-	PremiumRequestsPerLanded  float64         `json:"premiumRequestsPerLanded"`
-	TurnsPerLanded            float64         `json:"turnsPerLanded"`
-	ToolsPerLanded            float64         `json:"toolsPerLanded"`
-	InsufficientData          bool            `json:"insufficientData"`
-	QualityAttributionLimited bool            `json:"qualityAttributionLimited"`
+	Key                     string          `json:"key"`
+	AttributionMode         string          `json:"attributionMode"`
+	Provider                string          `json:"provider,omitempty"`
+	Model                   string          `json:"model,omitempty"`
+	Role                    string          `json:"role,omitempty"`
+	ReasoningEffort         string          `json:"reasoningEffort,omitempty"`
+	ExperimentID            string          `json:"experimentId,omitempty"`
+	VariantID               string          `json:"variantId,omitempty"`
+	Kind                    string          `json:"kind,omitempty"`
+	Subject                 *abtest.Subject `json:"subject,omitempty"`
+	Runs                    int             `json:"runs"`
+	Failures                int             `json:"failures"`
+	Stalled                 int             `json:"stalled"`
+	ResolvedRuns            int             `json:"resolvedRuns"`
+	FailureRate             float64         `json:"failureRate"`
+	FailureEstimate         RateEstimate    `json:"failureEstimate"`
+	Landed                  int             `json:"landed"`
+	LandedEstimate          RateEstimate    `json:"landedEstimate"`
+	Merged                  int             `json:"merged"`
+	MergedWithEdits         int             `json:"mergedWithEdits"`
+	Closed                  int             `json:"closed"`
+	MergeRate               float64         `json:"mergeRate"`
+	MergedWithEditsRate     float64         `json:"mergedWithEditsRate"`
+	CIFirstPassRate         float64         `json:"ciFirstPassRate"`
+	ReworkRate              float64         `json:"reworkRate"`
+	RevertRate              float64         `json:"revertRate"`
+	MergeEstimate           RateEstimate    `json:"mergeEstimate"`
+	CIFirstPassEstimate     RateEstimate    `json:"ciFirstPassEstimate"`
+	MergedWithEditsEstimate RateEstimate    `json:"mergedWithEditsEstimate"`
+	ReworkEstimate          RateEstimate    `json:"reworkEstimate"`
+	RevertEstimate          RateEstimate    `json:"revertEstimate"`
+	DurationP50S            float64         `json:"durationP50S"`
+	DurationP90S            float64         `json:"durationP90S"`
+	TotalCostUSD            float64         `json:"totalCostUsd"`
+	CostPerLanded           float64         `json:"costPerLanded"`
+	// Tier is modeltier.InferTier(Model)'s result, when the row's model
+	// resolves to a known cost/capability class ("" otherwise) — lets a
+	// consumer segment cost-per-merged by tier without re-inferring it.
+	Tier string `json:"tier,omitempty"`
+	// CostPerMergedUSD and TokensPerMergedPR mirror Scorecard's north-star
+	// metric at this row's granularity (provider/model/role/tier), dividing by
+	// Merged+MergedWithEdits rather than Landed.
+	CostPerMergedUSD          float64 `json:"costPerMergedUsd"`
+	TokensPerMergedPR         float64 `json:"tokensPerMergedPr"`
+	PremiumRequests           float64 `json:"premiumRequests"`
+	PremiumRequestsPerLanded  float64 `json:"premiumRequestsPerLanded"`
+	TurnsPerLanded            float64 `json:"turnsPerLanded"`
+	ToolsPerLanded            float64 `json:"toolsPerLanded"`
+	InsufficientData          bool    `json:"insufficientData"`
+	QualityAttributionLimited bool    `json:"qualityAttributionLimited"`
 	// SkillConformance is this row's skill-conformance bucket
 	// (SkillCohortSkill/SkillCohortDirect/SkillCohortIndeterminate) when every
 	// run credited to the row shares one, "" when the row blends more than
@@ -260,20 +316,65 @@ type ExperimentSampleStatus struct {
 	Status               string                `json:"status"`
 }
 
+// ScorecardSchemaVersion is the computation-semantics version of Report —
+// bumped when a metric's *meaning* changes in a way that makes an old and a
+// new report non-comparable at face value, not on every field addition.
+//
+// Version 2 (issue #2727) redefines human-touch from "entered
+// human-required" to "an explicit, durably-attributed operator action", and
+// CI-first-pass from "any PR-repair agent ran" to "a CI-failure-typed repair
+// ran". A report computed from event history that predates this
+// instrumentation cannot be reclassified after the fact: those landings
+// surface as Scorecard.AutonomyUnknownLandings (see its doc comment) rather
+// than being silently counted under the old, broader v1 definition. A
+// dashboard or trend view spanning the v1→v2 boundary should treat
+// AutonomyRate/CIFirstPassRate deltas across it as not directly comparable.
+const ScorecardSchemaVersion = 2
+
 // Report is the persisted, emitted, and CLI-printed output of one evaluation tick.
 type Report struct {
-	GeneratedAt              time.Time                 `json:"generatedAt"`
-	Since                    time.Time                 `json:"since"`
-	Until                    time.Time                 `json:"until"`
-	Overall                  Scorecard                 `json:"overall"`
-	ByProvider               []Breakdown               `json:"byProvider,omitempty"`
-	ByRole                   []Breakdown               `json:"byRole,omitempty"`
-	BySkillExecutionMode     []Breakdown               `json:"bySkillExecutionMode,omitempty"`
-	ByAgentModel             []ComparisonBreakdown     `json:"byAgentModel,omitempty"`
-	ByAgentModelContribution []ComparisonBreakdown     `json:"byAgentModelContribution,omitempty"`
-	ByExperimentKind         []ExperimentKindBreakdown `json:"byExperimentKind,omitempty"`
-	Weaknesses               []Weakness                `json:"weaknesses,omitempty"`
-	Notes                    []string                  `json:"notes,omitempty"`
+	// SchemaVersion is ScorecardSchemaVersion at generation time — see its
+	// doc comment for what changes across a version bump and how a cohort
+	// straddling one should be read.
+	SchemaVersion            int                   `json:"schemaVersion"`
+	GeneratedAt              time.Time             `json:"generatedAt"`
+	Since                    time.Time             `json:"since"`
+	Until                    time.Time             `json:"until"`
+	Overall                  Scorecard             `json:"overall"`
+	ByProvider               []Breakdown           `json:"byProvider,omitempty"`
+	ByRole                   []Breakdown           `json:"byRole,omitempty"`
+	BySkillExecutionMode     []Breakdown           `json:"bySkillExecutionMode,omitempty"`
+	ByAgentModel             []ComparisonBreakdown `json:"byAgentModel,omitempty"`
+	ByAgentModelContribution []ComparisonBreakdown `json:"byAgentModelContribution,omitempty"`
+	// ByCostTier segments the cost-per-merged-PR north star by
+	// provider:role:tier (see costTierCohortKey) — the granularity the
+	// tier-cascade rollout is judged against.
+	ByCostTier       []ComparisonBreakdown     `json:"byCostTier,omitempty"`
+	ByExperimentKind []ExperimentKindBreakdown `json:"byExperimentKind,omitempty"`
+	Weaknesses       []Weakness                `json:"weaknesses,omitempty"`
+	Notes            []string                  `json:"notes,omitempty"`
+	// SLO is the rolling autonomy/reliability compliance verdict for this
+	// window — see EvaluateSLOs. Populated by Service.Scan; a Report built
+	// by hand (e.g. in weakness_test.go fixtures) leaves this as the zero
+	// value, which is not a meaningful verdict either way.
+	SLO SLOReport `json:"slo"`
+	// AutonomySLOs are evidence-aware typed operational metrics. Unknown
+	// legacy/unprovable cohorts are explicit rather than guessed.
+	AutonomySLOs AutonomySLOs `json:"autonomySlos"`
+	// CostPerMergedBaseline is the prior equal-length window's cost/merged
+	// figures, used to detect a cost regression (see Weaknesses'
+	// cost_per_merge check) — nil when the prior window landed too few merges
+	// to trust (< minMergedForSignal).
+	CostPerMergedBaseline *CostBaseline `json:"costPerMergedBaseline,omitempty"`
+}
+
+// CostBaseline is the prior-window figures for the cost-efficiency north
+// star, computed over the equal-length window immediately preceding the
+// report's own [Since, Until].
+type CostBaseline struct {
+	CostPerMergedUSD  float64 `json:"costPerMergedUsd"`
+	TokensPerMergedPR float64 `json:"tokensPerMergedPr"`
+	MergedPRs         int     `json:"mergedPrs"`
 }
 
 // ExperimentKindBreakdown groups A/B comparison rows by experiment kind
@@ -336,9 +437,11 @@ func unaccountedFailureNote(records []stats.RunRecord, since, until time.Time) s
 		unaccounted, failures)
 }
 
-// reportNotes pairs the static deferred-metric notes with any note that depends
-// on what is actually in the window.
-func reportNotes(records []stats.RunRecord, since, until time.Time) []string {
+// reportNotes pairs the static deferred-metric notes with any note that
+// depends on what is actually in the window. sc is the already-computed
+// Scorecard for the same window, reused rather than recomputed so a caller
+// (Service.Scan) that already ran Compute doesn't pay for it twice.
+func reportNotes(records []stats.RunRecord, since, until time.Time, sc Scorecard) []string {
 	notes := slices.Clone(deferredNotes)
 	if n := unaccountedFailureNote(records, since, until); n != "" {
 		notes = append(notes, n)
@@ -346,7 +449,22 @@ func reportNotes(records []stats.RunRecord, since, until time.Time) []string {
 	if n := skillParityNote(records, since, until); n != "" {
 		notes = append(notes, n)
 	}
+	if n := autonomyUnknownNote(sc); n != "" {
+		notes = append(notes, n)
+	}
 	return notes
+}
+
+// autonomyUnknownNote mirrors unaccountedFailureNote/skillParityNote:
+// diagnostic only, never adjusts a metric, just states why AutonomyRate's
+// two buckets don't sum to TasksLanded when they don't.
+func autonomyUnknownNote(sc Scorecard) string {
+	if sc.AutonomyUnknownLandings == 0 {
+		return ""
+	}
+	return fmt.Sprintf(
+		"%d of %d landed tasks asked for intervention (entered human-required) but their resolution carries no durably-attributed operator action — likely event history predating issue #2727's provenance instrumentation; AutonomyRate/HumanTouchedLandings exclude them from both buckets rather than guessing",
+		sc.AutonomyUnknownLandings, sc.TasksLanded)
 }
 
 // skillParityNote counts in-window runs whose skill conformance is
@@ -387,7 +505,20 @@ var deferredNotes = []string{
 // taskSignals accumulates per-task lifecycle facts used for autonomy,
 // CI-first-pass, and rework detection.
 type taskSignals struct {
+	// humanTouched is set only by a durably-attributed, explicit operator
+	// action — never by entering human-required or by an automated recovery
+	// path, neither of which is evidence a human acted (issue #2727).
 	humanTouched bool
+	// sawHumanRequired records that the task asked for intervention at least
+	// once (a task.status_changed to "human-required"). On its own this is
+	// a request, not an outcome — see classifyLanded for how it combines
+	// with humanTouched and autoResolved.
+	sawHumanRequired bool
+	// autoResolved records a durably-confirmed automated-recovery exit from
+	// human-required (intervention.Capture with operator_action_class
+	// "auto_recovery") — positive evidence no human acted, distinct from
+	// "no provenance recorded at all" (see classifyLanded's unknown bucket).
+	autoResolved bool
 	ciFixNeeded  bool
 	transitions  map[string]int
 }
@@ -396,42 +527,95 @@ type taskSignals struct {
 // [since, until]. Records and events outside the window are ignored, so callers
 // may pass a superset. Pure: no I/O, deterministic for a given input.
 func Compute(records []stats.RunRecord, events []audit.Event, since, until time.Time) Scorecard {
+	return computeWithSignals(records, events, scanTaskSignals(events), since, until)
+}
+
+// computeWithSignals is Compute with task signals pre-scanned by the caller.
+// scanTaskSignals is not window-bound (it scans the full event history
+// regardless of [since, until]), so a caller that windows the same events
+// repeatedly — e.g. ComputeAutonomyTrend, which calls this once per snapshot
+// and per weekly bucket — can scan it once and reuse it instead of paying an
+// O(events) rescan on every call.
+func computeWithSignals(records []stats.RunRecord, events []audit.Event, sigs map[string]*taskSignals, since, until time.Time) Scorecard {
 	sc := Scorecard{WindowDays: until.Sub(since).Hours() / 24}
 	win := func(t time.Time) bool { return !t.Before(since) && !t.After(until) }
 
 	lg := scanLandings(events, win)
-	sigs := scanTaskSignals(events) // not window-bound: capture full task history
 	runs, fails, stalls, resolved := scanReliability(records, win)
-	cost, turns, tools := scanEfficiency(records, win)
+	cost, turns, tools, tokens := scanEfficiency(records, win)
 
 	sc.TasksLanded, sc.Merged, sc.Closed = lg.count, lg.merged, lg.closed
 	sc.MergedWithEdits = lg.mergedWithEdits
 	sc.AgentRuns, sc.AgentFailures, sc.AgentStalls, sc.AgentResolvedRuns = runs, fails, stalls, resolved
 	sc.Reverted = countReverts(events, win, lg.tasks)
 	sc.TotalCostUSD = cost
-	autonomous, humanTouched, ciClean := classifyLanded(lg.tasks, lg.edited, sigs)
-	sc.AutonomousLandings, sc.HumanTouchedLandings = autonomous, humanTouched
+	sc.TotalTokens = tokens
+	sc.AutonomyOutcomes, sc.FailureOwners, sc.EscalationCodes = scanTypedAutonomy(events, win)
+	autonomous, humanTouched, unknown, ciClean := classifyLanded(lg.tasks, lg.edited, sigs)
+	sc.AutonomousLandings, sc.HumanTouchedLandings, sc.AutonomyUnknownLandings = autonomous, humanTouched, unknown
 	sc.ReworkTasks = countRework(sigs, lg.tasks)
 
 	if n := float64(sc.TasksLanded); n > 0 {
 		sc.MergeRate = float64(sc.Merged) / n
-		sc.AutonomyRate = float64(autonomous) / n
 		sc.CIFirstPassRate = float64(ciClean) / n
 		sc.CostPerLanded = cost / n
 		sc.TurnsPerLanded = float64(turns) / n
 		sc.ToolsPerLanded = float64(tools) / n
 	}
+	// AutonomyRate is scoped to the known-provenance cohort — autonomous vs.
+	// human-touched — so a landing with no durably-attributed operator
+	// action (AutonomyUnknownLandings) neither counts as autonomous nor
+	// drags the rate down by inflating the denominator (issue #2727).
+	if known := float64(autonomous + humanTouched); known > 0 {
+		sc.AutonomyRate = float64(autonomous) / known
+	}
 	if sc.AgentResolvedRuns > 0 {
 		sc.FailureRate = float64(sc.AgentFailures) / float64(sc.AgentResolvedRuns)
 	}
+	// mergedLandings (not Landed/TasksLanded) is the denominator for every
+	// cost-efficiency north-star metric: a run that never merges is 100%
+	// waste, so ChangeFailureRate, CostPerMergedUSD, and TokensPerMergedPR all
+	// share this cohort rather than diluting it with closed-without-merging
+	// landings.
 	if mergedLandings := sc.Merged + sc.MergedWithEdits; mergedLandings > 0 {
-		sc.ChangeFailureRate = float64(sc.Reverted) / float64(mergedLandings)
+		n := float64(mergedLandings)
+		sc.ChangeFailureRate = float64(sc.Reverted) / n
+		sc.CostPerMergedUSD = cost / n
+		sc.TokensPerMergedPR = float64(tokens) / n
 	}
 	sc.LeadTimeP50H = percentile(lg.leadTimes, 50)
 	sc.LeadTimeP90H = percentile(lg.leadTimes, 90)
 	sc.CycleTimeP50H = percentile(lg.cycleTimes, 50)
 	sc.CycleTimeP90H = percentile(lg.cycleTimes, 90)
 	return sc
+}
+
+func scanTypedAutonomy(events []audit.Event, win func(time.Time) bool) (outcomes, owners, codes map[string]int) {
+	for i := range events {
+		e := events[i]
+		if e.Type != audit.EventTaskStatusChanged || !win(e.Timestamp) {
+			continue
+		}
+		if value := strVal(e.Data, "autonomy_outcome"); value != "" {
+			if outcomes == nil {
+				outcomes = map[string]int{}
+			}
+			outcomes[value]++
+		}
+		if value := strVal(e.Data, "failure_owner"); value != "" {
+			if owners == nil {
+				owners = map[string]int{}
+			}
+			owners[value]++
+		}
+		if value := strVal(e.Data, "escalation_code"); value != "" {
+			if codes == nil {
+				codes = map[string]int{}
+			}
+			codes[value]++
+		}
+	}
+	return outcomes, owners, codes
 }
 
 // landingAgg holds the outcome counts and timing samples from task.landed events.
@@ -496,17 +680,72 @@ func scanTaskSignals(events []audit.Event) map[string]*taskSignals {
 		switch e.Type {
 		case audit.EventTaskStatusChanged:
 			s := sig(e.TaskID)
-			if strVal(e.Data, "to") == "human-required" {
-				s.humanTouched = true
+			if strVal(e.Data, "to") == string(taskstatus.HumanRequired) {
+				// A request for intervention, not evidence one happened —
+				// see EventInterventionRecorded/EventPlanApproved below for
+				// the actual resolution provenance (issue #2727).
+				s.sawHumanRequired = true
 			}
 			s.transitions[strVal(e.Data, "from")+"->"+strVal(e.Data, "to")]++
-		case audit.EventHumanReviewSpawned:
-			sig(e.TaskID).humanTouched = true
-		case audit.EventPRCIFailureDetected, audit.EventPRFixAgentStarted, audit.EventRenovateCIFix:
+		case audit.EventInterventionRecorded:
+			// Fires on every real exit from human-required — a human
+			// clicking Dispatch, a manual field/status edit, or an
+			// automated-recovery re-entry — all through the same
+			// guard+scrub+persist+audit pipeline (intervention.Capture), so
+			// this is the single durable signal for who resolved it.
+			// operator_action_class mirrors intervention.OperatorActionClass
+			// ("human"/"auto_recovery"); duplicated as a literal here rather
+			// than importing internal/intervention for two constants.
+			s := sig(e.TaskID)
+			switch strVal(e.Data, "operator_action_class") {
+			case "human":
+				s.humanTouched = true
+			case "auto_recovery":
+				s.autoResolved = true
+			}
+		case audit.EventPlanApproved, audit.EventPlanRejected:
+			// SetPlanAutoApproveHook stamps auto=true; a genuine human
+			// approve/reject (PlanningService.approve/reject) does not.
+			if !boolVal(e.Data, "auto") {
+				sig(e.TaskID).humanTouched = true
+			}
+		case audit.EventPRCIFailureDetected, audit.EventRenovateCIFix:
+			// Both event types are themselves scoped to a CI failure by
+			// construction (their type, not a payload field, encodes the
+			// cause), unlike EventPRFixAgentStarted below.
 			sig(e.TaskID).ciFixNeeded = true
+		case audit.EventPRFixAgentStarted:
+			// Fires for every pr-fix dispatch regardless of cause — a
+			// merge-conflict or review-comment repair must not lower
+			// CI-first-pass, only a CI-failure-typed one (issue #2727).
+			if prFixIsCIRepair(e.Data) {
+				sig(e.TaskID).ciFixNeeded = true
+			}
 		}
 	}
 	return sigs
+}
+
+// prFixIsCIRepair reports whether a pr_monitor.fix_agent_started event's
+// typed cause set includes a CI failure. "kinds" (fix.go's
+// dispatchPRIssueWithOptions) carries the full comma-joined set of issue
+// kinds a batched fix coalesced — a comment reply pushed alongside an
+// unrelated CI retry, say — so a fix must count as CI repair if CI failure
+// is anywhere in that set; "issue" (the primary kind) is the fallback for
+// older events that only ever recorded one kind. The literal "ci_failure"
+// duplicates github.PRIssueCIFailure — matched as a string, like this file's
+// other audit Data literals (see scanLandings' "outcome" cases), rather than
+// importing internal/github for one constant.
+func prFixIsCIRepair(data map[string]any) bool {
+	if kinds := strVal(data, "kinds"); kinds != "" {
+		for k := range strings.SplitSeq(kinds, ",") {
+			if strings.TrimSpace(k) == "ci_failure" {
+				return true
+			}
+		}
+		return false
+	}
+	return strVal(data, "issue") == "ci_failure"
 }
 
 // scanReliability derives runs and failures from stats run records, not audit
@@ -532,26 +771,17 @@ func countReverts(events []audit.Event, win func(time.Time) bool, landed map[str
 // neither, and calling it either would put a run with no known result into a
 // rate or mislabel it a stall.
 func scanReliability(records []stats.RunRecord, win func(time.Time) bool) (runs, failures, stalls, resolved int) {
+	acct := make([]runacct.Record, 0, len(records))
 	for i := range records {
-		r := records[i]
-		if !win(r.Timestamp) {
-			continue
-		}
-		runs++
-		if r.Outcome == stats.OutcomeStalled {
-			stalls++
-		}
-		if stats.IsTerminalOutcome(r.Outcome) {
-			resolved++
-		}
-		if r.Outcome == stats.OutcomeFailed {
-			failures++
-		}
+		acct = append(acct, statsRecord(records[i]))
 	}
-	return runs, failures, stalls, resolved
+	counts := runacct.Count(acct, func(r runacct.Record) bool { return win(r.Timestamp) }, runacct.CountConfig{
+		CountsTowardFailure: runacct.CountsTowardCodeAuthorFailureRate,
+	})
+	return counts.Runs, counts.Failures, counts.Stalled, counts.Resolved
 }
 
-func scanEfficiency(records []stats.RunRecord, win func(time.Time) bool) (cost float64, turns, tools int) {
+func scanEfficiency(records []stats.RunRecord, win func(time.Time) bool) (cost float64, turns, tools, tokens int) {
 	for i := range records {
 		r := records[i]
 		if !win(r.Timestamp) {
@@ -560,28 +790,39 @@ func scanEfficiency(records []stats.RunRecord, win func(time.Time) bool) (cost f
 		cost += r.CostUSD
 		turns += r.TurnCount
 		tools += r.ToolCalls
+		tokens += r.InputTokens + r.OutputTokens + r.CacheCreationInputTokens + r.CacheReadInputTokens + r.ReasoningTokens
 	}
-	return cost, turns, tools
+	return cost, turns, tools, tokens
 }
 
-// classifyLanded splits landed tasks into autonomous vs human-touched and counts
-// those that landed without a CI fix. A task with no recorded signals counts as
-// autonomous and CI-clean.
-func classifyLanded(landed, edited map[string]bool, sigs map[string]*taskSignals) (autonomous, humanTouched, ciClean int) {
+// classifyLanded splits landed tasks into autonomous, human-touched, and
+// provenance-unknown, and counts those that landed without a CI fix. A task
+// with no recorded signals at all counts as autonomous and CI-clean.
+//
+// The three-way autonomy split (see taskSignals' field docs) is: a human
+// edit or a durably-confirmed operator action is always human-touched, even
+// over a confirmed auto-recovery signal on the same task (an operator can
+// still act after an automated retry); a task that never asked for
+// intervention is autonomous; a task that asked for intervention and was
+// durably confirmed resolved without one is also autonomous; a task that
+// asked for intervention with no resolution provenance at all is unknown
+// rather than forced into either bucket (issue #2727).
+func classifyLanded(landed, edited map[string]bool, sigs map[string]*taskSignals) (autonomous, humanTouched, unknown, ciClean int) {
 	for id := range landed {
 		s := sigs[id]
-		// A task is human-touched if it went human-required / spawned a human
-		// review (sigs) OR a human edited its PR before merge (merged_with_edits).
-		if (s == nil || !s.humanTouched) && !edited[id] {
-			autonomous++
-		} else {
+		switch {
+		case edited[id] || (s != nil && s.humanTouched):
 			humanTouched++
+		case s == nil || !s.sawHumanRequired || s.autoResolved:
+			autonomous++
+		default:
+			unknown++
 		}
 		if s == nil || !s.ciFixNeeded {
 			ciClean++
 		}
 	}
-	return autonomous, humanTouched, ciClean
+	return autonomous, humanTouched, unknown, ciClean
 }
 
 // countRework counts how many landed tasks bounced (a status transition seen
@@ -615,6 +856,7 @@ func BreakdownBy(records []stats.RunRecord, since, until time.Time, key func(sta
 	groups := map[string]*acc{}
 	for i := range records {
 		r := records[i]
+		rec := statsRecord(r)
 		if r.Timestamp.Before(since) || r.Timestamp.After(until) {
 			continue
 		}
@@ -628,13 +870,13 @@ func BreakdownBy(records []stats.RunRecord, since, until time.Time, key func(sta
 			groups[k] = a
 		}
 		a.runs++
-		if r.Outcome == stats.OutcomeStalled {
+		if rec.Outcome == stats.OutcomeCancelledShutdown || rec.Outcome == stats.OutcomeSuperseded || r.Outcome == stats.OutcomeStalled {
 			a.stalls++
 		}
-		if stats.IsTerminalOutcome(r.Outcome) {
+		if runacct.CountsTowardCodeAuthorFailureRate(rec) && stats.IsTerminalOutcome(r.Outcome) {
 			a.resolved++
 		}
-		if r.Outcome == stats.OutcomeFailed {
+		if runacct.CountsTowardCodeAuthorFailureRate(rec) && r.Outcome == stats.OutcomeFailed {
 			a.fails++
 		}
 		a.cost += r.CostUSD
@@ -676,6 +918,7 @@ type comparisonAcc struct {
 	skillConformance valueConsensus
 	durations        []float64
 	turns, tools     int
+	tokens           int
 	ciClean, rework  int
 	reverted         int
 }
@@ -697,6 +940,10 @@ func compareByAttribution(records []stats.RunRecord, events []audit.Event, since
 	ensure := func(r stats.RunRecord, k string) *comparisonAcc {
 		a := groups[k]
 		if a == nil {
+			tier := ""
+			if t, ok := modeltier.InferTier(r.Model); ok {
+				tier = string(t)
+			}
 			a = &comparisonAcc{row: ComparisonBreakdown{
 				Key:             k,
 				AttributionMode: string(mode),
@@ -706,6 +953,7 @@ func compareByAttribution(records []stats.RunRecord, events []audit.Event, since
 				ReasoningEffort: r.ReasoningEffort,
 				ExperimentID:    r.ExperimentID,
 				VariantID:       r.VariantID,
+				Tier:            tier,
 			}}
 			groups[k] = a
 		}
@@ -713,6 +961,7 @@ func compareByAttribution(records []stats.RunRecord, events []audit.Event, since
 	}
 	for i := range records {
 		r := records[i]
+		rec := statsRecord(r)
 		if r.Timestamp.Before(since) || r.Timestamp.After(until) {
 			continue
 		}
@@ -722,13 +971,13 @@ func compareByAttribution(records []stats.RunRecord, events []audit.Event, since
 		}
 		a := ensure(r, k)
 		a.row.Runs++
-		if r.Outcome == stats.OutcomeStalled {
+		if rec.Outcome == stats.OutcomeCancelledShutdown || rec.Outcome == stats.OutcomeSuperseded || r.Outcome == stats.OutcomeStalled {
 			a.row.Stalled++
 		}
-		if stats.IsTerminalOutcome(r.Outcome) {
+		if runacct.CountsTowardCodeAuthorFailureRate(rec) && stats.IsTerminalOutcome(r.Outcome) {
 			a.row.ResolvedRuns++
 		}
-		if r.Outcome == stats.OutcomeFailed {
+		if runacct.CountsTowardCodeAuthorFailureRate(rec) && r.Outcome == stats.OutcomeFailed {
 			a.row.Failures++
 		}
 		a.row.TotalCostUSD += r.CostUSD
@@ -736,6 +985,7 @@ func compareByAttribution(records []stats.RunRecord, events []audit.Event, since
 		a.durations = append(a.durations, r.DurationS)
 		a.turns += r.TurnCount
 		a.tools += r.ToolCalls
+		a.tokens += r.InputTokens + r.OutputTokens + r.CacheCreationInputTokens + r.CacheReadInputTokens + r.ReasoningTokens
 		a.skillConformance.add(skillConformanceBucket(r.SkillConformance))
 	}
 
@@ -1094,6 +1344,12 @@ func comparisonRows(groups map[string]*comparisonAcc, minSamples int) []Comparis
 			row.PremiumRequestsPerLanded = row.PremiumRequests / float64(row.Landed)
 			row.TurnsPerLanded = float64(a.turns) / float64(row.Landed)
 			row.ToolsPerLanded = float64(a.tools) / float64(row.Landed)
+		}
+		// Same north-star denominator as Scorecard's CostPerMergedUSD/
+		// TokensPerMergedPR — Merged+MergedWithEdits, never Landed alone.
+		if mergedLandings := row.Merged + row.MergedWithEdits; mergedLandings > 0 {
+			row.CostPerMergedUSD = row.TotalCostUSD / float64(mergedLandings)
+			row.TokensPerMergedPR = float64(a.tokens) / float64(mergedLandings)
 		}
 		row.DurationP50S = percentile(a.durations, 50)
 		row.DurationP90S = percentile(a.durations, 90)
@@ -1458,19 +1714,34 @@ func taskHasRework(s *taskSignals) bool {
 }
 
 func isAuthorRole(role string) bool {
-	switch normalizedRole(role) {
-	case "implementation", "fix-review", "pr-fix", "test-fix":
-		return true
-	default:
-		return false
-	}
+	return runacct.IsCodeAuthorRole(role)
 }
 
 func normalizedRole(role string) string {
-	if role == "" {
-		return "implementation"
+	return runacct.NormalizedRole(role)
+}
+
+func statsRecord(r stats.RunRecord) runacct.Record {
+	return runacct.Record{
+		ID:                 r.ID,
+		TaskID:             r.TaskID,
+		Role:               r.Role,
+		Mode:               r.Mode,
+		Provider:           r.Provider,
+		Model:              r.Model,
+		ReasoningEffort:    r.ReasoningEffort,
+		ExperimentID:       r.ExperimentID,
+		VariantID:          r.VariantID,
+		SkillExecutionMode: r.SkillExecutionMode,
+		SkillConformance:   r.SkillConformance,
+		CostUSD:            r.CostUSD,
+		DurationS:          r.DurationS,
+		PremiumRequests:    r.PremiumRequests,
+		TurnCount:          r.TurnCount,
+		ToolCalls:          r.ToolCalls,
+		Outcome:            r.Outcome,
+		Timestamp:          r.Timestamp,
 	}
-	return role
 }
 
 // percentile returns the p-th percentile (0–100) using nearest-rank. Empty → 0.
@@ -1497,6 +1768,14 @@ func strVal(m map[string]any, k string) string {
 	}
 	s, _ := m[k].(string)
 	return s
+}
+
+func boolVal(m map[string]any, k string) bool {
+	if m == nil {
+		return false
+	}
+	b, _ := m[k].(bool)
+	return b
 }
 
 // floatVal reads a numeric field, tolerating the float64 that JSON round-trips

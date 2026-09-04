@@ -1,6 +1,10 @@
 package agent
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/Automaat/sybra/internal/roleeffort"
+)
 
 func TestRole_AgentName(t *testing.T) {
 	t.Parallel()
@@ -9,7 +13,9 @@ func TestRole_AgentName(t *testing.T) {
 		title string
 		want  string
 	}{
+		{RoleMonitor, "Investigate", "monitor:Investigate"},
 		{RoleTriage, "My Task", "triage:My Task"},
+		{RoleOrchestrator, "Brain", "orchestrator:Brain"},
 		{RolePlan, "Plan Something", "plan:Plan Something"},
 		{RolePlanCritic, "Critique Plan", "plan-critic:Critique Plan"},
 		{RoleEval, "Evaluate", "eval:Evaluate"},
@@ -41,15 +47,18 @@ func TestRole_DefaultReasoningEffort(t *testing.T) {
 	}{
 		{RoleTriage, "low"},
 		{RoleEval, "low"},
+		{RoleMonitor, "low"},
 		{RolePlanCritic, "low"},
 		{RoleHumanReview, "low"},
-		{RoleImplementation, "high"},
+		{RolePlan, "high"},
+		{RoleReview, "high"},
 		{RoleFixReview, "high"},
 		{RolePRFix, "high"},
 		{RoleTestFix, "high"},
-		{RolePlan, ""},
-		{RoleReview, ""},
+		{RoleImplementation, ""},
 		{RoleTestRunner, ""},
+		{RoleLoop, ""},
+		{RoleOrchestrator, ""},
 		{Role(""), ""},
 	}
 
@@ -64,6 +73,47 @@ func TestRole_DefaultReasoningEffort(t *testing.T) {
 	}
 }
 
+// TestRole_DefaultReasoningEffort_CoversEveryKnownRole guards internal/roleeffort's
+// plain-string switch against drift. It iterates AllRoles rather than a
+// hand-maintained list, so a newly added Role fails here until someone decides
+// its effort baseline, and a typo'd name in roleeffort's switch shows up as the
+// wrong level instead of silently falling back to the global default.
+func TestRole_DefaultReasoningEffort_CoversEveryKnownRole(t *testing.T) {
+	t.Parallel()
+	covered := map[Role]string{
+		RoleTriage: "low", RoleEval: "low", RoleMonitor: "low",
+		RolePlanCritic: "low", RoleHumanReview: "low",
+		RolePlan: "high", RoleReview: "high", RoleFixReview: "high",
+		RolePRFix: "high", RoleTestFix: "high",
+		RoleImplementation: "", RoleTestRunner: "", RoleLoop: "", RoleOrchestrator: "",
+	}
+	all := AllRoles()
+	for _, r := range all {
+		want, ok := covered[r]
+		if !ok {
+			t.Errorf("role %q has no expected reasoning effort; add it to the table", r)
+			continue
+		}
+		if got := r.DefaultReasoningEffort(); got != want {
+			t.Errorf("DefaultReasoningEffort(%q) = %q, want %q", r, got, want)
+		}
+	}
+	if len(all) != len(covered) {
+		t.Errorf("AllRoles has %d roles, expectations have %d", len(all), len(covered))
+	}
+}
+
+// TestDefaultReasoningEffort_MatchesRoleEffortGlobal pins the global fallback
+// to the copy internal/abtest resolves omitted variant efforts against. The two
+// packages cannot import each other, so nothing but this would catch a drift.
+func TestDefaultReasoningEffort_MatchesRoleEffortGlobal(t *testing.T) {
+	t.Parallel()
+	if DefaultReasoningEffort != roleeffort.Global {
+		t.Fatalf("DefaultReasoningEffort = %q, roleeffort.Global = %q; they must not drift",
+			DefaultReasoningEffort, roleeffort.Global)
+	}
+}
+
 func TestRole_IsSystem(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -72,6 +122,9 @@ func TestRole_IsSystem(t *testing.T) {
 	}{
 		{RoleTriage, true},
 		{RoleEval, true},
+		{RoleLoop, true},
+		{RoleMonitor, true},
+		{RoleOrchestrator, true},
 		{RolePlanCritic, true},
 		{RolePlan, false},
 		{RolePRFix, false},
@@ -106,11 +159,13 @@ func TestRole_SupportsHeadlessSteer(t *testing.T) {
 		{RoleTriage, false},
 		{RolePlanCritic, false},
 		{RoleHumanReview, false},
+		{RoleLoop, false},
+		{RoleMonitor, false},
+		{RolePRFix, false},
 		{RoleFixReview, false},
 		// Roles a human may actively watch and steer from the GUI.
 		{RoleImplementation, true},
 		{RolePlan, true},
-		{RolePRFix, true},
 		{RoleTestFix, true},
 		{Role(""), true}, // empty maps to implementation
 	}
@@ -136,6 +191,7 @@ func TestRole_AuthorsCode(t *testing.T) {
 		{RoleFixReview, true},
 		{RolePRFix, true},
 		{RoleTestFix, true},
+		{RoleHumanReview, true},
 		{Role(""), true}, // empty maps to implementation
 		// Independent verifiers — must NOT inherit the implementer's scratchpad,
 		// or the reward-hacking defense is silently weakened.
@@ -145,7 +201,8 @@ func TestRole_AuthorsCode(t *testing.T) {
 		{RolePlan, false},
 		{RolePlanCritic, false},
 		{RoleTriage, false},
-		{RoleHumanReview, false},
+		{RoleLoop, false},
+		{RoleMonitor, false},
 	}
 
 	for _, tt := range tests {
@@ -168,6 +225,9 @@ func TestRoleFromName(t *testing.T) {
 		{"plan:Plan Task", RolePlan},
 		{"plan-critic:Critique Plan", RolePlanCritic},
 		{"eval:Evaluate", RoleEval},
+		{"monitor:lost_agent", RoleMonitor},
+		{"loop:self-monitor", RoleLoop},
+		{"orchestrator:brain", RoleOrchestrator},
 		{"pr-fix:Fix PR", RolePRFix},
 		{"test-fix:Fix Test", RoleTestFix},
 		{"review:Code Review", RoleReview},
@@ -199,6 +259,8 @@ func TestParseRoleFromName(t *testing.T) {
 		wantOK bool
 	}{
 		{"test-runner:Run Tests", RoleTestRunner, true},
+		{"monitor:lost_agent", RoleMonitor, true},
+		{"loop:self-monitor", RoleLoop, true},
 		{"pr-fix:Fix PR", RolePRFix, true},
 		{"test-fix:Fix Test", RoleTestFix, true},
 		{"implementation:Impl", RoleImplementation, true},
@@ -214,5 +276,136 @@ func TestParseRoleFromName(t *testing.T) {
 				t.Errorf("ParseRoleFromName(%q) = (%q, %v), want (%q, %v)", tt.name, got, ok, tt.want, tt.wantOK)
 			}
 		})
+	}
+}
+
+func TestResolveRunRole(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		role    Role
+		agent   string
+		want    Role
+		wantErr bool
+	}{
+		{name: "explicit role wins", role: RoleMonitor, agent: "monitor:lost_agent", want: RoleMonitor},
+		{name: "plain name defaults to implementation", agent: "Task title", want: RoleImplementation},
+		{name: "known prefix is accepted", agent: "monitor:lost_agent", want: RoleMonitor},
+		{name: "human title with colon defaults to implementation", agent: "refactor(agent): classify monitor runs", want: RoleImplementation},
+		{name: "unknown prefixed name fails", agent: "future:thing", wantErr: true},
+		{name: "unknown explicit role fails", role: Role("future"), agent: "Task title", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := ResolveRunRole(tt.role, tt.agent)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("ResolveRunRole error = nil, want non-nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ResolveRunRole error = %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("ResolveRunRole(%q, %q) = %q, want %q", tt.role, tt.agent, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestRole_WorkloadClass locks in that every known Role resolves to exactly
+// one WorkloadClass, and that the mapping is exhaustive (no known role falls
+// through to the unknown-role default by accident).
+func TestRole_WorkloadClass(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		role Role
+		want WorkloadClass
+	}{
+		{RoleImplementation, ClassImplementation},
+		{RolePlan, ClassImplementation},
+		{RolePRFix, ClassCompletion},
+		{RoleReview, ClassCompletion},
+		{RoleFixReview, ClassCompletion},
+		{RoleTestRunner, ClassCompletion},
+		{RoleTestFix, ClassCompletion},
+		{RoleTriage, ClassSystem},
+		{RoleEval, ClassSystem},
+		{RolePlanCritic, ClassSystem},
+		{RoleHumanReview, ClassSystem},
+		{RoleMonitor, ClassSystem},
+		{RoleLoop, ClassSystem},
+		{RoleOrchestrator, ClassSystem},
+		// Unknown/empty role falls back to ClassImplementation, matching
+		// RoleFromName's own fallback semantics.
+		{Role(""), ClassImplementation},
+		{Role("future"), ClassImplementation},
+	}
+
+	seen := make(map[Role]bool, len(tests))
+	for _, tt := range tests {
+		t.Run(string(tt.role), func(t *testing.T) {
+			t.Parallel()
+			if got := tt.role.WorkloadClass(); got != tt.want {
+				t.Fatalf("Role(%q).WorkloadClass() = %q, want %q", tt.role, got, tt.want)
+			}
+		})
+		seen[tt.role] = true
+	}
+
+	allKnown := []Role{
+		RoleTriage, RolePlan, RolePlanCritic, RoleEval, RoleLoop, RoleMonitor, RoleOrchestrator,
+		RolePRFix, RoleReview, RoleFixReview, RoleTestRunner, RoleImplementation,
+		RoleHumanReview, RoleTestFix,
+	}
+	for _, r := range allKnown {
+		if !seen[r] {
+			t.Fatalf("Role %q has no WorkloadClass test case", r)
+		}
+	}
+}
+
+// TestAllRolesReturnsACopy proves callers cannot mutate the canonical role set
+// through the accessor — IsKnown reads the same backing list.
+func TestAllRolesReturnsACopy(t *testing.T) {
+	t.Parallel()
+	got := AllRoles()
+	got[0] = Role("clobbered")
+	if !RoleTriage.IsKnown() {
+		t.Fatal("mutating the AllRoles result corrupted the canonical role set")
+	}
+	if AllRoles()[0] != RoleTriage {
+		t.Fatalf("AllRoles()[0] = %q, want %q", AllRoles()[0], RoleTriage)
+	}
+}
+
+func BenchmarkRoleIsKnown(b *testing.B) {
+	for b.Loop() {
+		_ = RoleImplementation.IsKnown()
+	}
+}
+
+// checkpointAndHandoff commits into sessionCWD from THIS process, not from the
+// sandboxed child, so the OS sandbox is not what protects a read-only dispatch
+// dir. On the deploy host that dir is the Sybra source checkout, which is also
+// auto_update.repo_dir — a checkpoint commit there wedges the ff-only merge
+// auto-deploy depends on.
+func TestCanCheckpointOnTurnCeiling_DeniedForReadOnlyDir(t *testing.T) {
+	m := &Manager{}
+	m.guardrails.CheckpointOnTurnCeiling = true
+
+	writable := &Agent{Role: RoleHumanReview}
+	if !m.canCheckpointOnTurnCeiling(writable) {
+		t.Fatal("precondition: a writable human-review run should be checkpoint-eligible")
+	}
+
+	readOnly := &Agent{Role: RoleHumanReview, sessionReadOnly: true}
+	if m.canCheckpointOnTurnCeiling(readOnly) {
+		t.Error("checkpoint allowed for a read-only dispatch dir; the host would commit into it")
 	}
 }

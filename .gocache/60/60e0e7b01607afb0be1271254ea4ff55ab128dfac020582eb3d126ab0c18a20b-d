@@ -1,0 +1,3 @@
+./openapi.go
+./proto_models.go
+./smd.go

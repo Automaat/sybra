@@ -95,8 +95,8 @@ func TestMarkRebaseBlocked_ParksHumanRequiredWhenNotResolved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusBlocked)
 	}
 	if got.StatusReason != worktreeerr.RebaseBlockedReason {
 		t.Fatalf("reason = %q, want %q", got.StatusReason, worktreeerr.RebaseBlockedReason)
@@ -120,8 +120,10 @@ func TestMarkRebaseBlocked_RespectsRecoverConflictsOwnExhaustionReason(t *testin
 	const specificReason = "branch conflict recovery attempted 3 time(s) and failed: resolve conflicts or recreate the task branch"
 	recoverConflict := func(taskID string) bool {
 		if _, err := tasks.Update(taskID, task.Update{
-			Status:       task.Ptr(task.StatusHumanRequired),
-			StatusReason: task.Ptr(specificReason),
+			Status:          task.Ptr(task.StatusHumanRequired),
+			Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+			AutonomyOutcome: task.HumanRequiredOutcome(),
+			StatusReason:    task.Ptr(specificReason),
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -169,8 +171,10 @@ func TestMarkRebaseBlocked_ReProbesResolvedPRAfterRecoveryExhaustion(t *testing.
 	const specificReason = "branch conflict recovery attempted 3 time(s) and failed: resolve conflicts or recreate the task branch"
 	recoverConflict := func(taskID string) bool {
 		if _, err := tasks.Update(taskID, task.Update{
-			Status:       task.Ptr(task.StatusHumanRequired),
-			StatusReason: task.Ptr(specificReason),
+			Status:          task.Ptr(task.StatusHumanRequired),
+			Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+			AutonomyOutcome: task.HumanRequiredOutcome(),
+			StatusReason:    task.Ptr(specificReason),
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -220,8 +224,8 @@ func TestMarkRebaseBlocked_NoLinkedPRParksHumanRequired(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusBlocked)
 	}
 }
 
@@ -266,8 +270,8 @@ func TestMarkRebaseBlocked_DiskSpaceErrorSkipsRecoveryAndPRProbe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusBlocked)
 	}
 	if got.StatusReason != worktreeerr.DiskSpaceExhaustedReason {
 		t.Fatalf("reason = %q, want %q", got.StatusReason, worktreeerr.DiskSpaceExhaustedReason)

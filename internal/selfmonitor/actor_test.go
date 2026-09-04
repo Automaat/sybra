@@ -24,20 +24,43 @@ func configWithAutoAct(categories ...string) config.SelfMonitorConfig {
 
 // stubTaskUpdater satisfies taskUpdater for actor tests.
 type stubTaskUpdater struct {
+	tasks   map[string]task.Task
 	updated map[string]task.Update
 	err     error
 }
 
 func newStubUpdater() *stubTaskUpdater {
-	return &stubTaskUpdater{updated: map[string]task.Update{}}
+	return &stubTaskUpdater{
+		tasks:   map[string]task.Task{},
+		updated: map[string]task.Update{},
+	}
 }
 
-func (s *stubTaskUpdater) Update(id string, u task.Update) (task.Task, error) {
+func (s *stubTaskUpdater) Apply(intent task.TransitionIntent) (task.TransitionResult, error) {
 	if s.err != nil {
-		return task.Task{}, s.err
+		return task.TransitionResult{}, s.err
 	}
-	s.updated[id] = u
-	return task.Task{ID: id}, nil
+	cur, ok := s.tasks[intent.TaskID]
+	if !ok {
+		cur = task.Task{ID: intent.TaskID, Status: task.StatusHumanRequired}
+	}
+	if intent.ExpectedStatus != nil && cur.Status != *intent.ExpectedStatus {
+		return task.TransitionResult{}, &task.ConflictError{
+			TaskID:         intent.TaskID,
+			ExpectedStatus: intent.ExpectedStatus,
+			ActualStatus:   cur.Status,
+		}
+	}
+	u := intent.Extra
+	toStatus := intent.ToStatus
+	u.Status = &toStatus
+	s.updated[intent.TaskID] = u
+	if u.AgentMode != nil {
+		cur.AgentMode = *u.AgentMode
+	}
+	cur.Status = toStatus
+	s.tasks[intent.TaskID] = cur
+	return task.TransitionResult{Task: cur, Applied: true}, nil
 }
 
 func confirmedTriageMismatch(taskID string) InvestigatedFinding {
@@ -75,8 +98,11 @@ func TestActor_FlipsAgentMode_ConfirmedTriageMismatch(t *testing.T) {
 	if !ok {
 		t.Fatal("task-flip not updated")
 	}
-	if u.AgentMode == nil || *u.AgentMode != task.AgentModeInteractive {
-		t.Errorf("AgentMode = %v, want interactive", u.AgentMode)
+	if u.AgentMode == nil || *u.AgentMode != task.AgentModeHeadless {
+		t.Errorf("AgentMode = %v, want headless", u.AgentMode)
+	}
+	if u.Status == nil || *u.Status != task.StatusTodo {
+		t.Errorf("Status = %v, want todo", u.Status)
 	}
 }
 
@@ -95,6 +121,40 @@ func TestActor_DryRun_DoesNotUpdate(t *testing.T) {
 	}
 	if len(updater.updated) != 0 {
 		t.Errorf("task updated in dry run: %v", updater.updated)
+	}
+}
+
+func TestActor_SkipsTriageMismatchWhenTaskStatusChanged(t *testing.T) {
+	tests := []task.Status{
+		task.StatusDone,
+		task.StatusInProgress,
+	}
+	for _, status := range tests {
+		t.Run(string(status), func(t *testing.T) {
+			updater := newStubUpdater()
+			updater.tasks["task-stale"] = task.Task{
+				ID:        "task-stale",
+				Status:    status,
+				AgentMode: task.AgentModeInteractive,
+			}
+			actor := &Actor{Tasks: updater, DryRun: false, Logger: slog.Default()}
+
+			rec := actor.Act(context.Background(), confirmedTriageMismatch("task-stale"))
+
+			if rec.Kind != "" {
+				t.Errorf("Kind = %q, want empty for stale task status", rec.Kind)
+			}
+			if _, ok := updater.updated["task-stale"]; ok {
+				t.Fatal("task-stale updated despite stale task status")
+			}
+			got := updater.tasks["task-stale"]
+			if got.Status != status {
+				t.Errorf("Status = %q, want %q", got.Status, status)
+			}
+			if got.AgentMode != task.AgentModeInteractive {
+				t.Errorf("AgentMode = %q, want %q", got.AgentMode, task.AgentModeInteractive)
+			}
+		})
 	}
 }
 
@@ -162,6 +222,7 @@ func TestActor_SkipsUnhandledCategories(t *testing.T) {
 
 func TestActor_RecordsErrorWhenUpdateFails(t *testing.T) {
 	updater := &stubTaskUpdater{
+		tasks:   map[string]task.Task{},
 		updated: map[string]task.Update{},
 		err:     os.ErrPermission,
 	}
@@ -211,8 +272,12 @@ func TestActor_FlipsAgentModeViaServicePipeline(t *testing.T) {
 	if r.ActionsTaken[0].Kind != "flip_agent_mode" {
 		t.Errorf("Kind = %q, want flip_agent_mode", r.ActionsTaken[0].Kind)
 	}
-	if _, ok := updater.updated["task-wired"]; !ok {
+	u, ok := updater.updated["task-wired"]
+	if !ok {
 		t.Error("task-wired not updated via pipeline")
+	}
+	if u.Status == nil || *u.Status != task.StatusTodo {
+		t.Errorf("Status = %v, want todo", u.Status)
 	}
 }
 

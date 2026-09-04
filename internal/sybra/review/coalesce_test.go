@@ -11,6 +11,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 )
@@ -43,22 +44,73 @@ func TestCoalescedFixPrompt(t *testing.T) {
 	t.Parallel()
 	pr := github.PullRequest{Number: 7, Repository: "o/r", HeadRefName: "feat", URL: "https://github.com/o/r/pull/7"}
 
-	single := coalescedFixPrompt(context.Background(), []github.PRIssue{{Kind: github.PRIssueComments, PR: pr}}, "")
+	single := coalescedFixPrompt(context.Background(), []github.PRIssue{{Kind: github.PRIssueComments, PR: pr}}, "", project.SigningAuto, reviewThreadBrief{})
 	if strings.Contains(single, "multiple open issues") {
 		t.Errorf("single-issue prompt must not carry the coalesced header:\n%s", single)
 	}
-	if !strings.Contains(single, "/fix-review") {
+	if !strings.Contains(single, "reply on every thread") {
 		t.Errorf("single comments prompt missing its body:\n%s", single)
 	}
 
 	multi := coalescedFixPrompt(context.Background(), []github.PRIssue{
 		{Kind: github.PRIssueCIFailure, PR: pr},
 		{Kind: github.PRIssueComments, PR: pr},
-	}, "")
-	for _, want := range []string{"multiple open issues", "Failing CI", "Review comments", "/fix-review", "gh run view"} {
+	}, "", project.SigningAuto, reviewThreadBrief{})
+	for _, want := range []string{"multiple open issues", "Failing CI", "Review comments", "reply on every thread", "gh run view"} {
 		if !strings.Contains(multi, want) {
 			t.Errorf("coalesced prompt missing %q:\n%s", want, multi)
 		}
+	}
+}
+
+func TestCoalescedFixPrompt_RequiresLivePRReprobeBeforeNoOp(t *testing.T) {
+	t.Parallel()
+
+	pr := github.PullRequest{Number: 7, Repository: "o/r", HeadRefName: "feat", URL: "https://github.com/o/r/pull/7"}
+	prompt := coalescedFixPrompt(context.Background(), []github.PRIssue{{Kind: github.PRIssueCIFailure, PR: pr}}, "", project.SigningAuto, reviewThreadBrief{})
+
+	for _, want := range []string{
+		"LIVE_BASE=$(gh pr view 7 --repo o/r --json baseRefName --jq .baseRefName)",
+		"gh pr view 7 --repo o/r --json state,mergeable,baseRefName",
+		"Do not trust NOTES.md",
+		"mergeable=CONFLICTING",
+		"SYBRA_PR_FIX_RESULT: no-op",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestCoalescedFixPrompt_ApprovedNoopDoesNotRequestHuman(t *testing.T) {
+	t.Parallel()
+
+	pr := github.PullRequest{
+		Number: 7, Repository: "o/r", HeadRefName: "feat", URL: "https://github.com/o/r/pull/7",
+		ReviewDecision: "APPROVED",
+	}
+	prompt := coalescedFixPrompt(context.Background(), []github.PRIssue{{Kind: github.PRIssueCIFailure, PR: pr}}, "", project.SigningAuto, reviewThreadBrief{})
+
+	if !strings.Contains(prompt, "Approval preservation") || !strings.Contains(prompt, "SYBRA_PR_FIX_RESULT: no-op") {
+		t.Fatalf("approved PR prompt missing no-op approval guard:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "If no substantive fix is needed, stop without pushing and report `SYBRA_PR_FIX_RESULT: human-required`") {
+		t.Fatalf("approved PR prompt retains contradictory human-required no-op instruction:\n%s", prompt)
+	}
+}
+
+func TestCoalescedFixPrompt_AddsLivePRReprobeGuardOnce(t *testing.T) {
+	t.Parallel()
+
+	pr := github.PullRequest{Number: 7, Repository: "o/r", HeadRefName: "feat", URL: "https://github.com/o/r/pull/7"}
+	prompt := coalescedFixPrompt(context.Background(), []github.PRIssue{
+		{Kind: github.PRIssueConflict, PR: pr},
+		{Kind: github.PRIssueComments, PR: pr},
+		{Kind: github.PRIssueCIFailure, PR: pr},
+	}, "", project.SigningAuto, reviewThreadBrief{})
+
+	if got := strings.Count(prompt, "LIVE_BASE=$(gh pr view 7 --repo o/r --json baseRefName --jq .baseRefName)"); got != 1 {
+		t.Fatalf("live re-probe guard count = %d, want 1:\n%s", got, prompt)
 	}
 }
 
@@ -86,7 +138,7 @@ func TestDispatchFixIssues_ReviewHoldSetsParkVar(t *testing.T) {
 		t.Fatal(err)
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
-	engine := workflow.NewEngine(
+	engine := workflow.NewTestEngine(
 		wfStore,
 		&taskAdapter{tasks: tasks},
 		&agentAdapter{agents: agentMgr, tasks: tasks},
@@ -145,18 +197,18 @@ func TestCoalescedFixPrompt_ReviewHold(t *testing.T) {
 	pr := github.PullRequest{Number: 7, Repository: "o/r", HeadRefName: "feat", URL: "https://github.com/o/r/pull/7"}
 	const suffix = "\n\n---\nREVIEW HOLD sentinel"
 
-	withComments := coalescedFixPrompt(context.Background(), []github.PRIssue{{Kind: github.PRIssueComments, PR: pr}}, suffix)
+	withComments := coalescedFixPrompt(context.Background(), []github.PRIssue{{Kind: github.PRIssueComments, PR: pr}}, suffix, project.SigningAuto, reviewThreadBrief{})
 	if !strings.HasSuffix(withComments, suffix) {
 		t.Errorf("comments prompt must end with the hold suffix:\n%s", withComments)
 	}
 
-	noComments := coalescedFixPrompt(context.Background(), []github.PRIssue{{Kind: github.PRIssueCIFailure, PR: pr}}, suffix)
+	noComments := coalescedFixPrompt(context.Background(), []github.PRIssue{{Kind: github.PRIssueCIFailure, PR: pr}}, suffix, project.SigningAuto, reviewThreadBrief{})
 	if strings.Contains(noComments, "REVIEW HOLD") {
 		t.Errorf("a non-comments fix posts no replies, so it must not carry the hold suffix:\n%s", noComments)
 	}
 
 	// Disabled hold (empty suffix) leaves a comments prompt byte-for-byte as-is.
-	plain := coalescedFixPrompt(context.Background(), []github.PRIssue{{Kind: github.PRIssueComments, PR: pr}}, "")
+	plain := coalescedFixPrompt(context.Background(), []github.PRIssue{{Kind: github.PRIssueComments, PR: pr}}, "", project.SigningAuto, reviewThreadBrief{})
 	if strings.Contains(plain, "REVIEW HOLD") {
 		t.Errorf("empty suffix must not alter the prompt:\n%s", plain)
 	}
@@ -185,7 +237,7 @@ func TestHandleMatchedPRIssues_CoalescesFixIssues(t *testing.T) {
 		t.Fatal(err)
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
-	engine := workflow.NewEngine(
+	engine := workflow.NewTestEngine(
 		wfStore,
 		&taskAdapter{tasks: tasks},
 		&agentAdapter{agents: agentMgr, tasks: tasks},

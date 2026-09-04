@@ -22,6 +22,7 @@ const DefaultSampleIntervalSeconds = 15
 // explicit nil guards when they need enabled-only side effects such as audit.
 type Gate struct {
 	minDiskFreePct     float64
+	remoteMinDiskBytes int64
 	minMemAvailPct     float64
 	maxLoadPerCPU      float64
 	warningDiskFreePct float64
@@ -54,6 +55,7 @@ func New(cfg config.PressureConfig, probeDir string, logger *slog.Logger) *Gate 
 	}
 	return &Gate{
 		minDiskFreePct:     cfg.MinDiskFreePercent,
+		remoteMinDiskBytes: cfg.RemoteMinDiskFreeBytes,
 		minMemAvailPct:     cfg.MinMemAvailablePercent,
 		maxLoadPerCPU:      cfg.MaxLoadPerCPU,
 		warningDiskFreePct: cfg.WarningDiskFreePercent,
@@ -89,7 +91,7 @@ func (g *Gate) SetReclaimTrigger(fn func()) {
 // throttle. Every field is NaN on a nil Gate.
 func (g *Gate) Status() Sample {
 	if g == nil {
-		return Sample{DiskFreePct: math.NaN(), MemAvailablePct: math.NaN(), LoadPerCPU: math.NaN()}
+		return Sample{DiskFreePct: math.NaN(), DiskFreeBytes: math.NaN(), MemAvailablePct: math.NaN(), LoadPerCPU: math.NaN()}
 	}
 	s, _ := g.sample()
 	return s
@@ -136,6 +138,34 @@ func (g *Gate) Admit() (ok bool, reason string) {
 		g.clearReason()
 		return true, ""
 	}
+	g.recordDeny(reason)
+	return false, reason
+}
+
+// AdmitRemote reports whether the leader has enough emergency disk reserve to
+// coordinate a run whose provider process and mutable workspace live on a
+// remote daemon. The leader's percentage, memory, and CPU thresholds protect
+// local provider execution and deliberately do not apply here; remote work
+// still needs a small absolute reserve for durable control state and the
+// bounded artifact handback. An unreadable disk signal fails open, matching
+// Admit's signal semantics.
+func (g *Gate) AdmitRemote() (ok bool, reason string) {
+	if g == nil {
+		return true, ""
+	}
+	s, err := g.sample()
+	if err != nil {
+		if !errors.Is(err, errAllSignalsUnreadable) && g.logger != nil {
+			g.logger.Warn("pressure.gate.sample", "err", err)
+		}
+		return true, ""
+	}
+	g.maybeTriggerReclaim(s)
+	if g.remoteMinDiskBytes <= 0 || math.IsNaN(s.DiskFreeBytes) || s.DiskFreeBytes >= float64(g.remoteMinDiskBytes) {
+		return true, ""
+	}
+	const gib = float64(1 << 30)
+	reason = fmt.Sprintf("leader disk free %.1f GiB below remote reserve %.1f GiB", s.DiskFreeBytes/gib, float64(g.remoteMinDiskBytes)/gib)
 	g.recordDeny(reason)
 	return false, reason
 }

@@ -1,0 +1,7 @@
+./clusterrole.go
+./clusterrolebinding.go
+./doc.go
+./generated_expansion.go
+./rbac_client.go
+./role.go
+./rolebinding.go

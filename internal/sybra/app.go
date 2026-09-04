@@ -5,7 +5,8 @@ package sybra
 //	config → audit/stats → task.Store → project.Store → loopagent.Store
 //	→ emit/bgops → task.Manager → limits/approval → agent.Manager → providerHealth
 //	→ worktrees → sandboxes → agentOrch → reviewer → workflowEngine
-//	→ wireServices → [LifecycleManager: StartManagers → StartPollers → StartWatchers]
+//	→ wireServices → mintAppTokenBeforeRecovery → RunStartupCleanup
+//	→ [LifecycleManager: StartManagers → StartPollers → StartWatchers]
 
 import (
 	"context"
@@ -24,17 +25,23 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/agentqueue"
 	"github.com/Automaat/sybra/internal/artifact"
+	"github.com/Automaat/sybra/internal/attachment"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/bgop"
+	"github.com/Automaat/sybra/internal/cleanup"
 	"github.com/Automaat/sybra/internal/cluster"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/confighot"
+	"github.com/Automaat/sybra/internal/db"
 	"github.com/Automaat/sybra/internal/diskreclaim"
 	"github.com/Automaat/sybra/internal/evaluation"
 	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/httpapi"
+	"github.com/Automaat/sybra/internal/intervention"
 	"github.com/Automaat/sybra/internal/learning"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/logging"
@@ -45,6 +52,7 @@ import (
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/recovery"
+	"github.com/Automaat/sybra/internal/routing"
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/selfmonitor"
 	"github.com/Automaat/sybra/internal/spotlight"
@@ -52,35 +60,61 @@ import (
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/sybra/clusterlead"
 	"github.com/Automaat/sybra/internal/sybra/completion"
+	"github.com/Automaat/sybra/internal/sybra/dispatch"
+	"github.com/Automaat/sybra/internal/sybra/reconciliation"
 	"github.com/Automaat/sybra/internal/sybra/review"
+	"github.com/Automaat/sybra/internal/sybra/runenv"
+	"github.com/Automaat/sybra/internal/sybra/verification"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/task/taskdb"
 	"github.com/Automaat/sybra/internal/tasksnapshot"
+	"github.com/Automaat/sybra/internal/toolledger"
 	"github.com/Automaat/sybra/internal/watcher"
+	"github.com/Automaat/sybra/internal/workercontrol"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
 	"github.com/google/uuid"
 )
 
 type App struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	ctx             context.Context
+	cancel          context.CancelFunc
+	schedulerCtx    context.Context
+	schedulerCancel context.CancelFunc
+	watcherCtx      context.Context
+	watcherCancel   context.CancelFunc
+	lifecycle       atomic.Uint32
+	backgroundMu    sync.Mutex // serializes tracked background work with drain
+	wg              sync.WaitGroup
 	// fetchPRHeadSHA overrides the PR-head lookup in tests; nil uses GitHub.
-	fetchPRHeadSHA    func(ctx context.Context, repo string, number int) (string, error)
-	tasks             *task.Manager
-	projects          *project.Store
-	loopAgents        *loopagent.Store
-	loopSched         *loopagent.Scheduler
-	agents            *agent.Manager
+	fetchPRHeadSHA func(ctx context.Context, repo string, number int) (string, error)
+	fetchPR        func(ctx context.Context, repo string, number int) (github.PullRequest, error)
+	tasks          *task.Manager
+	projects       *project.Store
+	database       *db.DB
+	workerControl  *workercontrol.Service
+	loopAgents     loopagent.Repository
+	loopSched      *loopagent.Scheduler
+	agents         *agent.Manager
+	// boardTarget/boardToken/boardCA name the board task-scoped agents reach,
+	// held here because SetAgentBoard runs before Startup builds the manager.
+	boardTarget       string
+	boardToken        string
+	boardCA           string
+	attempts          *dispatch.Controller
 	watcher           *watcher.Watcher
 	configWatcher     *confighot.Watcher
 	notifier          *notification.Emitter
-	audit             *audit.Logger
+	audit             audit.Store
+	attachments       *attachment.Store
 	artifacts         *artifact.Store
-	experience        *experience.Store
+	evidenceStore     *evidence.Store
+	experience        experience.Repository
+	intervention      *intervention.Store
+	cleanupProtected  *cleanup.ProtectedStore
 	learning          *learning.Store
 	agentQueue        *agentqueue.Queue
-	stats             *stats.Store
+	stats             stats.Repository
 	limits            *limits.Store
 	tasksDir          string
 	skillsDir         string
@@ -98,27 +132,38 @@ type App struct {
 	selfMonitorSvc    *selfmonitor.Service
 	evaluationSvc     *evaluation.Service
 	learningDigestSvc *learning.Service
+	routingSvc        *routing.Service
 	agentOrch         *agentorch.Orchestrator
+	runenv            *runenv.Service
+	verification      *verification.Manager
+	postRunReconciler *reconciliation.Reconciler
 	reviewer          *review.Handler
 	assigner          *clusterlead.Assigner
 	mirror            *clusterlead.Mirror
 	clusterRoster     *cluster.Roster
 	clusterSvc        *ClusterService
 	workflowEngine    *workflow.Engine
-	workflowStore     *workflow.Store
+	workflowStore     workflow.Repository
 	pressureGate      *pressure.Gate
 	diskReclaimer     *diskreclaim.Reclaimer
+	toolLedger        toolledger.Store
 	renovate          *renovateCoordinator
 	promptLab         *promptLabCoordinator
 	triage            *triageCoordinator
 	humanReview       *humanReviewHandler
-	cfg               *config.Config
-	logLevel          *slog.LevelVar
-	emit              func(string, any)
-	emitFactory       func(context.Context) func(string, any)
-	openBrowser       func(string)
-	requestRestart    func()
-	restartStaleErr   *logging.ErrorThrottle
+	// activeCfg is the immutable configuration snapshot used by concurrent
+	// runtime readers. cfg remains the construction-time snapshot for legacy
+	// startup wiring and tests; hot reloads must never mutate it in place.
+	activeCfg       atomic.Pointer[config.Config]
+	cfg             *config.Config
+	baseABTesting   atomic.Value
+	liveABTesting   atomic.Value
+	logLevel        *slog.LevelVar
+	emit            func(string, any)
+	emitFactory     func(context.Context) func(string, any)
+	openBrowser     func(string)
+	requestRestart  func()
+	restartStaleErr *logging.ErrorThrottle
 	// dispatchNudge wakes the orchestrator dispatch pass on demand (e.g. on a
 	// status change) so a freshly-ready task isn't left idle until the next
 	// fast tick. Buffered, size 1, coalescing — see nudgeDispatch.
@@ -131,12 +176,62 @@ type App struct {
 	// rather than silently refusing to dispatch.
 	schedulerDisabled atomic.Bool
 	brainDisabled     atomic.Bool
+	// startupRecoveryPending is set true just before initStatusHook (the
+	// earliest dispatch observer to be wired) and stays true until
+	// RunStartupCleanup (reattach survivor agents, replay persisted effects,
+	// restart stale runs) finishes. The status-change hook and, later, the file
+	// watcher go live before that reattach completes, so dispatchTaskCreatedWorkflow,
+	// dispatchPlanningWorkflow, dispatchStatusWorkflow and dispatchInboundReviewWorkflow
+	// — the sinks that auto-start work — refuse to dispatch while this is set: until
+	// reattach runs, HasRunningAgentForTask reads an empty registry and an
+	// early dispatch could start a duplicate agent on a live worktree
+	// (#2752). Zero value (unset) reports "not pending", so an App built
+	// without going through Startup (tests, direct construction) dispatches
+	// exactly as it did before this gate existed. Cleared once
+	// RunStartupCleanup returns, followed by replayDeferredStatusChanges (for
+	// the workflow status events the window suppressed) and a nudgeDispatch so
+	// any task that changed status during the window gets picked up immediately
+	// by the board-wide reconcileRunnableBoardTasks sweep instead of waiting for
+	// the next dispatch tick.
+	startupRecoveryPending atomic.Bool
+	// deferredStatusChanges buffers the tasks whose status change was observed
+	// while startupRecoveryPending was set, so the suppressed
+	// workflowEngine.HandleStatusChange can be replayed once reattach finishes.
+	// Without the replay a run_agent step parked on wait_for_status never sees
+	// its awaited status again: agent completion deliberately does not advance
+	// such a step, board reconciliation skips tasks with an active workflow, and
+	// ResumeStalled re-runs the agent instead of comparing the persisted status
+	// to WaitForStatus. A set, not a queue — replay reads each task's current
+	// persisted status, which coalesces several transitions in the window down
+	// to the one that is still true.
+	deferredStatusMu      sync.Mutex
+	deferredStatusChanges map[string]struct{}
+	// statusBounce tracks reciprocal status transitions seen by this process.
+	// It is a circuit breaker for automation loops; the persisted audit trail
+	// remains the cross-restart diagnostic record.
+	statusBounceMu sync.Mutex
+	statusBounces  map[string]*statusBounceState
+	// maintenanceCleanupRunning prevents slow git cleanup from stacking across
+	// maintenance ticks. Cleanup itself runs outside the orchestrator loop.
+	maintenanceCleanupRunning atomic.Bool
+	worktreeCleanupFn         func(context.Context) // test seam; nil uses worktrees
+	// recoveryStartGate, if non-nil, is closed by the caller to release the
+	// recovery goroutine right before it calls RunStartupCleanup. Test seam
+	// only: it lets a test observe startupRecoveryPending's armed state with a
+	// guaranteed happens-before instead of racing the goroutine's own
+	// scheduling (Go gives no ordering guarantee between a freshly spawned
+	// goroutine and the code after the spawning call returns).
+	recoveryStartGate chan struct{}
 	recovery          *recovery.Recovery
 	snapshotter       *tasksnapshot.Snapshotter
 	agentCompletion   *completion.Handler
 	// umbrellaCloseIssue closes the umbrella GitHub issue on full roll-up.
 	// nil defaults to github.CloseIssue; overridden in tests.
 	umbrellaCloseIssue func(repo string, number int, comment string) error
+	// umbrellaFetchIssue fetches a dependency's closing issue to check a
+	// "label" DepCondition. nil defaults to github.FetchIssue; overridden in
+	// tests.
+	umbrellaFetchIssue func(repo string, number int) (github.Issue, error)
 
 	// umbrellaRecoveryMu guards umbrellaRecoveryInFlight — App-owned recovery
 	// coordination state (deliberately not a package-level map) for the
@@ -171,6 +266,8 @@ type App struct {
 	configSvc    *ConfigService
 	intgSvc      *IntegrationService
 	statsSvc     *StatsService
+	auditSvc     *AuditService
+	selfMonSvc   *SelfMonitorService
 	reviewSvc    *ReviewService
 	workflowSvc  *WorkflowService
 	infoSvc      *InfoService
@@ -180,6 +277,26 @@ type App struct {
 
 	// HTTP-only services. QueueService must stay out of V3Services().
 	queueSvc *QueueService
+}
+
+// goWhileRunning adds tracked background work only while shutdown has not
+// begun. BeginDrain holds the same lock before it transitions lifecycle state,
+// closing the WaitGroup Add-vs-Wait window during Shutdown.
+func (a *App) goWhileRunning(fn func()) bool {
+	if a == nil || fn == nil {
+		return false
+	}
+	a.backgroundMu.Lock()
+	defer a.backgroundMu.Unlock()
+	switch a.lifecycleState() {
+	case lifecycleStateIdle, lifecycleStateRunning:
+		// Tests and startup code may schedule work before the running marker is
+		// installed; both states are safe until BeginDrain takes backgroundMu.
+	case lifecycleStateDraining, lifecycleStateStopping, lifecycleStateStopped:
+		return false
+	}
+	a.wg.Go(fn)
+	return true
 }
 
 // Option configures App behaviour at construction time.
@@ -234,6 +351,7 @@ func NewApp(logger *slog.Logger, logLevel *slog.LevelVar, cfg *config.Config, op
 		dispatchNudge:            make(chan struct{}, 1),
 		umbrellaRecoveryInFlight: make(map[string]bool),
 	}
+	a.activeCfg.Store(cfg)
 	// Pre-allocate service structs so Wails can bind them before startup().
 	// Fields are populated in startup() once dependencies are initialized.
 	a.taskSvc = &TaskService{}
@@ -245,6 +363,8 @@ func NewApp(logger *slog.Logger, logLevel *slog.LevelVar, cfg *config.Config, op
 	a.configSvc = &ConfigService{}
 	a.intgSvc = &IntegrationService{}
 	a.statsSvc = &StatsService{}
+	a.auditSvc = &AuditService{}
+	a.selfMonSvc = &SelfMonitorService{}
 	a.reviewSvc = &ReviewService{}
 	a.workflowSvc = &WorkflowService{}
 	a.infoSvc = &InfoService{}
@@ -256,7 +376,21 @@ func NewApp(logger *slog.Logger, logLevel *slog.LevelVar, cfg *config.Config, op
 	for _, o := range opts {
 		o(a)
 	}
+	a.initializeABTesting(cfg.ABTesting)
 	return a
+}
+
+// currentConfig returns one immutable configuration snapshot for the caller's
+// whole operation. A reload publishes a replacement snapshot atomically, so a
+// reader can never observe a torn struct or a mixture of two configurations.
+func (a *App) currentConfig() *config.Config {
+	if a == nil {
+		return nil
+	}
+	if cfg := a.activeCfg.Load(); cfg != nil {
+		return cfg
+	}
+	return a.cfg
 }
 
 // acquireHomeLock takes an exclusive, non-blocking flock on
@@ -285,35 +419,82 @@ func (a *App) acquireHomeLock() error {
 	return nil
 }
 
-func (a *App) startLifecycle(ctx context.Context, emit func(string, any)) {
+func (a *App) startLifecycle(schedulerCtx, watcherCtx context.Context, emit func(string, any)) {
 	a.applyInstanceRole()
-	a.initLoopScheduler(ctx, emit)
-	a.initFileWatcher(ctx, emit)
+	a.initLoopScheduler(schedulerCtx, emit)
+	a.initFileWatcher(watcherCtx, emit)
 
-	issuesFetcher := a.initAutomations(emit)
-	a.wireServices(emit)
+	issuesFetcher := a.initAutomations(schedulerCtx, emit)
+	a.wireServices(emit) //nolint:contextcheck // TaskService uses the app-bound root context; see Startup's contextcheck note.
 
 	// syncSkillsBundle's deep diagnostic logging uses context.Background()
 	// intentionally (see skillsync.Syncer.log) — not a cancellation bug.
-	a.syncSkillsBundle() //nolint:contextcheck // plain diagnostic logging inside skillsync, see its log() comment
+	a.syncSkillsBundle(project.NormalizeSigningPolicy(a.cfg.CommitSigning())) //nolint:contextcheck // plain diagnostic logging inside skillsync, see its log() comment
 	a.snapshotter = tasksnapshot.New(config.TaskSnapshotGitDir(), a.tasksDir, time.Duration(a.cfg.DefaultTaskSnapshotInterval())*time.Second, a.logger)
 	// EnsureRepo must run before RunStartupCleanup: the startup trash prune
 	// fires CommitBeforePrune, which on a fresh install would otherwise commit
 	// into an uninitialized git dir and fail silently. StartManagers'
 	// startTaskSnapshotLoop calls EnsureRepo again (idempotent).
 	if a.cfg.TaskSnapshotEnabled() {
-		a.snapshotter.EnsureRepo(ctx)
+		a.snapshotter.EnsureRepo(schedulerCtx)
 	}
 	a.recovery = a.newRecovery()
 	a.RegisterSpotlightHotkey() //nolint:contextcheck // agent.Manager dispatch chain uses its own m.ctx field, see Startup's contextcheck note
 
 	lm := newLifecycleManager(a)
-	lm.StartWatchers(ctx)
+	// Routing reads the evaluation service's cached report on its own
+	// goroutine, so the service pointer must be published before routing
+	// primes or starts ticking.
+	lm.startEvaluationService(schedulerCtx, emit)
+	// Routing must prime before Startup returns; otherwise the first workflow
+	// dispatch after a fresh enabled boot can beat version 1 publication.
+	lm.startRoutingService(schedulerCtx, emit)
+	lm.StartWatchers(schedulerCtx)
+	// Mint the GitHub App installation token synchronously (bounded timeout)
+	// before RunStartupCleanup's recovery pushes and the monitor's
+	// Authenticated() preflight run — both used to race an empty token on
+	// every boot, since the mint previously lived inside StartPollers,
+	// several steps after recovery already ran. A mint outage degrades to
+	// ambient gh credentials instead of blocking startup. See #2494.
+	lm.mintAppTokenBeforeRecovery(schedulerCtx)
 
 	a.wg.Go(func() {
-		a.recovery.RunStartupCleanup(ctx)
-		lm.StartManagers(ctx, emit)
-		lm.StartPollers(ctx, emit, issuesFetcher)
+		if a.recoveryStartGate != nil {
+			<-a.recoveryStartGate
+		}
+		a.recovery.RunStartupCleanup(schedulerCtx)
+		if a.verification != nil && a.agents != nil {
+			active := make(map[string]struct{})
+			for _, ag := range a.agents.ListLiveAgents() {
+				active[ag.ID] = struct{}{}
+			}
+			a.verification.Reconcile(active)
+		}
+		// Startup cleanup reattaches surviving provider processes before replay
+		// can call the synchronous human-required dispatch path. Running this
+		// earlier sees an empty live-agent registry and can start a duplicate.
+		if a.humanReview != nil {
+			a.humanReview.recoverStrandedUnblockedTasks() //nolint:contextcheck // handler bounds its git/PR checks with dedicated timeouts, matching live completion.
+		}
+		a.certifyStartupRunEnvironment(schedulerCtx)
+		// Arm dispatch now that reattach/replay/restart-stale have run, then
+		// nudge so any task that changed status during the window (buffered,
+		// not dispatched — see startupRecoveryPending) is picked up by the
+		// board-wide reconcile sweep right away instead of the next tick.
+		a.startupRecoveryPending.Store(false)
+		// Replay before the nudge: board reconciliation skips a task whose
+		// workflow is still active, so a step parked on wait_for_status has to
+		// be advanced by the deferred event itself, not by the sweep.
+		a.replayDeferredStatusChanges() //nolint:contextcheck // same engine chain as initStatusHook, which binds its own e.ctx; see Startup's contextcheck note
+		a.nudgeDispatch()
+		// After the nudge, never before it: this sweeps parks whose review
+		// spawn a previous shutdown dropped, and each one prepares a worktree.
+		// Ahead of arming, it delays every live task by its own setup time.
+		if a.humanReview != nil {
+			go a.humanReview.RespawnDroppedReviews(schedulerCtx)
+		}
+		lm.StartManagers(schedulerCtx, emit)
+		lm.StartPollers(schedulerCtx, emit, issuesFetcher)
 	})
 }
 
@@ -321,6 +502,8 @@ func (a *App) cleanupFailedStartup() {
 	if a.cancel != nil {
 		a.cancel()
 	}
+	a.stopFileWatcher()
+	a.closeDatabase()
 	if a.homeUnlock != nil {
 		if err := a.homeUnlock(); err != nil {
 			a.logger.Warn("app.home_unlock.failed", "err", err)
@@ -344,6 +527,8 @@ func (a *App) cleanupFailedStartup() {
 // parameter through the entire event/dispatch/workflow fan-out these chains
 // pass through is out of scope for this pass — nolint annotations below
 // point back to this comment.
+//
+//nolint:funlen // Startup ordering and reverse cleanup are intentionally kept in one lifecycle transaction.
 func (a *App) Startup(ctx context.Context) error {
 	if err := a.acquireHomeLock(); err != nil {
 		return err
@@ -356,43 +541,129 @@ func (a *App) Startup(ctx context.Context) error {
 		a.cleanupFailedStartup()
 	}()
 
-	ctx, a.cancel = context.WithCancel(ctx)
-	a.ctx = ctx
+	appCtx, schedulerCtx, watcherCtx := a.initLifecycle(ctx)
 	a.logger.Info("app.starting")
 
-	a.initAudit()
-	a.initStats()
+	// Before the stores that can live in it: each picks its backend at
+	// construction, and a database opened afterwards would leave every one of
+	// them on files for the whole run with nothing reporting it.
+	if err := a.initDatabase(appCtx); err != nil {
+		return err
+	}
+
+	a.initAudit(appCtx)
+	a.initToolLedger(appCtx)
+	a.initStats(appCtx)
 
 	store, err := task.NewStore(a.tasksDir)
 	if err != nil {
 		a.logger.Error("task.store.init", "err", err)
 		return fmt.Errorf("task store: %w", err)
 	}
-
-	projStore, err := project.NewStore(
-		filepath.Join(config.HomeDir(), "projects"),
-		filepath.Join(config.HomeDir(), "clones"),
-	)
-	if err != nil {
-		a.logger.Error("project.store.init", "err", err)
-		return fmt.Errorf("project store: %w", err)
+	// Eagerly run the legacy-field backfill (see task.Store.Migrate) so
+	// startup pays that cost once instead of leaving it to the first List()
+	// caller. List() still self-heals on read regardless, so a failure here
+	// is logged rather than fatal.
+	if err := store.Migrate(); err != nil {
+		a.logger.Warn("task.store.migrate", "err", err)
 	}
-	a.projects = projStore
 
-	if err := a.initLoopAgents(); err != nil {
+	if err := a.initProjects(appCtx); err != nil {
+		return err
+	}
+
+	if err := a.initLoopAgents(appCtx); err != nil {
 		return fmt.Errorf("loop agents: %w", err)
 	}
 	if a.emitFactory != nil {
-		a.emit = a.emitFactory(ctx)
+		a.emit = a.emitFactory(appCtx)
 	} else {
 		a.emit = func(string, any) {}
 	}
-	// This closure's DispatchEvent -> execShell eventually derives its
-	// context from workflow.Engine's own e.ctx field (Engine.SetContext),
-	// not an explicit parameter threaded through the closure. contextcheck
-	// no longer flags this call site (verified with a clean build+lint
-	// cache), so no suppression directive is needed here.
-	emit := func(event string, data any) {
+	emit := a.taskEventEmitter(store)
+	a.initBgops(appCtx, emit)
+
+	a.emitDegradedWarnings(emit)
+	taskPersist := a.openTaskPersistence(appCtx)
+	if taskPersist != nil {
+		a.tasks = task.NewManagerWithPersistence(store, taskPersist, task.EmitterFunc(emit))
+		a.tasks.SetCommentPersistence(taskdb.NewCommentStore(a.database))
+	} else {
+		a.tasks = task.NewManager(store, task.EmitterFunc(emit))
+	}
+	// Arm the dispatch gate before the status hook is wired — initStatusHook's
+	// handler reaches dispatchStatusWorkflow/dispatchTaskCreatedWorkflow, and
+	// the file watcher (initFileWatcher, later in startLifecycle) also observes
+	// status changes. atomic.Bool's zero value is false ("not pending"), so the
+	// gate would fail open for any init step in this window that flips a task's
+	// status. Set it here, before either observer exists. Cleared only after
+	// RunStartupCleanup's reattach populates the live agent registry (see
+	// startLifecycle and startupRecoveryPending's doc comment).
+	a.startupRecoveryPending.Store(true)
+	a.initStatusHook() //nolint:contextcheck // workflow engine uses its own e.ctx field, see Startup's contextcheck note
+	a.initLocalStores(appCtx)
+	a.cleanupProtected = a.openProtectedStore(appCtx)
+	a.notifier = notification.New(emit)
+	a.notifier.SetDesktop(a.cfg.Notification.Desktop)
+	a.initLimits(a.openLimitsStore(appCtx)) //nolint:contextcheck // the live poller derives from a.ctx directly, see Startup's contextcheck note
+	// initSandboxes has no agent-manager dependency and must run before
+	// initAgentManager so ManagerConfig.SandboxHome can be wired at construction.
+	a.initSandboxes()
+	if err := a.initAgentManager(appCtx, emit); err != nil {
+		return err
+	}
+	a.initProviderHealth(schedulerCtx, emit)
+
+	a.prTracker = github.NewIssueTrackerWithMaxRetries(30*time.Minute, a.cfg.GitHub.PRFixRetries())
+
+	configureProjectGitDefaults(a.worktreesDir)
+	// Initialize domain services (dependency order: worktrees → agentOrch → reviewer, workflow)
+	a.worktrees = worktree.New(worktree.Config{
+		WorktreesDir:      a.worktreesDir,
+		Projects:          a.projects,
+		Tasks:             a.tasks,
+		Logger:            a.logger,
+		LogsDir:           a.logDir,
+		PRBranchResolver:  github.FetchPRBranch,
+		AgentChecker:      a.agents.HasRunningAgentForTask,
+		LiveAgentChecker:  a.agents.HasLiveRegisteredAgentForTask,
+		ProtectedFindings: a.cleanupProtected,
+	})
+	if a.workerControl != nil {
+		a.workerControl.SetArtifactImporter(a.importRemoteHandback)
+	}
+	a.agentOrch = agentorch.New(a.tasks, a.projects, a.agents, a.audit, a.logger, a.worktrees, a.cfg)
+	a.agentOrch.SetContext(appCtx)
+	a.initRunEnvironment()
+	a.initReviewer(emit)
+
+	wfStore, wfErr := a.openWorkflowStore(appCtx)
+	if wfErr != nil {
+		a.logger.Error("workflow.store.init", "err", wfErr)
+	}
+	a.initWorkflowEngine(wfStore)
+
+	a.initCluster()
+
+	a.initAgentConfig()
+
+	a.startLifecycle(schedulerCtx, watcherCtx, emit)
+
+	a.logAutomationsSummary()
+	a.logger.Info("app.started")
+	started = true
+	return nil
+}
+
+func (a *App) initReviewer(emit func(string, any)) {
+	a.reviewer = review.New(a.tasks, a.projects, a.agents, a.audit, a.logger, a.prTracker, emit, a.worktrees, a.renovatePRsForMonitor, a.cfg, a.experience)
+	a.reviewer.SetABTestingSource(a.abTestingConfig)
+	a.reviewer.SetInterventionStore(a.intervention)
+	a.reviewer.SetVerification(a.verification)
+}
+
+func (a *App) taskEventEmitter(store *task.Store) func(string, any) {
+	return func(event string, data any) {
 		switch event {
 		case events.TaskCreated, events.TaskUpdated, events.TaskDeleted:
 			if path, ok := data.(string); ok {
@@ -416,58 +687,13 @@ func (a *App) Startup(ctx context.Context) error {
 		}
 		a.emit(event, data)
 	}
-	a.initBgops(emit)
-
-	a.emitDegradedWarnings(emit)
-	a.tasks = task.NewManager(store, task.EmitterFunc(emit))
-	a.initStatusHook() //nolint:contextcheck // workflow engine uses its own e.ctx field, see Startup's contextcheck note
-	a.initLocalStores()
-	a.notifier = notification.New(emit)
-	a.notifier.SetDesktop(a.cfg.Notification.Desktop)
-	a.initLimits() //nolint:contextcheck // backfill derives from a.ctx directly, see Startup's contextcheck note
-	// initSandboxes has no agent-manager dependency and must run before
-	// initAgentManager so ManagerConfig.SandboxHome can be wired at construction.
-	a.initSandboxes()
-	if err := a.initAgentManager(ctx, emit); err != nil {
-		return err
-	}
-	a.initProviderHealth(ctx, emit)
-
-	a.prTracker = github.NewIssueTracker(30 * time.Minute)
-
-	configureProjectGitDefaults()
-	// Initialize domain services (dependency order: worktrees → agentOrch → reviewer, workflow)
-	a.worktrees = worktree.New(worktree.Config{
-		WorktreesDir:     a.worktreesDir,
-		Projects:         a.projects,
-		Tasks:            a.tasks,
-		Logger:           a.logger,
-		LogsDir:          a.logDir,
-		PRBranchResolver: github.FetchPRBranch,
-		AgentChecker:     a.agents.HasRunningAgentForTask,
-		LiveAgentChecker: a.agents.HasLiveRegisteredAgentForTask,
-	})
-	a.agentOrch = agentorch.New(a.tasks, a.projects, a.agents, a.audit, a.logger, a.worktrees, a.cfg)
-	a.agentOrch.SetContext(ctx)
-	a.reviewer = review.New(a.tasks, a.projects, a.agents, a.audit, a.logger, a.prTracker, emit, a.worktrees, a.renovatePRsForMonitor, a.cfg, a.experience)
-
-	a.initWorkflowEngine()
-
-	a.initCluster()
-
-	a.initAgentConfig()
-
-	a.startLifecycle(ctx, emit)
-
-	a.logAutomationsSummary()
-	a.logger.Info("app.started")
-	started = true
-	return nil
 }
 
-func configureProjectGitDefaults() {
+func configureProjectGitDefaults(worktreesDir string) {
 	project.FetchTTL = 60 * time.Second
+	project.CloneHealthTTL = 60 * time.Second
 	project.QuarantineDir = filepath.Join(config.HomeDir(), "quarantine")
+	project.WorktreesDir = worktreesDir
 }
 
 // sandboxRetentionWindow translates the resolved sandbox.retention_hours
@@ -514,6 +740,21 @@ func (a *App) GetLifecyclePhases() evaluation.PhaseReport {
 		return evaluation.PhaseReport{}
 	}
 	return rep
+}
+
+// GetAutonomyTrend returns all-time / last-week / last-month autonomy
+// snapshots plus a week-by-week trend, so the Evaluation tab can show how
+// autonomy has moved over time instead of only the current rolling window.
+func (a *App) GetAutonomyTrend() evaluation.AutonomyTrend {
+	if a.evaluationSvc == nil {
+		return evaluation.AutonomyTrend{}
+	}
+	trend, err := a.evaluationSvc.AutonomyTrend(context.Background())
+	if err != nil {
+		a.logger.Warn("evaluation.autonomy_trend.failed", "err", err)
+		return evaluation.AutonomyTrend{}
+	}
+	return trend
 }
 
 // RunLearningDigestNow synchronously generates and persists a fresh Learning
@@ -565,35 +806,60 @@ func (a *App) fleetWorkBlocklist() ([]string, error) {
 	return bl, nil
 }
 
-func (a *App) Shutdown(_ context.Context) {
-	a.logger.Info("app.stopping")
+func (a *App) Shutdown(ctx context.Context) {
+	a.BeginDrain()
 	if a.loopSched != nil {
 		a.loopSched.Stop()
 	}
-	if a.cancel != nil {
-		a.cancel()
+	waitCtx, cancel := shutdownWaitContext(ctx)
+	defer cancel()
+	if !waitGroupContext(waitCtx, &a.wg) {
+		a.logger.Warn("app.shutdown.wait_timeout", "grace", shutdownWaitBudget(waitCtx), "stacks", a.dumpGoroutineStacks())
 	}
-	if !waitGroupTimeout(&a.wg, appShutdownWaitGrace) {
-		a.logger.Warn("app.shutdown.wait_timeout", "grace", appShutdownWaitGrace, "stacks", a.dumpGoroutineStacks())
-	}
+	a.logger.Info("app.stopping")
+	a.beginShutdown()
 	if a.agents != nil {
 		a.agents.Shutdown()
 	}
+	a.stopFileWatcher()
 	if a.audit != nil {
 		_ = a.audit.Close()
 	}
+	if a.toolLedger != nil {
+		_ = a.toolLedger.Close()
+	}
+	a.closeDatabase()
 	if a.homeUnlock != nil {
 		if err := a.homeUnlock(); err != nil {
 			a.logger.Warn("app.home_unlock.failed", "err", err)
 		}
 		a.homeUnlock = nil
 	}
+	a.finishShutdown()
 	a.logger.Info("app.stopped")
 }
 
 const appShutdownWaitGrace = 15 * time.Second
+const fileWatcherShutdownGrace = 2 * time.Second
 
-func waitGroupTimeout(wg *sync.WaitGroup, grace time.Duration) bool {
+func shutdownWaitContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, ok := ctx.Deadline(); ok {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, appShutdownWaitGrace)
+}
+
+func shutdownWaitBudget(ctx context.Context) time.Duration {
+	if deadline, ok := ctx.Deadline(); ok {
+		return time.Until(deadline)
+	}
+	return appShutdownWaitGrace
+}
+
+func waitGroupContext(ctx context.Context, wg *sync.WaitGroup) bool {
 	done := make(chan struct{})
 	go func() {
 		wg.Wait()
@@ -602,8 +868,25 @@ func waitGroupTimeout(wg *sync.WaitGroup, grace time.Duration) bool {
 	select {
 	case <-done:
 		return true
-	case <-time.After(grace):
+	case <-ctx.Done():
 		return false
+	}
+}
+
+func (a *App) stopFileWatcher() {
+	cancel := a.watcherCancel
+	a.watcherCancel = nil
+	if cancel == nil {
+		return
+	}
+	cancel()
+	if a.watcher == nil {
+		return
+	}
+	select {
+	case <-a.watcher.Done():
+	case <-time.After(fileWatcherShutdownGrace):
+		a.logger.Warn("watcher.shutdown.timeout", "grace", fileWatcherShutdownGrace)
 	}
 }
 
@@ -624,7 +907,7 @@ func (a *App) dumpGoroutineStacks() string {
 // User-triggered starts are never one-shot — that flag is reserved for workflow
 // steps that expect a single turn.
 func (a *App) StartAgent(taskID, mode, prompt string, includeTaskDescription bool) (*agent.Agent, error) {
-	return a.agentOrch.StartAgent(taskID, mode, prompt, includeTaskDescription, false)
+	return a.agentOrch.StartManualAgent(taskID, mode, prompt, includeTaskDescription, false)
 }
 
 // StartK8sPocAgent starts a project-less headless run directly through
@@ -645,6 +928,7 @@ func (a *App) StartK8sPocAgent(prompt string) (*agent.Agent, error) {
 	ag, err := a.agents.Run(agent.RunConfig{
 		TaskID:   "k8s-poc-" + uuid.NewString()[:8],
 		Name:     string(agent.RoleImplementation),
+		Role:     agent.RoleImplementation,
 		Mode:     "headless",
 		Prompt:   prompt,
 		Dir:      home,
@@ -663,34 +947,6 @@ func (a *App) AgentQueueSnapshot() AgentQueueSnapshot {
 		return AgentQueueSnapshot{Items: []AgentQueueSnapshotItem{}}
 	}
 	return a.queueSvc.AgentQueueSnapshot()
-}
-
-// StartChat creates a new interactive chat bound to projectID using the
-// requested provider ("claude" or "codex"). Each chat gets a dedicated
-// local-only worktree that is cleaned up when StopChat is called.
-func (a *App) StartChat(projectID, providerName, prompt string) (*agent.Agent, error) {
-	return a.agentOrch.StartChat(projectID, providerName, prompt)
-}
-
-// StopChat stops a chat agent, deletes its synthetic task, and removes its
-// worktree. Refuses to operate on agents that are not bound to a chat task
-// so the UI cannot accidentally delete a real task.
-func (a *App) StopChat(agentID string) error {
-	ag, err := a.agents.GetAgent(agentID)
-	if err != nil {
-		return err
-	}
-	if ag.TaskID == "" {
-		return fmt.Errorf("agent %s is not bound to a task", agentID)
-	}
-	t, err := a.tasks.Get(ag.TaskID)
-	if err != nil {
-		return fmt.Errorf("lookup chat task: %w", err)
-	}
-	if t.TaskType != task.TaskTypeChat {
-		return fmt.Errorf("agent %s is not a chat (task_type=%s)", agentID, t.TaskType)
-	}
-	return a.taskSvc.DeleteTask(t.ID)
 }
 
 // ListBackgroundOps returns active and recently-completed background operations.
@@ -729,7 +985,7 @@ func (a *App) RegisterSpotlightHotkey() {
 		}()
 	})
 
-	if err := spotlight.Register(func() {
+	a.registerSpotlight(func() {
 		projectsJSON := "[]"
 		if projects, err := a.projectSvc.ListProjects(); err == nil {
 			if data, err := json.Marshal(projects); err == nil {
@@ -737,12 +993,33 @@ func (a *App) RegisterSpotlightHotkey() {
 			}
 		}
 		spotlight.ShowPanel(projectsJSON)
-	}); err != nil {
-		a.logger.Error("spotlight.register", "err", err)
-		return
-	}
-	a.logger.Info("spotlight.registered", "hotkey", "ctrl+space")
+	})
 }
 
 // Context returns the app's running context.
 func (a *App) Context() context.Context { return a.ctx }
+
+// HTTPAdmission decides whether one HTTP API method may run.
+func (a *App) HTTPAdmission(service, method string, meta httpapi.MethodMeta) error {
+	return a.httpAdmission(service, method, meta)
+}
+
+// SetAgentBoard tells task-scoped agents which board to reach.
+//
+// An agent's sybra-cli has no filesystem path to task state and cannot
+// discover a board from inside the process sandbox, so it is given the address
+// instead. Call this before Startup: the recovery pass dispatches agents for
+// runs it finds stale, and one that starts unnamed burns a whole run on CLI
+// calls that all refuse. The address comes from configuration, so it is known
+// before anything listens.
+func (a *App) SetAgentBoard(target, token, ca string) {
+	if a == nil {
+		return
+	}
+	a.boardTarget, a.boardToken, a.boardCA = target, token, ca
+	// Startup has not run yet in the ordinary case; initAgents applies it to
+	// the manager it builds. Applied here too so a later call still lands.
+	if a.agents != nil {
+		a.agents.SetBoard(target, token, ca)
+	}
+}

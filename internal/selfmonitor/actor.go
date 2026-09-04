@@ -2,6 +2,7 @@ package selfmonitor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -14,7 +15,7 @@ import (
 // Defined as a local interface so tests can inject a fake without pulling in
 // the full filesystem-backed store.
 type taskUpdater interface {
-	Update(id string, u task.Update) (task.Task, error)
+	Apply(intent task.TransitionIntent) (task.TransitionResult, error)
 }
 
 // Actor applies autonomous remediations to confirmed health findings.
@@ -41,9 +42,10 @@ func (a *Actor) Act(_ context.Context, inv InvestigatedFinding) ActionRecord {
 	}
 }
 
-// flipAgentMode updates the task's agent_mode from headless to interactive
-// when a triage_mismatch finding is confirmed. The task already escalated to
-// human-required at least once, so headless re-dispatch will loop again.
+// flipAgentMode requeues a confirmed triage_mismatch task onto the headless
+// execution path. The task already escalated to human-required at least
+// once, so this re-dispatch is a retry, not a mode change — interactive is
+// going away as a remediation target (see the interactive-removal umbrella).
 func (a *Actor) flipAgentMode(inv InvestigatedFinding) ActionRecord {
 	rec := ActionRecord{
 		Category:    string(inv.Finding.Category),
@@ -64,16 +66,37 @@ func (a *Actor) flipAgentMode(inv InvestigatedFinding) ActionRecord {
 		return rec
 	}
 
-	mode := task.AgentModeInteractive
-	if _, err := a.Tasks.Update(inv.Finding.TaskID, task.Update{AgentMode: &mode}); err != nil {
+	mode := task.AgentModeHeadless
+	expected := task.StatusHumanRequired
+	if _, err := a.Tasks.Apply(task.TransitionIntent{
+		TaskID:         inv.Finding.TaskID,
+		ToStatus:       task.StatusTodo,
+		Actor:          "selfmonitor.flip_agent_mode",
+		ExpectedStatus: &expected,
+		Extra:          task.Update{AgentMode: &mode},
+	}); err != nil {
+		var conflict *task.ConflictError
+		if errors.As(err, &conflict) {
+			if a.Logger != nil {
+				a.Logger.Info("actor.flip_agent_mode.skipped",
+					"task", inv.Finding.TaskID,
+					"fingerprint", inv.Fingerprint,
+					"status", conflict.ActualStatus)
+			}
+			return ActionRecord{}
+		}
 		rec.Error = fmt.Sprintf("update task: %s", err)
-		a.Logger.Warn("actor.flip_agent_mode.failed",
-			"task", inv.Finding.TaskID, "err", err)
+		if a.Logger != nil {
+			a.Logger.Warn("actor.flip_agent_mode.failed",
+				"task", inv.Finding.TaskID, "err", err)
+		}
 		return rec
 	}
 
-	a.Logger.Info("actor.flip_agent_mode",
-		"task", inv.Finding.TaskID, "fingerprint", inv.Fingerprint)
+	if a.Logger != nil {
+		a.Logger.Info("actor.flip_agent_mode",
+			"task", inv.Finding.TaskID, "fingerprint", inv.Fingerprint)
+	}
 	return rec
 }
 

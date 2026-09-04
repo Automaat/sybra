@@ -2,18 +2,22 @@ package llmexec
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 func TestRunJSONFallsBackOnRateLimit(t *testing.T) {
 	dir := t.TempDir()
-	writeExe(t, filepath.Join(dir, "claude"), `#!/bin/sh
+	writeExe(t, filepath.Join(dir, providerid.Claude), `#!/bin/sh
 echo "rate limit exceeded" >&2
 exit 1
 `)
@@ -36,7 +40,7 @@ printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{
 
 func TestRunJSONPassesCodexPromptOnStdin(t *testing.T) {
 	dir := t.TempDir()
-	writeExe(t, filepath.Join(dir, "claude"), `#!/bin/sh
+	writeExe(t, filepath.Join(dir, providerid.Claude), `#!/bin/sh
 echo "rate limit exceeded" >&2
 exit 1
 `)
@@ -134,7 +138,7 @@ printf '%s\n' '{"type":"assistant.message","data":{"content":"{\"ok\":true}"}}'
 
 func TestRunJSONFallsBackOnCodexUsageLimit(t *testing.T) {
 	dir := t.TempDir()
-	writeExe(t, filepath.Join(dir, "claude"), `#!/bin/sh
+	writeExe(t, filepath.Join(dir, providerid.Claude), `#!/bin/sh
 echo "rate limit exceeded" >&2
 exit 1
 `)
@@ -242,7 +246,7 @@ printf '%%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"
 
 func TestRunJSONEmbedsSchemaAsProseForClaude(t *testing.T) {
 	dir := t.TempDir()
-	writeExe(t, filepath.Join(dir, "claude"), `#!/bin/bash
+	writeExe(t, filepath.Join(dir, providerid.Claude), `#!/bin/bash
 if [[ "$*" == *"--output-schema"* ]]; then
   echo "claude must not receive --output-schema" >&2
   exit 7
@@ -291,15 +295,19 @@ func TestRunJSONFallsBackWhenSchemaTempFileFails(t *testing.T) {
 echo "codex should never run when schema delivery fails" >&2
 exit 7
 `)
-	writeExe(t, filepath.Join(dir, "claude"), `#!/bin/sh
+	writeExe(t, filepath.Join(dir, providerid.Claude), `#!/bin/sh
 printf '%s\n' '{"result":"{\"ok\":true}"}'
 `)
 	t.Setenv("PATH", dir)
+	// Breaks the schema temp file only. Dir keeps the call's own working
+	// directory off this unusable temp root, so the failover under test is
+	// still schema delivery rather than a missing working directory.
 	t.Setenv("TMPDIR", filepath.Join(dir, "does-not-exist"))
 
 	res, err := RunJSON(context.Background(), "classify", Options{
 		Provider: "codex",
 		Schema:   `{"type":"object"}`,
+		Dir:      t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("RunJSON: %v", err)
@@ -334,7 +342,7 @@ printf '%s\n' '{"type":"assistant.message","data":{"content":"{\"ok\":true}"}}'
 
 func TestRunJSONAllProvidersFailedNamesLastProvider(t *testing.T) {
 	dir := t.TempDir()
-	writeExe(t, filepath.Join(dir, "claude"), `#!/bin/sh
+	writeExe(t, filepath.Join(dir, providerid.Claude), `#!/bin/sh
 echo "rate limit exceeded" >&2
 exit 1
 `)
@@ -352,7 +360,9 @@ exit 1
 `)
 	t.Setenv("PATH", dir)
 
-	res, err := RunJSON(context.Background(), "classify", Options{})
+	// Tools on, so the chain still ends at opencode: with tools off it is not
+	// a fallback, which TestCandidatesDropsToolOnlyFallback covers.
+	res, err := RunJSON(context.Background(), "classify", Options{EnableTools: true})
 	if err == nil {
 		t.Fatal("RunJSON: want error when every provider fails")
 	}
@@ -378,7 +388,7 @@ func writeExe(t *testing.T, path, content string) {
 // RunJSON through this line.
 func TestRunJSONWithNilHealthChecker(t *testing.T) {
 	dir := t.TempDir()
-	writeExe(t, filepath.Join(dir, "claude"), `#!/bin/sh
+	writeExe(t, filepath.Join(dir, providerid.Claude), `#!/bin/sh
 printf '%s\n' '{"type":"result","subtype":"success","result":"{\"ok\":true}","total_cost_usd":0.01}'
 `)
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -396,5 +406,217 @@ printf '%s\n' '{"type":"result","subtype":"success","result":"{\"ok\":true}","to
 	}
 	if !strings.Contains(res.Text, `"ok"`) {
 		t.Errorf("Text = %q, want the provider's payload", res.Text)
+	}
+}
+
+// TestRunJSONKeepsToolsOffByDefault pins the inversion in #3383. These calls
+// are classifiers and judges built from GitHub-sourced text, and every one of
+// them used to hand its provider a fully-permissioned session.
+func TestRunJSONKeepsToolsOffByDefault(t *testing.T) {
+	for _, tc := range []struct {
+		provider string
+		script   string
+		wantArg  string
+		denyArg  string
+	}{
+		{
+			provider: providerid.Claude,
+			script:   `printf '%s\n' "$@" > "$ARGS_FILE"; printf '%s\n' '{"result":"{\"ok\":true}"}'`,
+			wantArg:  "--disallowedTools",
+			denyArg:  "--dangerously-skip-permissions",
+		},
+		{
+			provider: providerid.Codex,
+			script:   `printf '%s\n' "$@" > "$ARGS_FILE"; printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"ok\":true}"}}'`,
+			wantArg:  "read-only",
+			denyArg:  "--dangerously-bypass-approvals-and-sandbox",
+		},
+		{
+			provider: providerid.Copilot,
+			script:   `printf '%s\n' "$@" > "$ARGS_FILE"; printf '%s\n' '{"type":"assistant.message","data":{"content":"{\"ok\":true}"}}'`,
+			wantArg:  "--no-ask-user",
+			denyArg:  "--allow-all-tools",
+		},
+	} {
+		t.Run(tc.provider, func(t *testing.T) {
+			dir := t.TempDir()
+			argsFile := filepath.Join(dir, "args")
+			writeExe(t, filepath.Join(dir, tc.provider), "#!/bin/sh\nARGS_FILE="+argsFile+"\n"+tc.script+"\n")
+			t.Setenv("PATH", dir)
+
+			if _, err := RunJSON(context.Background(), "classify", Options{Provider: tc.provider}); err != nil {
+				t.Fatalf("RunJSON: %v", err)
+			}
+			recorded, err := os.ReadFile(argsFile)
+			if err != nil {
+				t.Fatalf("read recorded argv: %v", err)
+			}
+			got := string(recorded)
+			if !strings.Contains(got, tc.wantArg) {
+				t.Errorf("argv lacks %q:\n%s", tc.wantArg, got)
+			}
+			if strings.Contains(got, tc.denyArg) {
+				t.Errorf("argv still carries %q:\n%s", tc.denyArg, got)
+			}
+		})
+	}
+}
+
+// TestRunJSONRunsOutsideTheCallersDirectory pins the other half: the CLI used
+// to inherit the serving process's cwd, which on the deploy host is Sybra's
+// own checkout, so a tool-enabled call could write into the source tree.
+func TestRunJSONRunsOutsideTheCallersDirectory(t *testing.T) {
+	dir := t.TempDir()
+	cwdFile := filepath.Join(dir, "cwd")
+	writeExe(t, filepath.Join(dir, providerid.Claude), "#!/bin/sh\npwd > "+cwdFile+"\nprintf '%s\\n' '{\"result\":\"{\\\"ok\\\":true}\"}'\n")
+	t.Setenv("PATH", dir)
+
+	if _, err := RunJSON(context.Background(), "classify", Options{Provider: providerid.Claude}); err != nil {
+		t.Fatalf("RunJSON: %v", err)
+	}
+	recorded, err := os.ReadFile(cwdFile)
+	if err != nil {
+		t.Fatalf("read recorded cwd: %v", err)
+	}
+	self, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if got := strings.TrimSpace(string(recorded)); got == self {
+		t.Fatalf("provider ran in the caller's directory %q", got)
+	}
+}
+
+// TestRunJSONUsesTheRegisteredCommandFactory pins the seam the app wires: the
+// sandbox lives in internal/agent, which imports this package, so containment
+// arrives by registration. A call made after registration must not spawn the
+// CLI itself.
+func TestRunJSONUsesTheRegisteredCommandFactory(t *testing.T) {
+	dir := t.TempDir()
+	writeExe(t, filepath.Join(dir, providerid.Claude), "#!/bin/sh\nexit 9\n")
+	stand := filepath.Join(dir, "stand-in")
+	writeExe(t, stand, "#!/bin/sh\nprintf '%s\\n' '{\"result\":\"{\\\"ok\\\":true}\"}'\n")
+	t.Setenv("PATH", dir)
+
+	var gotDir, gotName string
+	cleaned := false
+	SetCommandFactory(func(ctx context.Context, d, name string, _ []string) (*exec.Cmd, func(), error) {
+		gotDir, gotName = d, name
+		return exec.CommandContext(ctx, stand), func() { cleaned = true }, nil
+	})
+	t.Cleanup(func() { SetCommandFactory(nil) })
+
+	if _, err := RunJSON(context.Background(), "classify", Options{Provider: providerid.Claude}); err != nil {
+		t.Fatalf("RunJSON: %v", err)
+	}
+	if gotName != "claude" {
+		t.Errorf("factory got name %q, want claude", gotName)
+	}
+	if gotDir == "" {
+		t.Error("factory got no working directory")
+	}
+	if !cleaned {
+		t.Error("factory cleanup never ran; a scratch home per call would accumulate")
+	}
+}
+
+// TestCandidatesDropsToolOnlyFallback pins the failover half of the tools-off
+// default. opencode's non-interactive mode approves every tool call and has no
+// verified alternative, so it must not be the hop a tools-off call silently
+// lands on. An explicit preference still reaches it, since that caller chose
+// the CLI knowingly.
+func TestCandidatesDropsToolOnlyFallback(t *testing.T) {
+	if got := candidates("", false); slices.Contains(got, providerid.OpenCode) {
+		t.Errorf("tools-off fallback chain still contains opencode: %v", got)
+	}
+	if got := candidates("", true); !slices.Contains(got, providerid.OpenCode) {
+		t.Errorf("tools-on chain dropped opencode: %v", got)
+	}
+	if got := candidates(providerid.OpenCode, false); got[0] != providerid.OpenCode {
+		t.Errorf("explicit opencode preference was dropped: %v", got)
+	}
+}
+
+func TestProviderError_SalvagesTheReasonFromStdout(t *testing.T) {
+	tests := []struct {
+		name   string
+		stderr string
+		stdout string
+		want   string
+	}{
+		{
+			name:   "stderr wins when present",
+			stderr: "boom from stderr",
+			stdout: `{"type":"error","message":"{\"error\":{\"message\":\"ignored\"}}"}`,
+			want:   "boom from stderr",
+		},
+		{
+			name:   "json error event on stdout is used when stderr is empty",
+			stdout: "{\"type\":\"thread.started\"}\n{\"type\":\"error\",\"message\":\"invalid_json_schema: uniqueItems is not permitted\"}\n",
+			want:   "invalid_json_schema: uniqueItems is not permitted",
+		},
+		{
+			name:   "nested error message is used",
+			stdout: `{"type":"turn.failed","error":{"message":"400 invalid schema"}}`,
+			want:   "400 invalid schema",
+		},
+		{
+			name:   "plain stdout carries no reason",
+			stdout: "just some output\n",
+			want:   "",
+		},
+		{
+			name:   "string-valued error field is read",
+			stdout: `{"type":"error","error":"401 unauthorized"}`,
+			want:   "401 unauthorized",
+		},
+		{
+			name:   "failure-typed event without an error field is read",
+			stdout: `{"type":"thread.error","message":"real failure"}`,
+			want:   "real failure",
+		},
+		{
+			name:   "an ordinary assistant message is never reported as the cause",
+			stdout: `{"type":"item.completed","level":"error","message":"assistant said: umbrella acme/private#42"}`,
+			want:   "",
+		},
+		{
+			name:   "an error field on a non-failure event is ignored",
+			stdout: `{"type":"item.completed","error":{"message":"assistant quoted a 400"}}`,
+			want:   "",
+		},
+		{
+			name:   "an explicit is_error flag marks the failure",
+			stdout: `{"type":"result","is_error":true,"message":"credit balance too low"}`,
+			want:   "credit balance too low",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := providerError(providerid.Codex, errors.New("exit status 1"), tc.stderr, tc.stdout)
+			if !strings.Contains(err.Error(), "exit status 1") {
+				t.Fatalf("error lost the exit status: %v", err)
+			}
+			if tc.want == "" {
+				if err.Error() != providerid.Codex+": exit status 1" {
+					t.Fatalf("error = %q, want the bare exit status", err)
+				}
+				return
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %q, want it to carry %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestProviderStdoutDetail_IsBounded(t *testing.T) {
+	long := strings.Repeat("x", providerDetailMax*3)
+	detail := providerStdoutDetail(`{"type":"error","message":"` + long + `"}`)
+	if len(detail) > providerDetailMax+len("...") {
+		t.Fatalf("detail length = %d, want at most %d", len(detail), providerDetailMax+len("..."))
+	}
+	if detail == "" {
+		t.Fatal("bounded detail was dropped entirely")
 	}
 }

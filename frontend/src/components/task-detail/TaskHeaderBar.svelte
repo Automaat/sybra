@@ -7,6 +7,7 @@
   import { StartReview, StartFixReview } from '$lib/api'
   import { statusOptionsFor, STATUS_MAP, coreStatus } from '../../lib/statuses.js'
   import { isTamperFlaggedTask } from '$lib/tamper.js'
+  import MobileSheet from '../shell/MobileSheet.svelte'
 
   interface Props {
     task: Task
@@ -31,6 +32,7 @@
   let fixReviewLoading = $state(false)
   let error = $state('')
   let menuOpen = $state(false)
+  let deleteConfirmOpen = $state(false)
 
   function closeMenu() {
     menuOpen = false
@@ -107,7 +109,7 @@
       copyBranch()
     }
     function onDeleteEv() {
-      deleteTask()
+      openDeleteConfirm()
     }
     window.addEventListener('task-detail:edit-title', onEditTitle)
     window.addEventListener('task-detail:focus-status', onFocusStatus)
@@ -154,15 +156,6 @@
     if (task.status === value) return
     try {
       await taskStore.update(task.id, { status: value })
-    } catch (e) {
-      error = String(e)
-    }
-  }
-
-  async function updateTaskType(value: string) {
-    if ((task.taskType ?? 'normal') === value) return
-    try {
-      await taskStore.update(task.id, { task_type: value })
     } catch (e) {
       error = String(e)
     }
@@ -223,11 +216,18 @@
     }
   }
 
-  async function deleteTask() {
-    if (!window.confirm(`Delete task "${task.title}"? This cannot be undone.`)) return
+  function openDeleteConfirm() {
+    if (deleting) return
+    error = ''
+    deleteConfirmOpen = true
+  }
+
+  async function confirmDeleteTask() {
     deleting = true
     try {
       await taskStore.remove(task.id)
+      deleteConfirmOpen = false
+      deleting = false
       ondelete()
     } catch (e) {
       error = String(e)
@@ -364,22 +364,6 @@
       {#if menuOpen}
         <button type="button" tabindex="-1" class="fixed inset-0 z-40 cursor-default" aria-label="Close menu" onclick={closeMenu}></button>
         <div role="menu" class="absolute right-0 z-50 mt-1 w-48 rounded-lg py-1 elevation-popover">
-          <div class="flex flex-col gap-1 px-3 py-1.5">
-            <span id="task-type-label" class="text-[11px] font-medium uppercase tracking-wide text-surface-400">Task type</span>
-            <select
-              data-testid="task-type-select"
-              aria-labelledby="task-type-label"
-              class="rounded border border-surface-300 bg-surface-100 px-2 py-1 text-xs font-medium dark:border-surface-600 dark:bg-surface-700"
-              value={task.taskType || 'normal'}
-              onchange={(e) => updateTaskType((e.target as HTMLSelectElement).value)}
-              title="Task type — controls execution mode and worktree behavior"
-            >
-              <option value="normal">normal</option>
-              <option value="debug">debug</option>
-              <option value="research">research</option>
-            </select>
-          </div>
-          <div class="my-1 border-t border-surface-200 dark:border-surface-700"></div>
           <button
             type="button"
             role="menuitem"
@@ -403,7 +387,7 @@
             type="button"
             role="menuitem"
             class="flex w-full items-center px-3 py-1.5 text-left text-xs text-error-600 hover:bg-error-50 disabled:opacity-50 dark:text-error-400 dark:hover:bg-error-950"
-            onclick={() => { closeMenu(); deleteTask() }}
+            onclick={() => { closeMenu(); openDeleteConfirm() }}
             disabled={deleting}
           >
             {deleting ? 'Deleting...' : 'Delete task'}
@@ -413,3 +397,35 @@
     </div>
   </div>
 </div>
+
+<MobileSheet
+  open={deleteConfirmOpen}
+  onOpenChange={(open) => { if (!deleting) deleteConfirmOpen = open }}
+  variant="center"
+  title="Delete task"
+>
+  <div class="flex flex-col gap-4 px-5 pb-5 md:px-6 md:pb-6">
+    <p class="text-sm text-surface-700 dark:text-surface-300">
+      Delete "{task.title}"? This cannot be undone.
+    </p>
+
+    <div class="flex justify-end gap-2">
+      <button
+        type="button"
+        class="tap rounded-lg bg-surface-200 px-4 py-2.5 text-sm font-medium active:bg-surface-300 dark:bg-surface-700 dark:active:bg-surface-600"
+        onclick={() => (deleteConfirmOpen = false)}
+        disabled={deleting}
+      >
+        Cancel
+      </button>
+      <button
+        type="button"
+        class="tap rounded-lg bg-error-600 px-4 py-2.5 text-sm font-medium text-white active:bg-error-700 disabled:opacity-50"
+        onclick={confirmDeleteTask}
+        disabled={deleting}
+      >
+        {deleting ? 'Deleting...' : 'Delete'}
+      </button>
+    </div>
+  </div>
+</MobileSheet>

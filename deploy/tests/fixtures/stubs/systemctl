@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+case "${1:-}" in
+  is-enabled)
+    [[ "${FAKE_AGENTD_ENABLED:-0}" == "1" ]]
+    ;;
+  --no-block)
+    printf '%s\n' "$*" >>"${FAKE_SYSTEMCTL_LOG:?}"
+    ;;
+  *)
+    exit 1
+    ;;
+esac

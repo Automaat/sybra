@@ -3,13 +3,15 @@ package audit
 import (
 	"fmt"
 	"time"
+
+	"github.com/Automaat/sybra/internal/runoutcome"
 )
 
 const (
-	RunCompatCanonical                  = "canonical"
-	RunCompatLegacyFailed               = "legacy_failed"
-	RunCompatLegacyFailedShadowed       = "legacy_failed_shadowed"
-	RunCompatMissingStateAssumedStopped = "missing_state_assumed_stopped"
+	RunCompatCanonical             = "canonical"
+	RunCompatLegacyFailed          = "legacy_failed"
+	RunCompatLegacyFailedShadowed  = "legacy_failed_shadowed"
+	RunCompatMissingOutcomeUnknown = "missing_outcome_unknown"
 )
 
 // RunLifecycle normalizes the audit-visible lifecycle of one agent run.
@@ -25,6 +27,7 @@ type RunLifecycle struct {
 	Started       bool
 	Terminal      bool
 	Failed        bool
+	Outcome       string
 	Reattached    bool
 	Lost          bool
 	Compatibility string
@@ -43,7 +46,7 @@ func NormalizeAgentRuns(events []Event) []RunLifecycle {
 
 	for i := range events {
 		e := events[i]
-		start, terminal, failed, _, ok := classifyRunEvent(e)
+		start, terminal, outcome, ok := classifyRunEvent(e)
 		if !ok {
 			continue
 		}
@@ -83,7 +86,8 @@ func NormalizeAgentRuns(events []Event) []RunLifecycle {
 		if shouldReplaceTerminal(run.TerminalEvent, e) {
 			run.TerminalEvent = e
 			run.TerminalAt = e.Timestamp
-			run.Failed = failed
+			run.Outcome = outcome
+			run.Failed = outcome == runoutcome.Failed
 		} else if run.TerminalAt.IsZero() {
 			run.TerminalAt = e.Timestamp
 		}
@@ -111,20 +115,31 @@ func runKey(e Event, index int) string {
 	return fmt.Sprintf("event:%d:%s:%s:%d", index, e.Type, e.TaskID, e.Timestamp.UnixNano())
 }
 
-func classifyRunEvent(e Event) (start, terminal, failed, missingState, ok bool) {
+func classifyRunEvent(e Event) (start, terminal bool, outcome string, ok bool) {
 	switch e.Type {
 	case EventAgentStarted:
-		return true, false, false, false, true
+		return true, false, runoutcome.Started, true
 	case EventAgentFailed:
-		return false, true, true, false, true
+		return false, true, runoutcome.Failed, true
 	case EventAgentCompleted:
-		state, hasState := e.Data["state"].(string)
-		if !hasState || state == "" {
-			return false, true, false, true, true
-		}
-		return false, true, state != "stopped", false, true
+		return false, true, classifyCompletedOutcome(e), true
 	default:
-		return false, false, false, false, false
+		return false, false, "", false
+	}
+}
+
+func classifyCompletedOutcome(e Event) string {
+	if outcome, ok := e.Data["outcome"].(string); ok && outcome != "" {
+		return runoutcome.Normalize(outcome)
+	}
+	state, hasState := e.Data["state"].(string)
+	switch {
+	case !hasState || state == "":
+		return runoutcome.Unknown
+	case state == "stopped":
+		return runoutcome.Completed
+	default:
+		return runoutcome.Failed
 	}
 }
 
@@ -157,9 +172,12 @@ func runCompatibility(run RunLifecycle) string {
 	case run.sawLegacyFailed:
 		return RunCompatLegacyFailed
 	case run.TerminalEvent.Type == EventAgentCompleted:
+		if outcome, _ := run.TerminalEvent.Data["outcome"].(string); outcome != "" {
+			return RunCompatCanonical
+		}
 		state, _ := run.TerminalEvent.Data["state"].(string)
 		if state == "" {
-			return RunCompatMissingStateAssumedStopped
+			return RunCompatMissingOutcomeUnknown
 		}
 		return RunCompatCanonical
 	default:

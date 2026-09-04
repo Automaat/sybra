@@ -27,6 +27,19 @@ const (
 	KindLostAgent         AnomalyKind = "lost_agent"
 	KindFailureSpike      AnomalyKind = "failure_spike"
 	KindBottleneck        AnomalyKind = "bottleneck"
+	KindBoardStalled      AnomalyKind = "board_stalled"
+	// KindNoProviderCapacity fires when every enabled provider is unhealthy
+	// and there is work that would otherwise dispatch. Without it a fleet with
+	// nowhere to run looks exactly like an idle one: monitor.tick reports
+	// dispatched:0 either way, and diagnosing it means grepping
+	// provider.health.flip out of the app log by hand.
+	KindNoProviderCapacity AnomalyKind = "no_provider_capacity"
+	// KindClusterDrift is filed by clusterlead.Mirror, not Detect — a leader
+	// canonical task's Tags/DependsOn disagree with what its home follower
+	// reports, meaning a leader-side write never reached the node that
+	// actually owns the task. Always RequiresLLM: false; Mirror repairs it
+	// deterministically and files this purely as an audit trail.
+	KindClusterDrift AnomalyKind = "cluster_drift"
 )
 
 // AllAnomalyKinds returns every kind in declaration order. Useful for tests
@@ -40,6 +53,9 @@ func AllAnomalyKinds() []AnomalyKind {
 		KindLostAgent,
 		KindFailureSpike,
 		KindBottleneck,
+		KindBoardStalled,
+		KindNoProviderCapacity,
+		KindClusterDrift,
 	}
 }
 
@@ -53,6 +69,11 @@ type Anomaly struct {
 	Fingerprint string         `json:"fingerprint"`
 	Evidence    map[string]any `json:"evidence,omitempty"`
 	DetectedAt  time.Time      `json:"detectedAt"`
+	// IncidentScope is a public project ID, "fleet", or an opaque work key.
+	// Confidential forces deterministic local routing even without TaskID.
+	IncidentScope  string `json:"incidentScope,omitempty"`
+	IncidentTaskID string `json:"incidentTaskId,omitempty"`
+	Confidential   bool   `json:"confidential,omitempty"`
 }
 
 // Counts is a snapshot of board status counts at the moment of detection.
@@ -72,11 +93,13 @@ type Counts struct {
 // Report is the result of one tick. Anomalies is the raw detector output;
 // Remediated/Dispatched/Issues are filled in by the Service after side effects.
 type Report struct {
-	GeneratedAt   time.Time `json:"generatedAt"`
-	Counts        Counts    `json:"counts"`
-	Anomalies     []Anomaly `json:"anomalies"`
-	Remediated    []string  `json:"remediated"`
-	Dispatched    []string  `json:"dispatched"`
-	IssuesOpened  int       `json:"issuesOpened"`
-	IssuesUpdated int       `json:"issuesUpdated"`
+	GeneratedAt   time.Time  `json:"generatedAt"`
+	Counts        Counts     `json:"counts"`
+	Anomalies     []Anomaly  `json:"anomalies"`
+	Remediated    []string   `json:"remediated"`
+	Dispatched    []string   `json:"dispatched"`
+	IssuesOpened  int        `json:"issuesOpened"`
+	IssuesUpdated int        `json:"issuesUpdated"`
+	IssuesClosed  int        `json:"issuesClosed"`
+	Incidents     []Incident `json:"incidents,omitempty"`
 }

@@ -4,9 +4,12 @@
 export {
     ConvoEvent,
     PlanStep,
+    Role,
+    State,
     StreamEvent,
     ToolResultBlock,
-    ToolUseBlock
+    ToolUseBlock,
+    View
 } from "./models.js";
 
 export type {

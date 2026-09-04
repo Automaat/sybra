@@ -15,10 +15,17 @@ const mockUpdateAgent = vi.fn()
 const mockEventsOn = vi.fn((..._args: any[]) => vi.fn())
 const mockPushLocal = vi.fn()
 const mockListTaskProgress = vi.fn()
+const mockListAttachments = vi.fn()
+const mockUploadAttachment = vi.fn()
+const mockDeleteAttachment = vi.fn()
+const mockGetAttachmentURL = vi.fn()
 
 vi.mock('../stores/tasks.svelte.js', () => ({
   taskStore: {
     tasks: mockTasksMap,
+    detail: (id: string) => mockTasksMap.get(id),
+    isDetailHydrated: (id: string) => mockTasksMap.has(id),
+    retainDetail: () => () => {},
     get list() {
       return [...mockTasksMap.values()]
     },
@@ -78,6 +85,7 @@ vi.mock('../stores/connection.svelte.js', () => ({
 
 vi.mock('$lib/api', () => ({
   EventsOn: (...args: any[]) => mockEventsOn(...args),
+  GetSettings: vi.fn().mockResolvedValue({ browser: { inApp: false } }),
   BrowserOpenURL: vi.fn(),
   StartFixReview: vi.fn(),
   StartReview: vi.fn(),
@@ -87,22 +95,29 @@ vi.mock('$lib/api', () => ({
   GetTaskSetupLog: vi.fn(async () => ({ taskId: 'task-1', exists: false })),
   ListTaskAuditEvents: vi.fn(async () => []),
   ListTaskProgress: (...args: unknown[]) => mockListTaskProgress(...args),
+  ListAttachments: (...args: unknown[]) => mockListAttachments(...args),
+  UploadAttachment: (...args: unknown[]) => mockUploadAttachment(...args),
+  DeleteAttachment: (...args: unknown[]) => mockDeleteAttachment(...args),
+  GetAttachmentURL: (...args: unknown[]) => mockGetAttachmentURL(...args),
 }))
 
-vi.mock('@skeletonlabs/skeleton-svelte', () => ({
-  SegmentedControl: Object.assign(() => {}, {
-    Control: () => {},
-    Indicator: () => {},
-    Item: Object.assign(() => {}, {
-      ItemText: () => {},
-      ItemHiddenInput: () => {},
+vi.mock('@skeletonlabs/skeleton-svelte', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@skeletonlabs/skeleton-svelte')>()
+  return {
+    ...actual,
+    SegmentedControl: Object.assign(() => {}, {
+      Control: () => {},
+      Indicator: () => {},
+      Item: Object.assign(() => {}, {
+        ItemText: () => {},
+        ItemHiddenInput: () => {},
+      }),
     }),
-  }),
-}))
+  }
+})
 
 vi.mock('../components/StreamOutput.svelte', () => ({ default: () => {} }))
 vi.mock('../components/StatusBadge.svelte', () => ({ default: () => {} }))
-vi.mock('../components/ChatView.svelte', () => ({ default: () => {} }))
 vi.mock('../components/MessageBubble.svelte', () => ({ default: () => {} }))
 vi.mock('../components/ProviderLogo.svelte', () => ({ default: () => {} }))
 
@@ -137,6 +152,11 @@ describe('TaskDetail', () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true)
     mockListTaskProgress.mockReset()
     mockListTaskProgress.mockResolvedValue([])
+    mockListAttachments.mockReset()
+    mockListAttachments.mockResolvedValue([])
+    mockUploadAttachment.mockReset()
+    mockDeleteAttachment.mockReset()
+    mockGetAttachmentURL.mockReset()
   })
 
   afterEach(() => {
@@ -159,6 +179,31 @@ describe('TaskDetail', () => {
     })
     await vi.waitFor(() => {
       expect(screen.getByText('Test Task')).toBeDefined()
+    })
+  })
+
+  it('shows a durable warning when task history was compacted', async () => {
+    mockGet.mockResolvedValue({
+      ...mockTask,
+      documentCompaction: {
+        lastCompactedAt: '2026-09-01T12:00:00Z',
+        largestBytesSeen: 4 * 1024 * 1024,
+        droppedAgentRuns: 3,
+        droppedRunCostUsd: 12.5,
+        trimmedRunFields: 8,
+        trimmedWorkflow: 2,
+      },
+    })
+    render(TaskDetail, {
+      props: { taskId: 'task-1', onback: vi.fn(), onviewagent: vi.fn(), ondelete: vi.fn() },
+    })
+    await vi.waitFor(() => {
+      const warning = screen.getByTestId('task-document-compaction').textContent ?? ''
+      expect(warning).toContain('4.0 MiB')
+      expect(warning).toContain('3 old runs removed')
+      expect(warning).toContain('8 prompt/result fields shortened')
+      expect(warning).toContain('2 workflow/effect history entries shortened or removed')
+      expect(warning).toContain('$12.50 of removed-run cost remains counted toward the task budget')
     })
   })
 
@@ -204,7 +249,11 @@ describe('TaskDetail', () => {
     await vi.waitFor(() => {
       expect(screen.getByText('Delete task')).toBeDefined()
     })
-    screen.getByText('Delete task').click()
+    await fireEvent.click(screen.getByText('Delete task'))
+    await vi.waitFor(() => {
+      expect(screen.getByText('Delete "Test Task"? This cannot be undone.')).toBeDefined()
+    })
+    await fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
     await vi.waitFor(() => {
       expect(mockRemove).toHaveBeenCalledWith('task-1')
       expect(ondelete).toHaveBeenCalled()
@@ -218,6 +267,16 @@ describe('TaskDetail', () => {
     })
     await vi.waitFor(() => {
       expect(screen.getByText('Start agent')).toBeDefined()
+    })
+  })
+
+  it('renders the attachments panel in overview', async () => {
+    mockGet.mockResolvedValue(mockTask)
+    render(TaskDetail, {
+      props: { taskId: 'task-1', onback: vi.fn(), onviewagent: vi.fn(), ondelete: vi.fn() },
+    })
+    await vi.waitFor(() => {
+      expect(screen.getByTestId('task-attachments-panel')).toBeDefined()
     })
   })
 

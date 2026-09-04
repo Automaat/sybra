@@ -2,12 +2,15 @@ package sybra
 
 import (
 	"cmp"
+	"context"
 	"log/slog"
 	"maps"
 	"slices"
 	"time"
 
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/evaluation"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/stats"
@@ -16,12 +19,15 @@ import (
 
 // StatsService exposes statistics as Wails-bound methods.
 type StatsService struct {
-	stats    *stats.Store
+	stats    stats.Repository
 	limits   *limits.Store
 	projects *project.Store
 	tasks    *task.Manager
-	auditDir string
+	audit    audit.Store
 	policy   func() limits.Policy
+	// currentConfig reads one live snapshot, so a config reload reaches the
+	// evaluation scan without re-wiring the service.
+	currentConfig func() *config.Config
 }
 
 type doneTaskClosure struct {
@@ -51,7 +57,7 @@ func aggregateTasksDone(resp *stats.StatsResponse, done []doneTaskClosure, now t
 	}
 }
 
-func doneTaskClosures(list []task.Task, auditDir string, now time.Time) []doneTaskClosure {
+func doneTaskClosures(list []task.Task, trail audit.Store, now time.Time) []doneTaskClosure {
 	byID := map[string]doneTaskClosure{}
 	liveIDs := map[string]struct{}{}
 	for i := range list {
@@ -65,7 +71,7 @@ func doneTaskClosures(list []task.Task, auditDir string, now time.Time) []doneTa
 		}
 		byID[id] = doneTaskClosure{id: id, closedAt: taskCloseTime(list[i])}
 	}
-	for _, d := range auditDoneTaskClosures(auditDir, now) {
+	for _, d := range auditDoneTaskClosures(trail, now) {
 		if _, ok := liveIDs[d.id]; ok {
 			continue
 		}
@@ -85,11 +91,11 @@ type auditTaskStatus struct {
 	changedAt time.Time
 }
 
-func auditDoneTaskClosures(auditDir string, now time.Time) []doneTaskClosure {
-	if auditDir == "" {
+func auditDoneTaskClosures(trail audit.Store, now time.Time) []doneTaskClosure {
+	if trail == nil {
 		return nil
 	}
-	events, err := audit.Read(auditDir, audit.Query{
+	events, err := trail.Read(audit.Query{
 		Since: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC),
 		Until: now.Add(24 * time.Hour),
 		Type:  audit.EventTaskStatusChanged,
@@ -159,8 +165,8 @@ func (s *StatsService) GetStats() stats.StatsResponse {
 	resp.ByProjectType = aggregateByProjectType(resp.ByProject, s.projectTypes())
 
 	if s.tasks != nil {
-		if list, err := s.tasks.List(); err == nil {
-			done := doneTaskClosures(list, s.auditDir, now)
+		if list, err := s.tasks.ListBoard(); err == nil {
+			done := doneTaskClosures(list, s.audit, now)
 			aggregateTasksDone(&resp, done, now)
 			resp.ClosedTasksDaily = closedTasksDaily(done, now)
 		} else {
@@ -252,4 +258,33 @@ func mergeOutcomeCounts(a, b map[string]int) map[string]int {
 		out[key] += count
 	}
 	return out
+}
+
+// ScanEvaluation computes the fleet scorecard from the instance's own stats
+// and audit log.
+//
+// It sits on StatsService because those two stores are already its
+// dependencies, and both live under the server's home: a client scanning its
+// own copies would score a different fleet. `evaluation judge`, `golden` and
+// `offline` stay client-side by contrast — they read a task through the board
+// and operator-supplied files, not this instance's corpus.
+func (s *StatsService) ScanEvaluation() (evaluation.Report, error) {
+	cfg := s.config()
+	if cfg == nil || s.stats == nil {
+		return evaluation.Report{}, unavailableError("evaluation unavailable")
+	}
+	svc := evaluation.NewService(evaluation.Deps{
+		Cfg:       cfg.Evaluation,
+		ABTesting: cfg.ABTesting,
+		Stats:     s.stats,
+		Audit:     evaluation.AuditStoreReader(s.audit),
+	})
+	return svc.Scan(context.Background())
+}
+
+func (s *StatsService) config() *config.Config {
+	if s.currentConfig == nil {
+		return nil
+	}
+	return s.currentConfig()
 }

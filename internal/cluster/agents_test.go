@@ -12,7 +12,7 @@ func TestListAgentsReturnsFollowerAgents(t *testing.T) {
 	mux.HandleFunc("/api/AgentService/ListAgents", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode([]map[string]any{
-			{"id": "a1", "taskId": "t1", "state": "running"},
+			{"id": "a1", "taskId": "t1", "state": "running", "canSteer": true},
 		})
 	})
 	srv := httptest.NewServer(mux)
@@ -23,8 +23,30 @@ func TestListAgentsReturnsFollowerAgents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListAgents: %v", err)
 	}
-	if len(agents) != 1 || agents[0].ID != "a1" {
+	if len(agents) != 1 || agents[0].ID != "a1" || !agents[0].CanSteer {
 		t.Fatalf("want one agent a1, got %+v", agents)
+	}
+}
+
+func TestGetAgentReturnsCompleteFollowerSnapshot(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/AgentService/GetAgent", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": "a1", "taskId": "t1", "state": "running",
+			"prompt": "full prompt", "command": "provider command",
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := mustClient(t, Node{Name: "n1", Endpoints: []string{srv.URL}})
+	view, err := c.GetAgent(t.Context(), "a1")
+	if err != nil {
+		t.Fatalf("GetAgent: %v", err)
+	}
+	if view.ID != "a1" || view.Prompt != "full prompt" || view.Command != "provider command" {
+		t.Fatalf("incomplete agent view: %+v", view)
 	}
 }
 

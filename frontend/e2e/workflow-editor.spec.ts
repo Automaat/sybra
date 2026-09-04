@@ -1,195 +1,222 @@
-import { test, expect, type Page } from '@playwright/test'
-import { copyFile, unlink, readFile, mkdir } from 'node:fs/promises'
-import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { test, expect, type Page } from "@playwright/test";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { load as parseYAML } from "js-yaml";
 
-import { isolatedSybraHome } from './lib/sybra-home'
+import { isolatedSybraHome } from "./lib/sybra-home";
+import { apiCall } from "./lib/api";
 
-const SYBRA_HOME = isolatedSybraHome()
-const WORKFLOWS_DIR = join(SYBRA_HOME, 'workflows')
-const FIXTURE_ID = 'wf-editor-e2e'
-const FIXTURE_DEST = join(WORKFLOWS_DIR, `${FIXTURE_ID}.yaml`)
+const SYBRA_HOME = isolatedSybraHome();
+const FIXTURE_ID = "wf-editor-e2e";
+
+/**
+ * Seed and read the fixture through the API rather than the workflows
+ * directory.
+ *
+ * The directory is only the store under the `file` backend. Writing a YAML
+ * there after the server booted was invisible to every other backend, because
+ * those read rows and the one-time file import has already run — which is how
+ * this spec failed the moment the default moved to sqlite while every unit
+ * suite stayed green. Going through the API exercises whichever backend is
+ * configured.
+ */
+async function api(method: string, args: unknown[]): Promise<Response> {
+  return apiCall(SYBRA_HOME, "WorkflowService", method, args);
+}
 
 async function ensureFixture() {
-  if (!existsSync(WORKFLOWS_DIR)) {
-    await mkdir(WORKFLOWS_DIR, { recursive: true })
-  }
-  const src = join(import.meta.dirname, 'fixtures', 'wf-editor-e2e.yaml')
-  await copyFile(src, FIXTURE_DEST)
+  const src = join(import.meta.dirname, "fixtures", "wf-editor-e2e.yaml");
+  // SaveWorkflow takes a Definition, so the fixture is parsed here rather than posted as YAML.
+  await api("SaveWorkflow", [parseYAML(await readFile(src, "utf8"))]);
 }
 
 async function removeFixture() {
-  if (existsSync(FIXTURE_DEST)) {
-    await unlink(FIXTURE_DEST)
+  // Absent is the desired end state, so a fixture the test already removed is not a failure.
+  try {
+    await api("DeleteWorkflow", [FIXTURE_ID]);
+  } catch {
+    /* already gone */
   }
 }
 
+/**
+ * The saved definition as raw JSON text.
+ *
+ * The assertions look for step ids, which appear verbatim in the encoded
+ * definition, so the checks hold without re-serializing it to YAML — and they
+ * now describe what the board stores rather than what a file on disk holds.
+ */
+async function savedDefinition(): Promise<string> {
+  const res = await api("GetWorkflow", [FIXTURE_ID]);
+  return await res.text();
+}
+
 async function openWorkflowEditor(page: Page) {
-  await page.goto('/')
-  await page.locator('[data-part="trigger"]', { hasText: /Workflows/ }).click()
+  await page.goto("/");
+  await page.locator('[data-part="trigger"]', { hasText: /Workflows/ }).click();
   // Wait for the fixture card to appear and click it.
-  const card = page.getByRole('button', { name: /E2E Editor Fixture/ })
-  await expect(card).toBeVisible({ timeout: 10_000 })
-  await card.click()
+  const card = page.getByRole("button", { name: /E2E Editor Fixture/ });
+  await expect(card).toBeVisible({ timeout: 10_000 });
+  await card.click();
   // Detail header should render the workflow name.
   await expect(
-    page.locator('h2', { hasText: 'E2E Editor Fixture' }),
-  ).toBeVisible()
+    page.locator("h2", { hasText: "E2E Editor Fixture" }),
+  ).toBeVisible();
 }
 
 test.beforeAll(async () => {
-  await ensureFixture()
-})
+  await ensureFixture();
+});
 
 test.afterAll(async () => {
-  await removeFixture()
-})
+  await removeFixture();
+});
 
 // The fixture is hidden from the user-facing list; reveal it for the editor tests.
 test.beforeEach(async ({ page }) => {
-  await page.addInitScript(() => localStorage.setItem('sybra.showFixtures', 'true'))
-})
+  await page.addInitScript(() =>
+    localStorage.setItem("sybra.showFixtures", "true"),
+  );
+});
 
-test.describe('Workflow editor — list page', () => {
-  test('list card shows trigger event and condition count', async ({
+test.describe("Workflow editor — list page", () => {
+  test("list card shows trigger event and condition count", async ({
     page,
   }) => {
-    await page.goto('/')
+    await page.goto("/");
     await page
       .locator('[data-part="trigger"]', { hasText: /Workflows/ })
-      .click()
+      .click();
 
-    const card = page.getByRole('button', { name: /E2E Editor Fixture/ })
-    await expect(card).toBeVisible({ timeout: 10_000 })
-    await expect(card).toContainText('trigger: task.created')
-    await expect(card).toContainText('1 cond')
-    await expect(card).toContainText('1 steps')
-  })
-})
+    const card = page.getByRole("button", { name: /E2E Editor Fixture/ });
+    await expect(card).toBeVisible({ timeout: 10_000 });
+    await expect(card).toContainText("trigger: task.created");
+    await expect(card).toContainText("1 cond");
+    await expect(card).toContainText("1 steps");
+  });
+});
 
-test.describe('Workflow editor — trigger panel', () => {
-  test('renders event and existing condition', async ({ page }) => {
-    await openWorkflowEditor(page)
+test.describe("Workflow editor — trigger panel", () => {
+  test("renders event and existing condition", async ({ page }) => {
+    await openWorkflowEditor(page);
 
     // Trigger node in graph shows "1 condition" from the fixture.
-    await expect(page.getByText(/1 condition/)).toBeVisible()
+    await expect(page.getByText(/1 condition/)).toBeVisible();
 
     // Click the trigger node to open the TriggerConfigPanel sidebar.
-    await page.locator('.svelte-flow__node-triggerNode').click()
+    await page.locator(".svelte-flow__node-triggerNode").click();
 
     // Event dropdown reflects the seeded event.
-    await expect(page.locator('select').first()).toHaveValue('task.created')
+    await expect(page.locator("select").first()).toHaveValue("task.created");
 
     // Condition row inputs — target by placeholder attribute (Svelte sets
     // `value` as a DOM property, not an attribute, so input[value="…"]
     // won't match; placeholder is a normal attribute and is reliable).
     await expect(
       page.locator('input[placeholder="task.tags"]').first(),
-    ).toHaveValue('task.tags')
+    ).toHaveValue("task.tags");
     await expect(
       page.locator('input[placeholder="value"]').first(),
-    ).toHaveValue('skip')
-  })
+    ).toHaveValue("skip");
+  });
 
-  test('can add a new trigger condition', async ({ page }) => {
-    await openWorkflowEditor(page)
+  test("can add a new trigger condition", async ({ page }) => {
+    await openWorkflowEditor(page);
 
     // Click the trigger node to open the TriggerConfigPanel sidebar.
-    await page.locator('.svelte-flow__node-triggerNode').click()
+    await page.locator(".svelte-flow__node-triggerNode").click();
 
     // Button text is "+ Add" in TriggerConfigPanel.
-    const addBtn = page.getByRole('button', { name: '+ Add', exact: true })
-    await addBtn.click()
+    const addBtn = page.getByRole("button", { name: "+ Add", exact: true });
+    await addBtn.click();
 
     // After adding, trigger node summary should reflect 2 conditions.
-    await expect(page.getByText(/2 conditions/)).toBeVisible()
+    await expect(page.getByText(/2 conditions/)).toBeVisible();
 
     // Unsaved badge should appear.
-    await expect(page.locator('span', { hasText: 'unsaved' })).toBeVisible()
-  })
-})
+    await expect(page.locator("span", { hasText: "unsaved" })).toBeVisible();
+  });
+});
 
-test.describe('Workflow editor — add step + transitions', () => {
-  test('clicking + Add step creates a new step and opens the config panel', async ({
+test.describe("Workflow editor — add step + transitions", () => {
+  test("clicking + Add step creates a new step and opens the config panel", async ({
     page,
   }) => {
-    await openWorkflowEditor(page)
+    await openWorkflowEditor(page);
 
     // Panel should not be visible yet (no step selected).
     await expect(
-      page.locator('h3', { hasText: 'Step Config' }),
-    ).not.toBeVisible()
+      page.locator("h3", { hasText: "Step Config" }),
+    ).not.toBeVisible();
 
-    await page.getByRole('button', { name: '+ Add step', exact: true }).click()
+    await page.getByRole("button", { name: "+ Add step", exact: true }).click();
 
     // Config panel opens with the seeded default name.
-    await expect(
-      page.locator('h3', { hasText: 'Step Config' }),
-    ).toBeVisible()
-    await expect(page.getByLabel('Name')).toHaveValue('New step')
+    await expect(page.locator("h3", { hasText: "Step Config" })).toBeVisible();
+    await expect(page.getByLabel("Name")).toHaveValue("New step");
 
     // Transitions section is visible and empty by default.
     await expect(
-      page.locator('span', { hasText: /^Transitions$/ }),
-    ).toBeVisible()
+      page.locator("span", { hasText: /^Transitions$/ }),
+    ).toBeVisible();
     await expect(
-      page.getByText('No transitions — step ends the workflow'),
-    ).toBeVisible()
+      page.getByText("No transitions — step ends the workflow"),
+    ).toBeVisible();
 
     // Unsaved badge appears after mutation.
-    await expect(page.locator('span', { hasText: 'unsaved' })).toBeVisible()
-  })
+    await expect(page.locator("span", { hasText: "unsaved" })).toBeVisible();
+  });
 
-  test('can add a transition targeting an existing step', async ({ page }) => {
-    await openWorkflowEditor(page)
+  test("can add a transition targeting an existing step", async ({ page }) => {
+    await openWorkflowEditor(page);
 
     // Select the existing step by clicking its graph node.
-    await page.locator('.svelte-flow__node-stepNode').first().click()
-    await expect(
-      page.locator('h3', { hasText: 'Step Config' }),
-    ).toBeVisible()
+    await page.locator(".svelte-flow__node-stepNode").first().click();
+    await expect(page.locator("h3", { hasText: "Step Config" })).toBeVisible();
 
     // Transitions section → + Add (exact-match disambiguates from
     // "+ Add step" and "+ Add condition").
-    await page.getByRole('button', { name: '+ Add', exact: true }).click()
+    await page.getByRole("button", { name: "+ Add", exact: true }).click();
 
     // A new transition row with goto dropdown defaulting to <end workflow>.
-    const gotoSelect = page.locator('select').filter({ hasText: /end workflow/ })
-    await expect(gotoSelect).toBeVisible()
+    const gotoSelect = page
+      .locator("select")
+      .filter({ hasText: /end workflow/ });
+    await expect(gotoSelect).toBeVisible();
 
     // Toggle conditional (when) checkbox.
-    const whenCheckbox = page.getByRole('checkbox', { name: /conditional/ })
-    await whenCheckbox.check()
-    await expect(whenCheckbox).toBeChecked()
+    const whenCheckbox = page.getByRole("checkbox", { name: /conditional/ });
+    await whenCheckbox.check();
+    await expect(whenCheckbox).toBeChecked();
 
-    await expect(page.locator('span', { hasText: 'unsaved' })).toBeVisible()
-  })
-})
+    await expect(page.locator("span", { hasText: "unsaved" })).toBeVisible();
+  });
+});
 
-test.describe('Workflow editor — save round-trip', () => {
-  test('add step + save persists to disk', async ({ page }) => {
-    await openWorkflowEditor(page)
+test.describe("Workflow editor — save round-trip", () => {
+  test("add step + save persists to disk", async ({ page }) => {
+    await openWorkflowEditor(page);
 
-    await page.getByRole('button', { name: '+ Add step', exact: true }).click()
+    await page.getByRole("button", { name: "+ Add step", exact: true }).click();
 
     // Change the name to something identifiable.
-    const nameInput = page.getByLabel('Name')
-    await expect(nameInput).toHaveValue('New step')
-    await nameInput.fill('e2e-added-step')
-    await nameInput.blur()
+    const nameInput = page.getByLabel("Name");
+    await expect(nameInput).toHaveValue("New step");
+    await nameInput.fill("e2e-added-step");
+    await nameInput.blur();
 
     // Save via the header button.
-    await page.getByRole('button', { name: /^Save$/ }).click()
+    await page.getByRole("button", { name: /^Save$/ }).click();
 
     // Unsaved badge should clear.
-    await expect(
-      page.locator('span', { hasText: 'unsaved' }),
-    ).not.toBeVisible({ timeout: 5_000 })
+    await expect(page.locator("span", { hasText: "unsaved" })).not.toBeVisible({
+      timeout: 5_000,
+    });
 
-    // Verify the YAML on disk now contains the new step.
-    const yaml = await readFile(FIXTURE_DEST, 'utf8')
-    expect(yaml).toContain('e2e-added-step')
+    // Read back through the API, which reads whichever backend is configured.
+    const yaml = await savedDefinition();
+    expect(yaml).toContain("e2e-added-step");
     // Original step still there.
-    expect(yaml).toContain('first-step')
-  })
-})
+    expect(yaml).toContain("first-step");
+  });
+});

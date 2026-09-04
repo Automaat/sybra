@@ -80,3 +80,75 @@ func TestProgressAddRequiresMessage(t *testing.T) {
 		t.Fatal("progress add without --message exit 0, want non-zero")
 	}
 }
+
+func TestUpdateWritesDecisionProgressForHumanRequiredUnblock(t *testing.T) {
+	setupStore(t)
+	id := createTaskForProgress(t, "manual unblock")
+
+	code, out := runCLI(t, "--json", "update", id, "--status", "human-required")
+	if code != 0 {
+		t.Fatalf("set human-required exit %d: %s", code, out)
+	}
+
+	code, out = runCLI(t, "--json", "update", id,
+		"--status", "todo",
+		"--status-reason", "operator approved retry after clearing stale watchdog counters",
+	)
+	if code != 0 {
+		t.Fatalf("update exit %d: %s", code, out)
+	}
+
+	code, out = runCLI(t, "--json", "progress", "list", id)
+	if code != 0 {
+		t.Fatalf("progress list exit %d: %s", code, out)
+	}
+	var entries []artifact.ProgressEntry
+	if err := json.Unmarshal([]byte(out), &entries); err != nil {
+		t.Fatalf("unmarshal list: %v (%s)", err, out)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("entries = %+v, want one decision entry", entries)
+	}
+	if entries[0].Kind != artifact.ProgressKindDecision {
+		t.Fatalf("kind = %q, want %q", entries[0].Kind, artifact.ProgressKindDecision)
+	}
+	if !strings.Contains(entries[0].Message, "human-required to todo") {
+		t.Fatalf("message = %q, want transition detail", entries[0].Message)
+	}
+	if !strings.Contains(entries[0].Message, "operator approved retry after clearing stale watchdog counters") {
+		t.Fatalf("message = %q, want operator reason", entries[0].Message)
+	}
+}
+
+func TestReopenWritesDecisionProgressForHumanRequiredTask(t *testing.T) {
+	setupStore(t)
+	id := createTaskForProgress(t, "reopen unblock")
+
+	code, out := runCLI(t, "--json", "update", id, "--status", "human-required")
+	if code != 0 {
+		t.Fatalf("set human-required exit %d: %s", code, out)
+	}
+
+	code, out = runCLI(t, "--json", "reopen", id)
+	if code != 0 {
+		t.Fatalf("reopen exit %d: %s", code, out)
+	}
+
+	code, out = runCLI(t, "--json", "progress", "list", id)
+	if code != 0 {
+		t.Fatalf("progress list exit %d: %s", code, out)
+	}
+	var entries []artifact.ProgressEntry
+	if err := json.Unmarshal([]byte(out), &entries); err != nil {
+		t.Fatalf("unmarshal list: %v (%s)", err, out)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("entries = %+v, want one decision entry", entries)
+	}
+	if entries[0].Kind != artifact.ProgressKindDecision {
+		t.Fatalf("kind = %q, want %q", entries[0].Kind, artifact.ProgressKindDecision)
+	}
+	if !strings.Contains(entries[0].Message, "human-required to todo") {
+		t.Fatalf("message = %q, want transition detail", entries[0].Message)
+	}
+}

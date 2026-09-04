@@ -5,12 +5,13 @@ import (
 	"time"
 )
 
-const maxRetries = 3
+const defaultMaxRetries = 3
+const maxRetries = defaultMaxRetries
 
 // MaxRetries is the per-issue retry budget the monitor allows before escalating
 // to a human. Exported for callers that reference it in escalation messages or
 // tests.
-const MaxRetries = maxRetries
+const MaxRetries = defaultMaxRetries
 
 // DispatchDecision is the verdict of Decide for one detected PR issue.
 type DispatchDecision int
@@ -35,17 +36,26 @@ type IssueTracker struct {
 	lastSHA  map[string]string
 	sigs     map[string]string
 	cooldown time.Duration
+	maxRetry int
 	now      func() time.Time // injectable for testing
 }
 
 // NewIssueTracker creates a tracker with the given cooldown duration.
 func NewIssueTracker(cooldown time.Duration) *IssueTracker {
+	return NewIssueTrackerWithMaxRetries(cooldown, MaxRetries)
+}
+
+// NewIssueTrackerWithMaxRetries creates a tracker with a custom retry budget.
+// Negative maxRetries disables the cap; zero is a literal "no automated
+// retries" cap and should only be used deliberately in tests.
+func NewIssueTrackerWithMaxRetries(cooldown time.Duration, maxRetries int) *IssueTracker {
 	return &IssueTracker{
 		handled:  make(map[string]time.Time),
 		retries:  make(map[string]int),
 		lastSHA:  make(map[string]string),
 		sigs:     make(map[string]string),
 		cooldown: cooldown,
+		maxRetry: maxRetries,
 		now:      time.Now,
 	}
 }
@@ -75,13 +85,16 @@ func (t *IssueTracker) Decide(taskID string, kind PRIssueKind, sha, sig string) 
 		t.sigs[key] = sig
 	}
 
-	if t.retries[key] >= maxRetries {
+	if t.atCapLocked(key) {
 		return DispatchExhausted
 	}
 	// If SHA is known and unchanged, the fix attempt ran against this exact
 	// commit with no new push since — skip until a new commit arrives.
 	if sha != "" && t.lastSHA[key] == sha {
 		return DispatchSkip
+	}
+	if sha != "" && t.lastSHA[key] != "" && t.lastSHA[key] != sha {
+		return DispatchHandle
 	}
 	last, ok := t.handled[key]
 	if !ok {
@@ -142,7 +155,22 @@ func (t *IssueTracker) Retries(taskID string, kind PRIssueKind) int {
 func (t *IssueTracker) AtCap(taskID string, kind PRIssueKind) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.retries[issueKey(taskID, kind)] >= maxRetries
+	return t.atCapLocked(issueKey(taskID, kind))
+}
+
+// MaxRetries returns the retry cap configured for this tracker. Negative means
+// unlimited retries.
+func (t *IssueTracker) MaxRetries() int {
+	if t == nil {
+		return MaxRetries
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.maxRetry
+}
+
+func (t *IssueTracker) atCapLocked(key string) bool {
+	return t.maxRetry >= 0 && t.retries[key] >= t.maxRetry
 }
 
 // Cleanup drops the time-based cooldown record for entries older than 2x

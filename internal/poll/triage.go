@@ -3,10 +3,12 @@ package poll
 import (
 	"context"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/enrichment"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/task"
@@ -29,17 +31,18 @@ type TriageHandler struct {
 	projects   *project.Store
 	cfg        *config.TriageConfig
 	logger     *slog.Logger
-	audit      *audit.Logger
+	audit      audit.Store
 	gate       provider.HealthGate
 	factory    classifierFactory
 	perTaskTTL time.Duration
+	applyOpts  triage.ApplyOptions
 }
 
 // NewTriageHandler constructs a TriageHandler.
 func NewTriageHandler(
 	tasks *task.Manager,
 	projects *project.Store,
-	al *audit.Logger,
+	al audit.Store,
 	logger *slog.Logger,
 	cfg *config.TriageConfig,
 ) *TriageHandler {
@@ -62,6 +65,12 @@ func (h *TriageHandler) SetProviderGate(g provider.HealthGate) {
 	h.gate = g
 }
 
+// SetSybraBugProjectID configures the local tracking project used when
+// re-routing sybra-bug tasks during triage.
+func (h *TriageHandler) SetSybraBugProjectID(id string) {
+	h.applyOpts.SybraBugProjectID = id
+}
+
 // Poll implements poll.Fetcher. Returns the next poll interval.
 func (h *TriageHandler) Poll(ctx context.Context) time.Duration {
 	interval := time.Duration(h.cfg.PollSeconds) * time.Second
@@ -69,7 +78,7 @@ func (h *TriageHandler) Poll(ctx context.Context) time.Duration {
 		interval = 60 * time.Second
 	}
 
-	tasks, err := h.tasks.List()
+	tasks, err := h.tasks.ListActive()
 	if err != nil {
 		h.logger.Warn("triage.list", "err", err)
 		return interval
@@ -90,6 +99,9 @@ func (h *TriageHandler) Poll(ctx context.Context) time.Duration {
 		}
 		t := tasks[i]
 		if t.Status != task.StatusNew {
+			continue
+		}
+		if slices.Contains(t.Tags, enrichment.PendingTag) {
 			continue
 		}
 		if !t.UpdatedAt.IsZero() && time.Since(t.UpdatedAt) < 5*time.Second {
@@ -121,7 +133,7 @@ func (h *TriageHandler) classifyOne(
 	ctx, cancel := context.WithTimeout(parent, h.perTaskTTL)
 	defer cancel()
 
-	if _, _, err := triage.ClassifyAndApply(ctx, classifier, h.tasks, h.audit, t, projects); err != nil {
+	if _, _, err := triage.ClassifyAndApplyWithOptions(ctx, classifier, h.tasks, h.audit, t, projects, h.applyOpts); err != nil {
 		h.logger.Warn("triage.classify", "task", t.ID, "err", err)
 	}
 }

@@ -13,15 +13,18 @@ import (
 // query instead of fanning out multiple search legs in one GraphQL request; the
 // combined form times out at GitHub's edge for accounts with many open review
 // requests.
-const reviewSummaryQuery = `query($q: String!) {
+const reviewSummaryQuery = `query($q: String!, $after: String) {
   viewer { login }
-  search(query: $q, type: ISSUE, first: 50) {
+  search(query: $q, type: ISSUE, first: 50, after: $after) {
+    pageInfo { hasNextPage endCursor }
     nodes {
       ... on PullRequest {
         number
         title
         url
         headRefName
+        headRepositoryOwner { login }
+        headRepository { nameWithOwner }
         baseRefName
         isDraft
         mergeable
@@ -39,6 +42,7 @@ const reviewSummaryQuery = `query($q: String!) {
               statusCheckRollup {
                 state
                 contexts(first: 20) {
+                  pageInfo { hasNextPage endCursor }
                   nodes {
                     __typename
                     ... on CheckRun {
@@ -82,6 +86,8 @@ const monitorPRFields = `
       url
       state
       headRefName
+      headRepositoryOwner { login }
+      headRepository { nameWithOwner }
       baseRefName
       isDraft
       mergeable
@@ -99,6 +105,7 @@ const monitorPRFields = `
             statusCheckRollup {
               state
               contexts(first: 20) {
+                pageInfo { hasNextPage endCursor }
                 nodes {
                   __typename
                   ... on CheckRun {
@@ -148,7 +155,11 @@ type gqlReviewSummaryResponse struct {
 			Login string `json:"login"`
 		} `json:"viewer"`
 		Search struct {
-			Nodes []gqlPR `json:"nodes"`
+			Nodes    []gqlPR `json:"nodes"`
+			PageInfo struct {
+				HasNextPage bool   `json:"hasNextPage"`
+				EndCursor   string `json:"endCursor"`
+			} `json:"pageInfo"`
 		} `json:"search"`
 	} `json:"data"`
 	Errors []struct {
@@ -262,6 +273,18 @@ func FetchReviews() (ReviewSummary, error) {
 	return fetchReviewsWith(defaultExecer)
 }
 
+// FetchCreatedByMePRs returns open self-authored PRs for the outbound Sybra PR
+// monitor.
+func FetchCreatedByMePRs() ([]PullRequest, error) {
+	return fetchCreatedByMePRsWith(defaultExecer)
+}
+
+// FetchAssignedReviewSummary returns the inbound review discovery legs only:
+// review-requested:@me plus approved reviewed-by:@me PRs.
+func FetchAssignedReviewSummary() (ReviewSummary, error) {
+	return fetchAssignedReviewSummaryWith(defaultExecer)
+}
+
 // FetchPRForMonitor fetches one PR with the same signals used by FetchReviews,
 // but without a GitHub search query. The bool reports whether the PR is still
 // open; closed/merged PRs are left to FetchPRState-based reconciliation.
@@ -307,7 +330,13 @@ func fetchPRForMonitorWith(e execer, repo string, number int) (PullRequest, bool
 	if pr.State != "OPEN" {
 		return PullRequest{}, false, nil
 	}
-	return convertCommonPR(pr, gqlResp.Data.Viewer.Login), true, nil
+	// completePRCheckContexts operates on its slice in place. Use the completed
+	// element rather than the original pointer copied into that slice.
+	completed := []gqlPR{*pr}
+	if err := completePRCheckContexts(context.Background(), e, completed); err != nil {
+		return PullRequest{}, false, fmt.Errorf("complete check contexts for %s#%d: %w", repo, number, err)
+	}
+	return convertCommonPR(&completed[0], gqlResp.Data.Viewer.Login), true, nil
 }
 
 // FetchPRsForMonitor fetches multiple PRs' monitor signals, aliasing them
@@ -457,58 +486,31 @@ func fetchPRBatchWith(e execer, refs []PRRef) []MonitorPRResult {
 		if node.PullRequest == nil || node.PullRequest.State != "OPEN" {
 			continue
 		}
-		results[v.idx].PR = convertCommonPR(node.PullRequest, viewer)
+		completed := []gqlPR{*node.PullRequest}
+		if err := completePRCheckContexts(context.Background(), e, completed); err != nil {
+			results[v.idx].Err = fmt.Errorf("complete check contexts for %s#%d: %w", v.owner+"/"+v.name, v.number, err)
+			continue
+		}
+		results[v.idx].PR = convertCommonPR(&completed[0], viewer)
 		results[v.idx].Open = true
 	}
 	return results
 }
 
 func fetchReviewsWith(e execer) (ReviewSummary, error) {
-	const (
-		createdQuery   = "is:pr is:open author:@me"
-		requestedQuery = "is:pr is:open review-requested:@me"
-		reviewedQuery  = "is:pr is:open reviewed-by:@me"
-	)
-	cacheKey := createdQuery + "||" + requestedQuery + "||" + reviewedQuery
-	if runtimeCacheEnabled(e) {
-		if cached, ok := reviewSummaryCache.Get(cacheKey); ok {
-			return cached, nil
-		}
-		// Pace the search legs by the live GraphQL budget: when it is low, serve
-		// a stale summary if we have one, otherwise back off (ErrBudgetExhausted
-		// is transient) instead of firing three searches that would only be
-		// rejected and burn the last of the shared budget.
-		if ghGate.shouldSkipOptional("graphql", priorityDiscovery) {
-			if stale, ok := reviewSummaryCache.GetStale(cacheKey); ok {
-				return stale, nil
-			}
-			return ReviewSummary{}, ErrBudgetExhausted
-		}
-	}
-
-	created, err := fetchReviewSearchWith(e, createdQuery)
+	created, err := fetchCreatedByMePRsWith(e)
 	if err != nil {
-		return staleReviewSummaryOrError(e, cacheKey, "created", err)
+		return ReviewSummary{}, err
 	}
-	requested, err := fetchReviewSearchWith(e, requestedQuery)
+	assigned, err := fetchAssignedReviewSummaryWith(e)
 	if err != nil {
-		return staleReviewSummaryOrError(e, cacheKey, "requested", err)
+		return ReviewSummary{}, err
 	}
-	reviewed, err := fetchReviewSearchWith(e, reviewedQuery)
-	if err != nil {
-		return staleReviewSummaryOrError(e, cacheKey, "reviewed", err)
-	}
-
-	summary := ReviewSummary{
+	return ReviewSummary{
 		CreatedByMe:     created,
-		ReviewRequested: requested,
-		ReviewedByMe:    approvedOnly(reviewed),
-	}
-	if runtimeCacheEnabled(e) {
-		reviewSummaryCache.Set(cacheKey, summary, 2*time.Minute)
-	}
-
-	return summary, nil
+		ReviewRequested: assigned.ReviewRequested,
+		ReviewedByMe:    assigned.ReviewedByMe,
+	}, nil
 }
 
 func staleReviewSummaryOrError(e execer, cacheKey, leg string, err error) (ReviewSummary, error) {
@@ -520,23 +522,106 @@ func staleReviewSummaryOrError(e execer, cacheKey, leg string, err error) (Revie
 	return ReviewSummary{}, fmt.Errorf("fetch %s reviews: %w", leg, err)
 }
 
-func fetchReviewSearchWith(e execer, query string) ([]PullRequest, error) {
-	resp, err := runGHAPIWith(e, "", "graphql",
-		"-f", "query="+reviewSummaryQuery,
-		"-f", "q="+query)
+const (
+	createdReviewQuery   = "is:pr is:open author:@me"
+	requestedReviewQuery = "is:pr is:open review-requested:@me"
+	reviewedReviewQuery  = "is:pr is:open reviewed-by:@me"
+)
+
+func fetchCreatedByMePRsWith(e execer) ([]PullRequest, error) {
+	cacheKey := createdReviewQuery
+	if runtimeCacheEnabled(e) {
+		if cached, ok := reviewSummaryCache.Get(cacheKey); ok {
+			return cached.CreatedByMe, nil
+		}
+		if ghGate.shouldSkipOptional("graphql", priorityDiscovery) {
+			if stale, ok := reviewSummaryCache.GetStale(cacheKey); ok {
+				return stale.CreatedByMe, nil
+			}
+			return nil, ErrBudgetExhausted
+		}
+	}
+
+	created, err := fetchReviewSearchWith(e, createdReviewQuery)
 	if err != nil {
-		return nil, fmt.Errorf("gh api graphql: %s: %w", sanitizeGHOutput(resp.body), err)
+		summary, staleErr := staleReviewSummaryOrError(e, cacheKey, "created", err)
+		return summary.CreatedByMe, staleErr
+	}
+	if runtimeCacheEnabled(e) {
+		reviewSummaryCache.Set(cacheKey, ReviewSummary{CreatedByMe: created}, 2*time.Minute)
+	}
+	return created, nil
+}
+
+func fetchAssignedReviewSummaryWith(e execer) (ReviewSummary, error) {
+	cacheKey := requestedReviewQuery + "||" + reviewedReviewQuery
+	if runtimeCacheEnabled(e) {
+		if cached, ok := reviewSummaryCache.Get(cacheKey); ok {
+			return cached, nil
+		}
+		if ghGate.shouldSkipOptional("graphql", priorityDiscovery) {
+			if stale, ok := reviewSummaryCache.GetStale(cacheKey); ok {
+				return stale, nil
+			}
+			return ReviewSummary{}, ErrBudgetExhausted
+		}
 	}
 
-	var gqlResp gqlReviewSummaryResponse
-	if err := json.Unmarshal(resp.body, &gqlResp); err != nil {
-		return nil, fmt.Errorf("parse graphql response: %w", err)
+	requested, err := fetchReviewSearchWith(e, requestedReviewQuery)
+	if err != nil {
+		return staleReviewSummaryOrError(e, cacheKey, "requested", err)
 	}
-	if len(gqlResp.Errors) > 0 {
-		return nil, fmt.Errorf("graphql: %s", gqlResp.Errors[0].Message)
+	reviewed, err := fetchReviewSearchWith(e, reviewedReviewQuery)
+	if err != nil {
+		return staleReviewSummaryOrError(e, cacheKey, "reviewed", err)
 	}
 
-	return convertPRs(gqlResp.Data.Search.Nodes, gqlResp.Data.Viewer.Login), nil
+	summary := ReviewSummary{
+		ReviewRequested: requested,
+		ReviewedByMe:    approvedOnly(reviewed),
+	}
+	if runtimeCacheEnabled(e) {
+		reviewSummaryCache.Set(cacheKey, summary, 2*time.Minute)
+	}
+	return summary, nil
+}
+
+func fetchReviewSearchWith(e execer, query string) ([]PullRequest, error) {
+	var all []PullRequest
+	var after, viewer string
+	for range maxSearchPages {
+		args := []string{"-f", "query=" + reviewSummaryQuery, "-f", "q=" + query}
+		if after != "" {
+			args = append(args, "-F", "after="+after)
+		}
+		resp, err := runGHAPIWith(e, "", append([]string{"graphql"}, args...)...)
+		if err != nil {
+			return nil, fmt.Errorf("gh api graphql: %s: %w", sanitizeGHOutput(resp.body), err)
+		}
+
+		var gqlResp gqlReviewSummaryResponse
+		if err := json.Unmarshal(resp.body, &gqlResp); err != nil {
+			return nil, fmt.Errorf("parse graphql response: %w", err)
+		}
+		if len(gqlResp.Errors) > 0 {
+			return nil, fmt.Errorf("graphql: %s", gqlResp.Errors[0].Message)
+		}
+		if viewer == "" {
+			viewer = gqlResp.Data.Viewer.Login
+		}
+		if err := completePRCheckContexts(context.Background(), e, gqlResp.Data.Search.Nodes); err != nil {
+			return nil, err
+		}
+		all = append(all, convertPRs(gqlResp.Data.Search.Nodes, viewer)...)
+		if !gqlResp.Data.Search.PageInfo.HasNextPage {
+			return all, nil
+		}
+		after = gqlResp.Data.Search.PageInfo.EndCursor
+		if after == "" {
+			return nil, fmt.Errorf("graphql: search has next page without cursor")
+		}
+	}
+	return nil, fmt.Errorf("graphql: search exceeded %d pages", maxSearchPages)
 }
 
 func approvedOnly(prs []PullRequest) []PullRequest {
@@ -554,6 +639,7 @@ func approvedOnly(prs []PullRequest) []PullRequest {
 // fetchMyReviewStateWith, and the REST auto-merge approval gate
 // (restApproval) so all three parse the same /pulls/{n}/reviews shape once.
 type restReview struct {
+	ID          int64  `json:"id"`
 	State       string `json:"state"`
 	CommitID    string `json:"commit_id"`
 	SubmittedAt string `json:"submitted_at"`
@@ -667,7 +753,9 @@ type MyReviewState struct {
 	Pending     bool   // an unsubmitted draft review exists
 	Submitted   bool   // a submitted (non-draft) review exists
 	Approved    bool   // the latest submitted review is an approval
+	ViewerIsBot bool   // the authenticated viewer is a GitHub App/bot identity
 	ReviewedSHA string // commit_id of the latest submitted review ("" if none)
+	ReviewID    int64  // id of the review carrying the latest verdict (0 if none) — needed to dismiss it
 }
 
 // FetchMyReviewState reports the authenticated user's review state on a PR.
@@ -706,7 +794,7 @@ func fetchMyReviewStateWith(e execer, repo string, number int) (MyReviewState, e
 		return MyReviewState{}, fmt.Errorf("resolve viewer login for %s#%d: %w", repo, number, err)
 	}
 
-	var st MyReviewState
+	st := MyReviewState{ViewerIsBot: isBotLogin(me)}
 	var latestReview, latestVerdict string // submitted_at watermarks
 	for i := range reviews {
 		r := reviews[i]
@@ -733,6 +821,7 @@ func fetchMyReviewStateWith(e execer, repo string, number int) (MyReviewState, e
 			if r.SubmittedAt >= latestVerdict {
 				latestVerdict = r.SubmittedAt
 				st.Approved = r.State == "APPROVED"
+				st.ReviewID = r.ID
 			}
 		}
 	}
@@ -741,6 +830,10 @@ func fetchMyReviewStateWith(e execer, repo string, number int) (MyReviewState, e
 		myReviewStateCache.Set(key, st, 30*time.Second)
 	}
 	return st, nil
+}
+
+func isBotLogin(login string) bool {
+	return strings.HasSuffix(login, "[bot]")
 }
 
 // ApprovePR approves a pull request.
@@ -753,6 +846,30 @@ func approvePRWith(e execer, repo string, number int) error {
 		strconv.Itoa(number), "-R", repo)
 	if err != nil {
 		return fmt.Errorf("gh pr review --approve %d: %s: %w", number, strings.TrimSpace(string(out)), err)
+	}
+	if runtimeCacheEnabled(e) {
+		invalidatePRCaches(repo, number)
+	}
+	return nil
+}
+
+// DismissReview dismisses a previously-submitted review, reverting its
+// verdict (e.g. an APPROVED that should never have counted). GitHub has no
+// `gh pr review` dismiss subcommand, so this goes through the REST
+// dismissals endpoint directly; it requires the numeric review ID (see
+// MyReviewState.ReviewID) and a message explaining why the verdict no
+// longer stands.
+func DismissReview(repo string, number int, reviewID int64, message string) error {
+	return dismissReviewWith(defaultExecer, repo, number, reviewID, message)
+}
+
+func dismissReviewWith(e execer, repo string, number int, reviewID int64, message string) error {
+	out, err := e.run("api", "--method", "PUT",
+		fmt.Sprintf("repos/%s/pulls/%d/reviews/%d/dismissals", repo, number, reviewID),
+		"-f", "message="+message,
+		"-f", "event=DISMISS")
+	if err != nil {
+		return fmt.Errorf("dismiss review %d on %s#%d: %s: %w", reviewID, repo, number, strings.TrimSpace(string(out)), err)
 	}
 	if runtimeCacheEnabled(e) {
 		invalidatePRCaches(repo, number)

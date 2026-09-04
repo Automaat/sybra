@@ -1,10 +1,15 @@
 package stats
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/Automaat/sybra/internal/fsutil"
 )
 
 func TestNewStoreEmpty(t *testing.T) {
@@ -17,6 +22,27 @@ func TestNewStoreEmpty(t *testing.T) {
 	}
 	if s.Len() != 0 {
 		t.Fatalf("expected 0 runs, got %d", s.Len())
+	}
+}
+
+func TestAllForTaskReturnsOnlyMatchingRuns(t *testing.T) {
+	t.Parallel()
+	s, err := NewStore(filepath.Join(t.TempDir(), "stats.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, record := range []RunRecord{{ID: "one", TaskID: "target"}, {ID: "other", TaskID: "other"}, {ID: "two", TaskID: "target"}} {
+		if err := s.Record(record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := s.AllForTask("target")
+	if len(got) != 2 || got[0].ID != "one" || got[1].ID != "two" {
+		t.Fatalf("AllForTask = %+v, want target runs in storage order", got)
+	}
+	got[0].ID = "mutated"
+	if all := s.AllForTask("target"); len(all) != 2 || all[0].ID != "one" {
+		t.Fatalf("AllForTask returned aliased records: %+v", all)
 	}
 }
 
@@ -169,6 +195,77 @@ func TestPersistence(t *testing.T) {
 	}
 }
 
+func TestRecord_PersistsAppendOnlyNDJSON(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stats.json")
+	s, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Record(RunRecord{ID: "first", Timestamp: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Record(RunRecord{ID: "second", Timestamp: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(after, before) {
+		t.Fatal("second Record rewrote existing NDJSON history instead of appending")
+	}
+	lines := bytes.Split(bytes.TrimSpace(after), []byte{'\n'})
+	if len(lines) != 2 {
+		t.Fatalf("NDJSON lines = %d, want 2", len(lines))
+	}
+	var second RunRecord
+	if err := json.Unmarshal(lines[1], &second); err != nil {
+		t.Fatalf("parse second NDJSON line: %v", err)
+	}
+	if second.ID != "second" {
+		t.Fatalf("second NDJSON ID = %q, want second", second.ID)
+	}
+}
+
+func TestNewStore_MigratesLegacyJSONArray(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stats.json")
+	legacy, err := json.Marshal([]RunRecord{{ID: "legacy", Timestamp: time.Now()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Len() != 1 {
+		t.Fatalf("Len after legacy migration = %d, want 1", s.Len())
+	}
+	migrated, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.HasPrefix(bytes.TrimSpace(migrated), []byte{'['}) {
+		t.Fatal("legacy JSON array was not migrated to NDJSON")
+	}
+	if err := s.Record(RunRecord{ID: "current", Timestamp: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Len() != 2 {
+		t.Fatalf("Len after legacy migration and append = %d, want 2", reloaded.Len())
+	}
+}
+
 // TestRecordCrossProcessSimulatesConcurrentWriters models two OS processes
 // (e.g. the GUI server and sybra-cli) each holding their own *Store over the
 // same path. s.runs is loaded once at NewStore time and never re-read on the
@@ -194,6 +291,9 @@ func TestRecordCrossProcessSimulatesConcurrentWriters(t *testing.T) {
 	if err := s2.Record(RunRecord{ID: "a2", TaskID: "t2", Timestamp: time.Now()}); err != nil {
 		t.Fatalf("s2.Record: %v", err)
 	}
+	if s1.Len() != 2 || s2.Len() != 2 {
+		t.Fatalf("live stores do not converge after cross-process appends: s1=%d s2=%d", s1.Len(), s2.Len())
+	}
 
 	s3, err := NewStore(path)
 	if err != nil {
@@ -201,6 +301,72 @@ func TestRecordCrossProcessSimulatesConcurrentWriters(t *testing.T) {
 	}
 	if s3.Len() != 2 {
 		t.Fatalf("Len() = %d, want 2 — a run was dropped by concurrent cross-process writes", s3.Len())
+	}
+}
+
+func TestNewStore_DiscardsIncompleteFinalNDJSONRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stats.json")
+	valid, err := marshalNDJSON([]RunRecord{{ID: "valid", Timestamp: time.Now()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(valid, []byte(`{"id":"truncated"`)...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := NewStore(path)
+	if err != nil {
+		t.Fatalf("NewStore with incomplete final record: %v", err)
+	}
+	if s.Len() != 1 {
+		t.Fatalf("Len after incomplete-tail recovery = %d, want 1", s.Len())
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, valid) {
+		t.Fatalf("recovered file = %q, want %q", got, valid)
+	}
+}
+
+func TestNewStore_RejectsMalformedCompleteNDJSONRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stats.json")
+	if err := os.WriteFile(path, []byte("{not json}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewStore(path); err == nil {
+		t.Fatal("NewStore accepted a malformed newline-terminated record")
+	}
+}
+
+func TestStore_SyncReportsActualLineForMalformedAppend(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stats.json")
+	s, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Record(RunRecord{ID: "valid", Timestamp: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("{not json}\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	unlock, err := fsutil.LockFileWithin(path, storeLockTimeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = unlock() }()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.syncLocked(); err == nil || !strings.Contains(err.Error(), "line 2") {
+		t.Fatalf("syncLocked error = %v, want line 2", err)
 	}
 }
 

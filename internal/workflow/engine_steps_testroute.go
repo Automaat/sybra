@@ -1,19 +1,22 @@
 package workflow
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
+
+	"github.com/Automaat/sybra/internal/evidence"
+	"github.com/Automaat/sybra/internal/gitexec"
+	"github.com/Automaat/sybra/internal/taskstatus"
+	"github.com/Automaat/sybra/internal/textutil"
+	"github.com/Automaat/sybra/internal/workflow/failureclassify"
 )
 
 const (
@@ -42,8 +45,17 @@ const (
 	testFailureBodyStartLenKey = "body_start_len"
 	testVerdictOutcomeKey      = "outcome"
 	testFailureFingerprintKey  = "failure_fingerprint"
-	testFailuresHeading        = "## Test Failures"
-	acceptanceLedgerHeading    = "## Acceptance Ledger"
+	testSurfaceUnavailableKey  = "surface_unavailable"
+	testSchemaReaskKey         = "schema_reask"
+	// testPassEvidenceReasonKey carries why a PASS report's manual-testing
+	// evidence was rejected, so the re-ask can name it. Without it every
+	// rejected PASS was re-asked with the FAIL-shaped missingEvidenceReask
+	// ("for EVERY claimed defect you MUST include..."), which tells a tester
+	// that claimed no defect nothing at all — so it re-emitted the same
+	// report until the retry budget ran out.
+	testPassEvidenceReasonKey = "pass_evidence_reason"
+	testFailuresHeading       = "## Test Failures"
+	acceptanceLedgerHeading   = "## Acceptance Ledger"
 	// resolvedTestFailuresHeading is what a stale "## Test Failures" section
 	// is renamed to when a newer cycle supersedes it (see
 	// stripTestFailuresSections). Deliberately distinct from testFailuresHeading
@@ -51,12 +63,16 @@ const (
 	// already-superseded reports for the current blocking failure.
 	resolvedTestFailuresHeading = "## Resolved Test Failures (historical)"
 
-	testOutcomePass                 = "pass"
-	testOutcomeProductBug           = "product_bug"
-	testOutcomeAmbiguousRequirement = "ambiguous_requirement"
-	testOutcomeInfraFailure         = "infra_failure"
-	testOutcomeMissingEvidence      = "missing_evidence"
-	testOutcomeProtocolViolation    = "protocol_violation"
+	// testOutcome* mirror the failureclassify vocabulary so route_test_result
+	// and verify_checks classify the same underlying signal (infra vs. code
+	// vs. evidence/protocol issues) against one shared source of truth
+	// instead of independently-defined strings that could drift (#2500).
+	testOutcomePass                 = string(failureclassify.Pass)
+	testOutcomeProductBug           = string(failureclassify.ProductBug)
+	testOutcomeAmbiguousRequirement = string(failureclassify.AmbiguousRequirement)
+	testOutcomeInfraFailure         = string(failureclassify.InfraFailure)
+	testOutcomeMissingEvidence      = string(failureclassify.MissingEvidence)
+	testOutcomeProtocolViolation    = string(failureclassify.ProtocolViolation)
 
 	testProtocolFixSuggestions  = "fix-suggestions"
 	testProtocolMissingEvidence = "missing-evidence"
@@ -80,11 +96,46 @@ const (
 	// lacked, rather than being re-run blind.
 	testingReaskNoteVar = "testing_reask_note"
 
+	// schemaReask is sent when a prose report already claims, in its own
+	// fields, that the surface could not be started. Whether a transcript
+	// proves that claim is not decidable from free prose, so the runner is
+	// asked for the same report in the schema the router can check rather
+	// than having its wording refereed.
+	schemaReask = "Your PASS report says the product surface could not be started on this host. " +
+		"Re-emit the SAME findings as the JSON verdict object the output schema defines: " +
+		"surface_kind, app_started, unable_to_run_reason, a readiness_probe whose command, output " +
+		"and status fields are filled in separately, and automated_checks carrying each command " +
+		"with its recorded result. Do not change what you observed, and do not start the surface " +
+		"if it genuinely cannot start here."
+
+	missingEvidenceHumanReason = "test-runner report lacked machine-checkable evidence after auto-retries — needs local reproduction"
+
+	passEvidenceHumanReason = "test-runner PASS report was rejected for its manual-testing evidence after auto-retries — check the surface it declared against what the change actually exposes"
+
+	// passEvidenceReask is the re-ask for a PASS whose verdict was never in
+	// question — only the evidence backing it. It must not read as pressure to
+	// find a defect: a tester nudged toward FAIL by the re-ask itself sends
+	// correct work back for re-implementation.
+	passEvidenceReask = "Your previous report emitted PASS and was rejected for the manual-testing " +
+		"evidence backing it, not for the verdict itself: %s. Do not turn a PASS into a FAIL to " +
+		"satisfy this. Re-run the probes your verdict rests on and record each in the schema " +
+		"fields — surface_kind, the exact command, its verbatim output, and the result you read " +
+		"from it. Declare the surface you actually exercised: use cli for a change you invoke and " +
+		"read the result of, library for an internal change with no runnable product surface " +
+		"(with unable_to_run_reason filled in), and the web/server/desktop/k8s tokens only for a " +
+		"surface you started and probed while it ran."
+
+	schemaReaskHumanReason = "test-runner says the product surface cannot start on this host but never emitted the schema form — check whether its provider honours the output schema"
+
 	missingEvidenceReask = "Your previous FAIL report was rejected because it lacked machine-checkable " +
 		"evidence. For EVERY claimed defect you MUST include: the exact command you ran, its verbatim " +
 		"output, the expected behaviour citing the task's own words, and a code line quoted from the " +
 		"CURRENT file (file:line). Re-run the probes and produce that evidence — or, if the feature " +
 		"actually works, emit PASS with the required manual-testing evidence."
+	fixSuggestionsReask = "Your previous FAIL report was rejected because it contained fix suggestions " +
+		"instead of observed symptoms. Re-run adversarial testing and report only what you directly " +
+		"observed: commands, outputs, expected behaviour, actual behaviour, and cited evidence. Do not " +
+		"propose implementation changes; if you cannot prove a product defect, emit PASS."
 )
 
 func testingAutoRetryKey(outcome string) string {
@@ -99,37 +150,34 @@ func testingAutoRetryKey(outcome string) string {
 // exhausted and the caller should escalate to human-required. The retry counter
 // is keyed by outcome and persists on the workflow across the rewind.
 func (e *Engine) parkTestingRetryOrEscalate(taskID, outcome, reaskNote string, wfExec *Execution, t TaskInfo) (parked bool, err error) {
-	key := testingAutoRetryKey(outcome)
-	attempts := parseWorkflowInt(wfExec.Variables[key])
-	if attempts >= testingAutoRetryCap {
+	armed, attempt, err := e.rewindRetry(taskID, wfExec, t, rewindRetryPolicy{
+		counterKey: testingAutoRetryKey(outcome),
+		max:        testingAutoRetryCap,
+		// Rewind to the tester step; ResumeStalled re-dispatches it once idle
+		// and past the backoff (run_test is a run_agent step).
+		rewindStep: testVerdictSourceStep,
+		backoff:    func(int) time.Duration { return testingAutoRetryBackoff },
+		onArm: func(wfExec *Execution, attempt int) {
+			if reaskNote != "" {
+				wfExec.SetVar(testingReaskNoteVar, reaskNote)
+			}
+			// Clear the prior run's verdict/outcome/taint so the re-armed run is
+			// judged on its own output, not the stale report that triggered this
+			// retry.
+			clearTestVerdictVars(wfExec)
+		},
+		reason: func(attempt int) string {
+			return fmt.Sprintf("auto-retrying adversarial testing (%s, attempt %d/%d)", outcome, attempt, testingAutoRetryCap)
+		},
+	})
+	if err != nil {
+		return false, err
+	}
+	if !armed {
 		return false, nil
 	}
-	wfExec.SetVar(key, strconv.Itoa(attempts+1))
-	wfExec.SetVar(workflowRetryAfterVar, time.Now().UTC().Add(testingAutoRetryBackoff).Format(time.RFC3339))
-	if reaskNote != "" {
-		wfExec.SetVar(testingReaskNoteVar, reaskNote)
-	}
-	// Clear the prior run's verdict/outcome/taint so the re-armed run is judged
-	// on its own output, not the stale report that triggered this retry.
-	clearTestVerdictVars(wfExec)
-	// Also clear run_test's step-history records: CountStep(run_test) counts
-	// every historical execution, not just the current retry cycle, so without
-	// this a route-level re-arm would leave the tester's own in-step
-	// max_retries budget looking exhausted from earlier cycles.
-	wfExec.ClearStepRecords(testVerdictSourceStep)
-	// Rewind to the tester step; ResumeStalled re-dispatches it once idle and
-	// past the backoff (run_test is a run_agent step).
-	wfExec.CurrentStep = testVerdictSourceStep
-	wfExec.State = ExecWaiting
-	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
-		return false, err
-	}
-	reason := fmt.Sprintf("auto-retrying adversarial testing (%s, attempt %d/%d)", outcome, attempts+1, testingAutoRetryCap)
-	if err := e.tasks.UpdateTaskStatus(taskID, t.Status, reason); err != nil {
-		return false, err
-	}
 	e.logger.Info("workflow.test.auto-retry",
-		"task_id", taskID, "outcome", outcome, "attempt", attempts+1, "cap", testingAutoRetryCap)
+		"task_id", taskID, "outcome", outcome, "attempt", attempt, "cap", testingAutoRetryCap)
 	return true, nil
 }
 
@@ -145,7 +193,7 @@ func (e *Engine) retryOrEscalateTransient(taskID, stepID, outcome, reask, humanR
 	if parked {
 		return StepOutput{}, errStepParked
 	}
-	if err := e.tasks.UpdateTaskStatus(taskID, "human-required", humanReason); err != nil {
+	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, humanReason); err != nil {
 		return StepOutput{}, err
 	}
 	e.logger.Warn(logMsg, "task_id", taskID)
@@ -174,17 +222,38 @@ func (e *Engine) retryOrOpenPRForUnrunnableGate(taskID, stepID string, wfExec *E
 
 func (e *Engine) openPRForUnrunnableTestingGate(taskID, stepID string) (StepOutput, error) {
 	reason := "manual testing gate could not be run after auto-retries (harness/infra limitation, not a product defect) — opening PR for CI and human review"
-	if err := e.tasks.UpdateTaskStatus(taskID, "ready-pr", reason); err != nil {
+	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.ReadyPR, reason); err != nil {
 		return StepOutput{}, err
 	}
 	e.logger.Warn("workflow.test.infra-failure.open-pr", "task_id", taskID)
 	return StepOutput{StepID: stepID, Status: "completed", Output: "infra failure — opened pr"}, nil
 }
 
+func (e *Engine) routeUnstartableSurface(taskID, stepID, surface string) (StepOutput, error) {
+	if !e.openPROnUnrunnableGate.Load() {
+		reason := "manual testing needs a " + surface + " surface this host cannot start — rerun testing where that surface exists"
+		if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
+			return StepOutput{}, err
+		}
+		e.logger.Warn("workflow.test.surface-unavailable", "task_id", taskID, "surface", surface)
+		return StepOutput{StepID: stepID, Status: "completed", Output: "surface unavailable"}, nil
+	}
+	reason := "manual testing needs a " + surface + " surface this host cannot start (not a product defect) — opening PR for CI and human review"
+	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.ReadyPR, reason); err != nil {
+		return StepOutput{}, err
+	}
+	e.logger.Warn("workflow.test.surface-unavailable.open-pr", "task_id", taskID, "surface", surface)
+	return StepOutput{StepID: stepID, Status: "completed", Output: "surface unavailable — opened pr"}, nil
+}
+
 func (e *Engine) routeNonProductTestOutcome(taskID, stepID, outcome string, wfExec *Execution, t TaskInfo) (StepOutput, bool, error) {
 	switch outcome {
 	case testOutcomeInfraFailure:
-		if e.openPROnUnrunnableGate {
+		if surface := wfExec.Variables["step."+testVerdictSourceStep+"."+testSurfaceUnavailableKey]; surface != "" {
+			out, err := e.routeUnstartableSurface(taskID, stepID, surface)
+			return out, true, err
+		}
+		if e.openPROnUnrunnableGate.Load() {
 			out, err := e.retryOrOpenPRForUnrunnableGate(taskID, stepID, wfExec, t)
 			return out, true, err
 		}
@@ -199,7 +268,7 @@ func (e *Engine) routeNonProductTestOutcome(taskID, stepID, outcome string, wfEx
 		return out, true, err
 	case testOutcomeAmbiguousRequirement:
 		reason := "testing found ambiguous or contradictory requirements — human decision needed; see latest ## Test Failures"
-		if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+		if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 			return StepOutput{}, true, err
 		}
 		e.logger.Warn("workflow.test.ambiguous-requirement", "task_id", taskID)
@@ -212,7 +281,7 @@ func clearTestVerdictVars(wfExec *Execution) {
 	if wfExec == nil || wfExec.Variables == nil {
 		return
 	}
-	for _, suffix := range []string{".verdict", "." + testVerdictOutcomeKey, "." + testVerdictTaintedKey, "." + testFailureFingerprintKey} {
+	for _, suffix := range []string{".verdict", "." + testVerdictOutcomeKey, "." + testVerdictTaintedKey, "." + testFailureFingerprintKey, "." + testSurfaceUnavailableKey, "." + testSchemaReaskKey, "." + testPassEvidenceReasonKey} {
 		delete(wfExec.Variables, "step."+testVerdictSourceStep+suffix)
 	}
 }
@@ -497,23 +566,28 @@ func prepareTestVerdictAttemptVars(wfExec *Execution, stepID, body string) {
 	delete(wfExec.Variables, "step."+stepID+"."+testVerdictTaintedKey)
 	delete(wfExec.Variables, "step."+stepID+"."+testVerdictOutcomeKey)
 	delete(wfExec.Variables, "step."+stepID+"."+testFailureFingerprintKey)
+	delete(wfExec.Variables, "step."+stepID+"."+testSurfaceUnavailableKey)
+	delete(wfExec.Variables, "step."+stepID+"."+testSchemaReaskKey)
 }
 
 func (e *Engine) prepareTestStepCompletion(taskID string, t TaskInfo, output *StepOutput, wfExec *Execution, body *string) error {
-	if appended, nextBody, appendErr := e.appendTestFailureReport(taskID, *output, wfExec, *body); appendErr != nil {
+	if appendErr := e.appendTestFailureReport(taskID, *output, wfExec, *body); appendErr != nil {
 		return appendErr
-	} else if appended {
-		*body = nextBody
 	}
 
 	violation, outcome, fingerprint := applyTestVerdictCompletion(wfExec, output, *body, t)
+	if outcome == testOutcomePass && violation == "" {
+		e.recordEvidence(taskID, output.StepID, evidenceCriterionTestRunner, evidence.ProofStructuredTest,
+			0, "", output.Output)
+	}
 	if outcome == testOutcomeProductBug && fingerprint != "" {
-		report := currentTestFailureReport(output.Output, *body, wfExec, output.StepID)
-		if nextBody, changed := upsertAcceptanceLedger(*body, fingerprint, report); changed {
-			if err := e.tasks.ReplaceTaskBody(taskID, nextBody); err != nil {
-				return fmt.Errorf("update acceptance ledger: %w", err)
+		report := currentTestFailureReport(output.Output, t.CurrentTestFailures, wfExec, output.StepID)
+		if nextLedger, changed := upsertAcceptanceLedger(t.AcceptanceLedger, fingerprint, report); changed {
+			nextLedger = clampWorkflowSidecar(nextLedger)
+			if err := e.tasks.WriteSidecar(taskID, "acceptance_ledger", nextLedger); err != nil {
+				return fmt.Errorf("write acceptance ledger: %w", err)
 			}
-			*body = nextBody
+			t.AcceptanceLedger = nextLedger
 		}
 	}
 	if output.AgentID != "" && outcome != "" {
@@ -529,19 +603,19 @@ func (e *Engine) prepareTestStepCompletion(taskID string, t TaskInfo, output *St
 	return nil
 }
 
-func (e *Engine) appendTestFailureReport(taskID string, output StepOutput, wfExec *Execution, body string) (appended bool, nextBody string, err error) {
+func (e *Engine) appendTestFailureReport(taskID string, output StepOutput, wfExec *Execution, body string) error {
 	if wfExec == nil || output.StepID != testVerdictSourceStep {
-		return false, body, nil
+		return nil
 	}
 	if output.Status != "completed" {
-		return false, body, nil
+		return nil
 	}
 
 	report := ""
 	isFail := false
 	if parsed, ok := parseStructuredTestOutput(output.Output); ok {
 		if strings.ToUpper(strings.TrimSpace(parsed.Verdict)) != "FAIL" {
-			return false, body, nil
+			return nil
 		}
 		isFail = true
 		report = normalizeStructuredFailuresMarkdown(parsed.FailuresMarkdown, parsed.Outcome)
@@ -550,63 +624,19 @@ func (e *Engine) appendTestFailureReport(taskID string, output StepOutput, wfExe
 		report = plainTestFailureReport(output.Output)
 	}
 	if !isFail {
-		return false, body, nil
+		return nil
 	}
 	if delta, hasDelta := testFailureBodyDelta(body, wfExec, output.StepID); hasDelta && testFailSectionOf(delta) != "" {
-		var currentStart int
-		nextBody, currentStart = normalizeTestFailureDeltaBody(body, delta)
-		wfExec.SetVar("step."+output.StepID+"."+testFailureBodyStartLenKey, strconv.Itoa(currentStart))
-		if err := e.tasks.ReplaceTaskBody(taskID, nextBody); err != nil {
-			return false, body, fmt.Errorf("normalize test failure report: %w", err)
-		}
-		return true, nextBody, nil
+		report = strings.TrimSpace(stripTestVerdictMarkers(testFailSectionOf(delta)))
 	}
 	if report == "" {
-		return false, body, nil
+		return nil
 	}
-
-	// Strip any prior "## Test Failures" section(s) before appending the new
-	// one, so at most one is ever live in the body — it is then unambiguously
-	// the current, blocking failure. Priors are archived under a distinctly
-	// different heading rather than dropped, preserving audit history without
-	// reintroducing the ambiguity.
-	strippedBody, priorSections := stripTestFailuresSections(body)
-	nextBody = strippedBody
-	for _, prior := range priorSections {
-		nextBody = appendRawBody(nextBody, archiveTestFailuresSection(prior))
+	report = clampWorkflowSidecar(strings.TrimSpace(report))
+	if err := e.tasks.WriteSidecar(taskID, "current_test_failures", report); err != nil {
+		return fmt.Errorf("write current test failures: %w", err)
 	}
-	currentStart := len(nextBody)
-	nextBody = appendRawBody(nextBody, report)
-	wfExec.SetVar("step."+output.StepID+"."+testFailureBodyStartLenKey, strconv.Itoa(currentStart))
-	if err := e.tasks.ReplaceTaskBody(taskID, nextBody); err != nil {
-		return false, body, fmt.Errorf("append test failure report: %w", err)
-	}
-	return true, nextBody, nil
-}
-
-func normalizeTestFailureDeltaBody(body, delta string) (nextBody string, currentStart int) {
-	preAttemptBody := body[:len(body)-len(delta)]
-	strippedPreAttemptBody, priorSections := stripTestFailuresSections(preAttemptBody)
-	strippedDelta, deltaSections := stripTestFailuresSections(delta)
-	if len(deltaSections) == 0 {
-		return body, len(body)
-	}
-
-	nextBody = strippedPreAttemptBody
-	nextBody = appendRawBody(nextBody, strippedDelta)
-	for _, prior := range priorSections {
-		nextBody = appendRawBody(nextBody, archiveTestFailuresSection(prior))
-	}
-	for _, prior := range deltaSections[:len(deltaSections)-1] {
-		nextBody = appendRawBody(nextBody, archiveTestFailuresSection(prior))
-	}
-	currentSection := deltaSections[len(deltaSections)-1]
-	nextBody = appendRawBody(nextBody, currentSection)
-	currentStart = strings.LastIndex(nextBody, currentSection)
-	if currentStart < 0 {
-		currentStart = len(nextBody)
-	}
-	return nextBody, currentStart
+	return nil
 }
 
 // stripTestFailuresSections removes every "## Test Failures" section from
@@ -684,6 +714,10 @@ func capPriorAttemptDiffStat(text string) string {
 	return capTextBlock(text, 40, 4*1024, "\n\n[truncated for prior-attempt note]", true)
 }
 
+func clampWorkflowSidecar(text string) string {
+	return capHeadTailText(text, 16*1024, "\n\n[truncated to cap workflow sidecar growth]\n\n")
+}
+
 // capTextBlock head-truncates text to maxLines then byte-caps it to maxBytes,
 // appending suffix when anything was dropped. When preserveLastLine is set, the
 // final line is held aside before the line cut and re-appended afterwards — used
@@ -720,7 +754,7 @@ func capTextBlock(text string, maxLines, maxBytes int, suffix string, preserveLa
 		limit -= len(suffix)
 	}
 	if len(text) > limit {
-		text = trimUTF8ToBytes(text, limit)
+		text = textutil.TruncateBytesValid(text, limit, "")
 		truncated = true
 	}
 	text = strings.TrimRight(text, "\n")
@@ -731,6 +765,21 @@ func capTextBlock(text string, maxLines, maxBytes int, suffix string, preserveLa
 		return strings.TrimSpace(suffix)
 	}
 	return text + suffix
+}
+
+func capHeadTailText(text string, maxBytes int, elision string) string {
+	text = strings.TrimSpace(text)
+	if text == "" || len(text) <= maxBytes {
+		return text
+	}
+	headBytes := maxBytes / 3
+	if headBytes <= 0 {
+		headBytes = maxBytes / 2
+	}
+	head := textutil.TruncateBytes(text, headBytes, "")
+	tailBudget := max(0, maxBytes-len(elision)-len(head))
+	tail := textutil.TailBytes(text, tailBudget)
+	return strings.TrimRight(head, "\n") + elision + strings.TrimLeft(tail, "\n")
 }
 
 func normalizeAcceptanceLedgerReport(report string) string {
@@ -755,25 +804,6 @@ func normalizeAcceptanceLedgerReport(report string) string {
 	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
-func trimUTF8ToBytes(s string, limit int) string {
-	if limit <= 0 {
-		return ""
-	}
-	if len(s) <= limit {
-		return s
-	}
-	s = s[:limit]
-	for len(s) > 0 && !utf8.ValidString(s) {
-		_, size := utf8.DecodeLastRuneInString(s)
-		if size <= 1 {
-			s = s[:len(s)-1]
-			continue
-		}
-		s = s[:len(s)-size]
-	}
-	return s
-}
-
 func upsertAcceptanceLedger(body, fingerprint, report string) (nextBody string, changed bool) {
 	if fingerprint == "" || report == "" {
 		return body, false
@@ -792,7 +822,9 @@ func upsertAcceptanceLedger(body, fingerprint, report string) (nextBody string, 
 		return body, false
 	}
 
-	if _, end, ok := topLevelSectionRange(body, acceptanceLedgerHeading); ok {
+	if _, end, ok := topLevelSectionRange(body, func(line string) bool {
+		return strings.EqualFold(line, acceptanceLedgerHeading)
+	}); ok {
 		before := strings.TrimRight(body[:end], "\n")
 		after := strings.TrimLeft(body[end:], "\n")
 		nextBody = appendRawBody(before, entry)
@@ -1021,6 +1053,12 @@ func hasManualPassEvidence(output string, t TaskInfo) (ok bool, reason string) {
 	if surface == "library" || surface == "docs" || surface == "none" {
 		return false, "PASS skipped manual testing without an explicit docs/library exemption"
 	}
+	if isOneShotSurface(surface) {
+		if !hasConcreteManualProbeEvidence(parsed.ManualProbes) {
+			return false, "PASS report omitted an executed " + surface + " probe"
+		}
+		return true, ""
+	}
 	if !parsed.AppStarted {
 		return false, "PASS report did not confirm app_started"
 	}
@@ -1089,6 +1127,23 @@ func normalizeSurfaceKind(s string) string {
 	return fallback
 }
 
+// isOneShotSurface reports whether a product surface is exercised by invoking
+// it and reading the result rather than by starting something and probing it
+// while it runs. A one-shot surface leaves no process behind, so it has no
+// start_command and nothing a readiness probe could poll; demanding
+// app_started of one rejects every honest report a CLI-shaped change can
+// produce, which is how a build-script fix passed its probes three times and
+// still burned its whole auto-retry budget on missing_evidence.
+//
+// This is not the docs/library exemption: a one-shot surface still has to show
+// a probe that actually ran, and at the stricter concrete-result bar
+// (hasConcreteProbeEvidence) the exemption path does not apply, so a tester
+// cannot label a web change "cli" to dodge starting it any more cheaply than
+// it could already have said "library".
+func isOneShotSurface(surface string) bool {
+	return surface == "cli"
+}
+
 func isManualTestExemption(surface string, t TaskInfo) bool {
 	if surface == "library" {
 		return true
@@ -1118,6 +1173,12 @@ func hasPlainTextManualPassEvidence(output string, t TaskInfo) (ok bool, reason 
 	}
 	if surface == "library" || surface == "docs" || surface == "none" {
 		return false, "plain-text PASS skipped manual testing without an explicit docs/library exemption"
+	}
+	if isOneShotSurface(surface) {
+		if !hasPlainTextConcreteProbeEvidence(output) {
+			return false, "plain-text PASS report omitted an executed " + surface + " probe"
+		}
+		return true, ""
 	}
 	lower := strings.ToLower(output)
 	if !containsAny(lower, "app_started: true", "app started: true") {
@@ -1161,6 +1222,37 @@ func hasPlainTextManualProbeEvidence(output string) bool {
 		containsAny(lower, "actual:", "actual output:", "observed:", "observed output:")
 }
 
+// hasPlainTextConcreteProbeEvidence is hasConcreteManualProbeEvidence's
+// plain-text counterpart: the probe labels must be present AND at least one
+// recorded result must read as an outcome rather than a not-executed marker.
+//
+// hasPlainTextManualProbeEvidence alone only asks whether the labels appear,
+// so a one-shot PASS whose single probe said "actual: not run" satisfied the
+// plain-text gate while its structured twin was rejected — weaker than the
+// structured path and weaker than what /sybra-test tells a tester it owes.
+//
+// It reads every line rather than reportScanLines, because a probe's result
+// is usually written indented under its command and reportScanLines drops
+// indented lines as fenced/quoted content.
+func hasPlainTextConcreteProbeEvidence(output string) bool {
+	if !hasPlainTextManualProbeEvidence(output) {
+		return false
+	}
+	for line := range strings.SplitSeq(output, "\n") {
+		field, value, ok := strings.Cut(strings.TrimSpace(strings.TrimLeft(line, "-* \t")), ":")
+		if !ok {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(field)) {
+		case "actual", "actual output", "observed", "observed output", "status":
+			if hasConcreteProbeResult(evidenceText(strings.TrimSpace(value))) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func hasPlainTextRegressionCheckEvidence(output string) bool {
 	lower := strings.ToLower(output)
 	return containsAny(lower, "automated_checks:", "automated checks:", "regression check:", "test harness:") &&
@@ -1192,6 +1284,19 @@ func hasManualProbeEvidence(probes manualProbeEvidenceList) bool {
 			return true
 		}
 		if hasRawManualProbeEvidence(p.Raw) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasConcreteManualProbeEvidence is hasManualProbeEvidence's stricter sibling:
+// it requires a probe whose recorded result reads as an outcome rather than a
+// not-executed marker. One-shot surfaces gate on this instead of the app-start
+// triple, so it is the only thing standing between a "cli" PASS and the router.
+func hasConcreteManualProbeEvidence(probes manualProbeEvidenceList) bool {
+	for _, p := range probes {
+		if hasConcreteProbeEvidence(p.Command, p.Actual, p.Output, p.Observed, p.Status, p.Raw) {
 			return true
 		}
 	}
@@ -1479,8 +1584,19 @@ func applyTestVerdictCompletion(wfExec *Execution, output *StepOutput, body stri
 	}
 	if output.Status == "completed" && outcome == testOutcomePass && v == "PASS" {
 		if ok, reason := hasManualPassEvidence(output.Output, t); !ok {
+			if proseUnstartableClaim(output.Output, t) {
+				wfExec.SetVar("step."+output.StepID+"."+testSchemaReaskKey, "1")
+			}
+			if surface := unstartableSurface(output.Output, t); surface != "" {
+				wfExec.SetVar("step."+output.StepID+"."+testVerdictOutcomeKey, testOutcomeInfraFailure)
+				wfExec.SetVar("step."+output.StepID+"."+testSurfaceUnavailableKey, surface)
+				output.Status = "failed"
+				output.Output = appendUnstartableSurface(output.Output, surface)
+				return "", testOutcomeInfraFailure, ""
+			}
 			wfExec.SetVar("step."+output.StepID+"."+testVerdictOutcomeKey, testOutcomeMissingEvidence)
 			wfExec.SetVar("step."+output.StepID+"."+testVerdictTaintedKey, testProtocolMissingEvidence)
+			wfExec.SetVar("step."+output.StepID+"."+testPassEvidenceReasonKey, reason)
 			output.Status = "failed"
 			output.Output = appendTestProtocolViolation(output.Output, reason)
 			return testProtocolMissingEvidence, testOutcomeMissingEvidence, ""
@@ -1502,6 +1618,150 @@ func applyTestVerdictCompletion(wfExec *Execution, output *StepOutput, body stri
 
 func appendTestProtocolViolation(output, detail string) string {
 	msg := "test-runner protocol violation: " + detail
+	if strings.TrimSpace(output) == "" {
+		return msg
+	}
+	return strings.TrimRight(output, "\n") + "\n\n" + msg
+}
+
+// proseUnstartableClaim reports whether a non-structured PASS already says, in
+// its own fields, that the product surface could not be started here. Only the
+// structural fields are read. Whether a transcript proves the claim is left to
+// the schema-shaped re-emission, because deciding it from free prose needs a
+// vocabulary of what a failure reads like, and every word added to catch a
+// report that skipped the surface rejects an honest one that used the word
+// plainly.
+func proseUnstartableClaim(output string, t TaskInfo) bool {
+	if _, structured := parseStructuredTestOutput(output); structured {
+		return false
+	}
+	surface := normalizeSurfaceKind(firstPlainEvidenceField(output, "surface_kind", "surface kind"))
+	if surface == "" || isManualTestExemption(surface, t) {
+		return false
+	}
+	if surface == "library" || surface == "docs" || surface == "none" {
+		return false
+	}
+	if !plainReportDeniesStart(output) {
+		return false
+	}
+	if firstPlainEvidenceField(output, "unable_to_run_reason", "unable to run manual test") == "" {
+		return false
+	}
+	if firstPlainEvidenceField(output, "readiness_probe", "readiness probe") == "" {
+		return false
+	}
+	return strings.TrimSpace(testFailSectionOf(output)) == ""
+}
+
+// plainReportDeniesStart reads the app_started field and treats anything it
+// cannot read as started, so an unreadable value never earns the claim.
+func plainReportDeniesStart(output string) bool {
+	v := strings.ToLower(strings.TrimSpace(firstPlainEvidenceField(output, "app_started", "app started")))
+	if v == "" {
+		return false
+	}
+	first := strings.Trim(strings.Fields(v)[0], " \t`\"'.,;:-")
+	switch first {
+	case "false", "no", "not", "never":
+		return true
+	}
+	return false
+}
+
+func unstartableSurface(output string, t TaskInfo) string {
+	parsed, ok := parseStructuredTestOutput(output)
+	if !ok {
+		return ""
+	}
+	if strings.ToUpper(strings.TrimSpace(parsed.Verdict)) != "PASS" {
+		return ""
+	}
+	if normalizeTestOutcome(parsed.Outcome) != testOutcomePass {
+		return ""
+	}
+	if strings.TrimSpace(parsed.FailuresMarkdown) != "" {
+		return ""
+	}
+	surface := normalizeSurfaceKind(parsed.SurfaceKind)
+	if surface == "" || isManualTestExemption(surface, t) {
+		return ""
+	}
+	if surface == "library" || surface == "docs" || surface == "none" {
+		return ""
+	}
+	if parsed.AppStarted {
+		return ""
+	}
+	if strings.TrimSpace(parsed.UnableToRunReason) == "" {
+		return ""
+	}
+	if !readinessProbeReportsUnavailable(parsed.ReadinessProbe) {
+		return ""
+	}
+	if !hasUnstartableSurfaceEvidence(parsed) {
+		return ""
+	}
+	return surface
+}
+
+func hasUnstartableSurfaceEvidence(parsed structuredTestOutput) bool {
+	for _, c := range parsed.AutomatedChecks {
+		if recordedCheckSucceeded(c.Command, c.Output, c.Observed) || hasRawRegressionCheckEvidence(c.Raw) {
+			return true
+		}
+	}
+	for _, p := range parsed.ManualProbes {
+		if recordedCheckSucceeded(p.Command, p.Output, p.Observed) || hasRawRegressionCheckEvidence(p.Raw) {
+			return true
+		}
+	}
+	return false
+}
+
+func recordedCheckSucceeded(command string, output, observed evidenceText) bool {
+	cmd := strings.ToLower(strings.TrimSpace(command))
+	if cmd == "" || !hasRegressionCheckCommandEvidence(cmd) {
+		return false
+	}
+	if strings.TrimSpace(string(output)) == "" && strings.TrimSpace(string(observed)) == "" {
+		return false
+	}
+	return hasSuccessfulCheckResult(output, observed)
+}
+
+var probeSuccessTokenPattern = regexp.MustCompile(`\b(ok|pass|passed|success|successful|healthy|serving|ready|2\d\d)\b`)
+
+var probeAnsweredPattern = regexp.MustCompile(`\bhttp/\d(?:\.\d)?\s+\d{3}\b`)
+
+func probeTranscriptReportsAbsence(parts ...string) bool {
+	lower := strings.ToLower(strings.TrimSpace(strings.Join(collectNonEmptyStrings(parts...), "\n")))
+	if lower == "" {
+		return false
+	}
+	if probeAnsweredPattern.MatchString(lower) {
+		return false
+	}
+	if hasFailureCheckResult(lower) {
+		return true
+	}
+	return !probeSuccessTokenPattern.MatchString(lower)
+}
+
+func readinessProbeReportsUnavailable(probe readinessProbeEvidence) bool {
+	if strings.TrimSpace(probe.Command) == "" {
+		return hasRawReadinessProbeEvidence(probe.Raw) && probeTranscriptReportsAbsence(probe.Raw)
+	}
+	switch strings.ToLower(strings.TrimSpace(string(probe.Status))) {
+	case "unavailable", "unreachable", "not_available", "not-available", "missing":
+	default:
+		return false
+	}
+	return probeTranscriptReportsAbsence(string(probe.Output), string(probe.Observed))
+}
+
+func appendUnstartableSurface(output, surface string) string {
+	msg := "test-runner could not start the " + surface + " surface on this host: readiness probe reported it unavailable"
 	if strings.TrimSpace(output) == "" {
 		return msg
 	}
@@ -2361,7 +2621,7 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 	delete(wfExec.Variables, testingReaskNoteVar)
 
 	if wfExec.Variables["step."+testVerdictSourceStep+".verdict"] == "PASS" {
-		if err := e.tasks.UpdateTaskStatus(taskID, "ready-pr", "manual testing passed"); err != nil {
+		if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.ReadyPR, "manual testing passed"); err != nil {
 			return StepOutput{}, err
 		}
 		e.logger.Info("workflow.test.passed", "task_id", taskID, "step", step.ID)
@@ -2369,21 +2629,22 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 	}
 
 	if violation := wfExec.Variables["step."+testVerdictSourceStep+"."+testVerdictTaintedKey]; violation != "" {
-		// A missing-evidence report describes the runner, not the code — re-ask
-		// the tester (with the specific evidence it owes) before a human. A
-		// fix-suggestions violation already had one in-step retry and rarely
-		// improves on re-ask, so it still escalates immediately.
+		// Protocol violations describe the runner, not the code. Re-ask the
+		// tester with the specific contract it broke before involving a human.
 		if violation == testProtocolMissingEvidence {
-			return e.retryOrEscalateTransient(taskID, step.ID, testOutcomeMissingEvidence, missingEvidenceReask,
-				"test-runner report lacked machine-checkable evidence after auto-retries — needs local reproduction",
+			reask, humanReason := missingEvidenceReask, missingEvidenceHumanReason
+			if r := wfExec.Variables["step."+testVerdictSourceStep+"."+testPassEvidenceReasonKey]; r != "" {
+				reask, humanReason = fmt.Sprintf(passEvidenceReask, r), passEvidenceHumanReason
+			}
+			if wfExec.Variables["step."+testVerdictSourceStep+"."+testSchemaReaskKey] != "" {
+				reask, humanReason = schemaReask, schemaReaskHumanReason
+			}
+			return e.retryOrEscalateTransient(taskID, step.ID, testOutcomeMissingEvidence, reask, humanReason,
 				"protocol violation: "+violation, "workflow.test.protocol-violation", wfExec, t)
 		}
-		reason := "test-runner report violated testing protocol after retry: contained fix suggestions instead of observed symptoms"
-		if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
-			return StepOutput{}, err
-		}
-		e.logger.Warn("workflow.test.protocol-violation", "task_id", taskID, "violation", violation)
-		return StepOutput{StepID: step.ID, Status: "completed", Output: "protocol violation: " + violation}, nil
+		return e.retryOrEscalateTransient(taskID, step.ID, testOutcomeProtocolViolation, fixSuggestionsReask,
+			"test-runner report violated testing protocol after auto-retries — needs local reproduction",
+			"protocol violation: "+violation, "workflow.test.protocol-violation", wfExec, t)
 	}
 	outcome := wfExec.Variables["step."+testVerdictSourceStep+"."+testVerdictOutcomeKey]
 	if out, handled, err := e.routeNonProductTestOutcome(taskID, step.ID, outcome, wfExec, t); handled || err != nil {
@@ -2396,7 +2657,7 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 	// and must not inflate the counter. Nil means no re-dispatch has happened
 	// (first cycle or automatic implement→test loop), so all runs count.
 	attempts, duplicate := e.countValidProductTestAttempts(t, wfExec)
-	limit := e.maxTestAttempts
+	limit := int(e.maxTestAttempts.Load())
 	if limit <= 0 {
 		limit = defaultTestAttempts
 	}
@@ -2414,10 +2675,10 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 			}
 		}
 		reason := "suspected acceptance-criteria conflict after recurring product-bug test failures — human spec decision needed; see ## Test Failures"
-		if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+		if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 			return StepOutput{}, err
 		}
-		if err := e.appendSpecDecisionSection(taskID, t.Body, recurring, attempts, limit); err != nil {
+		if err := e.writeSpecDecision(taskID, recurring, attempts, limit); err != nil {
 			e.logger.Warn("workflow.test.spec-decision.append-failed", "task_id", taskID, "err", err)
 		}
 		e.logSpecDecisionEscalation(taskID, attempts, limit, recurring, false)
@@ -2435,17 +2696,17 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 			reason := fmt.Sprintf(
 				"suspected acceptance-criteria conflict: the implement/test loop failed to converge over %d product-bug attempt(s) (cap %d) — could be a contradictory spec or a hard defect the fixes keep missing; human spec decision needed; see ## Test Failures",
 				attempts, limit)
-			if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+			if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 				return StepOutput{}, err
 			}
-			if err := e.appendSpecDecisionSection(taskID, t.Body, recurring, attempts, limit); err != nil {
+			if err := e.writeSpecDecision(taskID, recurring, attempts, limit); err != nil {
 				e.logger.Warn("workflow.test.spec-decision.append-failed", "task_id", taskID, "err", err)
 			}
 			e.logSpecDecisionEscalation(taskID, attempts, limit, recurring, true)
 			return StepOutput{StepID: step.ID, Status: "completed", Output: "escalated"}, nil
 		}
 		reason := fmt.Sprintf("manual testing found %d grounded product defects: feature still does not match the task — needs targeted local reproduction/fix from latest ## Test Failures", attempts)
-		if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+		if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 			return StepOutput{}, err
 		}
 		e.logger.Warn("workflow.test.escalate", "task_id", taskID, "attempts", attempts, "cap", limit)
@@ -2461,7 +2722,7 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 	}
 	e.seedReimplementNote(e.ctx, wfExec, taskID, attempts, t)
 	reason := "manual testing found a grounded product defect — re-implementing the latest ## Test Failures repro"
-	if err := e.tasks.UpdateTaskStatus(taskID, "in-progress", reason); err != nil {
+	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.InProgress, reason); err != nil {
 		return StepOutput{}, err
 	}
 	e.logger.Info("workflow.test.reimplement", "task_id", taskID, "attempts", attempts, "cap", limit)
@@ -2469,10 +2730,10 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 }
 
 func (e *Engine) seedReimplementNote(ctx context.Context, wfExec *Execution, taskID string, attempts int, t TaskInfo) {
-	if e.attemptNotes == nil || e.worktrees == nil {
+	if e.execution.AttemptNotes == nil || e.execution.Worktrees == nil {
 		return
 	}
-	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	wtPath, ok := e.execution.Worktrees.GetWorktreePath(taskID)
 	if !ok {
 		return
 	}
@@ -2500,7 +2761,7 @@ func (e *Engine) seedReimplementNote(ctx context.Context, wfExec *Execution, tas
 			"Latest rejection reason:\n\n%s\n",
 		attempts, marker, diffStat, quoteMarkdownBlock(reason),
 	)
-	if err := e.attemptNotes.AppendReimplementNote(ctx, taskID, wtPath, marker, section); err != nil {
+	if err := e.execution.AttemptNotes.AppendReimplementNote(ctx, taskID, wtPath, marker, section); err != nil {
 		e.logger.Warn("workflow.test.reimplement-note", "task_id", taskID, "worktree", wtPath, "attempts", attempts, "err", err)
 		return
 	}
@@ -2512,21 +2773,17 @@ func (e *Engine) attemptDiffStat(ctx context.Context, wtPath string) string {
 	defer cancel()
 
 	base := resolveOriginBase(diffCtx, wtPath)
-	cmd := exec.CommandContext(diffCtx, "git", "diff", "--stat", base+"...HEAD")
-	cmd.Dir = wtPath
 	// Capture stderr separately so git's non-fatal advisories (safe.directory,
 	// advice.* hints) — which it can emit while still exiting 0 — never leak into
 	// the note's fenced diff-stat block presented as if part of the diff.
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
+	out, stderr, err := gitexec.OutputWithStderr(diffCtx, gitexec.Options{Dir: wtPath}, "diff", "--stat", base+"...HEAD")
 	if err != nil {
-		diag := singleLineDiagnostic(err, stderr.String())
+		diag := singleLineDiagnostic(err, string(stderr))
 		e.logger.Warn("workflow.test.reimplement-note", "worktree", wtPath, "base", base, "err", err, "phase", "diff-stat")
 		return "(diff unavailable: " + diag + ")"
 	}
-	if stderr.Len() > 0 {
-		e.logger.Warn("workflow.test.reimplement-note", "worktree", wtPath, "base", base, "phase", "diff-stat", "stderr", singleLineDiagnostic(nil, stderr.String()))
+	if len(stderr) > 0 {
+		e.logger.Warn("workflow.test.reimplement-note", "worktree", wtPath, "base", base, "phase", "diff-stat", "stderr", singleLineDiagnostic(nil, string(stderr)))
 	}
 	diff := capPriorAttemptDiffStat(string(out))
 	if diff == "" {
@@ -2536,11 +2793,8 @@ func (e *Engine) attemptDiffStat(ctx context.Context, wtPath string) string {
 }
 
 func reimplementRejectReason(t TaskInfo, wfExec *Execution) string {
-	_, sections := stripTestFailuresSections(t.Body)
-	if len(sections) > 0 {
-		if reason := capPriorAttemptText(sections[len(sections)-1]); reason != "" {
-			return reason
-		}
+	if reason := capPriorAttemptText(t.CurrentTestFailures); reason != "" {
+		return reason
 	}
 
 	var lines []string
@@ -2567,7 +2821,7 @@ func singleLineDiagnostic(err error, output string) string {
 	if text == "" {
 		return "unknown error"
 	}
-	return trimUTF8ToBytes(text, 300)
+	return textutil.TruncateBytesValid(text, 300, "")
 }
 
 // recurringProductBugFingerprints returns the distinct product-bug failure
@@ -2656,9 +2910,7 @@ func nonConvergingProductBugLoop(t TaskInfo) bool {
 const specDecisionHeading = "## Spec Decision Needed"
 
 // specDecisionMarker returns a stable HTML-comment marker keyed by the sorted
-// set of recurring fingerprints driving an escalation. appendSpecDecisionSection
-// uses it to skip re-appending an identical section on a rerun (idempotency),
-// while a genuinely new recurring set still gets its own section appended.
+// set of recurring fingerprints driving an escalation.
 func specDecisionMarker(fingerprints []string) string {
 	sorted := append([]string(nil), fingerprints...)
 	sort.Strings(sorted)
@@ -2666,12 +2918,12 @@ func specDecisionMarker(fingerprints []string) string {
 	return "<!-- sybra:spec-decision:" + hex.EncodeToString(sum[:6]) + " -->"
 }
 
-// buildSpecDecisionSection renders the task-body evidence for a spec-decision
+// buildSpecDecisionSection renders the sidecar evidence for a spec-decision
 // escalation. It deliberately avoids asserting a proven contradiction —
 // the same recurrence shape can also be produced by two independent
-// sequential bugs — and points at the latest "## Test Failures" section
-// for repros rather than claiming an exact section-to-fingerprint mapping,
-// since AgentRunInfo does not persist historical report text or offsets.
+// sequential bugs — and points at the latest current-test-failures sidecar
+// rather than claiming an exact section-to-fingerprint mapping, since
+// AgentRunInfo does not persist historical report text or offsets.
 func buildSpecDecisionSection(fingerprints []string, attempts, limit int) string {
 	sorted := append([]string(nil), fingerprints...)
 	sort.Strings(sorted)
@@ -2685,9 +2937,9 @@ func buildSpecDecisionSection(fingerprints []string, attempts, limit int) string
 				"different repro (fixture values, ids, quoted literals) to demonstrate the same conceptual "+
 				"defect each time, so no exact fingerprint recurred. This is evidence of a suspected "+
 				"acceptance-criteria conflict — not a confirmed one, since a hard defect the fixes keep "+
-				"missing can look the same. A human spec decision is needed; inspect the latest %q section "+
-				"of this task body for the most recent repro.\n",
-			attempts, limit, testFailuresHeading)
+				"missing can look the same. A human spec decision is needed; inspect the latest current test "+
+				"failures sidecar for the most recent repro.\n",
+			attempts, limit)
 		return b.String()
 	}
 	fmt.Fprintf(&b,
@@ -2698,23 +2950,14 @@ func buildSpecDecisionSection(fingerprints []string, attempts, limit int) string
 		len(sorted), attempts, limit)
 	fmt.Fprintf(&b,
 		"Recurring fingerprint(s): %s. Repros for these failure classes are identifiable in the latest "+
-			"%q section of this task body.\n",
-		strings.Join(sorted, ", "), testFailuresHeading)
+			"current test failures sidecar.\n",
+		strings.Join(sorted, ", "))
 	return b.String()
 }
 
-// appendSpecDecisionSection appends the spec-decision evidence section to the
-// task body, unless a section with an identical marker (same recurring
-// fingerprint set) is already present — reruns then skip instead of
-// duplicating. A new/different recurring set still gets appended, since
-// AppendTaskBody has no in-place replace and the older section remains valid
-// historical evidence.
-func (e *Engine) appendSpecDecisionSection(taskID, body string, fingerprints []string, attempts, limit int) error {
-	if strings.Contains(body, specDecisionMarker(fingerprints)) {
-		return nil
-	}
-	if err := e.tasks.AppendTaskBody(taskID, buildSpecDecisionSection(fingerprints, attempts, limit)); err != nil {
-		return fmt.Errorf("append spec-decision section: %w", err)
+func (e *Engine) writeSpecDecision(taskID string, fingerprints []string, attempts, limit int) error {
+	if err := e.tasks.WriteSidecar(taskID, "spec_decision", clampWorkflowSidecar(buildSpecDecisionSection(fingerprints, attempts, limit))); err != nil {
+		return fmt.Errorf("write spec decision: %w", err)
 	}
 	return nil
 }

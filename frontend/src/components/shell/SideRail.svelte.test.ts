@@ -55,7 +55,6 @@ describe('SideRail', () => {
     render(SideRail)
     expect(screen.getByText('Board')).toBeDefined()
     expect(screen.getByText('Projects')).toBeDefined()
-    expect(screen.getByText('Chats')).toBeDefined()
     expect(screen.getByText('Agents')).toBeDefined()
     expect(screen.getByText('GitHub')).toBeDefined()
     expect(screen.getByText('Reviews')).toBeDefined()
@@ -105,7 +104,7 @@ describe('SideRail', () => {
   it('in focus mode shows only primary items + More, hiding the rest', () => {
     focusModeStore.set(true)
     render(SideRail)
-    for (const label of ['Board', 'Reviews', 'Chats', 'Agents']) {
+    for (const label of ['Board', 'Reviews', 'Agents']) {
       expect(screen.getByText(label)).toBeDefined()
     }
     expect(screen.getByText('More')).toBeDefined()

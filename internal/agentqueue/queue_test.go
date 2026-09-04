@@ -76,6 +76,12 @@ func TestLess_Matrix(t *testing.T) {
 			b:    Item{TaskID: "a", Priority: task.PriorityMedium, Enqueued: base},
 			want: false,
 		},
+		{
+			name: "real queued item beats zero enqueue placeholder",
+			a:    Item{TaskID: "queued", Priority: task.PriorityMedium, Enqueued: base},
+			b:    Item{TaskID: "stalled", Priority: task.PriorityMedium},
+			want: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -434,8 +440,13 @@ func TestQueue_Reconcile(t *testing.T) {
 		t.Fatalf("Reconcile left %v, want only [keep]", snap)
 	}
 
-	// Store files for pruned items must be gone too.
-	dir := q.store.dir
+	// Store files for pruned items must be gone too. The queue holds its store
+	// behind an interface now, so this reaches the file one it was built with.
+	fileStore, ok := q.store.(*store)
+	if !ok {
+		t.Fatalf("queue store is %T, want the file store this test built", q.store)
+	}
+	dir := fileStore.dir
 	for _, id := range []string{"missing", "done", "cancelled", "in-progress"} {
 		if _, err := os.Stat(filepath.Join(dir, id+".yaml")); !os.IsNotExist(err) {
 			t.Errorf("expected store file for %q to be removed, stat err=%v", id, err)

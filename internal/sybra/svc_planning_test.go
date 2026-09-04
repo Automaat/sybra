@@ -1,7 +1,9 @@
 package sybra
 
 import (
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/httpapi"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 )
@@ -96,6 +100,46 @@ func TestPlanningService_PlanTask_StartsWorkflow(t *testing.T) {
 	}
 }
 
+func TestPlanningService_PlanTask_ResumesPlanningAtPlanStep(t *testing.T) {
+	planSvc, _, a := setupPlanningService(t)
+
+	created, err := a.tasks.Create("resume planning", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.tasks.UpdateMap(created.ID, map[string]any{
+		"status": string(task.StatusPlanning),
+		"workflow": &workflow.Execution{
+			WorkflowID:  "simple-task-plan",
+			CurrentStep: "review_plan",
+			State:       workflow.ExecFailed,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := planSvc.PlanTask(created.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := a.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Workflow == nil {
+		t.Fatal("workflow missing after PlanTask")
+	}
+	if updated.Workflow.WorkflowID != "simple-task-plan" {
+		t.Fatalf("WorkflowID = %q, want simple-task-plan", updated.Workflow.WorkflowID)
+	}
+	if updated.Workflow.RecordForStep("triage") != nil {
+		t.Fatalf("triage record = %+v, want no triage re-entry", updated.Workflow.RecordForStep("triage"))
+	}
+	if updated.Status == task.StatusInProgress {
+		t.Fatalf("Status = %q, want planning-side status, not implementation handoff", updated.Status)
+	}
+}
+
 func TestPlanningService_ApprovePlan_ErrorWhenNotWaiting(t *testing.T) {
 	planSvc, taskSvc, _ := setupPlanningService(t)
 
@@ -105,8 +149,16 @@ func TestPlanningService_ApprovePlan_ErrorWhenNotWaiting(t *testing.T) {
 	}
 
 	// No workflow running → approve should fail.
-	if _, err := planSvc.ApprovePlan(created.ID); err == nil {
+	_, err = planSvc.ApprovePlan(created.ID)
+	if err == nil {
 		t.Fatal("expected error when approving task without active workflow")
+	}
+	var ce httpapi.ClientError
+	if !errors.As(err, &ce) {
+		t.Fatalf("want a 4xx httpapi.ClientError so a cluster follower's rejection relays as a readable error instead of a sanitized 500, got %T: %v", err, err)
+	}
+	if ce.HTTPStatus() != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", ce.HTTPStatus(), http.StatusConflict)
 	}
 }
 
@@ -171,6 +223,63 @@ func TestPlanningService_ApprovePlan_RecoversCompletedPlanReviewWorkflow(t *test
 	}
 	if got := updated.Workflow.Variables["step.critique_plan.note"]; got != "keep" {
 		t.Fatalf("step variable = %q, want preserved", got)
+	}
+}
+
+func TestWorkflowService_HandleHumanAction_RecoversCompletedPlanReviewWorkflow(t *testing.T) {
+	_, taskSvc, a := setupPlanningService(t)
+	workflowSvc := &WorkflowService{engine: taskSvc.workflowEngine}
+
+	created, err := a.tasks.Create("approve stale plan through workflow service", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := task.StatusPlanReview
+	completedAt := time.Now().UTC()
+	wf := &workflow.Execution{
+		WorkflowID:  "simple-task-plan",
+		CurrentStep: "",
+		State:       workflow.ExecCompleted,
+		StepHistory: []workflow.StepRecord{
+			{StepID: "validate_plan_contract", Status: "completed"},
+			{StepID: "maybe_critique", Status: "completed"},
+		},
+		StartedAt:   completedAt.Add(-time.Minute),
+		CompletedAt: &completedAt,
+	}
+	plan := "# Execution Plan\n\n## Steps\n1. Fix it."
+	planContract := validPlanningContract(created.ID)
+	planResearch := "researched relevant files"
+	planDecisions := "# Decisions\n\nNo open decisions."
+	planBrief := "safe to approve"
+	if _, err := a.tasks.Update(created.ID, task.Update{
+		Status:        &status,
+		Workflow:      &wf,
+		Plan:          &plan,
+		PlanContract:  &planContract,
+		PlanResearch:  &planResearch,
+		PlanDecisions: &planDecisions,
+		PlanBrief:     &planBrief,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := workflowSvc.HandleHumanAction(created.ID, "approve", nil); err != nil {
+		t.Fatalf("HandleHumanAction approve: %v", err)
+	}
+
+	updated, err := a.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != task.StatusInProgress {
+		t.Fatalf("Status = %q, want %q", updated.Status, task.StatusInProgress)
+	}
+	if updated.Workflow == nil || updated.Workflow.State != workflow.ExecCompleted {
+		t.Fatalf("workflow = %+v, want completed", updated.Workflow)
+	}
+	if updated.Workflow.CurrentStep != "" {
+		t.Fatalf("CurrentStep = %q, want empty after approval", updated.Workflow.CurrentStep)
 	}
 }
 
@@ -306,6 +415,70 @@ func TestPlanningService_ApprovePlan_RecoversManualVerificationContract(t *testi
 	}
 }
 
+func TestPlanningService_ApprovePlan_StaleReviewPersistsImplementationReadyStateUnderStatusHook(t *testing.T) {
+	planSvc, taskSvc, a := setupPlanningService(t)
+	a.workflowEngine = taskSvc.workflowEngine
+	a.initStatusHook()
+
+	created, err := a.tasks.Create("approve stale plan without redispatch", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := task.StatusPlanReview
+	completedAt := time.Now().UTC()
+	wf := &workflow.Execution{
+		WorkflowID:  "simple-task-plan",
+		CurrentStep: "",
+		State:       workflow.ExecCompleted,
+		StepHistory: []workflow.StepRecord{{
+			StepID: "validate_plan_contract",
+			Status: "completed",
+		}},
+		StartedAt:   completedAt.Add(-time.Minute),
+		CompletedAt: &completedAt,
+	}
+	plan := "# Execution Plan\n\n## Steps\n1. Fix it."
+	planContract := validPlanningContract(created.ID)
+	planResearch := "researched relevant files"
+	planDecisions := "# Decisions\n\nNo open decisions."
+	planBrief := "safe to approve"
+	if _, err := a.tasks.Update(created.ID, task.Update{
+		Status:        &status,
+		Workflow:      &wf,
+		Plan:          &plan,
+		PlanContract:  &planContract,
+		PlanResearch:  &planResearch,
+		PlanDecisions: &planDecisions,
+		PlanBrief:     &planBrief,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := planSvc.ApprovePlan(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != task.StatusInProgress {
+		t.Fatalf("ApprovePlan status = %q, want %q", updated.Status, task.StatusInProgress)
+	}
+
+	time.Sleep(150 * time.Millisecond)
+
+	after, err := a.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Status != task.StatusInProgress {
+		t.Fatalf("status after hook = %q, want %q", after.Status, task.StatusInProgress)
+	}
+	if after.StatusReason != "" {
+		t.Fatalf("status_reason = %q, want empty", after.StatusReason)
+	}
+	if after.Workflow == nil || after.Workflow.WorkflowID != "simple-task-plan" || after.Workflow.State != workflow.ExecCompleted {
+		t.Fatalf("workflow after hook = %+v, want completed simple-task-plan pending scheduler dispatch", after.Workflow)
+	}
+}
+
 func TestPlanningService_RejectPlan_ErrorWhenNotWaiting(t *testing.T) {
 	planSvc, taskSvc, _ := setupPlanningService(t)
 
@@ -314,8 +487,16 @@ func TestPlanningService_RejectPlan_ErrorWhenNotWaiting(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := planSvc.RejectPlan(created.ID, "bad plan"); err == nil {
+	_, err = planSvc.RejectPlan(created.ID, "bad plan")
+	if err == nil {
 		t.Fatal("expected error when rejecting task without active workflow")
+	}
+	var ce httpapi.ClientError
+	if !errors.As(err, &ce) {
+		t.Fatalf("want a 4xx httpapi.ClientError so a cluster follower's rejection relays as a readable error instead of a sanitized 500, got %T: %v", err, err)
+	}
+	if ce.HTTPStatus() != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", ce.HTTPStatus(), http.StatusConflict)
 	}
 }
 
@@ -575,6 +756,86 @@ func TestPlanningService_RejectPlan_StoresMergedFeedbackInVars(t *testing.T) {
 	}
 }
 
+// TestPlanningService_ApprovePlan_LogsPlanApprovedAudit proves a genuine
+// human approval (reached only via the plan-review GUI action, never
+// SetPlanAutoApproveHook) logs plan.approved with auto=false — the durable
+// operator-action signal the evaluation scorecard's human-touch
+// classification reads (issue #2727).
+func TestPlanningService_ApprovePlan_LogsPlanApprovedAudit(t *testing.T) {
+	planSvc, taskSvc, _ := setupPlanningService(t)
+	auditDir := t.TempDir()
+	al, err := audit.NewLogger(auditDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer al.Close()
+	planSvc.audit = al
+
+	created, err := taskSvc.tasks.Create("approve plan", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stageWaitingPlanReview(t, taskSvc, created.ID)
+
+	if _, err := planSvc.ApprovePlan(created.ID); err != nil {
+		t.Fatalf("ApprovePlan: %v", err)
+	}
+
+	events, err := audit.Read(auditDir, audit.Query{
+		Since: time.Now().Add(-time.Hour),
+		Until: time.Now().Add(time.Hour),
+		Type:  audit.EventPlanApproved,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("len(EventPlanApproved) = %d, want 1: %+v", len(events), events)
+	}
+	if got := events[0].Data["auto"]; got != false {
+		t.Errorf("Data[auto] = %v, want false (a genuine human approval, not SetPlanAutoApproveHook)", got)
+	}
+}
+
+// TestPlanningService_RejectPlan_LogsPlanRejectedAudit is
+// TestPlanningService_ApprovePlan_LogsPlanApprovedAudit's reject-path
+// counterpart.
+func TestPlanningService_RejectPlan_LogsPlanRejectedAudit(t *testing.T) {
+	planSvc, taskSvc, _ := setupPlanningService(t)
+	auditDir := t.TempDir()
+	al, err := audit.NewLogger(auditDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer al.Close()
+	planSvc.audit = al
+
+	created, err := taskSvc.tasks.Create("reject plan", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stageWaitingPlanReview(t, taskSvc, created.ID)
+
+	if _, err := planSvc.RejectPlan(created.ID, "needs more detail"); err != nil {
+		t.Fatalf("RejectPlan: %v", err)
+	}
+
+	events, err := audit.Read(auditDir, audit.Query{
+		Since: time.Now().Add(-time.Hour),
+		Until: time.Now().Add(time.Hour),
+		Type:  audit.EventPlanRejected,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("len(EventPlanRejected) = %d, want 1: %+v", len(events), events)
+	}
+	if got := events[0].Data["auto"]; got != false {
+		t.Errorf("Data[auto] = %v, want false", got)
+	}
+}
+
 func TestPlanningService_RejectPlan_WithOnlyUnresolvedCommentsStillStoresFeedback(t *testing.T) {
 	planSvc, taskSvc, _ := setupPlanningService(t)
 
@@ -697,7 +958,7 @@ func TestApp_StatusHook_AdvancesWorkflow(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(wfDir, "test-status-hook.yaml"), []byte(waitForStatusWorkflowYAML), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	engine := workflow.NewEngine(
+	engine := workflow.NewTestEngine(
 		wfStore,
 		&taskAdapter{tasks: app.tasks},
 		&agentAdapter{agents: app.agents, agentOrch: app.agentOrch, tasks: app.tasks},
@@ -709,7 +970,7 @@ func TestApp_StatusHook_AdvancesWorkflow(t *testing.T) {
 
 	// Direct store write, not TaskService.CreateTask: the latter's auto-triage
 	// goroutine would race this test's manual workflow setup.
-	created, err := app.tasks.Create("status hook task", "", "interactive")
+	created, err := app.tasks.Create("status hook task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}

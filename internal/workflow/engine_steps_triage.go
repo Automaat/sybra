@@ -256,8 +256,8 @@ func (e *Engine) execTriageReview(taskID string, step *Step, t TaskInfo) (StepOu
 // triage heuristic. Tries the worktree first, falls back to gh pr diff when
 // the task has a PR but no worktree (e.g. the standalone pr-review workflow).
 func (e *Engine) collectTriageDiff(taskID string, t TaskInfo) (files []string, insertions, deletions int, source string, err error) {
-	if e.worktrees != nil {
-		if wtPath, ok := e.worktrees.GetWorktreePath(taskID); ok {
+	if e.execution.Worktrees != nil {
+		if wtPath, ok := e.execution.Worktrees.GetWorktreePath(taskID); ok {
 			files, insertions, deletions, err = e.gitTriageDiff(wtPath)
 			if err == nil {
 				return files, insertions, deletions, "worktree", nil
@@ -283,22 +283,18 @@ func (e *Engine) gitTriageDiff(wtPath string) (files []string, insertions, delet
 	base := resolveOriginBase(ctx, wtPath)
 	rangeSpec := base + "...HEAD"
 
-	nameCmd := exec.CommandContext(ctx, "git", "diff", "--name-only", rangeSpec)
-	nameCmd.Dir = wtPath
-	nameOut, err := nameCmd.Output()
+	nameOut, err := gitStdout(ctx, wtPath, "diff", "--name-only", rangeSpec)
 	if err != nil {
 		return nil, 0, 0, fmt.Errorf("git diff --name-only: %w", err)
 	}
 
-	statCmd := exec.CommandContext(ctx, "git", "diff", "--shortstat", rangeSpec)
-	statCmd.Dir = wtPath
-	statOut, err := statCmd.Output()
+	statOut, err := gitStdout(ctx, wtPath, "diff", "--shortstat", rangeSpec)
 	if err != nil {
 		return nil, 0, 0, fmt.Errorf("git diff --shortstat: %w", err)
 	}
 
-	files = splitNonEmptyLines(string(nameOut))
-	insertions, deletions = parseShortStat(string(statOut))
+	files = splitNonEmptyLines(nameOut)
+	insertions, deletions = parseShortStat(statOut)
 	return files, insertions, deletions, nil
 }
 

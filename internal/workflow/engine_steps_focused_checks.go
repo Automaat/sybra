@@ -5,14 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os/exec"
 	"path"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 const focusedChecksReaskNoteVar = "focused_checks_reask_note"
@@ -38,27 +38,48 @@ type selectedFocusedCheck struct {
 }
 
 func (e *Engine) execFocusedChecks(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error) {
-	if e.checks == nil {
-		return stepDone(step, "skipped: no check config getter")
-	}
-	focused := e.checks.FocusedChecks(e.ctx, taskID)
+	v := e.computeFocusedChecksVerdict(taskID, step, t)
+	return e.applyFocusedChecksVerdict(taskID, step, wfExec, t, v)
+}
+
+// focusedChecksVerdict is the pure result of running focused_checks: it
+// touches nothing but the (thread-safe) artifact/report store — no task
+// status write, no wfExec mutation — so it is safe to compute concurrently
+// with the other post-implement gates from execParallelGates.
+type focusedChecksVerdict struct {
+	// skip is non-empty for every short-circuit that lets the chain proceed
+	// unchanged (nothing configured, no worktree, no changed files, no
+	// matching mapping, or a canceled context).
+	skip         string
+	err          error
+	selected     []selectedFocusedCheck
+	changedFiles []string
+	cmds         []string
+	failedCmd    string
+	output       string
+	runErr       error
+	timeout      time.Duration
+}
+
+func (e *Engine) computeFocusedChecksVerdict(taskID string, step *Step, _ TaskInfo) focusedChecksVerdict {
+	focused := e.execution.Checks.FocusedChecks(e.ctx, taskID)
 	if len(focused) == 0 {
-		return stepDone(step, "skipped: no focused checks configured")
+		return focusedChecksVerdict{skip: "skipped: no focused checks configured"}
 	}
-	if e.worktrees == nil {
-		return stepDone(step, "skipped: no worktree getter configured")
+	if e.execution.Worktrees == nil {
+		return focusedChecksVerdict{skip: "skipped: no worktree getter configured"}
 	}
-	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	wtPath, ok := e.execution.Worktrees.GetWorktreePath(taskID)
 	if !ok {
-		return stepDone(step, "skipped: no worktree for task")
+		return focusedChecksVerdict{skip: "skipped: no worktree for task"}
 	}
 
 	changedFiles, err := changedFilesSinceProjectBase(e.ctx, wtPath, e.focusedChecksBaseRef(taskID))
 	if err != nil {
-		return StepOutput{}, fmt.Errorf("focused-checks: discover changed files: %w", err)
+		return focusedChecksVerdict{err: fmt.Errorf("focused-checks: discover changed files: %w", err)}
 	}
 	if len(changedFiles) == 0 {
-		return stepDone(step, "skipped: no changed files")
+		return focusedChecksVerdict{skip: "skipped: no changed files"}
 	}
 
 	selected, cmds := selectFocusedChecks(focused, changedFiles)
@@ -72,7 +93,7 @@ func (e *Engine) execFocusedChecks(taskID string, step *Step, wfExec *Execution,
 		if err := e.recordFocusedChecksReport(taskID, step.ID, report); err != nil {
 			e.logger.Warn("workflow.focused-checks.artifact", "task_id", taskID, "err", err)
 		}
-		return stepDone(step, "skipped: no safe focused mapping matched changed files")
+		return focusedChecksVerdict{skip: "skipped: no safe focused mapping matched changed files"}
 	}
 
 	timeout := resolveWorkflowCheckTimeout(e.verifyTimeout)
@@ -90,27 +111,45 @@ func (e *Engine) execFocusedChecks(taskID string, step *Step, wfExec *Execution,
 	failedCmd, output, runErr := e.runVerifyCommands(ctx, taskID, wtPath, cmds)
 
 	report.FailedCmd = failedCmd
-	report.OutputTail = tailString(output, verifyChecksOutputTail)
+	report.OutputTail = output
 	if err := e.recordFocusedChecksReport(taskID, step.ID, report); err != nil {
 		e.logger.Warn("workflow.focused-checks.artifact", "task_id", taskID, "err", err)
 	}
 
-	if runErr != nil {
-		if errors.Is(runErr, context.Canceled) && e.ctx.Err() != nil {
-			e.logger.Warn("workflow.focused-checks.canceled", "task_id", taskID, "err", runErr)
+	return focusedChecksVerdict{
+		selected: selected, changedFiles: changedFiles, cmds: cmds,
+		failedCmd: failedCmd, output: output, runErr: runErr, timeout: timeout,
+	}
+}
+
+// applyFocusedChecksVerdict persists a computeFocusedChecksVerdict result:
+// task status, evidence, and — on a command failure — the auto-fix rewind to
+// implement. Must run on the same goroutine that owns wfExec.
+func (e *Engine) applyFocusedChecksVerdict(taskID string, step *Step, wfExec *Execution, t TaskInfo, v focusedChecksVerdict) (StepOutput, error) {
+	if v.err != nil {
+		return StepOutput{}, v.err
+	}
+	if v.skip != "" {
+		return stepDone(step, v.skip)
+	}
+	if v.runErr != nil {
+		if errors.Is(v.runErr, context.Canceled) && e.ctx.Err() != nil {
+			e.logger.Warn("workflow.focused-checks.canceled", "task_id", taskID, "err", v.runErr)
 			return stepDone(step, "skipped: context canceled")
 		}
-		if errors.Is(runErr, context.DeadlineExceeded) {
-			reason := fmt.Sprintf("focused checks exceeded the time budget (%s) before the author loop stabilized", timeout)
+		if errors.Is(v.runErr, context.DeadlineExceeded) {
+			reason := fmt.Sprintf("focused checks exceeded the time budget (%s) before the author loop stabilized", v.timeout)
 			return e.flagFocusedChecks(taskID, step, reason, "timeout")
 		}
-		reason := "focused checks could not run cleanly: " + trimDiffLine(runErr.Error())
+		reason := "focused checks could not run cleanly: " + trimDiffLine(v.runErr.Error())
 		return e.flagFocusedChecks(taskID, step, reason, "setup")
 	}
-	if failedCmd == "" {
+	if v.failedCmd == "" {
+		e.recordEvidence(taskID, step.ID, evidenceCriterionFocusedChecks, evidence.ProofDeterministicCheck,
+			0, strings.Join(v.cmds, " && "), v.output)
 		return stepDone(step, "clean")
 	}
-	return e.reaskFocusedChecks(taskID, step, wfExec, t, selected, changedFiles, failedCmd, output)
+	return e.reaskFocusedChecks(taskID, step, wfExec, t, v.selected, v.changedFiles, v.failedCmd, v.output)
 }
 
 type worktreeBaseRefGetter interface {
@@ -118,7 +157,7 @@ type worktreeBaseRefGetter interface {
 }
 
 func (e *Engine) focusedChecksBaseRef(taskID string) string {
-	if getter, ok := e.checks.(worktreeBaseRefGetter); ok {
+	if getter, ok := e.execution.Checks.(worktreeBaseRefGetter); ok {
 		return getter.WorktreeBaseRef(e.ctx, taskID)
 	}
 	return project.WorktreeBaseRefFresh
@@ -128,15 +167,9 @@ func changedFilesSinceProjectBase(parentCtx context.Context, wtPath, worktreeBas
 	ctx, cancel := context.WithTimeout(parentCtx, shellTimeout)
 	defer cancel()
 	base := resolveProjectBase(ctx, wtPath, worktreeBaseRef)
-	cmd := exec.CommandContext(ctx, "git", "diff", "--name-only", base+"...HEAD")
-	cmd.Dir = wtPath
-	out, err := cmd.CombinedOutput()
+	out, err := gitCombinedOutput(ctx, wtPath, "diff", "--name-only", base+"...HEAD")
 	if err != nil {
-		detail := strings.TrimSpace(string(out))
-		if detail == "" {
-			return nil, fmt.Errorf("git diff --name-only %s...HEAD: %w", base, err)
-		}
-		return nil, fmt.Errorf("git diff --name-only %s...HEAD: %w: %s", base, err, detail)
+		return nil, err
 	}
 	var changed []string
 	seen := map[string]bool{}
@@ -162,10 +195,8 @@ func resolveProjectBase(ctx context.Context, wtPath, worktreeBaseRef string) str
 
 func resolveLocalDefaultBranchBase(ctx context.Context, wtPath string) string {
 	branches := []string{}
-	cmd := exec.CommandContext(ctx, "git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
-	cmd.Dir = wtPath
-	if out, err := cmd.Output(); err == nil {
-		branch := strings.TrimPrefix(strings.TrimSpace(string(out)), "origin/")
+	if out, err := gitStdout(ctx, wtPath, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"); err == nil {
+		branch := strings.TrimPrefix(out, "origin/")
 		if branch != "" {
 			branches = append(branches, branch)
 		}
@@ -173,9 +204,7 @@ func resolveLocalDefaultBranchBase(ctx context.Context, wtPath string) string {
 	branches = append(branches, "master", "main")
 	for _, branch := range branches {
 		candidate := "refs/heads/" + branch
-		cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", candidate)
-		cmd.Dir = wtPath
-		if cmd.Run() == nil {
+		if gitOK(ctx, wtPath, "rev-parse", "--verify", candidate) {
 			return candidate
 		}
 	}
@@ -376,9 +405,10 @@ func (e *Engine) recordFocusedChecksReport(taskID, stepID string, report focused
 }
 
 func (e *Engine) flagFocusedChecks(taskID string, step *Step, reason, detail string) (StepOutput, error) {
-	if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
+	if statusErr := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); statusErr != nil {
 		return StepOutput{}, fmt.Errorf("focused-checks: set human-required: %w", statusErr)
 	}
+	e.recordEvidence(taskID, step.ID, evidenceCriterionFocusedChecks, evidence.ProofDeterministicCheck, 1, "", detail)
 	e.logger.Warn("workflow.focused-checks.flagged", "task_id", taskID, "detail", detail)
 	return stepDone(step, "flagged")
 }
@@ -389,36 +419,45 @@ func (e *Engine) reaskFocusedChecks(taskID string, step *Step, wfExec *Execution
 		reason += " for " + surfaces
 	}
 	reason += ": " + trimDiffLine(failedCmd)
-	if wfExec == nil {
+	if wfExec == nil || wfExec.CountStep(verifyChecksImplStepID) == 0 {
 		return e.flagFocusedChecks(taskID, step, reason, failedCmd)
 	}
-	key := "step." + step.ID + ".auto_fix"
-	attempts := parseWorkflowInt(wfExec.Variables[key])
-	if attempts >= verifyChecksAutoFixCap || wfExec.CountStep(verifyChecksImplStepID) == 0 {
-		return e.flagFocusedChecks(taskID, step, reason, failedCmd)
-	}
-
-	wfExec.SetVar(key, strconv.Itoa(attempts+1))
-	wfExec.SetVar(focusedChecksReaskNoteVar, buildFocusedChecksReaskNote(selected, changedFiles, failedCmd, output))
-	wfExec.SetVar(workflowRetryAfterVar, time.Now().UTC().Add(verifyChecksAutoFixBackoff).Format(time.RFC3339))
-	wfExec.ClearStepRecords(verifyChecksImplStepID)
-	wfExec.CurrentStep = verifyChecksImplStepID
-	wfExec.State = ExecWaiting
-	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+	fingerprint := autoFixFailureFingerprint(failedCmd, output)
+	armed, attempt, err := e.rewindRetry(taskID, wfExec, t, rewindRetryPolicy{
+		counterKey:  "step." + step.ID + ".auto_fix",
+		max:         verifyChecksAutoFixCeiling,
+		rewindStep:  verifyChecksImplStepID,
+		backoff:     autoFixBackoff,
+		fingerprint: fingerprint,
+		// One prior identical occurrence means this is repeat #2. Re-running
+		// the same deterministic failure again only spends another author run.
+		maxSameFingerprintRuns: 1,
+		attemptProducedWork:    lastAuthorRunProducedWork,
+		onArm: func(wfExec *Execution, attempt int) {
+			wfExec.SetVar(focusedChecksReaskNoteVar, buildFocusedChecksReaskNote(selected, changedFiles, failedCmd, output))
+			wfExec.SetVar(verifyRetryModelVar, "expensive")
+		},
+		reason: func(int) string { return reason },
+	})
+	if err != nil {
 		return StepOutput{}, fmt.Errorf("focused-checks: rewind to implement: %w", err)
 	}
-	if err := e.tasks.UpdateTaskStatus(taskID, t.Status, reason); err != nil {
-		return StepOutput{}, err
+	if !armed {
+		exhausted := fmt.Sprintf("%s — escalating after repeated identical auto-fix failures or %d attempts without passing",
+			reason, verifyChecksAutoFixCeiling)
+		return e.flagFocusedChecks(taskID, step, exhausted, "auto-fix-exhausted: "+trimDiffLine(failedCmd))
 	}
 	e.logger.Info("workflow.focused-checks.reask",
-		"task_id", taskID, "attempt", attempts+1, "cap", verifyChecksAutoFixCap, "cmd", trimDiffLine(failedCmd))
+		"task_id", taskID, "attempt", attempt, "cmd", trimDiffLine(failedCmd))
 	return StepOutput{}, errStepParked
 }
 
 func buildFocusedChecksReaskNote(selected []selectedFocusedCheck, changedFiles []string, failedCmd, output string) string {
 	var b strings.Builder
 	b.WriteString("A prior implementation FAILED Sybra's focused checks. Fix the ROOT CAUSE so the failing command passes on a clean run")
-	b.WriteString(" — do NOT weaken, skip, or edit the check to make it pass.\n\n")
+	b.WriteString(" — do NOT weaken, skip, or edit the check to make it pass. Then COMMIT and push your fix: the check runs against your")
+	b.WriteString(" branch HEAD in a freshly prepared worktree, so an uncommitted change is not picked up and the same failure recurs;")
+	b.WriteString(" some projects also enforce a clean working tree (e.g. a `git diff --exit-code` / generated-file gate) that fails outright on uncommitted changes.\n\n")
 	if surfaces := focusedSurfaceSummary(selected); surfaces != "" {
 		b.WriteString("## Focused surface\n\n")
 		b.WriteString(surfaces)

@@ -2,6 +2,7 @@ package loopagent
 
 import (
 	"cmp"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/fsutil"
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
 )
@@ -26,7 +28,7 @@ func NewStore(dir string) (*Store, error) {
 }
 
 // List returns all loop agents sorted by Name for stable UI ordering.
-func (s *Store) List() ([]LoopAgent, error) {
+func (s *Store) List(context.Context) ([]LoopAgent, error) {
 	paths, err := fsutil.ListFiles(s.dir, ".yaml")
 	if err != nil {
 		return nil, fmt.Errorf("read loop agents dir: %w", err)
@@ -44,15 +46,15 @@ func (s *Store) List() ([]LoopAgent, error) {
 }
 
 // Get returns the loop agent with the given ID.
-func (s *Store) Get(id string) (LoopAgent, error) {
+func (s *Store) Get(_ context.Context, id string) (LoopAgent, error) {
 	path := s.filePath(id)
 	return s.readFile(path)
 }
 
 // FindByName returns the first loop agent whose Name matches. Used by the
 // first-boot seed to stay idempotent.
-func (s *Store) FindByName(name string) (LoopAgent, bool) {
-	all, err := s.List()
+func (s *Store) FindByName(ctx context.Context, name string) (LoopAgent, bool) {
+	all, err := s.List(ctx)
 	if err != nil {
 		return LoopAgent{}, false
 	}
@@ -65,21 +67,39 @@ func (s *Store) FindByName(name string) (LoopAgent, bool) {
 }
 
 // Create assigns an ID and timestamps, validates, and writes the record.
-func (s *Store) Create(la LoopAgent) (LoopAgent, error) {
+func (s *Store) Create(_ context.Context, la LoopAgent) (LoopAgent, error) {
 	if la.Provider == "" {
-		la.Provider = "claude"
+		la.Provider = providerid.Claude
 	}
 	if err := la.Validate(); err != nil {
 		return LoopAgent{}, err
 	}
 	now := time.Now().UTC()
-	la.ID = uuid.NewString()[:8]
+	la.ID = newID()
 	la.CreatedAt = now
 	la.UpdatedAt = now
 	if err := s.writeFile(la); err != nil {
 		return LoopAgent{}, err
 	}
 	return la, nil
+}
+
+// CreateIfAbsentByName writes la only when no record carries its Name, reporting whether it did. The dir-wide flock is what keeps the first-boot seed idempotent when two processes start together.
+func (s *Store) CreateIfAbsentByName(ctx context.Context, la LoopAgent) (LoopAgent, bool, error) {
+	unlock, err := fsutil.LockFile(filepath.Join(s.dir, ".create-by-name.lock"))
+	if err != nil {
+		return LoopAgent{}, false, fmt.Errorf("lock loop agents dir: %w", err)
+	}
+	defer func() { _ = unlock() }()
+
+	if existing, ok := s.FindByName(ctx, la.Name); ok {
+		return existing, false, nil
+	}
+	created, err := s.Create(ctx, la)
+	if err != nil {
+		return LoopAgent{}, false, err
+	}
+	return created, true, nil
 }
 
 // Update overwrites mutable fields on an existing record. ID and CreatedAt
@@ -90,14 +110,14 @@ func (s *Store) Create(la LoopAgent) (LoopAgent, error) {
 // separate Store instances in separate OS processes against the same dir,
 // and without a cross-process lock a concurrent Update from the other
 // process can be read here, then clobbered by this write's stale CreatedAt.
-func (s *Store) Update(la LoopAgent) (LoopAgent, error) {
+func (s *Store) Update(ctx context.Context, la LoopAgent) (LoopAgent, error) {
 	unlock, err := fsutil.LockFile(s.filePath(la.ID))
 	if err != nil {
 		return LoopAgent{}, fmt.Errorf("lock loop agent: %w", err)
 	}
 	defer func() { _ = unlock() }()
 
-	existing, err := s.Get(la.ID)
+	existing, err := s.Get(ctx, la.ID)
 	if err != nil {
 		return LoopAgent{}, err
 	}
@@ -121,14 +141,14 @@ func (s *Store) Update(la LoopAgent) (LoopAgent, error) {
 // trip Sync()'s change detection and restart the fetcher every time it
 // fires. Used by the scheduler to persist run bookkeeping (LastRunAt,
 // LastRunID, LastRunCost) without racing GUI/API/CLI config updates.
-func (s *Store) UpdateRunMetadata(id string, mutate func(*LoopAgent)) (LoopAgent, error) {
+func (s *Store) UpdateRunMetadata(ctx context.Context, id string, mutate func(*LoopAgent)) (LoopAgent, error) {
 	unlock, err := fsutil.LockFile(s.filePath(id))
 	if err != nil {
 		return LoopAgent{}, fmt.Errorf("lock loop agent: %w", err)
 	}
 	defer func() { _ = unlock() }()
 
-	rec, err := s.Get(id)
+	rec, err := s.Get(ctx, id)
 	if err != nil {
 		return LoopAgent{}, err
 	}
@@ -140,12 +160,17 @@ func (s *Store) UpdateRunMetadata(id string, mutate func(*LoopAgent)) (LoopAgent
 }
 
 // Delete removes the record file. Missing files are not an error.
-func (s *Store) Delete(id string) error {
+func (s *Store) Delete(_ context.Context, id string) error {
 	path := s.filePath(id)
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("delete loop agent: %w", err)
 	}
 	return nil
+}
+
+// newID mints the fixed-width short identifier both repositories use. It is the package's only UUID slice, so the consolidated-primitive ledger has one entry to account for rather than one per store.
+func newID() string {
+	return uuid.NewString()[:8]
 }
 
 func (s *Store) filePath(id string) string {
@@ -162,7 +187,7 @@ func (s *Store) readFile(path string) (LoopAgent, error) {
 		return LoopAgent{}, fmt.Errorf("parse loop agent: %w", err)
 	}
 	if la.Provider == "" {
-		la.Provider = "claude"
+		la.Provider = providerid.Claude
 	}
 	return la, nil
 }

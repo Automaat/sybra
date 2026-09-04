@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/errclass"
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/metrics"
@@ -150,8 +151,9 @@ func (f *IssuesFetcher) Poll(ctx context.Context) time.Duration {
 	issues, err := f.fetchAssigned()
 	metrics.GitHubFetch(ctx, err == nil)
 	if err != nil {
-		switch {
-		case github.IsAuthError(err):
+		class := github.ClassifyError(err, errclass.GitHubCircuitEscalationBiased)
+		switch class {
+		case errclass.Auth:
 			f.transientFetchFails = 0
 			f.authCircuit.RecordFailure(err)
 			if f.authCircuit.Open() {
@@ -160,7 +162,7 @@ func (f *IssuesFetcher) Poll(ctx context.Context) time.Duration {
 			// Pre-trip: Info, not Warn, so up-to-threshold auth failures don't
 			// flood before the circuit's single trip line.
 			f.logger.Info("issues.fetch", "err", err)
-		case github.IsTransientError(err):
+		case errclass.Transient, errclass.RateLimited:
 			f.transientFetchFails++
 			if f.transientFetchFails < issuesTransientWarnThreshold {
 				f.logger.Info("issues.fetch", "err", err)
@@ -189,15 +191,16 @@ func (f *IssuesFetcher) pollSnapshot(ctx context.Context) {
 	snapshot, err := f.fetchSnapshot(repos, synapseIssueLabel)
 	metrics.GitHubFetch(ctx, err == nil)
 	if err != nil {
-		switch {
-		case github.IsAuthError(err):
+		class := github.ClassifyError(err, errclass.GitHubCircuitEscalationBiased)
+		switch class {
+		case errclass.Auth:
 			f.transientFetchFails = 0
 			f.authCircuit.RecordFailure(err)
 			if !f.authCircuit.Open() {
 				// Pre-trip: Info, not Warn (see Poll's auth branch).
 				f.logger.Info("issues.fetch", "err", err)
 			}
-		case github.IsTransientError(err):
+		case errclass.Transient, errclass.RateLimited:
 			f.transientFetchFails++
 			if f.transientFetchFails < issuesTransientWarnThreshold {
 				f.logger.Info("issues.fetch", "err", err)
@@ -246,7 +249,8 @@ func (f *IssuesFetcher) syncMentionedIssuesToTasks() {
 
 	mentioned, err := f.fetchMentioned(repos, f.mentionTrigger)
 	if err != nil {
-		if github.IsTransientError(err) {
+		class := github.ClassifyError(err, errclass.GitHubPollerRetryBiased)
+		if class == errclass.Transient || class == errclass.RateLimited {
 			f.transientMentionedFails++
 			if f.transientMentionedFails < issuesTransientWarnThreshold {
 				f.logger.Info("mentioned-issues.fetch", "err", err)
@@ -280,7 +284,8 @@ func (f *IssuesFetcher) syncLabeledIssuesToTasks() {
 
 	labeled, err := f.fetchLabeled(repos, synapseIssueLabel)
 	if err != nil {
-		if github.IsTransientError(err) {
+		class := github.ClassifyError(err, errclass.GitHubPollerRetryBiased)
+		if class == errclass.Transient || class == errclass.RateLimited {
 			f.transientLabeledFails++
 			if f.transientLabeledFails < issuesTransientWarnThreshold {
 				f.logger.Info("labeled-issues.fetch", "err", err)
@@ -337,7 +342,7 @@ func (f *IssuesFetcher) syncIssuesToTasks(issues []github.Issue) {
 
 	// Pass 2: flat tasks, with a dedup snapshot taken AFTER expansion so the
 	// children created above are visible.
-	tasks, err := f.tasks.List()
+	tasks, err := f.tasks.ListBoard()
 	if err != nil {
 		f.logger.Error("issue-sync.list-tasks", "err", err)
 		return
@@ -433,7 +438,20 @@ func (f *IssuesFetcher) syncFlatIssue(issue *github.Issue, issueURLs map[string]
 		if issue.Body != "" {
 			u.Body = task.Ptr(issue.Body)
 		}
-		if _, err := f.tasks.Update(taskID, u); err != nil {
+		var err error
+		if u.Status != nil {
+			toStatus := *u.Status
+			u.Status = nil
+			_, err = f.tasks.Apply(task.TransitionIntent{
+				TaskID:   taskID,
+				ToStatus: toStatus,
+				Actor:    "poll.issues.enrich",
+				Extra:    u,
+			})
+		} else {
+			_, err = f.tasks.UpdateBy(taskID, "poll.issues.enrich", u)
+		}
+		if err != nil {
 			f.logger.Error("issue-sync.enrich", "task_id", taskID, "err", err)
 		} else {
 			f.logger.Info("issue-sync.enriched", "task_id", taskID, "issue", issue.URL, "title", issue.Title)
@@ -443,14 +461,18 @@ func (f *IssuesFetcher) syncFlatIssue(issue *github.Issue, issueURLs map[string]
 
 	u := task.Update{
 		Issue:     task.Ptr(issue.URL),
-		Status:    task.Ptr(task.StatusTodo),
 		ProjectID: task.Ptr(issue.Repository),
 	}
+	status := task.StatusTodo
 	// The task doesn't exist yet, so its real ID is unknown here — claim the
 	// branch under the issue's own URL instead. That's still a stable,
 	// unique-enough token to block a second issue in this same batch from
 	// claiming the same branch (see claimedBranches above).
 	f.enrichLinkedViewerPR(issue, &u, claimedBranches, issue.URL)
+	if u.Status != nil {
+		status = *u.Status
+		u.Status = nil
+	}
 	if len(issue.Labels) > 0 {
 		labels := issue.Labels
 		u.Tags = &labels
@@ -459,7 +481,7 @@ func (f *IssuesFetcher) syncFlatIssue(issue *github.Issue, issueURLs map[string]
 	// creation — a crash between create and a second update would otherwise
 	// leave the task without its dedupe key, and the next poll would
 	// re-import the same GitHub issue as a duplicate.
-	t, err := f.tasks.CreateFull(issue.Title, issue.Body, "headless", u)
+	t, err := f.tasks.CreateWithStatus(issue.Title, issue.Body, "headless", status, u)
 	if err != nil {
 		f.logger.Error("issue-sync.create", "issue", issue.URL, "err", err)
 		return

@@ -69,6 +69,42 @@ func TestCheckDwell_SkipsBlockedTasks(t *testing.T) {
 	}
 }
 
+func TestCheckDwell_SkipsUmbrellaTask(t *testing.T) {
+	store, err := task.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	mgr := task.NewManager(store, nil)
+
+	tk, err := mgr.Create("umbrella task", "## Description\nchild work still active", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	umbrellaType := task.TaskTypeUmbrella
+	tk, err = mgr.Update(tk.ID, task.Update{
+		Status:   task.Ptr(task.StatusInProgress),
+		TaskType: &umbrellaType,
+	})
+	if err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+
+	w := &Watchdog{
+		tasks:  mgr,
+		logger: slog.New(slog.DiscardHandler),
+	}
+
+	w.checkDwell(tk.UpdatedAt.Add(48 * time.Hour))
+
+	got, err := mgr.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want in-progress (umbrella tracker should be skipped by dwell)", got.Status)
+	}
+}
+
 func TestCheckDwell_SkipsTodoTask(t *testing.T) {
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
@@ -167,9 +203,10 @@ func TestCheckDwell_EscalatesWhenNoLiveHeadlessAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want human-required when no live headless agent backs the task", got.Status)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want blocked when no live headless agent backs the task", got.Status)
 	}
+	assertWatchdogEffectRecorded(t, got, "external:watchdog_dwell:", tk.Generation)
 }
 
 func TestCheckDwell_EscalatesUnblockedInProgressTask(t *testing.T) {
@@ -200,10 +237,11 @@ func TestCheckDwell_EscalatesUnblockedInProgressTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want human-required", got.Status)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want blocked", got.Status)
 	}
 	if got.StatusReason == "dwell exceeded size tag budget" {
 		t.Fatalf("status reason still has hardcoded string; want budget-specific reason")
 	}
+	assertWatchdogEffectRecorded(t, got, "external:watchdog_dwell:", tk.Generation)
 }
