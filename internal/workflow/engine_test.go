@@ -1926,7 +1926,7 @@ steps:
 }
 
 func TestManualVerificationBlockerRecovery_UsesAuthoritativePRHeadRemote(t *testing.T) {
-	store := newInlineTestStore(t, "pr-recovery", `
+	store := newInlineTestStore(t, "pr-recovery", fmt.Sprintf(`
 id: pr-recovery
 name: PR Recovery
 trigger:
@@ -1943,7 +1943,7 @@ steps:
       - when:
           field: task.status
           operator: equals
-          value: human-required
+          value: %s
         goto: ""
       - goto: verify
   - id: verify
@@ -1953,7 +1953,7 @@ steps:
       status: done
     next:
       - goto: ""
-`)
+`, taskstatus.HumanRequired))
 	tasks := newMemTasks()
 	agents := newMockAgents()
 	engine := NewTestEngine(store, tasks, agents, discardLogger())
@@ -1983,7 +1983,7 @@ steps:
 
 	tasks.Put(TaskInfo{
 		ID:        "t1",
-		Status:    "in-progress",
+		Status:    taskstatus.InProgress,
 		AgentMode: "headless",
 		ProjectID: repoID,
 		Branch:    branch,
@@ -1991,7 +1991,7 @@ steps:
 	if err := engine.StartWorkflow("t1", "pr-recovery"); err != nil {
 		t.Fatal(err)
 	}
-	if err := tasks.UpdateTaskStatus("t1", "human-required", missingLivePRProofReason); err != nil {
+	if err := tasks.UpdateTaskStatus("t1", taskstatus.HumanRequired, missingLivePRProofReason); err != nil {
 		t.Fatal(err)
 	}
 
