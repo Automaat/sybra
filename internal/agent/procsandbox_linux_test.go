@@ -202,6 +202,9 @@ func TestSandboxSyncShell_UnchangedRefPreservesReflog(t *testing.T) {
 	// sandboxSyncShell passes the sandbox launcher as argv[3]. Replacing it
 	// with true exercises only the post-command publisher, without requiring
 	// bwrap or mutating its package-global probe state.
+	if len(args) <= 3 {
+		t.Fatalf("sync wrapper argv = %v, want launcher at index 3", args)
+	}
 	args[3] = truePath
 	cmd := exec.CommandContext(t.Context(), name, args...)
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -241,6 +244,9 @@ func TestSandboxSyncShell_UnchangedOverlayDoesNotRewindConcurrentRefAdvance(t *t
 		gitOverlayRefFile:   refFile,
 		gitBranchRef:        "refs/heads/main",
 	}})
+	if len(args) <= 3 {
+		t.Fatalf("sync wrapper argv = %v, want launcher at index 3", args)
+	}
 	args[3] = "/bin/sh"
 	cmd := exec.CommandContext(t.Context(), name, args...)
 	if out, err := cmd.CombinedOutput(); err != nil {

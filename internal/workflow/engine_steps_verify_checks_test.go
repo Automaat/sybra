@@ -2139,7 +2139,7 @@ func TestBuiltinSimpleTaskImplement_VerifyChecksWiring(t *testing.T) {
 	if got, _ := ResolveTransition(gates.Next, map[string]string{"task.status": "human-required"}); got != "" {
 		t.Errorf("flagged parallel_gates goto = %q, want end", got)
 	}
-	if got, _ := ResolveTransition(gates.Next, map[string]string{"task.status": "ready-pr"}); got != "" {
+	if got, _ := ResolveTransition(gates.Next, map[string]string{"task.status": string(taskstatus.ReadyPR)}); got != "" {
 		t.Errorf("unrelated-failure parallel_gates goto = %q, want end", got)
 	}
 	if got, _ := ResolveTransition(gates.Next, map[string]string{"task.status": "in-progress"}); got != "set_ready_review" {
