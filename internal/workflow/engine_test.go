@@ -494,7 +494,7 @@ steps:
 `)
 		tasks := &memTasks{tasks: map[string]*TaskInfo{
 			"t1": {
-				ID: "t1", Generation: 1, Status: "in-progress",
+				ID: "t1", Generation: 1, Status: taskstatus.InProgress,
 				Workflow: &Execution{
 					WorkflowID: "replay-review", CurrentStep: "review", State: ExecWaiting,
 					EffectLog: []EffectRecord{{
