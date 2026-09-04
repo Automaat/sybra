@@ -841,6 +841,9 @@ func (m *Manager) SetGHAppToken(fn func() string) {
 	m.mu.Lock()
 	m.ghAppToken = fn
 	m.mu.Unlock()
+	if err := m.syncGHAppToken(); err != nil {
+		m.logger.Error("agent.gh-shim.token", "err", err)
+	}
 }
 
 func (m *Manager) SetGHVerifierAppToken(fn func() string) {

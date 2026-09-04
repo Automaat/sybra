@@ -68,7 +68,29 @@ var appAPIBaseURL = "https://api.github.com"
 var (
 	appSourceMu sync.RWMutex
 	appSource   *appTokenSource
+
+	appTokenChangeMu   sync.RWMutex
+	appTokenChangeHook func()
 )
+
+// SetAppTokenChangeHook registers a process-local observer for changes to the
+// cached author token. The server uses it to republish credentials to helpers
+// immediately after both scheduled and forced refreshes. Passing nil clears
+// the observer.
+func SetAppTokenChangeHook(hook func()) {
+	appTokenChangeMu.Lock()
+	appTokenChangeHook = hook
+	appTokenChangeMu.Unlock()
+}
+
+func notifyAppTokenChange() {
+	appTokenChangeMu.RLock()
+	hook := appTokenChangeHook
+	appTokenChangeMu.RUnlock()
+	if hook != nil {
+		hook()
+	}
+}
 
 // EnableAppAuth configures GitHub App installation-token auth. It loads and
 // validates the private key so a misconfiguration fails loudly at startup
@@ -90,6 +112,7 @@ func EnableAppAuth(creds AppCredentials) error {
 	appSourceMu.Lock()
 	appSource = src
 	appSourceMu.Unlock()
+	notifyAppTokenChange()
 	// The viewer identity is auth-mode-dependent (<slug>[bot] under App auth,
 	// the /user login otherwise), so a mode switch must not inherit the
 	// previous mode's cached login.
@@ -103,6 +126,7 @@ func DisableAppAuth() {
 	appSourceMu.Lock()
 	appSource = nil
 	appSourceMu.Unlock()
+	notifyAppTokenChange()
 	resetCachedViewer()
 }
 
@@ -260,6 +284,7 @@ func (s *appTokenSource) doRefresh(ctx context.Context) error {
 	s.mu.Lock()
 	s.token, s.expires = token, expires
 	s.mu.Unlock()
+	notifyAppTokenChange()
 	return nil
 }
 

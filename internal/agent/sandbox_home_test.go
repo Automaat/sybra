@@ -518,6 +518,13 @@ func TestPrepareRunConfig_GitHubAppTokenForcesGitCredentialHelper(t *testing.T) 
 	if !strings.HasPrefix(path, shimDir+string(os.PathListSeparator)) {
 		t.Fatalf("PATH = %q, want shim dir first", path)
 	}
+	tokenPath := sandboxTestEnvValue(cfg.ExtraEnv, ghAuthFileEnv)
+	if tokenPath != filepath.Join(shimDir, ".token") {
+		t.Fatalf("%s = %q, want manager token path", ghAuthFileEnv, tokenPath)
+	}
+	if !slices.Contains(cfg.ReadOnlyPaths, shimDir) {
+		t.Fatalf("ReadOnlyPaths = %v, want gh shim dir %q", cfg.ReadOnlyPaths, shimDir)
+	}
 }
 
 func sandboxTestEnvValue(env []string, key string) string {

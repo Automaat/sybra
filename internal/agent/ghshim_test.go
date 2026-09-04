@@ -133,6 +133,56 @@ func TestGhShim_MintsFreshAppTokenPerGhInvocation(t *testing.T) {
 	}
 }
 
+func TestGhShimUsesRotatedManagerTokenWithoutControlHome(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ghDir := t.TempDir()
+	realGh := filepath.Join(ghDir, "gh")
+	if err := os.WriteFile(realGh, []byte("#!/bin/sh\nprintf 'GH=%s GITHUB=%s\\n' \"$GH_TOKEN\" \"$GITHUB_TOKEN\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cliDir := t.TempDir()
+	marker := filepath.Join(cliDir, "minted")
+	if err := os.WriteFile(filepath.Join(cliDir, "sybra-cli"), []byte("#!/bin/sh\ntouch '"+marker+"'\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", ghDir+string(os.PathListSeparator)+cliDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	shimDir, err := writeGhShim(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &Manager{ghShimDir: shimDir, logger: slog.New(slog.DiscardHandler)}
+	token := "author-token-1"
+	m.SetGHAppToken(func() string { return token })
+	t.Setenv(ghAuthFileEnv, filepath.Join(shimDir, ".token"))
+	t.Setenv("GH_TOKEN", "expired-ambient-token")
+	t.Setenv("GITHUB_TOKEN", "expired-ambient-token")
+	t.Setenv("SYBRA_HOME", t.TempDir())
+
+	stdout, stderr, code := runShim(t, shimDir, "api", "rate_limit")
+	if code != 0 || !strings.Contains(stdout, "GH=author-token-1 GITHUB=author-token-1") {
+		t.Fatalf("shim did not use published token: exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+
+	token = "author-token-2"
+	if err := m.SyncGHAppToken(); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, code = runShim(t, shimDir, "api", "rate_limit")
+	if code != 0 || !strings.Contains(stdout, "GH=author-token-2 GITHUB=author-token-2") {
+		t.Fatalf("shim did not use rotated token: exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("shim called task-local token mint fallback despite published token: %v", err)
+	}
+	info, err := os.Stat(filepath.Join(shimDir, ".token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("published token mode = %o, want 600", got)
+	}
+}
+
 func TestGhShimPreservesPreScopedVerifierToken(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	ghDir := t.TempDir()
@@ -399,6 +449,45 @@ func TestGitCredentialShim_MintsFreshAppTokenPerLookup(t *testing.T) {
 	}
 	if stdout != "username=x-access-token\npassword=token-2\n" {
 		t.Fatalf("second credential lookup = %q, want fresh token-2", stdout)
+	}
+}
+
+func TestGitCredentialShimUsesRotatedManagerTokenWithoutControlHome(t *testing.T) {
+	fakeGhOnPath(t)
+	cliDir := t.TempDir()
+	marker := filepath.Join(cliDir, "minted")
+	if err := os.WriteFile(filepath.Join(cliDir, "sybra-cli"), []byte("#!/bin/sh\ntouch '"+marker+"'\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", cliDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	shimDir, err := writeGhShim(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &Manager{ghShimDir: shimDir, logger: slog.New(slog.DiscardHandler)}
+	token := "author-token-1"
+	m.SetGHAppToken(func() string { return token })
+	t.Setenv(ghAuthFileEnv, filepath.Join(shimDir, ".token"))
+	t.Setenv("GH_TOKEN", "expired-ambient-token")
+	t.Setenv("GITHUB_TOKEN", "expired-ambient-token")
+	t.Setenv("SYBRA_HOME", t.TempDir())
+
+	input := "protocol=https\nhost=github.com\n\n"
+	stdout, stderr, code := runCredentialShim(t, shimDir, input, "get")
+	if code != 0 || stdout != "username=x-access-token\npassword=author-token-1\n" {
+		t.Fatalf("credential lookup = stdout %q stderr %q code %d", stdout, stderr, code)
+	}
+
+	token = "author-token-2"
+	if err := m.SyncGHAppToken(); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, code = runCredentialShim(t, shimDir, input, "get")
+	if code != 0 || stdout != "username=x-access-token\npassword=author-token-2\n" {
+		t.Fatalf("rotated credential lookup = stdout %q stderr %q code %d", stdout, stderr, code)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("credential shim called task-local token mint fallback despite published token: %v", err)
 	}
 }
 

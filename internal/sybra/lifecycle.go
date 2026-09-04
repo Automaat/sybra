@@ -211,6 +211,9 @@ func (lm *LifecycleManager) refreshAppToken(ctx context.Context) {
 	if err := github.RefreshVerifierAppToken(ctx); err != nil {
 		a.logger.Warn("github.app.verifier-token.refresh", "err", err)
 	}
+	if err := a.agents.SyncGHAppToken(); err != nil {
+		a.logger.Warn("github.app.token.publish", "err", err)
+	}
 	if err := a.agents.SyncGHVerifierAppToken(); err != nil {
 		a.logger.Warn("github.app.verifier-token.publish", "err", err)
 	}

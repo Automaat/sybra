@@ -604,6 +604,11 @@ func (a *App) initAgentManager(ctx context.Context, emit func(string, any)) erro
 	// them to spawn unwrapped in the serving process's own directory (#3383).
 	a.agents.RegisterOneShotCommands()
 	a.agents.SetGHAppToken(github.CurrentAppToken)
+	github.SetAppTokenChangeHook(func() {
+		if err := a.agents.SyncGHAppToken(); err != nil {
+			a.logger.Warn("github.app.token.publish", "err", err)
+		}
+	})
 	a.agents.SetGHVerifierAppToken(github.CurrentVerifierAppToken)
 	// Applied at construction, not after Startup returns: the recovery pass
 	// below dispatches agents, and one that starts before its board is named
