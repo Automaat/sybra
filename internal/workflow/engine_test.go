@@ -19,6 +19,7 @@ import (
 	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/clock"
+	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/taskstatus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -1921,6 +1922,102 @@ steps:
 				t.Fatalf("completions = %+v, want one pr-recovery completion", completed)
 			}
 		})
+	}
+}
+
+func TestManualVerificationBlockerRecovery_UsesAuthoritativePRHeadRemote(t *testing.T) {
+	store := newInlineTestStore(t, "pr-recovery", fmt.Sprintf(`
+id: pr-recovery
+name: PR Recovery
+trigger:
+  on: task.created
+steps:
+  - id: implement
+    name: Implement
+    type: run_agent
+    config:
+      role: implementation
+      mode: headless
+      prompt: "implement"
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: %s
+        goto: ""
+      - goto: verify
+  - id: verify
+    name: Verify
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
+`, taskstatus.HumanRequired))
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
+
+	const (
+		repoID     = "acme/widgets"
+		forkRepoID = "contrib/widgets"
+		branch     = "feat/live-proof-fork"
+	)
+	wtPath, originSHA, forkSHA := newSameNamedBranchCollisionWorktree(t, "acme", "widgets", "contrib", branch)
+	restoreRemoteBranchHead := recoveryRemoteBranchHead
+	recoveryRemoteBranchHead = func(_ context.Context, _ string, remote, _ string) (string, error) {
+		switch remote {
+		case "origin":
+			return originSHA, nil
+		case "fork":
+			return forkSHA, nil
+		default:
+			return "", nil
+		}
+	}
+	defer func() { recoveryRemoteBranchHead = restoreRemoteBranchHead }()
+
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
+	engine.SetPRFinder(&fakePRFinder{number: 42, found: true})
+	engine.setPRMetaFetcherForTest(&fakePRMetaFetcher{pr: github.PullRequest{HeadRepo: forkRepoID, HeadRefName: branch}})
+
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    taskstatus.InProgress,
+		AgentMode: "headless",
+		ProjectID: repoID,
+		Branch:    branch,
+	})
+	if err := engine.StartWorkflow("t1", "pr-recovery"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.UpdateTaskStatus("t1", taskstatus.HumanRequired, missingLivePRProofReason); err != nil {
+		t.Fatal(err)
+	}
+
+	agentID := agents.LastID()
+	agents.SimulateComplete("t1")
+	if err := engine.AdvanceStep("t1", StepOutput{
+		StepID:  "implement",
+		AgentID: agentID,
+		Status:  "completed",
+		Output:  missingLivePRProofReason,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti.Status != taskstatus.InReview {
+		t.Fatalf("status = %q, want %q", ti.Status, taskstatus.InReview)
+	}
+	if ti.PRNumber != 42 {
+		t.Fatalf("pr number = %d, want 42", ti.PRNumber)
+	}
+	if ti.StatusReason != "" {
+		t.Fatalf("status reason = %q, want cleared when the linked PR already owns the exact head", ti.StatusReason)
 	}
 }
 

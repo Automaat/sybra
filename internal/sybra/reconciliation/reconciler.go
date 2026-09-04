@@ -25,6 +25,11 @@ import (
 
 const maxReobserveAttempts = 5
 
+var (
+	refreshedRemoteTrackingSHA = project.RefreshedRemoteTrackingSHA
+	reconcileGitConfigOutput   = gitexec.Output
+)
+
 type Config struct {
 	Tasks     *task.Manager
 	Projects  *project.Store
@@ -35,6 +40,7 @@ type Config struct {
 
 	FetchPRState   func(string, int) (github.PRState, error)
 	FetchPRHeadSHA func(string, int) (string, error)
+	FetchPRMeta    func(context.Context, string, int) (github.PullRequest, error)
 }
 
 type Reconciler struct {
@@ -46,6 +52,7 @@ type Reconciler struct {
 	audit     func(reconcile.Request, reconcile.Plan)
 	prState   func(string, int) (github.PRState, error)
 	prHead    func(string, int) (string, error)
+	prMeta    func(context.Context, string, int) (github.PullRequest, error)
 }
 
 func New(cfg Config) *Reconciler {
@@ -57,7 +64,11 @@ func New(cfg Config) *Reconciler {
 	if head == nil {
 		head = github.FetchPRHeadSHA
 	}
-	return &Reconciler{tasks: cfg.Tasks, projects: cfg.Projects, worktrees: cfg.Worktrees, logger: cfg.Logger, evidence: cfg.Evidence, audit: cfg.Audit, prState: state, prHead: head}
+	meta := cfg.FetchPRMeta
+	if meta == nil {
+		meta = github.FetchPRMetaContext
+	}
+	return &Reconciler{tasks: cfg.Tasks, projects: cfg.Projects, worktrees: cfg.Worktrees, logger: cfg.Logger, evidence: cfg.Evidence, audit: cfg.Audit, prState: state, prHead: head, prMeta: meta}
 }
 
 func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Plan, error) {
@@ -173,15 +184,7 @@ func (r *Reconciler) observe(ctx context.Context, req reconcile.Request, pathOve
 	if path == "" && r.worktrees != nil {
 		path = r.worktrees.PathFor(t)
 	}
-	if path != "" {
-		if _, statErr := os.Stat(path); statErr == nil {
-			git, gitErr := r.observeGit(ctx, &t, path)
-			if gitErr != nil {
-				return observedSnapshot{}, gitErr
-			}
-			s.Git = git
-		}
-	}
+	var prHead authoritativePRHead
 	if t.PRNumber > 0 {
 		pr, prErr := r.prState(t.ProjectID, t.PRNumber)
 		if prErr != nil {
@@ -191,8 +194,25 @@ func (r *Reconciler) observe(ctx context.Context, req reconcile.Request, pathOve
 		if headErr != nil {
 			return observedSnapshot{}, fmt.Errorf("reconcile PR head: %w", headErr)
 		}
+		prHead.sha = head
+		if r.prMeta != nil {
+			if meta, metaErr := r.prMeta(ctx, t.ProjectID, t.PRNumber); metaErr == nil {
+				prHead.repo = meta.HeadRepo
+				prHead.branch = meta.HeadRefName
+			} else if r.logger != nil {
+				r.logger.Warn("reconcile.pr-meta", "task_id", t.ID, "pr", t.PRNumber, "err", metaErr)
+			}
+		}
 		s.PR = reconcile.PRState{Number: t.PRNumber, State: pr.State, HeadSHA: head, Mergeable: pr.Mergeable, Checks: pr.CIStatus()}
-		s.Git.PRHeadSHA = head
+	}
+	if path != "" {
+		if _, statErr := os.Stat(path); statErr == nil {
+			git, gitErr := r.observeGit(ctx, &t, path, prHead)
+			if gitErr != nil {
+				return observedSnapshot{}, gitErr
+			}
+			s.Git = git
+		}
 	}
 	return observedSnapshot{Snapshot: s, gitPath: path}, nil
 }
@@ -251,7 +271,13 @@ func contentDigest(content string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func (r *Reconciler) observeGit(ctx context.Context, t *task.Task, path string) (reconcile.GitState, error) {
+type authoritativePRHead struct {
+	repo   string
+	branch string
+	sha    string
+}
+
+func (r *Reconciler) observeGit(ctx context.Context, t *task.Task, path string, prHead authoritativePRHead) (reconcile.GitState, error) {
 	g := reconcile.GitState{Available: true, Branch: t.Branch, PushForbidden: t.IsPRReview(), Healthy: project.WorktreeHealthy(ctx, path)}
 	if !g.Healthy {
 		return g, nil
@@ -270,17 +296,14 @@ func (r *Reconciler) observeGit(ctx context.Context, t *task.Task, path string) 
 	g.Staged = gitexec.RunQuiet(ctx, gitexec.Options{Dir: path}, "diff", "--cached", "--quiet") != nil
 	g.Operation = project.WorktreeOperation(ctx, path)
 
-	if t.Branch != "" {
-		remote, exists, err := project.RefreshedRemoteTrackingSHA(ctx, path, project.PushRemote(ctx, path), t.Branch)
+	g.PRHeadSHA = prHead.sha
+	if sha, exists, err := authoritativeRemoteSHA(ctx, path, t, prHead); err != nil {
+		return g, fmt.Errorf("reconcile remote branch: %w", err)
+	} else if exists {
+		g.RemoteSHA = sha
+		g.Behind, g.Ahead, err = aheadBehind(ctx, path, sha, head)
 		if err != nil {
-			return g, fmt.Errorf("reconcile remote branch: %w", err)
-		}
-		if exists {
-			g.RemoteSHA = remote
-			g.Behind, g.Ahead, err = aheadBehind(ctx, path, remote, head)
-			if err != nil {
-				return g, fmt.Errorf("reconcile remote reachability: %w", err)
-			}
+			return g, fmt.Errorf("reconcile remote reachability: %w", err)
 		}
 	}
 	if r.projects != nil && t.ProjectID != "" {
@@ -303,6 +326,50 @@ func (r *Reconciler) observeGit(ctx context.Context, t *task.Task, path string) 
 		}
 	}
 	return g, nil
+}
+
+func authoritativeRemoteSHA(ctx context.Context, path string, t *task.Task, prHead authoritativePRHead) (sha string, ok bool, err error) {
+	if remote, branch, ok := authoritativePRTrackingRef(ctx, path, t, prHead); ok {
+		return refreshedRemoteTrackingSHA(ctx, path, remote, branch)
+	}
+	if prHead.sha != "" {
+		return prHead.sha, true, nil
+	}
+	if t.Branch == "" {
+		return "", false, nil
+	}
+	return refreshedRemoteTrackingSHA(ctx, path, project.PushRemote(ctx, path), t.Branch)
+}
+
+func authoritativePRTrackingRef(ctx context.Context, path string, t *task.Task, prHead authoritativePRHead) (remote, branch string, ok bool) {
+	branch = prHead.branch
+	if branch == "" {
+		branch = t.Branch
+	}
+	if branch == "" {
+		return "", "", false
+	}
+	if prHead.repo != "" {
+		switch {
+		case strings.EqualFold(prHead.repo, t.ProjectID):
+			return "origin", branch, true
+		case remoteRepoMatches(ctx, path, "fork", prHead.repo):
+			return "fork", branch, true
+		}
+	}
+	return "", "", false
+}
+
+func remoteRepoMatches(ctx context.Context, path, remote, repo string) bool {
+	raw, err := reconcileGitConfigOutput(ctx, gitexec.Options{Dir: path}, "config", "--get", "remote."+remote+".url")
+	if err != nil {
+		return false
+	}
+	owner, name, err := project.ParseGitHubURL(strings.TrimSpace(raw))
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(owner+"/"+name, repo)
 }
 
 func aheadBehind(ctx context.Context, path, left, right string) (behind, ahead int, err error) {

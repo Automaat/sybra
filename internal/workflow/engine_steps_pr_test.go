@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/taskstatus"
 )
@@ -90,6 +91,43 @@ func headSHA(t *testing.T, wtPath string) string {
 func newPushBranchStep() *Step { return &Step{ID: "push_existing_pr", Type: StepPushBranch} }
 func newCreatePRStep() *Step   { return &Step{ID: "create_pr", Type: StepCreatePR} }
 
+func newSameNamedBranchCollisionWorktree(t *testing.T, repoOwner, repoName, forkOwner, branch string) (wtPath, originSHA, forkSHA string) {
+	t.Helper()
+
+	wtPath = t.TempDir()
+	runGit(t, wtPath, "init", "-b", "main")
+	runGit(t, wtPath, "config", "user.name", "Sybra Test")
+	runGit(t, wtPath, "config", "user.email", "test@example.com")
+	runGit(t, wtPath, "config", "remote.origin.url", "https://github.com/"+repoOwner+"/"+repoName+".git")
+	runGit(t, wtPath, "config", "remote.fork.url", "https://github.com/"+forkOwner+"/"+repoName+".git")
+	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("base\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, wtPath, "add", "README.md")
+	runGit(t, wtPath, "commit", "-m", "base")
+	baseSHA := headSHA(t, wtPath)
+
+	runGit(t, wtPath, "checkout", "-b", branch)
+	if err := os.WriteFile(filepath.Join(wtPath, "origin.txt"), []byte("origin\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, wtPath, "add", "origin.txt")
+	runGit(t, wtPath, "commit", "-m", "origin branch")
+	originSHA = headSHA(t, wtPath)
+
+	runGit(t, wtPath, "checkout", "-B", "fork-tmp", baseSHA)
+	if err := os.WriteFile(filepath.Join(wtPath, "fork.txt"), []byte("fork\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, wtPath, "add", "fork.txt")
+	runGit(t, wtPath, "commit", "-m", "fork branch")
+	forkSHA = headSHA(t, wtPath)
+
+	runGit(t, wtPath, "checkout", branch)
+	runGit(t, wtPath, "reset", "--hard", forkSHA)
+	return wtPath, originSHA, forkSHA
+}
+
 type fakePRHeadFetcher struct {
 	sha string
 	err error
@@ -97,6 +135,15 @@ type fakePRHeadFetcher struct {
 
 func (f *fakePRHeadFetcher) FetchPRHeadSHA(context.Context, string, int) (string, error) {
 	return f.sha, f.err
+}
+
+type fakePRMetaFetcher struct {
+	pr  github.PullRequest
+	err error
+}
+
+func (f *fakePRMetaFetcher) FetchPRMeta(context.Context, string, int) (github.PullRequest, error) {
+	return f.pr, f.err
 }
 
 type fakePRCreator struct {

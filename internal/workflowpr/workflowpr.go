@@ -19,6 +19,7 @@ var (
 	_ workflow.PRStateFetcher        = (*StateFetcherAdapter)(nil)
 	_ workflow.PRReviewThreadFetcher = (*ThreadFetcherAdapter)(nil)
 	_ workflow.PRHeadFetcher         = (*HeadFetcherAdapter)(nil)
+	_ workflow.PRMetaFetcher         = (*MetaFetcherAdapter)(nil)
 	_ workflow.PRCreator             = (*CreatorAdapter)(nil)
 	_ workflow.PRCloser              = (*CloserAdapter)(nil)
 	_ workflow.PRFinder              = (*FinderAdapter)(nil)
@@ -61,6 +62,14 @@ type HeadFetcherAdapter struct{}
 
 func (HeadFetcherAdapter) FetchPRHeadSHA(ctx context.Context, repo string, number int) (string, error) {
 	return github.FetchPRHeadSHAContext(ctx, repo, number)
+}
+
+// MetaFetcherAdapter wires the workflow engine's PRMetaFetcher interface to
+// the github package. Stateless — all state lives in `gh` / GitHub.
+type MetaFetcherAdapter struct{}
+
+func (MetaFetcherAdapter) FetchPRMeta(ctx context.Context, repo string, number int) (github.PullRequest, error) {
+	return github.FetchPRMetaContext(ctx, repo, number)
 }
 
 // CreatorAdapter wires the workflow engine's PRCreator interface to the

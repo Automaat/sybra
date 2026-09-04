@@ -240,7 +240,6 @@ func buildAllowances() map[allowanceKey]allowance { //nolint:funlen // The expli
 	add(kindStringTruncation, "internal/agent/tool_result_bound.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 7})
 	add(kindStringTruncation, "internal/cleanup/protected.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "internal/experience/store.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 2})
-	add(kindStringTruncation, "internal/gitexec/gitexec.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "internal/github/client.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "internal/github/runtime.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "internal/httpapi/handler.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})

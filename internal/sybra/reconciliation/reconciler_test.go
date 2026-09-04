@@ -5,10 +5,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Automaat/sybra/internal/evidence"
+	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/reconcile"
 	"github.com/Automaat/sybra/internal/task"
@@ -130,6 +132,125 @@ func TestReconcileCheckpointsDirtyAuthorWorkBeforeAdvancing(t *testing.T) {
 	}
 }
 
+func TestReconcileUsesAuthoritativePRHeadRepoOverSameNamedForkBranch(t *testing.T) {
+	ctx := context.Background()
+	const branch = "fix/shared-head"
+
+	wtPath, originSHA, forkSHA := setupSameNamedBranchCollision(t, branch)
+	restoreRemoteStubs(t, func(_ context.Context, _ string, remote, _ string) (string, bool, error) {
+		switch remote {
+		case "origin":
+			return originSHA, true, nil
+		case "fork":
+			return forkSHA, true, nil
+		default:
+			return "", false, nil
+		}
+	})
+
+	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	created, err := tasks.CreateFull("resume", "", task.AgentModeHeadless, task.Update{
+		ProjectID:   task.Ptr("owner/repo"),
+		Branch:      task.Ptr(branch),
+		PRNumber:    task.Ptr(42),
+		WorktreeDir: task.Ptr(wtPath),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.AddRun(created.ID, task.AgentRun{AgentID: "run-1", Role: "pr-fix", Mode: "headless"}); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := New(Config{
+		Tasks: tasks,
+		FetchPRState: func(string, int) (github.PRState, error) {
+			return github.PRState{State: "OPEN", Mergeable: "MERGEABLE"}, nil
+		},
+		FetchPRHeadSHA: func(string, int) (string, error) { return originSHA, nil },
+		FetchPRMeta: func(context.Context, string, int) (github.PullRequest, error) {
+			return github.PullRequest{HeadRepo: "owner/repo", HeadRefName: branch}, nil
+		},
+	})
+
+	plan, err := runner.Reconcile(ctx, reconcile.Request{TaskID: created.ID, RunID: "run-1", Intent: reconcile.IntentStaleRun})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if plan.Action != reconcile.ActionResumeMergeablePR {
+		t.Fatalf("action = %q, want %q", plan.Action, reconcile.ActionResumeMergeablePR)
+	}
+	if plan.Preconditions.RemoteSHA != originSHA {
+		t.Fatalf("remote SHA = %q, want authoritative origin SHA %q", plan.Preconditions.RemoteSHA, originSHA)
+	}
+	if plan.Preconditions.RemoteSHA == forkSHA {
+		t.Fatalf("remote SHA = fork SHA %q, want origin PR head", forkSHA)
+	}
+}
+
+func TestReconcileUsesForkRemoteWhenPRHeadRepoLivesOnFork(t *testing.T) {
+	ctx := context.Background()
+	const branch = "fix/shared-head-fork"
+
+	wtPath, originSHA, forkSHA := setupSameNamedBranchCollision(t, branch)
+	restoreRemoteStubs(t, func(_ context.Context, _ string, remote, _ string) (string, bool, error) {
+		switch remote {
+		case "origin":
+			return originSHA, true, nil
+		case "fork":
+			return forkSHA, true, nil
+		default:
+			return "", false, nil
+		}
+	})
+	runGit(t, wtPath, "checkout", branch)
+	runGit(t, wtPath, "reset", "--hard", forkSHA)
+
+	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	created, err := tasks.CreateFull("resume fork", "", task.AgentModeHeadless, task.Update{
+		ProjectID:   task.Ptr("owner/repo"),
+		Branch:      task.Ptr(branch),
+		PRNumber:    task.Ptr(43),
+		WorktreeDir: task.Ptr(wtPath),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.AddRun(created.ID, task.AgentRun{AgentID: "run-1", Role: "pr-fix", Mode: "headless"}); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := New(Config{
+		Tasks: tasks,
+		FetchPRState: func(string, int) (github.PRState, error) {
+			return github.PRState{State: "OPEN", Mergeable: "MERGEABLE"}, nil
+		},
+		FetchPRHeadSHA: func(string, int) (string, error) { return forkSHA, nil },
+		FetchPRMeta: func(context.Context, string, int) (github.PullRequest, error) {
+			return github.PullRequest{HeadRepo: "fork-owner/repo", HeadRefName: branch}, nil
+		},
+	})
+
+	plan, err := runner.Reconcile(ctx, reconcile.Request{TaskID: created.ID, RunID: "run-1", Intent: reconcile.IntentStaleRun})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if plan.Action != reconcile.ActionResumeMergeablePR {
+		t.Fatalf("action = %q, want %q", plan.Action, reconcile.ActionResumeMergeablePR)
+	}
+	if plan.Preconditions.RemoteSHA != forkSHA {
+		t.Fatalf("remote SHA = %q, want fork SHA %q", plan.Preconditions.RemoteSHA, forkSHA)
+	}
+}
+
 func TestObservedSidecarsRecordsOnlyContentDigests(t *testing.T) {
 	t.Parallel()
 	taskState := task.Task{
@@ -146,6 +267,49 @@ func TestObservedSidecarsRecordsOnlyContentDigests(t *testing.T) {
 			t.Fatalf("sidecar %q did not retain a content-only digest: %#v", item.Name, item)
 		}
 	}
+}
+
+func restoreRemoteStubs(t *testing.T, fn func(context.Context, string, string, string) (string, bool, error)) {
+	t.Helper()
+	prevRefresh := refreshedRemoteTrackingSHA
+	refreshedRemoteTrackingSHA = fn
+	t.Cleanup(func() { refreshedRemoteTrackingSHA = prevRefresh })
+}
+
+func setupSameNamedBranchCollision(t *testing.T, branch string) (wtPath, originSHA, forkSHA string) {
+	t.Helper()
+
+	wtPath = t.TempDir()
+	runGit(t, wtPath, "init", "-b", "main")
+	runGit(t, wtPath, "config", "user.name", "Sybra Test")
+	runGit(t, wtPath, "config", "user.email", "test@example.com")
+	runGit(t, wtPath, "config", "remote.origin.url", "https://github.com/owner/repo.git")
+	runGit(t, wtPath, "config", "remote.fork.url", "https://github.com/fork-owner/repo.git")
+	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("base\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, wtPath, "add", "README.md")
+	runGit(t, wtPath, "commit", "-m", "base")
+	baseSHA := strings.TrimSpace(runGit(t, wtPath, "rev-parse", "HEAD"))
+
+	runGit(t, wtPath, "checkout", "-b", branch)
+	if err := os.WriteFile(filepath.Join(wtPath, "origin.txt"), []byte("origin\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, wtPath, "add", "origin.txt")
+	runGit(t, wtPath, "commit", "-m", "origin branch")
+	originSHA = strings.TrimSpace(runGit(t, wtPath, "rev-parse", "HEAD"))
+
+	runGit(t, wtPath, "checkout", "-B", "fork-tmp", baseSHA)
+	if err := os.WriteFile(filepath.Join(wtPath, "fork.txt"), []byte("fork\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, wtPath, "add", "fork.txt")
+	runGit(t, wtPath, "commit", "-m", "fork branch")
+	forkSHA = strings.TrimSpace(runGit(t, wtPath, "rev-parse", "HEAD"))
+
+	runGit(t, wtPath, "checkout", branch)
+	return wtPath, originSHA, forkSHA
 }
 
 func TestObservedEvidenceKeepsRevisionBinding(t *testing.T) {

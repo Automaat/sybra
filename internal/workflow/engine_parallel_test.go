@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -559,6 +560,8 @@ func TestParallel_PlanDraftSidecarKeyedByStepID(t *testing.T) {
 	tasks := newMemTasks()
 	agents := newMockAgents()
 	engine := NewTestEngine(store, tasks, agents, discardLogger())
+	dir := t.TempDir()
+	engine.setSidecarDirResolverForTest(func(string) (string, error) { return dir, nil })
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo"})
 
 	if err := engine.StartWorkflow("t1", "test-parallel"); err != nil {
@@ -568,10 +571,8 @@ func TestParallel_PlanDraftSidecarKeyedByStepID(t *testing.T) {
 	// Set up sidecar files for both children. importSidecarIfConfigured
 	// reads from disk; write the per-child draft files using the path
 	// pattern from test-parallel.yaml.
-	dir := t.TempDir()
-	t.Setenv("TMPDIR", dir) // not strictly necessary; paths are absolute /tmp
 	for _, child := range []string{"plan_a", "plan_b"} {
-		path := "/tmp/sybra-plan-draft-" + child + "-t1.md"
+		path := filepath.Join(dir, "sybra-plan-draft-"+child+"-t1.md")
 		if err := writeFile(path, "draft for "+child); err != nil {
 			t.Fatalf("write fixture %s: %v", path, err)
 		}

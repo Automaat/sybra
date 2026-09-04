@@ -1711,6 +1711,7 @@ func (a *App) workflowDependencies(agentLauncher *agentAdapter) workflow.Depende
 			StateFetcher:     workflowpr.StateFetcherAdapter{},
 			ThreadFetcher:    workflowpr.ThreadFetcherAdapter{},
 			HeadFetcher:      workflowpr.HeadFetcherAdapter{},
+			MetaFetcher:      workflowpr.MetaFetcherAdapter{},
 			Creator:          workflowpr.CreatorAdapter{},
 			Closer:           workflowpr.CloserAdapter{},
 			Finder:           workflowpr.FinderAdapter{},
