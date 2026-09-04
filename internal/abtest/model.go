@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/Automaat/sybra/internal/modeltier"
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 // Config controls deterministic A/B assignment for workflow agent runs.
@@ -290,10 +291,10 @@ func humanReviewRestructureContextExperiment(expEnabled bool) Experiment {
 		Subject:        &Subject{Role: "human-review"},
 		Roles:          []string{"human-review"},
 		Variants: []Variant{
-			{ID: "baseline", Provider: "claude", Model: "claude-haiku-4-5-20251001", Weight: 1},
+			{ID: "baseline", Provider: providerid.Claude, Model: "claude-haiku-4-5-20251001", Weight: 1},
 			{
 				ID:       "pl-50bbd0314913",
-				Provider: "claude",
+				Provider: providerid.Claude,
 				Model:    "claude-haiku-4-5-20251001",
 				Version:  "pl-50bbd0314913",
 				Digest:   digestString(HumanReviewRestructureContextPL50BBD0314913),
