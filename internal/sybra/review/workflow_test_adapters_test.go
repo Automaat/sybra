@@ -515,6 +515,8 @@ func toRunInfos(runs []task.AgentRun) []workflow.AgentRunInfo {
 			AgentID:                runs[i].AgentID,
 			Role:                   runs[i].Role,
 			Provider:               runs[i].Provider,
+			Mode:                   runs[i].Mode,
+			State:                  runs[i].State,
 			RequestedSkill:         runs[i].RequestedSkill,
 			SkillExecutionMode:     runs[i].SkillExecutionMode,
 			SkillConformance:       runs[i].SkillConformance,

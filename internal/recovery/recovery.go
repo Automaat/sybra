@@ -45,6 +45,7 @@ type WorkflowRestarter interface {
 	// restarting a stale WorkflowID.
 	DispatchEvent(taskID, event string, extraFields, vars map[string]string) (string, error)
 	HandleAgentComplete(taskID string, completion workflow.AgentCompletion)
+	CurrentStepRunRole(taskID string) string
 	ReplayPersistedEffects()
 	ReplayPersistedEffectsForTask(taskID string) bool
 	// ReclaimOrphanedEffectLeases must run before the two replay paths above:

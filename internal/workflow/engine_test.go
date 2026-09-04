@@ -475,6 +475,47 @@ steps:
 			t.Fatalf("step history = %+v, want unchanged workflow", got.Workflow.StepHistory)
 		}
 	})
+
+	t.Run("legacy terminal verifier defers replay to stale recovery", func(t *testing.T) {
+		store := newInlineTestStore(t, "replay-review", `
+id: replay-review
+name: Replay Review
+trigger:
+  on: task.created
+steps:
+  - id: review
+    name: Review
+    type: run_agent
+    config:
+      role: review
+      mode: headless
+      model: sonnet
+      prompt: "Review {{.Task.ID}}"
+`)
+		tasks := &memTasks{tasks: map[string]*TaskInfo{
+			"t1": {
+				ID: "t1", Generation: 1, Status: "in-progress",
+				Workflow: &Execution{
+					WorkflowID: "replay-review", CurrentStep: "review", State: ExecWaiting,
+					EffectLog: []EffectRecord{{
+						ID: EffectID{Generation: 1, StepSeq: 0, StepID: "review", Pos: effectPosStepAction}, IntentAt: time.Now().UTC(),
+					}},
+				},
+				AgentRuns: []AgentRunInfo{{
+					AgentID: "review-legacy", Role: "review", Mode: "headless", State: "stopped", Outcome: "failure",
+				}},
+			},
+		}, gets: map[string]int{}}
+		agents := newMockAgents()
+		engine := NewTestEngine(store, tasks, agents, discardLogger())
+
+		if consumed := engine.ReplayPersistedEffectsForTask("t1"); consumed {
+			t.Fatal("ReplayPersistedEffectsForTask consumed tick, want stale recovery to reconcile terminal verifier")
+		}
+		if len(agents.calls) != 0 {
+			t.Fatalf("StartAgent calls = %d, want 0", len(agents.calls))
+		}
+	})
 }
 
 func workflowMetricValue(t *testing.T, name string, labels []string) float64 {
