@@ -15,6 +15,7 @@ import (
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/procstat"
 	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/watchdogreason"
 )
@@ -1256,13 +1257,13 @@ func TestHandleZeroOutputStall_CapturesProcessState(t *testing.T) {
 			}
 			return procstat.Summary{
 				Available: true,
-				TopCPU:    []procstat.Process{{PID: 4242, Name: "claude", Owned: true}},
-				TopMem:    []procstat.Process{{PID: 4242, Name: "claude", Owned: true}},
+				TopCPU:    []procstat.Process{{PID: 4242, Name: providerid.Claude, Owned: true}},
+				TopMem:    []procstat.Process{{PID: 4242, Name: providerid.Claude, Owned: true}},
 			}
 		},
 	}
 
-	ag := &agent.Agent{ID: "a1", TaskID: tk.ID, Provider: "claude", PID: 4242}
+	ag := &agent.Agent{ID: "a1", TaskID: tk.ID, Provider: providerid.Claude, PID: 4242}
 
 	w.handleZeroOutputStall(ag, 20*time.Minute, 20*time.Minute, task.StatusInProgress)
 
@@ -1292,7 +1293,7 @@ func TestHandleZeroOutputStall_CapturesProcessState(t *testing.T) {
 	if err := json.Unmarshal(data, &capture); err != nil {
 		t.Fatalf("unmarshal capture: %v", err)
 	}
-	if capture.AgentID != "a1" || capture.TaskID != tk.ID || capture.Provider != "claude" || capture.PID != 4242 {
+	if capture.AgentID != "a1" || capture.TaskID != tk.ID || capture.Provider != providerid.Claude || capture.PID != 4242 {
 		t.Fatalf("capture identity = %+v, want agent a1 task %s provider claude pid 4242", capture, tk.ID)
 	}
 	if capture.StallSec != int((20*time.Minute).Seconds()) || capture.TotalSec != int((20*time.Minute).Seconds()) {
@@ -1325,7 +1326,7 @@ func TestHandleZeroOutputStall_CaptureFailureStillStops(t *testing.T) {
 		artifacts: nil,
 	}
 
-	ag := &agent.Agent{ID: "a1", TaskID: tk.ID, Provider: "claude"}
+	ag := &agent.Agent{ID: "a1", TaskID: tk.ID, Provider: providerid.Claude}
 	w.handleZeroOutputStall(ag, 20*time.Minute, 20*time.Minute, task.StatusInProgress)
 
 	got, err := tasks.Get(tk.ID)
