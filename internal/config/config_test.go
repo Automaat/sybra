@@ -2749,6 +2749,52 @@ func TestLoadReconcilesStaleBuiltinABExperiments(t *testing.T) {
 	}
 }
 
+// TestLoadReconcilesVersion7Builtins proves installations already stamped at
+// the previously-current built-in version adopt the human-review Prompt Lab
+// experiment added in version 8.
+func TestLoadReconcilesVersion7Builtins(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+	enabled := true
+	priorBuiltinVersion := 7
+	priorExperiments := make([]abtest.Experiment, 0, len(abtest.DefaultConfig().Experiments)-1)
+	for _, exp := range abtest.DefaultConfig().Experiments {
+		if exp.ID != "human-review-restructure-context-pl-50bbd0314913" {
+			priorExperiments = append(priorExperiments, exp)
+		}
+	}
+	cfg := DefaultConfig()
+	cfg.SchemaVersion = 0
+	cfg.ABTesting = abtest.Config{
+		Enabled:              &enabled,
+		MinSamplesPerVariant: 20,
+		BuiltinVersion:       &priorBuiltinVersion,
+		Experiments:          priorExperiments,
+	}
+	cfg.Server = ServerConfig{AuthToken: "test-token"}
+	data, err := yamlv3.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := loaded.ABTesting.BuiltinVersionValue(); got != abtest.CurrentBuiltinVersion {
+		t.Fatalf("BuiltinVersion = %d, want %d", got, abtest.CurrentBuiltinVersion)
+	}
+	for _, exp := range loaded.ABTesting.Experiments {
+		if exp.ID == "human-review-restructure-context-pl-50bbd0314913" {
+			return
+		}
+	}
+	t.Fatal("human-review Prompt Lab experiment not adopted from builtin version 7")
+}
+
 // TestLoadReconcileDoesNotRewriteConfigFile proves the ab_testing builtin
 // reconcile is in-memory only. This is the fix for #2180: any tool that
 // renders config.yaml declaratively (Ansible, Nix, Chezmoi) previously lost a

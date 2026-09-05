@@ -34,7 +34,7 @@ type Config struct {
 // returned by DefaultConfig. Bump this whenever the built-in experiments'
 // roles, variants, or weights change in a way that persisted configs should
 // pick up automatically.
-const CurrentBuiltinVersion = 7
+const CurrentBuiltinVersion = 8
 
 // BuiltinExperimentIDs lists the experiment IDs owned by Sybra's shipped
 // defaults. A persisted config's experiment is only replaced during a builtin
@@ -46,7 +46,30 @@ var BuiltinExperimentIDs = []string{
 	"fix-review-expensive",
 	"review-expensive",
 	"review-tighten-instructions-pl-a2d853b2c1d9",
+	"human-review-restructure-context-pl-50bbd0314913",
 }
+
+// HumanReviewRestructureContextPL50BBD0314913 is Prompt Lab proposal
+// pl-50bbd0314913's candidate text for the human-review role: prepended to
+// the base human-review prompt (internal/sybra buildPrompt), it tells the
+// reviewer to read the deterministic task/workflow/run signals before the
+// free-text agent results and host log tail, so noisy log prose cannot
+// override a conclusion the structured signals already establish. Its sha256
+// digest (see the pl-50bbd0314913 variant below) must match the exact bytes
+// screened by `sybra-cli evaluation offline run` — editing this text
+// invalidates that verdict and re-blocks enrollment until the offline eval is
+// re-run.
+const HumanReviewRestructureContextPL50BBD0314913 = `
+## Context reading order (apply before deciding)
+
+Read the context below in this fixed priority order, not the order it appears:
+
+1. Task status, status_reason, and Workflow execution (current step) — the deterministic record of where and why the task stalled.
+2. Each recent agent run's deterministic metadata: state, protocol_violation, test_outcome, test_failure_fingerprint — trust these over any prose in that run's Result block.
+3. Only then read agent Result text and the Sybra host log tail, and only as far as needed to explain what steps 1-2 already narrowed down.
+
+If steps 1-2 already establish a clear stall reason — a genuine human-required cause, or a Sybra bug pattern — do not let unrelated noise later in the log tail override that conclusion. In "reason", name which of steps 1-2 grounded your decision before citing any log excerpt.
+`
 
 const ReviewTightenInstructionsPLA2D853B2C1D9 = `
 
@@ -209,6 +232,7 @@ func DefaultConfig() Config {
 			fixReviewExpensiveExperiment(expensive),
 			reviewExpensiveExperiment(expensive),
 			reviewTightenInstructionsExperiment(expensive),
+			humanReviewRestructureContextExperiment(),
 		},
 	}
 }
@@ -319,6 +343,41 @@ func reviewTightenInstructionsExperiment(expensive map[string]string) Experiment
 				PromptTransform: &PromptTransform{
 					Op:   "append",
 					Text: ReviewTightenInstructionsPLA2D853B2C1D9,
+				},
+				Weight: 1,
+			},
+		},
+	}
+}
+
+// humanReviewRestructureContextExperiment is Prompt Lab proposal
+// pl-50bbd0314913 (candidate intent "restructure-context"), scaffolded from
+// fleet evidence that role human-review fails 73% vs 29% overall. The
+// challenger variant is enrolled only after `sybra-cli evaluation offline
+// gate` allows the exact digest below; changing the prompt text invalidates
+// that verdict and requires re-running the offline eval before keeping
+// positive weight (see internal/prompteval/testdata/promptlab-human-review-
+// restructure-context-*.json for the screened fixture).
+func humanReviewRestructureContextExperiment() Experiment {
+	expEnabled := true
+	return Experiment{
+		ID:             "human-review-restructure-context-pl-50bbd0314913",
+		Kind:           "prompt",
+		Enabled:        &expEnabled,
+		AssignmentUnit: "task",
+		Subject:        &Subject{Role: "human-review"},
+		Roles:          []string{"human-review"},
+		Variants: []Variant{
+			{ID: "baseline", Provider: providerid.Claude, Model: "claude-haiku-4-5-20251001", Weight: 1},
+			{
+				ID:       "pl-50bbd0314913",
+				Provider: providerid.Claude,
+				Model:    "claude-haiku-4-5-20251001",
+				Version:  "pl-50bbd0314913",
+				Digest:   digestString(HumanReviewRestructureContextPL50BBD0314913),
+				PromptTransform: &PromptTransform{
+					Op:   "prepend",
+					Text: HumanReviewRestructureContextPL50BBD0314913,
 				},
 				Weight: 1,
 			},

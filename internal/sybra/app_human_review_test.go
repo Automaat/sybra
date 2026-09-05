@@ -62,13 +62,13 @@ func setupUnblockedRecoveryWorktree(t *testing.T, branch string) string {
 }
 
 type fakeHumanReviewAgentRunner struct {
-	apply func(agent.RunConfig) agent.RunConfig
+	apply func(agent.RunConfig, abtest.Config, string, string) agent.RunConfig
 	run   func(agent.RunConfig) (*agent.Agent, error)
 }
 
-func (f *fakeHumanReviewAgentRunner) ApplyABVariant(cfg agent.RunConfig, _ abtest.Config, _, _ string) agent.RunConfig {
+func (f *fakeHumanReviewAgentRunner) ApplyABVariant(cfg agent.RunConfig, ab abtest.Config, taskID, role string) agent.RunConfig {
 	if f != nil && f.apply != nil {
-		return f.apply(cfg)
+		return f.apply(cfg, ab, taskID, role)
 	}
 	return cfg
 }
@@ -477,6 +477,37 @@ func TestBuildPrompt_NoFencedVerdictInstruction(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "`decision`") {
 		t.Errorf("prompt does not describe the decision field:\n%s", prompt)
+	}
+}
+
+// TestHumanReviewPromptLabVariantTargetsHumanReviewDispatch pins the role
+// boundary between the human-review launcher and its Prompt Lab experiment.
+func TestHumanReviewPromptLabVariantTargetsHumanReviewDispatch(t *testing.T) {
+	h, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	called := false
+	h.abTesting = abtest.DefaultConfig
+	h.agents = &fakeHumanReviewAgentRunner{apply: func(cfg agent.RunConfig, ab abtest.Config, taskID, role string) agent.RunConfig {
+		called = true
+		if taskID != "task-prompt-lab" {
+			t.Fatalf("task ID = %q, want task-prompt-lab", taskID)
+		}
+		if role != string(agent.RoleHumanReview) {
+			t.Fatalf("role = %q, want %q", role, agent.RoleHumanReview)
+		}
+		for _, exp := range ab.Experiments {
+			if exp.ID == "human-review-restructure-context-pl-50bbd0314913" {
+				return cfg
+			}
+		}
+		t.Fatal("human-review Prompt Lab experiment was not provided to dispatch")
+		return cfg
+	}}
+
+	_ = h.spawnReviewConfig(task.Task{Title: "Prompt Lab dispatch"}, "task-prompt-lab", "base prompt", t.TempDir(), false, humanReviewSpawnOptions{})
+	if !called {
+		t.Fatal("ApplyABVariant was not called")
 	}
 }
 
@@ -3032,7 +3063,7 @@ func TestOnComplete_StructuredVerdictFailure_RetriesAlternateProvider(t *testing
 	}
 
 	runner := &fakeHumanReviewAgentRunner{
-		apply: func(cfg agent.RunConfig) agent.RunConfig { return cfg },
+		apply: func(cfg agent.RunConfig, _ abtest.Config, _, _ string) agent.RunConfig { return cfg },
 		run: func(cfg agent.RunConfig) (*agent.Agent, error) {
 			if cfg.Provider != "codex" {
 				t.Fatalf("fallback provider = %q, want codex", cfg.Provider)
@@ -3418,7 +3449,7 @@ func TestMaybeSpawn_RechecksStatusBeforeRun(t *testing.T) {
 
 	runner := &fakeHumanReviewAgentRunner{}
 	runCalls := 0
-	runner.apply = func(cfg agent.RunConfig) agent.RunConfig {
+	runner.apply = func(cfg agent.RunConfig, _ abtest.Config, _, _ string) agent.RunConfig {
 		if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusBlocked)}); err != nil {
 			t.Fatalf("advance task before run: %v", err)
 		}
