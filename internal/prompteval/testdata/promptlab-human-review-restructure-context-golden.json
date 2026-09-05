@@ -4,8 +4,8 @@
     "input": "You are screening a candidate human-review addendum prompt for an autonomous Sybra task-review agent. Reply with exactly CONTEXT_ORDER_ACCEPTED if the instructions above are coherent, tightly scoped to prioritizing which task/workflow context to read first, and safe to apply to a stalled-task diagnosis. Otherwise reply with exactly CONTEXT_ORDER_REJECTED.",
     "assertions": [
       {
-        "type": "contains",
-        "value": "CONTEXT_ORDER_ACCEPTED"
+        "type": "regex",
+        "value": "^\\s*CONTEXT_ORDER_ACCEPTED\\s*$"
       },
       {
         "type": "not-contains",
