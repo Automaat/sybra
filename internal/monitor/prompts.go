@@ -30,6 +30,19 @@ func DeterministicIssueBody(a Anomaly) string {
 	return b.String()
 }
 
+// RecurrenceComment renders the compact comment posted on an already-open
+// issue when its anomaly is detected again. occurrence is the consecutive
+// detection count (1-based) at the time of posting. Deliberately terse —
+// re-posting the full DeterministicIssueBody on every recurrence is what
+// makes a self-healing anomaly look like a stream of fresh incidents instead
+// of one ongoing, tracked condition.
+func RecurrenceComment(a Anomaly, occurrence int) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Recurred (occurrence #%d) at %s — still detected after remediation ran again.\n", occurrence, a.DetectedAt.UTC().Format(time.RFC3339))
+	fmt.Fprintf(&b, "Fingerprint: `%s`\n", a.Fingerprint)
+	return b.String()
+}
+
 // DispatchPrompt builds the focused per-anomaly Claude prompt the agent
 // dispatcher hands to claude -p. Each kind gets a short, surgical script.
 // issueRepo is the "owner/name" repository where GitHub issues must be filed;
@@ -50,6 +63,28 @@ func DispatchPrompt(a Anomaly, issueRepo, pushRemote string) string {
 	default:
 		return investigatePrompt(a, issueRepo)
 	}
+}
+
+func dispatchPromptForAnomaly(a Anomaly, issueRepo, pushRemote string) string {
+	if a.IncidentScope == "" || a.Kind == KindPRGap {
+		return DispatchPrompt(a, issueRepo, pushRemote)
+	}
+	failureCode := typedEvidenceString(a.Evidence, "failure_code", "code")
+	if failureCode == "" {
+		failureCode = string(a.Kind)
+	}
+	return fmt.Sprintf(`You are a read-only Sybra incident investigator.
+
+Incident fingerprint: %s
+Typed failure code: %s
+Scope: %s
+
+Investigate the local Sybra state and return one final JSON object with
+categorical fields: {"component":"...","capability":"...","finding_code":"...","remediation":"..."}.
+Do not create, comment, close, or reopen GitHub issues. The host owns the
+canonical incident lifecycle. Never include task prose, repository URLs,
+branch names, commit hashes, customer names, or other work-derived content.`,
+		a.Fingerprint, failureCode, a.IncidentScope)
 }
 
 func prGapPrompt(a Anomaly, pushRemote string) string {
@@ -267,7 +302,7 @@ func suggestedInvestigation(a Anomaly) string {
 			if verdict == "human" {
 				hint += "- Human-review agent confirmed: this task requires direct human input (scope beyond automation — credentials, creative decision, or ambiguous requirement).\n"
 				if taskID != "" {
-					hint += "- Review the task body and the auto-review note, provide the required input, then unblock: `sybra-cli update " + taskID + " --mode interactive --status todo`.\n"
+					hint += "- Review the task body and the auto-review note, provide the required input, then unblock: `sybra-cli update " + taskID + " --status todo`.\n"
 				}
 			} else {
 				hint += "- Human-review agent assessed this task — check the latest auto-review note in the task body.\n"
@@ -276,7 +311,7 @@ func suggestedInvestigation(a Anomaly) string {
 						hint += fmt.Sprintf("- If note says awaiting PR review: check PR #%d for new reviewer feedback.\n", prNum)
 					}
 					hint += "- Note confirms human input needed: provide it, then `sybra-cli update " + taskID + " --status todo`.\n"
-					hint += "- If the note says scope exceeds automation, switch to interactive mode: `sybra-cli update " + taskID + " --mode interactive --status todo`.\n"
+					hint += "- If the note says scope exceeds automation, this is ongoing human work, not a one-time unblock — expect to keep providing input and re-queuing with `--status todo` across multiple rounds.\n"
 				}
 				hint += "- Note shows unparseable or failed verdict: review the raw agent output in the note and act accordingly.\n"
 			}

@@ -7,13 +7,17 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/Automaat/sybra/internal/llmjob"
+	"github.com/Automaat/sybra/internal/taskstatus"
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 var errBestOfNParked = errors.New("best-of-n parked waiting for attempt completion")
 
 // bestOfNAttemptSep separates a best_of_n parent step ID from a synthetic
 // attempt ID (e.g. "implement_n::attempt_2") in the compound stepID stashed
-// in agentRoutes for an attempt agent. Attempts have no corresponding YAML
+// in the persisted agent route for an attempt agent. Attempts have no corresponding YAML
 // Step (unlike `parallel` children), so they cannot be looked up via
 // Definition.StepByID — loadAdvanceContext instead detects this separator and
 // routes to the best-of-N attempt path. "::" cannot collide with a real
@@ -60,16 +64,14 @@ func bestOfNSuccessfulVar(stepID string) string { return "bestofn." + stepID + "
 // budget, so this preflights it explicitly and fails closed on
 // ErrTaskCostExceeded.
 func (e *Engine) execBestOfN(taskID string, def *Definition, step *Step, wfExec *Execution, ctx TemplateContext) (*CompletionInfo, error) {
-	if e.costBudget != nil {
-		if err := e.costBudget.CheckTaskCostBudget(taskID); err != nil {
-			if errors.Is(err, ErrTaskCostExceeded) {
-				return e.failStepClosed(taskID, def, step, wfExec,
-					"best-of-n: cost budget exceeded before attempts started: "+err.Error())
-			}
-			return nil, err
+	if err := e.execution.CostBudget.CheckTaskCostBudget(taskID); err != nil {
+		if errors.Is(err, ErrTaskCostExceeded) {
+			return e.failStepClosed(taskID, def, step, wfExec,
+				"best-of-n: cost budget exceeded before attempts started: "+err.Error())
 		}
+		return nil, err
 	}
-	if e.attemptWorktrees == nil {
+	if e.execution.AttemptWorktrees == nil {
 		return e.failStepClosed(taskID, def, step, wfExec,
 			"best-of-n: no attempt worktree manager configured")
 	}
@@ -116,8 +118,7 @@ func (e *Engine) execBestOfN(taskID string, def *Definition, step *Step, wfExec 
 	// Released before finalizeBestOfNParent (which may recurse into
 	// executeSteps/StopAgentsForTask) so it cannot deadlock the way holding
 	// this lock through execRunAgent's StopAgentsForTask would.
-	inflight := e.taskInflightMutex(taskID)
-	inflight.Lock()
+	unlockInflight := e.acquireInflight(taskID)
 	for i := 1; i <= n; i++ {
 		id := bestOfNAttemptID(i)
 		status := rec.Attempts[id]
@@ -150,7 +151,7 @@ func (e *Engine) execBestOfN(taskID string, def *Definition, step *Step, wfExec 
 	if !allDone {
 		persistErr = e.tasks.SetWorkflow(taskID, wfExec)
 	}
-	inflight.Unlock()
+	unlockInflight()
 	if persistErr != nil {
 		return nil, persistErr
 	}
@@ -169,17 +170,14 @@ func (e *Engine) execBestOfN(taskID string, def *Definition, step *Step, wfExec 
 // (VariantID=attempt_N, AssignmentUnit=bestofn-attempt) independent of the
 // trimmable Execution state above.
 func (e *Engine) spawnBestOfNAttempt(taskID string, step *Step, wfExec *Execution, parentCtx TemplateContext, attemptID string, status *AttemptStatus) error {
-	mode := step.Config.Mode
-	if mode == "" || mode == "interactive" {
-		// Attempts must terminate on their own so the parent can advance —
-		// same rationale as spawnParallelChild's oneShot=false headless-only
-		// requirement.
-		mode = "headless"
+	if status == nil {
+		return fmt.Errorf("best-of-n attempt %q has no status", attemptID)
 	}
+	mode := resolveRunAgentMode(step.Config.Mode, parentCtx)
 	if admit, reason := e.agents.AdmitDispatch(taskID, step.Config.Role, mode); !admit {
 		return fmt.Errorf("%w: %s", ErrResourcePressure, reason)
 	}
-	dir, branch, err := e.attemptWorktrees.PrepareAttempt(taskID, attemptID)
+	dir, branch, err := e.execution.AttemptWorktrees.PrepareAttempt(taskID, attemptID)
 	if err != nil {
 		return fmt.Errorf("prepare attempt worktree: %w", err)
 	}
@@ -187,10 +185,7 @@ func (e *Engine) spawnBestOfNAttempt(taskID string, step *Step, wfExec *Executio
 	status.Branch = branch
 
 	attemptCtx := parentCtx
-	model := step.Config.Model
-	if model == "" {
-		model = "sonnet"
-	}
+	model := resolveRunAgentModel(step.Config.Model, attemptCtx)
 	provider := status.Provider
 	if provider == "" {
 		provider = resolveProvider(step.Config.Provider, wfExec, e.agents.DefaultProvider(), attemptCtx.Task)
@@ -208,25 +203,32 @@ func (e *Engine) spawnBestOfNAttempt(taskID string, step *Step, wfExec *Executio
 	}
 
 	assignment := AgentAssignment{
-		VariantID:      attemptID,
-		AssignmentUnit: "bestofn-attempt",
-		Provider:       provider,
-		Model:          model,
+		IntentID:         taskID + ":" + wfExec.WorkflowID + ":bestofn:" + step.ID + ":" + attemptID,
+		AdmissionTaskKey: taskID + ":bestofn:" + attemptID,
+		VariantID:        attemptID,
+		AssignmentUnit:   "bestofn-attempt",
+		Provider:         provider,
+		Model:            model,
 	}
 
-	// Hold e.mu across StartAgent so a fast-exiting agent's completion cannot
-	// race past the agentRoutes registration below (mirrors spawnParallelChild).
+	// Hold e.mu until the attempt route is durably persisted on the workflow.
 	e.mu.Lock()
 	agentID, _, _, startErr := e.agents.StartAgent(taskID, step.Config.Role, mode, model, provider, prompt, dir, step.Config.AllowedTools, false, false, step.Config.OutputSchema, "", assignment)
 	if startErr != nil {
 		e.mu.Unlock()
 		return fmt.Errorf("start agent: %w", startErr)
 	}
-	e.agentRoutes[agentID] = agentRoute{taskID: taskID, stepID: bestOfNAttemptStepKey(step.ID, attemptID)}
-	e.mu.Unlock()
-
 	status.AgentID = agentID
 	status.Status = "pending"
+	stepKey := bestOfNAttemptStepKey(step.ID, attemptID)
+	wfExec.SetAgentRoute(agentID, stepKey)
+	e.setPendingAgentStepLocked(taskID, agentID, stepKey)
+	err = e.tasks.SetWorkflow(taskID, wfExec)
+	e.mu.Unlock()
+	if err != nil {
+		return e.deferStartedAgentRoute(taskID, stepKey, agentID, err)
+	}
+	e.clearPendingAgentStep(taskID, agentID)
 	e.logger.Info("workflow.best-of-n.spawn",
 		"task_id", taskID, "parent", step.ID, "attempt", attemptID,
 		"agent_id", agentID, "provider", provider, "dir", dir)
@@ -274,7 +276,7 @@ func (e *Engine) advanceBestOfNAttempt(taskID string, def *Definition, parent *S
 	status.AgentID = output.AgentID
 	status.Provider = output.Provider
 	status.Status = output.Status
-	status.Output = truncate(output.Output, 4000)
+	status.Output = textutil.TruncateBytes(output.Output, 4000, "\n... (truncated)")
 
 	if !rec.AllAttemptsDone() {
 		e.logger.Debug("workflow.best-of-n.attempt-done",
@@ -328,11 +330,11 @@ func (e *Engine) finalizeBestOfNParent(taskID string, def *Definition, parent *S
 	wfExec.RecordStep(StepRecord{
 		StepID:    parent.ID,
 		Status:    "completed",
-		Output:    truncate(parentOutput, 4000),
+		Output:    textutil.TruncateBytes(parentOutput, 4000, "\n... (truncated)"),
 		StartedAt: rec.StartedAt,
 		EndedAt:   now,
 	})
-	wfExec.SetVar("step."+parent.ID+".output", truncate(parentOutput, 2000))
+	wfExec.SetVar("step."+parent.ID+".output", textutil.TruncateBytes(parentOutput, 2000, "\n... (truncated)"))
 
 	t, err := e.tasks.GetTask(taskID)
 	if err != nil {
@@ -347,7 +349,8 @@ func (e *Engine) finalizeBestOfNParent(taskID string, def *Definition, parent *S
 		return comp, nil
 	}
 	e.logger.Info("workflow.best-of-n.advance", "task_id", taskID, "from", parent.ID, "to", nextStep.ID)
-	return e.executeSteps(taskID, def, nextStep, wfExec)
+	comp, err = e.executeSteps(taskID, def, nextStep, wfExec)
+	return comp, normalizeExecuteStepsErr(err)
 }
 
 // cleanupAllBestOfNAttempts best-effort removes every attempt worktree dir
@@ -356,7 +359,7 @@ func (e *Engine) finalizeBestOfNParent(taskID string, def *Definition, parent *S
 // on the success path, so a block that never reaches promotion doesn't leak
 // attempt directories on disk indefinitely.
 func (e *Engine) cleanupAllBestOfNAttempts(taskID string, rec *BestOfNInflight) {
-	if e.attemptWorktrees == nil || rec == nil {
+	if e.execution.AttemptWorktrees == nil || rec == nil {
 		return
 	}
 	ids := make([]string, 0, len(rec.Attempts))
@@ -367,7 +370,7 @@ func (e *Engine) cleanupAllBestOfNAttempts(taskID string, rec *BestOfNInflight) 
 		return
 	}
 	sort.Strings(ids)
-	e.attemptWorktrees.CleanupAttempts(taskID, ids)
+	e.execution.AttemptWorktrees.CleanupAttempts(taskID, ids)
 }
 
 // preflightRunAgentBudget enforces the cumulative task cost budget BEFORE a
@@ -382,10 +385,10 @@ func (e *Engine) cleanupAllBestOfNAttempts(taskID string, rec *BestOfNInflight) 
 // flips the task to human-required and ends the workflow via the same
 // declarative Next path as every other mechanical gate.
 func (e *Engine) preflightRunAgentBudget(taskID string, def *Definition, step *Step, wfExec *Execution) (comp *CompletionInfo, handled bool, err error) {
-	if !step.Config.BudgetPreflight || e.costBudget == nil {
+	if !step.Config.BudgetPreflight {
 		return nil, false, nil
 	}
-	cErr := e.costBudget.CheckTaskCostBudget(taskID)
+	cErr := e.execution.CostBudget.CheckTaskCostBudget(taskID)
 	if cErr == nil {
 		return nil, false, nil
 	}
@@ -403,7 +406,7 @@ func (e *Engine) preflightRunAgentBudget(taskID string, def *Definition, step *S
 // same declarative path as every other mechanical gate (verify_commits,
 // detect_tampering, ...), rather than force-ending the execution directly.
 func (e *Engine) failStepClosed(taskID string, def *Definition, step *Step, wfExec *Execution, reason string) (*CompletionInfo, error) {
-	if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 		return nil, err
 	}
 	now := time.Now().UTC()
@@ -420,7 +423,8 @@ func (e *Engine) failStepClosed(taskID string, def *Definition, step *Step, wfEx
 	if nextStep == nil {
 		return comp, nil
 	}
-	return e.executeSteps(taskID, def, nextStep, wfExec)
+	comp, err = e.executeSteps(taskID, def, nextStep, wfExec)
+	return comp, normalizeExecuteStepsErr(err)
 }
 
 // bestOfNManifestAttempt is one attempt's entry in the JSON manifest artifact
@@ -464,7 +468,7 @@ func buildBestOfNManifest(stepID string, rec *BestOfNInflight) string {
 			Provider:  a.Provider,
 			Branch:    a.Branch,
 			Dir:       a.Dir,
-			Output:    truncate(a.Output, 500),
+			Output:    textutil.TruncateBytes(a.Output, 500, "\n... (truncated)"),
 		})
 	}
 	b, mErr := json.Marshal(m)
@@ -489,23 +493,42 @@ type judgeScore struct {
 }
 
 // extractJudgeJSON parses a judgeVerdict out of a judge agent's raw output,
-// tolerating surrounding prose by falling back to the outermost {...} span
-// when the whole trimmed output isn't valid JSON on its own.
+// tolerating surrounding prose and code fences.
+//
+// Failing to parse costs every attempt in the round, so it tries both
+// heuristics: the shared scanner first, then the outermost brace span. They
+// fail on disjoint inputs — the scanner is defeated by an odd ASCII quote in
+// the prose ("a 6\" margin"), which flips its string-literal state and hides
+// the object, while the span is defeated by a brace inside a string value.
+// json.Unmarshal validates whichever one produced a candidate.
 func extractJudgeJSON(output string) (judgeVerdict, error) {
 	trimmed := strings.TrimSpace(output)
 	var v judgeVerdict
 	if err := json.Unmarshal([]byte(trimmed), &v); err == nil {
 		return v, nil
 	}
-	start := strings.IndexByte(trimmed, '{')
-	end := strings.LastIndexByte(trimmed, '}')
-	if start < 0 || end <= start {
+	obj := llmjob.ExtractLastJSONObject(trimmed)
+	if obj == "" {
+		obj = outermostBraceSpan(trimmed)
+	}
+	if obj == "" {
 		return judgeVerdict{}, fmt.Errorf("no JSON object found in judge output")
 	}
-	if err := json.Unmarshal([]byte(trimmed[start:end+1]), &v); err != nil {
+	if err := json.Unmarshal([]byte(obj), &v); err != nil {
 		return judgeVerdict{}, fmt.Errorf("malformed judge JSON: %w", err)
 	}
 	return v, nil
+}
+
+// outermostBraceSpan returns the first `{` through the last `}`, ignoring
+// quote state. Only a fallback for output the balanced scanner cannot read.
+func outermostBraceSpan(s string) string {
+	start := strings.IndexByte(s, '{')
+	end := strings.LastIndexByte(s, '}')
+	if start < 0 || end <= start {
+		return ""
+	}
+	return s[start : end+1]
 }
 
 // humanRequiredStepOutput flips the task to human-required with reason and
@@ -513,7 +536,7 @@ func extractJudgeJSON(output string) (judgeVerdict, error) {
 // Next-evaluation (`when task.status == human-required goto ""`) ends the
 // workflow — the same mechanical pattern as verify_commits/detect_tampering.
 func (e *Engine) humanRequiredStepOutput(taskID string, step *Step, reason string) (StepOutput, error) {
-	if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 		return StepOutput{}, err
 	}
 	return StepOutput{StepID: step.ID, Status: "failed", Output: reason}, nil
@@ -569,16 +592,14 @@ func (e *Engine) execPromoteBestOfN(taskID string, step *Step) (StepOutput, erro
 		return e.humanRequiredStepOutput(taskID, step, "best-of-n promotion: judge named a non-successful attempt "+winnerID)
 	}
 
-	if e.costBudget != nil {
-		if cErr := e.costBudget.CheckTaskCostBudget(taskID); cErr != nil {
-			if errors.Is(cErr, ErrTaskCostExceeded) {
-				return e.humanRequiredStepOutput(taskID, step, "best-of-n promotion: cost budget exceeded before promotion: "+cErr.Error())
-			}
-			return StepOutput{}, cErr
+	if cErr := e.execution.CostBudget.CheckTaskCostBudget(taskID); cErr != nil {
+		if errors.Is(cErr, ErrTaskCostExceeded) {
+			return e.humanRequiredStepOutput(taskID, step, "best-of-n promotion: cost budget exceeded before promotion: "+cErr.Error())
 		}
+		return StepOutput{}, cErr
 	}
 
-	if e.attemptWorktrees == nil {
+	if e.execution.AttemptWorktrees == nil {
 		return e.humanRequiredStepOutput(taskID, step, "best-of-n promotion: no attempt worktree manager configured")
 	}
 
@@ -588,8 +609,17 @@ func (e *Engine) execPromoteBestOfN(taskID string, step *Step) (StepOutput, erro
 		}
 	}
 
-	canonicalDir, promErr := e.attemptWorktrees.PromoteAttempt(taskID, winner.Dir, winner.Branch)
+	canonicalDir, promErr := e.execution.AttemptWorktrees.PromoteAttempt(taskID, winner.Dir, winner.Branch)
 	if promErr != nil {
+		// The fail-closed reasons above are all judgements a human must make.
+		// A canonical path another mutating operation currently owns is not
+		// one: it frees itself, and this step is resumable, so return the
+		// error and let the next tick re-enter rather than park a human on a
+		// condition that will be gone by the time they look.
+		if e.transientOrShutdownStartError(promErr) {
+			e.logger.Info("workflow.best-of-n.promote.deferred", "task_id", taskID, "step", step.ID, "err", promErr)
+			return StepOutput{}, promErr
+		}
 		return e.humanRequiredStepOutput(taskID, step, promErr.Error())
 	}
 	// Downstream steps (e.g. a shell step pushing the now-canonical branch)
@@ -610,7 +640,7 @@ func (e *Engine) execPromoteBestOfN(taskID string, step *Step) (StepOutput, erro
 	}
 	sort.Strings(allAttempts)
 	if len(allAttempts) > 0 {
-		e.attemptWorktrees.CleanupAttempts(taskID, allAttempts)
+		e.execution.AttemptWorktrees.CleanupAttempts(taskID, allAttempts)
 	}
 
 	// Persist the loser cleanup + inflight teardown against the CURRENT

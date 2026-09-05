@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Automaat/sybra/internal/errclass"
 )
 
 // execer abstracts command execution for testing.
@@ -39,13 +41,34 @@ func (ghExecer) run(args ...string) ([]byte, error) {
 // expires — releasing the global request gate instead of holding it for the
 // kernel TCP timeout. Used by latency-sensitive callers (the PR poll loop).
 func ghRunCtx(ctx context.Context, args ...string) ([]byte, error) {
+	return RunWithEnv(ctx, ghEnv(), args...)
+}
+
+// RunWithEnv executes `gh` with args under env (nil = inherit the ambient
+// process environment unchanged) through the shared request gate — the same
+// pacing, rate-limit bookkeeping, and auth-circuit breaker every other gh
+// call in this package gets. Exported for callers outside this package that
+// build their own credential env (e.g. internal/monitor's issue sink, which
+// mirrors GHEnv() locally so its tests can inject a synthetic token without a
+// real App-auth mint) but must not bypass the shared gate to do it — a
+// caller that shells out to gh directly makes its traffic invisible to the
+// shared rate budget (see #2496).
+func RunWithEnv(ctx context.Context, env []string, args ...string) ([]byte, error) {
 	return ghGate.execute(ctx, func() ([]byte, error) {
 		cmd := exec.CommandContext(ctx, "gh", args...)
-		if env := ghEnv(); env != nil {
+		if env != nil {
 			cmd.Env = env
 		}
 		return cmd.CombinedOutput()
 	})
+}
+
+// Run is RunWithEnv using this package's own credential environment
+// (GHEnv()). This is the chokepoint every gh invocation in the process should
+// route through when no more specific Fetch/Create/etc. helper covers the
+// call.
+func Run(ctx context.Context, args ...string) ([]byte, error) {
+	return RunWithEnv(ctx, GHEnv(), args...)
 }
 
 // runCtx lets ghExecer satisfy the optional ctxRunner interface, so callers
@@ -187,9 +210,13 @@ func sanitizeGHOutput(out []byte) string {
 	return "GitHub returned an HTML error page"
 }
 
-const prQuery = `query($q: String!) {
+// maxSearchPages bounds each GraphQL search so a pathological result set cannot
+// consume an unbounded share of the GitHub API budget.
+const maxSearchPages = 5
+
+const prQuery = `query($q: String!, $after: String) {
   viewer { login }
-  search(query: $q, type: ISSUE, first: 100) {
+  search(query: $q, type: ISSUE, first: 100, after: $after) {
     pageInfo {
       hasNextPage
       endCursor
@@ -201,6 +228,7 @@ const prQuery = `query($q: String!) {
         url
         headRefName
         headRepositoryOwner { login }
+        headRepository { nameWithOwner }
         isDraft
         mergeable
         createdAt
@@ -216,6 +244,7 @@ const prQuery = `query($q: String!) {
               statusCheckRollup {
                 state
                 contexts(first: 50) {
+                  pageInfo { hasNextPage endCursor }
                   nodes {
                     __typename
                     ... on CheckRun {
@@ -314,11 +343,19 @@ func parseCheckTime(s string) time.Time {
 	return t
 }
 
+type gqlPageInfo struct {
+	HasNextPage bool   `json:"hasNextPage"`
+	EndCursor   string `json:"endCursor"`
+}
+
+type gqlCheckContextConnection struct {
+	Nodes    []gqlCheckContext `json:"nodes"`
+	PageInfo gqlPageInfo       `json:"pageInfo"`
+}
+
 type gqlStatusCheckRollup struct {
-	State    string `json:"state"`
-	Contexts struct {
-		Nodes []gqlCheckContext `json:"nodes"`
-	} `json:"contexts"`
+	State    string                    `json:"state"`
+	Contexts gqlCheckContextConnection `json:"contexts"`
 }
 
 type gqlResponse struct {
@@ -348,6 +385,9 @@ type gqlPR struct {
 	HeadRepositoryOwner struct {
 		Login string `json:"login"`
 	} `json:"headRepositoryOwner"`
+	HeadRepository *struct {
+		NameWithOwner string `json:"nameWithOwner"`
+	} `json:"headRepository"`
 	BaseRefName    string `json:"baseRefName"`
 	IsDraft        bool   `json:"isDraft"`
 	Mergeable      string `json:"mergeable"`
@@ -403,22 +443,41 @@ type gqlPR struct {
 }
 
 func searchPRsWith(e execer, query string) ([]PullRequest, error) {
-	resp, err := runGHAPIWith(e, "", "graphql",
-		"-f", "query="+prQuery,
-		"-f", "q="+query)
-	if err != nil {
-		return nil, fmt.Errorf("gh api graphql: %s: %w", sanitizeGHOutput(resp.body), err)
-	}
+	var all []PullRequest
+	var after, viewer string
+	for range maxSearchPages {
+		args := []string{"-f", "query=" + prQuery, "-f", "q=" + query}
+		if after != "" {
+			args = append(args, "-F", "after="+after)
+		}
+		resp, err := runGHAPIWith(e, "", append([]string{"graphql"}, args...)...)
+		if err != nil {
+			return nil, fmt.Errorf("gh api graphql: %s: %w", sanitizeGHOutput(resp.body), err)
+		}
 
-	var gqlResp gqlResponse
-	if err := json.Unmarshal(resp.body, &gqlResp); err != nil {
-		return nil, fmt.Errorf("parse graphql response: %w", err)
+		var gqlResp gqlResponse
+		if err := json.Unmarshal(resp.body, &gqlResp); err != nil {
+			return nil, fmt.Errorf("parse graphql response: %w", err)
+		}
+		if len(gqlResp.Errors) > 0 {
+			return nil, fmt.Errorf("graphql: %s", gqlResp.Errors[0].Message)
+		}
+		if viewer == "" {
+			viewer = gqlResp.Data.Viewer.Login
+		}
+		if err := completePRCheckContexts(context.Background(), e, gqlResp.Data.Search.Nodes); err != nil {
+			return nil, err
+		}
+		all = append(all, convertPRs(gqlResp.Data.Search.Nodes, viewer)...)
+		if !gqlResp.Data.Search.PageInfo.HasNextPage {
+			return all, nil
+		}
+		after = gqlResp.Data.Search.PageInfo.EndCursor
+		if after == "" {
+			return nil, fmt.Errorf("graphql: search has next page without cursor")
+		}
 	}
-	if len(gqlResp.Errors) > 0 {
-		return nil, fmt.Errorf("graphql: %s", gqlResp.Errors[0].Message)
-	}
-
-	return convertPRs(gqlResp.Data.Search.Nodes, gqlResp.Data.Viewer.Login), nil
+	return nil, fmt.Errorf("graphql: search exceeded %d pages", maxSearchPages)
 }
 
 // convertCommonPR converts shared gqlPR fields into a PullRequest.
@@ -505,6 +564,7 @@ func convertCommonPR(n *gqlPR, viewer string) PullRequest {
 		URL:               n.URL,
 		HeadRefName:       n.HeadRefName,
 		HeadRepoOwner:     n.HeadRepositoryOwner.Login,
+		HeadRepo:          headRepositoryNameWithOwner(n),
 		BaseRefName:       n.BaseRefName,
 		HeadSHA:           headSHA,
 		Repository:        n.Repository.NameWithOwner,
@@ -527,6 +587,13 @@ func convertCommonPR(n *gqlPR, viewer string) PullRequest {
 		UpdatedAt:         n.UpdatedAt,
 		AutoMergeEnabled:  n.AutoMergeRequest != nil,
 	}
+}
+
+func headRepositoryNameWithOwner(n *gqlPR) string {
+	if n == nil || n.HeadRepository == nil {
+		return ""
+	}
+	return n.HeadRepository.NameWithOwner
 }
 
 // reviewFeedbackSig fingerprints a PR's reviewer feedback so the pr-fix retry
@@ -563,6 +630,9 @@ func convertPRs(nodes []gqlPR, viewer string) []PullRequest {
 	}
 	return prs
 }
+
+// SameActor reports whether two logins name one actor, ignoring case and "[bot]".
+func SameActor(a, b string) bool { return sameActor(a, b) }
 
 func isBot(typeName, login string) bool {
 	return typeName == "Bot" || strings.Contains(login, "[bot]")
@@ -642,30 +712,21 @@ func ViewerLoginCtx(ctx context.Context) string {
 // in-flight request at once, so a gap here turns a ten-second network wobble
 // into a board-wide escalation storm.
 func IsTransientError(err error) bool {
+	class := ClassifyError(err, errclass.GitHubPollerRetryBiased)
+	return class == errclass.Transient || class == errclass.RateLimited
+}
+
+// ClassifyError answers once under the caller's explicit GitHub policy. The
+// budget sentinel is transient independently of message text: it means an
+// optional poll was intentionally skipped until the shared budget recovers.
+func ClassifyError(err error, policy errclass.Policy) errclass.Class {
 	if err == nil {
-		return false
+		return errclass.Unknown
 	}
-	// A skipped optional poll (low GraphQL budget) is transient by design: back
-	// off and retry next cycle rather than treating it as a hard fetch failure.
 	if errors.Is(err, ErrBudgetExhausted) {
-		return true
+		return errclass.Transient
 	}
-	msg := strings.ToLower(err.Error())
-	// HTTP 5xx: sanitized gh output produces "gh: http 5xx"
-	if strings.Contains(msg, "http 5") {
-		return true
-	}
-	// Rate limiting is backpressure, not a defect — GitHub is telling us to wait.
-	if isRateLimitedMessage(msg) {
-		return true
-	}
-	return strings.Contains(msg, "dial tcp") ||
-		strings.Contains(msg, "i/o timeout") ||
-		strings.Contains(msg, "context deadline exceeded") ||
-		strings.Contains(msg, "connection reset") ||
-		strings.Contains(msg, "connection refused") ||
-		strings.Contains(msg, "tls handshake timeout") ||
-		strings.Contains(msg, "no route to host")
+	return errclass.ClassifyErr(err, policy)
 }
 
 // IsAuthError reports whether err is a GitHub authentication failure — an

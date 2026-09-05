@@ -1,5 +1,5 @@
 # Stage 1: Build web frontend
-FROM node:24-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d AS frontend-builder
+FROM node:24-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e AS frontend-builder
 WORKDIR /app/frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
@@ -7,7 +7,7 @@ COPY frontend/ ./
 RUN npm run build:web
 
 # Stage 2: Build sybra-server binary
-FROM golang:1.26.5-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651 AS go-builder
+FROM golang:1.26.6-bookworm@sha256:116d58cbd88c1297624acc6e967a060012422bacf9930927e23fb719189c6f36 AS go-builder
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
@@ -42,7 +42,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /bin/sybra-server ./cmd/sybra
 # install` ever lands in Layer F+G, the apt cache silently regenerates
 # on every sybra commit and image size balloons. The linter catches that
 # before it reaches main.
-FROM node:24-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d AS runtime
+FROM node:24-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e AS runtime
 
 # Pipe failures in subsequent RUN blocks should fail the build.
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -71,7 +71,7 @@ RUN apt-get update \
 # script that could change or be compromised without any diff in this
 # repo).
 # renovate: datasource=github-releases depName=smykla-skalski/klaudiush
-ARG KLAUDIUSH_VERSION=v1.36.2
+ARG KLAUDIUSH_VERSION=v1.37.0
 RUN ARCH="$(dpkg --print-architecture)" \
     && case "${ARCH}" in \
          amd64|arm64) KLAUDIUSH_ARCH="${ARCH}" ;; \
@@ -92,11 +92,11 @@ RUN ARCH="$(dpkg --print-architecture)" \
 
 # --- Layer C: node CLIs (claude code + codex + opencode), pinned for cache stability ---
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
-ARG CLAUDE_CODE_VERSION=2.1.216
+ARG CLAUDE_CODE_VERSION=2.1.222
 # renovate: datasource=npm depName=@openai/codex
-ARG CODEX_VERSION=0.144.6
+ARG CODEX_VERSION=0.149.1
 # renovate: datasource=npm depName=opencode-ai
-ARG OPENCODE_VERSION=1.18.4
+ARG OPENCODE_VERSION=1.18.13
 RUN npm install -g \
         "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
         "@openai/codex@${CODEX_VERSION}" \
@@ -115,7 +115,7 @@ RUN npm install -g \
 # own tool (npm ci, uv sync, cargo build, ./.sybra/bootstrap.sh …).
 #
 # renovate: datasource=github-releases depName=jdx/mise
-ARG MISE_VERSION=v2026.7.12
+ARG MISE_VERSION=v2026.8.3
 RUN ARCH="$(dpkg --print-architecture)" \
     && case "${ARCH}" in \
          amd64) MISE_ARCH=x64 ;; \
@@ -176,7 +176,7 @@ ENV SYBRA_PORT=8080
 ENV SYBRA_STATIC_DIR=/app/web
 ENV HOME=/home/sybra
 
-USER sybra
+USER ${SYBRA_UID}:${SYBRA_GID}
 WORKDIR /home/sybra
 
 EXPOSE 8080
@@ -185,10 +185,12 @@ EXPOSE 8080
 # (cluster.tls) serves https on the same port, so an http-only probe would mark
 # it permanently unhealthy. -k is safe here: the probe is localhost-only and the
 # leader, not the container, is what pins the certificate.
+#
+# Exec form with an explicit `sh -c` rather than shell form (DL3025): the probe
+# needs ${SYBRA_PORT} expansion and `||`, which is exactly what Docker wrapped
+# the shell form in anyway, so the semantics are unchanged.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -sf "http://localhost:${SYBRA_PORT}/health" \
-     || curl -skf "https://localhost:${SYBRA_PORT}/health" \
-     || exit 1
+    CMD ["/bin/sh", "-c", "curl -sf \"http://localhost:${SYBRA_PORT}/health\" || curl -skf \"https://localhost:${SYBRA_PORT}/health\" || exit 1"]
 
 # Mounts expected (host dirs must be chowned to uid:gid 1000:1000):
 #   ~/.sybra  → /home/sybra/.sybra  (task store, config, projects)

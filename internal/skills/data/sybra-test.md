@@ -72,6 +72,11 @@ In `## Test Failures` record, per defect: what you did (exact steps/commands), w
 
    Set `surface_kind` to exactly one canonical token — `web`, `cli`, `server`, `desktop`, `k8s`, `library`, `docs`, or `none` — never a free-form description; the router only recognizes these tokens. Use `library` for internal package/component/refactor changes with no runnable product surface and put the detail in `unable_to_run_reason`.
 
+   The token you pick decides what a PASS must carry, so pick the one that matches how you actually exercised the change:
+   - `web`, `server`, `desktop`, `k8s` — you started something and probed it while it ran. PASS needs `app_started: true`, a `start_command`, a filled-in `readiness_probe`, and at least one manual probe.
+   - `cli` — you invoked the change and read the result (a binary, a `make` target, a script, a one-shot command). There is no process left running, so `app_started`, `start_command`, and `readiness_probe` are not required; PASS needs at least one manual probe whose recorded result is a real outcome, not `not run`/`skipped`/`n/a`. Do not label a startable surface `cli` because you could not start it — that is `unable_to_run_reason` on the real token.
+   - `library`, `docs`, `none` — see the exception below; the last two also need the matching task tag.
+
    **Exception:** the default is to attempt a real run; skipping the attempt is only valid when you can affirmatively rule out any externally observable effect, and the burden is on you to show that, not to assert it. Before claiming the exception, check whether the project has a runnable entrypoint (`cmd/` binary, `.sybra.yaml` `manual_test`, a server/control-plane binary such as `kuma-cp`/`kuma-dp`). If one exists:
       - **Attempt to start it before falling back to the exception.** A blocked attempt (missing binary, no cluster/credentials available in the sandbox) is a valid, documented reason for the exception — record what you tried and why it stopped in `unable_to_run_reason`. Skipping the attempt entirely, on the reasoning that the change "looks internal," is not a valid exception.
       - **Grant the no-attempt exception only when the diff touches nothing externally observable**: no CLI flag, no HTTP/gRPC/API handler, no CRD/resource schema, and — for control-plane, codegen, or template/resolver repos — no code path that can change what the running system produces. A change that removes or alters such a path is an observable surface even when it reads as "just internal plumbing"; attempt the run.
@@ -86,6 +91,7 @@ In `## Test Failures` record, per defect: what you did (exact steps/commands), w
    - Bind **only ephemeral/dynamic ports** (`:0` or a high random port). Never a fixed well-known port — other test agents run in parallel on this machine.
    - Namespace anything global by the task id.
    - **Tear down** every process/container/cluster you start before exiting (trap/defer). Leaks starve the next agent.
+   - **Never `pkill`/`pgrep` by command-line pattern to stop a server you started.** A broad pattern can match more than you intend — including, on some invocations, your own ancestor process (your prompt or task text can itself contain the same path/command fragment you're matching on), killing your own run instead of the server. Capture the PID when you start the process (`cmd & pid=$!`) and tear it down with that exact PID (`kill "$pid"`).
 
    **`SYBRA_HOME` is always set to your per-task sandbox** — every task-scoped agent gets one automatically now (sybra#1577), not just Sybra-testing-Sybra. Test servers, e2e suites, and scratch data all belong there by default; that's where `go run ./cmd/sybra-server`, ad-hoc scripts, and anything else you start will land unless told otherwise.
 

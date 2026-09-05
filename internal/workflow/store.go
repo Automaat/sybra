@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -14,15 +15,22 @@ import (
 
 // Store manages workflow definition files on disk.
 type Store struct {
-	dir string
+	dir         string
+	snapshotDir string
 }
+
+var snapshotHashPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
 // NewStore creates a store backed by the given directory.
 func NewStore(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create workflows dir: %w", err)
 	}
-	return &Store{dir: dir}, nil
+	snapshotDir := filepath.Join(dir, "snapshots")
+	if err := os.MkdirAll(snapshotDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create workflow snapshots dir: %w", err)
+	}
+	return &Store{dir: dir, snapshotDir: snapshotDir}, nil
 }
 
 // Dir returns the store directory.
@@ -83,6 +91,47 @@ func (s *Store) Save(def Definition) error {
 	return fsutil.AtomicWrite(path, data)
 }
 
+// SaveSnapshot persists an immutable workflow definition snapshot keyed by the
+// definition's semantic hash. Existing snapshots are preserved as-is.
+func (s *Store) SaveSnapshot(def Definition) (string, error) {
+	if def.ID == "" {
+		return "", fmt.Errorf("workflow ID is required")
+	}
+	hash, err := def.SemanticHash()
+	if err != nil {
+		return "", err
+	}
+	path, err := s.snapshotPath(def.ID, hash)
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(path); err == nil {
+		return hash, nil
+	} else if !os.IsNotExist(err) {
+		return "", fmt.Errorf("stat workflow snapshot: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", fmt.Errorf("create workflow snapshot dir: %w", err)
+	}
+	data, err := yaml.Marshal(def)
+	if err != nil {
+		return "", fmt.Errorf("marshal workflow snapshot: %w", err)
+	}
+	if err := fsutil.AtomicWrite(path, data); err != nil {
+		return "", fmt.Errorf("write workflow snapshot: %w", err)
+	}
+	return hash, nil
+}
+
+// GetSnapshot loads a previously persisted workflow definition snapshot.
+func (s *Store) GetSnapshot(workflowID, hash string) (Definition, error) {
+	path, err := s.snapshotPath(workflowID, hash)
+	if err != nil {
+		return Definition{}, err
+	}
+	return s.parseFile(path)
+}
+
 // Delete removes a workflow definition file.
 func (s *Store) Delete(id string) error {
 	path, err := s.safePath(id)
@@ -107,6 +156,17 @@ func (s *Store) safePath(id string) (string, error) {
 	return path, nil
 }
 
+func (s *Store) snapshotPath(workflowID, hash string) (string, error) {
+	if !snapshotHashPattern.MatchString(hash) {
+		return "", fmt.Errorf("invalid workflow snapshot hash %q", hash)
+	}
+	path := filepath.Clean(filepath.Join(s.snapshotDir, workflowID, hash+".yaml"))
+	if !strings.HasPrefix(path, filepath.Clean(s.snapshotDir)+string(filepath.Separator)) {
+		return "", fmt.Errorf("invalid workflow ID %q", workflowID)
+	}
+	return path, nil
+}
+
 func (s *Store) parseFile(path string) (Definition, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -121,11 +181,8 @@ func (s *Store) parseFile(path string) (Definition, error) {
 	if err := yaml.Unmarshal(data, &def); err != nil {
 		return Definition{}, fmt.Errorf("unmarshal workflow %s: %w", filepath.Base(path), err)
 	}
-	// Warn-but-return on semantic validation failures so a single broken
-	// hand-edited workflow can't take the whole app offline. Save() still
-	// rejects strictly, so GUI edits get caught at write time.
 	if vErr := def.Validate(); vErr != nil {
-		slog.Default().Warn("workflow.validate", "file", filepath.Base(path), "id", def.ID, "err", vErr)
+		return Definition{}, fmt.Errorf("validate workflow %s: %w", filepath.Base(path), vErr)
 	}
 	return def, nil
 }

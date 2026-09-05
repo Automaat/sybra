@@ -1,6 +1,7 @@
 package umbrella
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/Automaat/sybra/internal/llmjob"
 )
 
 // DefaultMaxParallel bounds how many children of one umbrella run at once when
@@ -55,7 +58,49 @@ type PlannedChild struct {
 	// serial-default layer; resolve trims and drops blank values so a
 	// whitespace-only entry cannot count. The text itself is advisory only
 	// beyond that presence check (never further validated or enforced).
-	ParallelJustification map[string]string `json:"parallelJustification,omitempty"`
+	ParallelJustification ParallelJustification `json:"parallelJustification,omitempty"`
+}
+
+// ParallelJustification maps a sibling ref to why this child may run beside it.
+type ParallelJustification map[string]string
+
+// UnmarshalJSON accepts the object map and the array of {sibling, reason}
+// pairs the structured-output schema has to use, since that API rejects a
+// schema-valued additionalProperties (see buildPlanSchema).
+func (j *ParallelJustification) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		*j = nil
+		return nil
+	}
+	if trimmed[0] == '[' {
+		var pairs []struct {
+			Sibling string `json:"sibling"`
+			Reason  string `json:"reason"`
+		}
+		if err := json.Unmarshal(trimmed, &pairs); err != nil {
+			return err
+		}
+		out := make(ParallelJustification, len(pairs))
+		for _, p := range pairs {
+			if strings.TrimSpace(p.Sibling) == "" {
+				continue
+			}
+			out[p.Sibling] = p.Reason
+		}
+		if len(out) == 0 {
+			*j = nil
+			return nil
+		}
+		*j = out
+		return nil
+	}
+	var asMap map[string]string
+	if err := json.Unmarshal(trimmed, &asMap); err != nil {
+		return err
+	}
+	*j = ParallelJustification(asMap)
+	return nil
 }
 
 // Plan is the dependency DAG the planner extracts from an umbrella body.
@@ -389,14 +434,14 @@ func BuildPrompt(umbrellaRef, umbrellaBody string, subs []SubIssue) string {
 	b.WriteString(" express, e.g. markers like \"← #N\" or \"⛔ blocks all\" in the umbrella body. Kept in")
 	b.WriteString(" addition to the derived edges, not instead of them.\n")
 	b.WriteString("  - parallelJustification (optional): to run this sub-issue in parallel with another,")
-	b.WriteString(" add an entry keyed by that sub-issue's ref explaining concretely why their change")
-	b.WriteString(" surfaces are disjoint. Without an entry for a pair, that pair defaults to serial")
-	b.WriteString(" (the later sub-issue depends on the earlier one). Overlapping touches always")
-	b.WriteString(" re-serializes the pair even with a justification present.\n\n")
+	b.WriteString(" add an entry naming that sub-issue's ref in \"sibling\" and explaining concretely in")
+	b.WriteString(" \"reason\" why their change surfaces are disjoint. Without an entry for a pair, that")
+	b.WriteString(" pair defaults to serial (the later sub-issue depends on the earlier one).")
+	b.WriteString(" Overlapping touches always re-serializes the pair even with a justification.\n\n")
 	b.WriteString("Output ONLY a JSON object, no prose, no code fence:\n")
-	b.WriteString(`{"children":[{"issue":"<ref>","touches":["<path>"],"produces":["<symbol>"],"requires":["<symbol>"],"dependsOn":["<ref>"],"parallelJustification":{"<ref>":"<why disjoint>"},"track":"<label>"}],"maxParallel":<int>}` + "\n")
+	b.WriteString(`{"children":[{"issue":"<ref>","touches":["<path>"],"produces":["<symbol>"],"requires":["<symbol>"],"dependsOn":["<ref>"],"parallelJustification":[{"sibling":"<ref>","reason":"<why disjoint>"}],"track":"<label>"}],"maxParallel":<int>}` + "\n")
 	b.WriteString("Rules: include EVERY sub-issue exactly once (including done ones); dependsOn and")
-	b.WriteString(" parallelJustification keys must reference only the sub-issues above; emit children")
+	b.WriteString(" parallelJustification siblings must reference only the sub-issues above; emit children")
 	b.WriteString(" in the SAME ORDER as the sub-issues above; never create a cycle; maxParallel is the")
 	b.WriteString(" max children to run at once (default 5).\n")
 	return b.String()
@@ -404,11 +449,14 @@ func BuildPrompt(umbrellaRef, umbrellaBody string, subs []SubIssue) string {
 
 // buildPlanSchema returns a JSON Schema for Plan that constrains
 // children[].issue and children[].dependsOn to the exact canonical sub-issue
-// refs, requires string-valued parallelJustification entries to match
-// PlannedChild, and makes children a fixed tuple with one slot per sub-issue
-// ref in prompt order. This eliminates the duplicate/omitted
-// coverage-mismatch failure mode at the model layer instead of relying solely
-// on post-hoc validate+retry.
+// refs, and bounds children to one entry per sub-issue via minItems/maxItems.
+// Coverage of every ref exactly once is enforced by validate+retry (see
+// resolve and missingRefs), not by the schema: the structured-output API
+// rejects a tuple "items", so a fixed slot per sub-issue is not expressible.
+// It also rejects "uniqueItems" and a schema-valued "additionalProperties",
+// which is why parallelJustification travels as an array of
+// {sibling, reason} pairs — PlannedChild accepts that form and the legacy
+// object map (see ParallelJustification.UnmarshalJSON).
 // Delivered via llmexec.Options.Schema by a Runner (see FallbackPlannerRunner):
 // codex receives it natively (--output-schema), claude/copilot get it appended
 // as prose. additionalProperties:false and every property listed in
@@ -422,41 +470,42 @@ func buildPlanSchema(subs []SubIssue) string {
 	refEnum := map[string]any{"type": "string", "enum": refs}
 	stringArray := map[string]any{"type": "array", "items": map[string]any{"type": "string"}}
 
-	childForIssue := func(ref string) map[string]any {
-		return map[string]any{
+	justification := map[string]any{
+		"type": "array",
+		"items": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"issue":     map[string]any{"type": "string", "enum": []string{ref}},
-				"dependsOn": map[string]any{"type": "array", "items": refEnum},
-				"track":     map[string]any{"type": "string"},
-				"touches":   stringArray,
-				"produces":  stringArray,
-				"requires":  stringArray,
-				"parallelJustification": map[string]any{
-					"type":                 "object",
-					"additionalProperties": map[string]any{"type": "string"},
-				},
+				"sibling": refEnum,
+				"reason":  map[string]any{"type": "string"},
 			},
-			"required":             []string{"issue", "dependsOn", "track", "touches", "produces", "requires", "parallelJustification"},
+			"required":             []string{"sibling", "reason"},
 			"additionalProperties": false,
-		}
+		},
 	}
 
-	childItems := make([]any, len(refs))
-	for i, ref := range refs {
-		childItems[i] = childForIssue(ref)
+	child := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"issue":                 refEnum,
+			"dependsOn":             map[string]any{"type": "array", "items": refEnum},
+			"track":                 map[string]any{"type": "string"},
+			"touches":               stringArray,
+			"produces":              stringArray,
+			"requires":              stringArray,
+			"parallelJustification": justification,
+		},
+		"required":             []string{"issue", "dependsOn", "track", "touches", "produces", "requires", "parallelJustification"},
+		"additionalProperties": false,
 	}
 
 	schema := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"children": map[string]any{
-				"type":            "array",
-				"minItems":        len(subs),
-				"maxItems":        len(subs),
-				"uniqueItems":     true,
-				"items":           childItems,
-				"additionalItems": false,
+				"type":     "array",
+				"minItems": len(subs),
+				"maxItems": len(subs),
+				"items":    child,
 			},
 			"maxParallel": map[string]any{"type": "integer"},
 		},
@@ -474,7 +523,8 @@ func buildPlanSchema(subs []SubIssue) string {
 
 // ParsePlan extracts a Plan from a model's raw stdout. It tolerates the claude
 // `--output-format json` envelope ({"result":"..."}) and a surrounding code
-// fence or prose by extracting the first balanced JSON object.
+// fence or prose by extracting the last balanced JSON object — a model that
+// reasons before answering emits its real plan last.
 func ParsePlan(raw string) (Plan, error) {
 	text := raw
 	var env struct {
@@ -484,8 +534,8 @@ func ParsePlan(raw string) (Plan, error) {
 		text = env.Result
 	}
 
-	obj, ok := firstJSONObject(text)
-	if !ok {
+	obj := llmjob.ExtractLastJSONObject(text)
+	if obj == "" {
 		return Plan{}, fmt.Errorf("planner output contains no JSON object")
 	}
 	var plan Plan
@@ -493,39 +543,6 @@ func ParsePlan(raw string) (Plan, error) {
 		return Plan{}, fmt.Errorf("parse planner JSON: %w", err)
 	}
 	return plan, nil
-}
-
-// firstJSONObject returns the first brace-balanced JSON object substring in s,
-// ignoring braces inside string literals. ok is false when none is found.
-func firstJSONObject(s string) (string, bool) {
-	start := strings.IndexByte(s, '{')
-	if start < 0 {
-		return "", false
-	}
-	depth := 0
-	inStr := false
-	escaped := false
-	for i := start; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case escaped:
-			escaped = false
-		case c == '\\' && inStr:
-			escaped = true
-		case c == '"':
-			inStr = !inStr
-		case inStr:
-			// skip
-		case c == '{':
-			depth++
-		case c == '}':
-			depth--
-			if depth == 0 {
-				return s[start : i+1], true
-			}
-		}
-	}
-	return "", false
 }
 
 // resolve rewrites every child and dependency ref to its canonical sub-issue

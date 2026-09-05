@@ -1,0 +1,85 @@
+<script lang="ts">
+  import StatsLineChart from './stats/StatsLineChart.svelte'
+  import { pct } from '$lib/evaluation-format.js'
+  import type { AutonomySnapshot, AutonomyTrend } from '../../bindings/github.com/Automaat/sybra/internal/evaluation/models.js'
+  import type { TimeSeriesPoint } from '$lib/stats-charts.js'
+
+  interface Props {
+    trend: AutonomyTrend | null
+  }
+
+  const { trend }: Props = $props()
+
+  // A zero-value AutonomyTrend (service disabled / not yet loaded) still has a
+  // non-null overall, which would render as a measured 0% dashboard — same
+  // guard the headline scorecard applies to its own hasData check.
+  const hasData = $derived(!!trend && trend.overall.tasksLanded > 0)
+
+  const tiles = $derived(
+    trend
+      ? [
+          { label: 'Overall', snapshot: trend.overall },
+          { label: 'Last 30 days', snapshot: trend.lastMonth },
+          { label: 'Last 7 days', snapshot: trend.lastWeek },
+        ]
+      : [],
+  )
+
+  // A week with zero landings has no autonomy signal at all — plotting it as
+  // 0% would misrepresent "no data" as "0% autonomous". Drop it instead, so
+  // the chart (and its own emptyLabel, when every bucket is empty) reflects
+  // only weeks with an actual sample.
+  const weeklyPoints = $derived<TimeSeriesPoint[]>(
+    (trend?.weekly ?? [])
+      .filter((w) => w.tasksLanded > 0)
+      .map((w) => ({ date: String(w.weekStart).slice(0, 10), value: w.autonomyRate * 100 })),
+  )
+
+  // A week with zero merged PRs has no cost-per-merged signal — same "drop,
+  // don't zero-fill" rule as weeklyPoints above.
+  const costPerMergedPoints = $derived<TimeSeriesPoint[]>(
+    (trend?.weekly ?? [])
+      .filter((w) => w.mergedPrs > 0)
+      .map((w) => ({ date: String(w.weekStart).slice(0, 10), value: w.costPerMergedUsd })),
+  )
+
+  // Higher is better; same thresholds as the headline scorecard's goodScale.
+  function goodScale(x: number): string {
+    if (x >= 0.8) return 'text-success-600 dark:text-success-400'
+    if (x >= 0.5) return 'text-warning-600 dark:text-warning-400'
+    return 'text-error-600 dark:text-error-400'
+  }
+
+  // A zero-landings snapshot's autonomyRate is 0, indistinguishable from a
+  // genuinely bad rate — render it as "no data" rather than a misleading 0%.
+  function rateLabel(s: AutonomySnapshot): string {
+    return s.tasksLanded > 0 ? pct(s.autonomyRate) : '—'
+  }
+
+  function rateColor(s: AutonomySnapshot): string {
+    return s.tasksLanded > 0 ? goodScale(s.autonomyRate) : 'text-surface-400'
+  }
+
+  function detail(s: AutonomySnapshot): string {
+    return s.tasksLanded > 0 ? `${s.autonomousLandings}/${s.tasksLanded} landed` : 'no landings in window'
+  }
+</script>
+
+{#if hasData}
+  <div class="rounded-lg border border-surface-300 bg-surface-50 p-4 dark:border-surface-600 dark:bg-surface-800">
+    <h3 class="mb-3 text-sm font-semibold text-surface-500">Autonomy over time</h3>
+    <div class="mb-4 grid grid-cols-1 gap-4 sm:grid-cols-3">
+      {#each tiles as tile (tile.label)}
+        <div>
+          <span class="text-xs font-medium text-surface-500">{tile.label}</span>
+          <p class="mt-1 text-2xl font-bold {rateColor(tile.snapshot)}">{rateLabel(tile.snapshot)}</p>
+          <p class="mt-0.5 text-xs text-surface-400">{detail(tile.snapshot)}</p>
+        </div>
+      {/each}
+    </div>
+    <StatsLineChart points={weeklyPoints} ariaLabel="Autonomy rate by week" emptyLabel="Not enough weekly data yet" />
+
+    <h3 class="mb-3 mt-6 text-sm font-semibold text-surface-500">Cost / merged PR over time</h3>
+    <StatsLineChart points={costPerMergedPoints} ariaLabel="Cost per merged PR by week" emptyLabel="Not enough weekly merge data yet" />
+  </div>
+{/if}

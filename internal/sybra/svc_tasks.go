@@ -21,10 +21,17 @@ import (
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/attachment"
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/intervention"
+	"github.com/Automaat/sybra/internal/monitor"
+	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/stats"
+	"github.com/Automaat/sybra/internal/sybra/clusterlead"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/umbrella"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -42,9 +49,23 @@ type TaskService struct {
 	attachments    *attachment.Store
 	wg             *sync.WaitGroup
 	logger         *slog.Logger
-	audit          *audit.Logger
+	audit          audit.Store
 	cfg            *config.Config
-	abTesting      func() abtest.Config
+	currentConfig  func() *config.Config
+	// leaderRunPlacement means node metadata chooses an execution daemon, not
+	// a second canonical task owner. Legacy services leave this false.
+	leaderRunPlacement bool
+	// projects and intervention back recordInterventionOnUnblock only; nil in
+	// tests that don't exercise the human-required unblock path (the method
+	// guards on both being non-nil before doing anything).
+	projects     *project.Store
+	intervention *intervention.Store
+	abTesting    func() abtest.Config
+	// assigner forwards a Tags/DependsOn edit to a follower-homed task's home
+	// node at write time (see UpdateTask) — the write-time counterpart to
+	// clusterlead.Mirror's detect-and-repair drift backstop. nil on a
+	// non-leader node or in tests that don't exercise clustering.
+	assigner *clusterlead.Assigner
 	// ctx is the app's root context (wireTaskService sets it from a.ctx), used
 	// only where a Wails-bound method has no request-scoped context of its own
 	// to thread through — see RecoverLostAgent. nil in tests that construct
@@ -58,7 +79,14 @@ type TaskService struct {
 	// umbrellaExpand expands a detected ☂️ umbrella issue into a gated child
 	// DAG instead of a flat task. Wired in wireServices; gated at call time on
 	// cfg.Umbrella.Enabled. nil in tests that don't exercise umbrellas.
-	umbrellaExpand func(issueURL string) (umbrella.Result, error)
+	umbrellaExpand func(issueURL, model string) (umbrella.Result, error)
+	// monitorScan runs one anomaly-detector pass on the server's own monitor
+	// service, so sybra-cli's `monitor scan` reports what the running instance
+	// sees rather than what a second reader of the same files would. Wired
+	// unconditionally: monitor.enabled stops the background loop, not the
+	// ability to read the board, so the closure falls back to a read-only
+	// ad-hoc pass. nil only in tests that do not exercise a scan.
+	monitorScan func(context.Context) (monitor.Report, error)
 	// deleteTask allows tests to force DeleteTask failures on cleanup branches
 	// without mutating the real task store or broadening the public API.
 	deleteTask func(id string) error
@@ -71,6 +99,17 @@ type TaskService struct {
 	// Initial async enrichment is not gated; this only prevents a permanently
 	// broken stub from spending GitHub calls on every reconcile tick.
 	enrichRetryCooldown sync.Map
+	// followerStatusMu serializes each follower RPC with the corresponding
+	// leader mirror write, preventing concurrent UI transitions from applying
+	// remote and local statuses in opposite orders.
+	followerStatusMu sync.Mutex
+}
+
+func (s *TaskService) config() *config.Config {
+	if s.currentConfig != nil {
+		return s.currentConfig()
+	}
+	return s.cfg
 }
 
 const enrichPendingRetryCooldown = time.Hour
@@ -116,9 +155,13 @@ type TaskAuditEventDTO struct {
 
 const taskDiagnosticReadLimit = 256 * 1024
 
-// ListTasks returns all tasks from the store.
+// ListTasks returns the board projection of every task. Historical prompt and
+// result text is intentionally omitted: cards need run metadata for cost/count
+// badges, while TaskDetail immediately calls GetTask for the selected task.
+// Returning that text here made every board refresh serialize the complete
+// lifetime prompt history of every task (hundreds of MiB on a mature board).
 func (s *TaskService) ListTasks() ([]task.Task, error) {
-	return s.tasks.List()
+	return s.tasks.ListBoard()
 }
 
 // mirrorStaleTerminalWindow bounds how long a terminal (done/cancelled) task
@@ -143,13 +186,18 @@ const mirrorStaleTerminalWindow = 10 * time.Minute
 // name onto a task it created itself, so without this, such a task is
 // permanently invisible to the leader's mirror — see cluster.mirror.adopted.
 func (s *TaskService) ListTasksForNode(node string) ([]task.Task, error) {
-	all, err := s.tasks.List()
+	all, err := s.tasks.ListForNode(node, time.Now().Add(-mirrorStaleTerminalWindow))
 	if err != nil {
 		return nil, err
 	}
 	out := all[:0]
 	for i := range all {
 		t := all[i]
+		// Degraded entries deliberately exist only on the local board. They do
+		// not name a valid task payload and must not be replicated to a leader.
+		if t.Degraded {
+			continue
+		}
 		if t.AssignedNode != node && t.AssignedNode != "" {
 			continue
 		}
@@ -165,7 +213,7 @@ func (s *TaskService) ListTasksForNode(node string) ([]task.Task, error) {
 func (s *TaskService) GetTask(id string) (task.Task, error) {
 	t, err := s.tasks.Get(id)
 	if err != nil {
-		return t, err
+		return t, boardRejectionFor("task", id, err)
 	}
 	return s.withEstimatedAgentRunCosts(t), nil
 }
@@ -181,7 +229,7 @@ func (s *TaskService) UploadAttachment(taskID, fileName string, data []byte) (ta
 	if err != nil {
 		return task.Attachment{}, validationError(err.Error())
 	}
-	_, err = s.tasks.UpdateFn(taskID, func(cur task.Task) (task.Update, error) {
+	_, err = s.tasks.UpdateFnBy(taskID, "svc.tasks.upload_attachment", func(cur task.Task) (task.Update, error) {
 		next := slices.Clone(cur.Attachments)
 		next = append(next, meta)
 		return task.Update{Attachments: &next}, nil
@@ -196,7 +244,7 @@ func (s *TaskService) UploadAttachment(taskID, fileName string, data []byte) (ta
 func (s *TaskService) ListAttachments(taskID string) ([]task.Attachment, error) {
 	t, err := s.tasks.Get(taskID)
 	if err != nil {
-		return nil, err
+		return nil, boardRejectionFor("task", taskID, err)
 	}
 	if t.Attachments == nil {
 		return []task.Attachment{}, nil
@@ -208,7 +256,7 @@ func (s *TaskService) DeleteAttachment(taskID, attachmentID string) error {
 	if s.attachments == nil {
 		return validationError("attachments are unavailable")
 	}
-	_, err := s.tasks.UpdateFn(taskID, func(cur task.Task) (task.Update, error) {
+	_, err := s.tasks.UpdateFnBy(taskID, "svc.tasks.delete_attachment", func(cur task.Task) (task.Update, error) {
 		idx := slices.IndexFunc(cur.Attachments, func(att task.Attachment) bool { return att.ID == attachmentID })
 		if idx < 0 {
 			return task.Update{}, validationError(fmt.Sprintf("attachment %q not found", attachmentID))
@@ -233,20 +281,17 @@ func (s *TaskService) GetAttachmentURL(taskID, attachmentID string) (string, err
 	}
 	t, err := s.tasks.Get(taskID)
 	if err != nil {
-		return "", err
+		return "", boardRejectionFor("task", taskID, err)
 	}
 	idx := slices.IndexFunc(t.Attachments, func(att task.Attachment) bool { return att.ID == attachmentID })
 	if idx < 0 {
 		return "", validationError(fmt.Sprintf("attachment %q not found", attachmentID))
 	}
 	att := t.Attachments[idx]
-	path, err := s.attachments.Path(taskID, attachmentID)
+	data, _, err := s.attachments.Content(taskID, attachmentID)
 	if err != nil {
-		return "", validationError(err.Error())
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("read attachment: %w", err)
+		// The task already lists this attachment, so a read that still fails is a backend fault rather than a bad request, and its message describes storage the caller cannot act on.
+		return "", fmt.Errorf("read attachment %q: %w", attachmentID, err)
 	}
 	return "data:" + att.ContentType + ";base64," + base64.StdEncoding.EncodeToString(data), nil
 }
@@ -257,7 +302,7 @@ func (s *TaskService) ListTaskArtifacts(taskID string) ([]TaskArtifactDTO, error
 	}
 	metas, err := s.artifacts.List(taskID)
 	if err != nil {
-		return nil, err
+		return nil, boardRejectionFor("task", taskID, err)
 	}
 	out := make([]TaskArtifactDTO, 0, len(metas))
 	for i := range metas {
@@ -286,11 +331,12 @@ func (s *TaskService) ListTaskArtifacts(taskID string) ([]TaskArtifactDTO, error
 
 func (s *TaskService) GetTaskSetupLog(taskID string) (TaskSetupLogDTO, error) {
 	dto := TaskSetupLogDTO{TaskID: taskID}
-	if s.cfg == nil || s.cfg.Logging.Dir == "" {
+	cfg := s.config()
+	if cfg == nil || cfg.Logging.Dir == "" {
 		return dto, nil
 	}
-	path := filepath.Join(s.cfg.Logging.Dir, "worktrees", taskID+"-setup.log")
-	root := filepath.Join(s.cfg.Logging.Dir, "worktrees")
+	path := filepath.Join(cfg.Logging.Dir, "worktrees", taskID+"-setup.log")
+	root := filepath.Join(cfg.Logging.Dir, "worktrees")
 	cleanRoot := filepath.Clean(root) + string(filepath.Separator)
 	cleanPath := filepath.Clean(path)
 	if !strings.HasPrefix(cleanPath, cleanRoot) {
@@ -314,7 +360,8 @@ func (s *TaskService) GetTaskSetupLog(taskID string) (TaskSetupLogDTO, error) {
 }
 
 func (s *TaskService) ListTaskAuditEvents(taskID string, days int) ([]TaskAuditEventDTO, error) {
-	if s.cfg == nil || s.cfg.Logging.Dir == "" {
+	cfg := s.config()
+	if cfg == nil || cfg.Logging.Dir == "" {
 		return []TaskAuditEventDTO{}, nil
 	}
 	if days <= 0 || days > 90 {
@@ -322,7 +369,10 @@ func (s *TaskService) ListTaskAuditEvents(taskID string, days int) ([]TaskAuditE
 	}
 	until := time.Now().UTC().Add(time.Minute)
 	since := until.AddDate(0, 0, -days)
-	events, err := audit.Read(s.cfg.AuditDir(), audit.Query{
+	if s.audit == nil {
+		return []TaskAuditEventDTO{}, nil
+	}
+	events, err := s.audit.Read(audit.Query{
 		Since:  since,
 		Until:  until,
 		TaskID: taskID,
@@ -354,7 +404,7 @@ func (s *TaskService) GetTamperReport(taskID string) (TamperReportDTO, error) {
 		if isMissingArtifactError(err) {
 			return emptyTamperReport(taskID), nil
 		}
-		return TamperReportDTO{}, err
+		return TamperReportDTO{}, boardRejectionFor("task", taskID, err)
 	}
 	var report TamperReportDTO
 	if err := json.Unmarshal(data, &report); err != nil {
@@ -379,7 +429,7 @@ func (s *TaskService) ListTaskProgress(taskID string) ([]artifact.ProgressEntry,
 	}
 	entries, err := s.artifacts.ReadProgress(taskID)
 	if err != nil {
-		return nil, err
+		return nil, boardRejectionFor("task", taskID, err)
 	}
 	if entries == nil {
 		return []artifact.ProgressEntry{}, nil
@@ -400,18 +450,72 @@ func isMissingArtifactError(err error) bool {
 	return errors.Is(err, artifact.ErrNotFound)
 }
 
+func translateTaskLockTimeout(err error) error {
+	if err == nil || !errors.Is(err, fsutil.ErrLockTimeout) {
+		return err
+	}
+	// The reason, not the lock path: this error names an absolute path under
+	// the server's home and a holder pid, and its caller is a client on another
+	// machine. What that client acts on is the 503, which it retries.
+	return unavailableError("resource is locked; retry")
+}
+
+// writeMergedSidecarsOrWarn writes t's sidecar content to the file backend after a request-triggered forward already merged and persisted it via PutFnBy — PutFnBy's plain whole-task write never touches sidecar files. A failure here must not fail the whole RPC, since the task's primary fields already committed; it only logs. WriteMergedSidecars itself retries a transient write failure and skips a stale write superseded by a newer merge (#3308); what a warning here still means is every retry inside that call was exhausted, which for a healthy disk should be rare.
+func (s *TaskService) writeMergedSidecarsOrWarn(op, taskID, node string, t task.Task) {
+	if err := clusterlead.WriteMergedSidecars(s.tasks, t); err != nil {
+		s.logger.Warn("cluster.task."+op+".sidecar_failed", "task_id", taskID, "node", node, "err", err)
+	}
+}
+
 // BlessTampering records a human bless for a tamper-flagged task and sends it
 // back to the review workflow.
 func (s *TaskService) BlessTampering(taskID string) (task.Task, error) {
+	// A follower owns task execution. Ask it to bless first, before changing
+	// the leader mirror, so the board cannot claim the task resumed when the
+	// worker rejected or never received the transition.
+	if s.assigner != nil {
+		s.followerStatusMu.Lock()
+		defer s.followerStatusMu.Unlock()
+		current, err := s.tasks.Get(taskID)
+		if err != nil {
+			return task.Task{}, boardRejectionFor("task", taskID, err)
+		}
+		ctx, cancel := context.WithTimeout(s.recoveryCtx(), fieldPushTimeout)
+		defer cancel()
+		remote, forwarded, err := s.assigner.BlessTampering(ctx, current)
+		if err != nil {
+			return task.Task{}, err
+		} else if forwarded {
+			result, _, putErr := s.tasks.PutFnBy(taskID, "svc.tasks.bless_tampering", func(local task.Task) (task.Task, error) {
+				if local.AssignedNode != current.AssignedNode || local.AssignmentRev != current.AssignmentRev {
+					return task.Task{}, conflictError("task ownership changed while follower tamper blessing was in flight")
+				}
+				merged, ok := clusterlead.Merge(local, remote)
+				if !ok {
+					return local, nil
+				}
+				if !slices.Contains(merged.Tags, workflow.TamperBlessedTag) {
+					merged.Tags = append(merged.Tags, workflow.TamperBlessedTag)
+				}
+				return merged, nil
+			})
+			if putErr != nil {
+				return task.Task{}, translateTaskLockTimeout(putErr)
+			}
+			s.writeMergedSidecarsOrWarn("tamper_bless", taskID, current.AssignedNode, result)
+			s.logger.Info("cluster.task.tamper_bless.forwarded", "task_id", taskID, "node", current.AssignedNode)
+			return result, nil
+		}
+	}
 	var (
 		cur      task.Task
 		tagAdded bool
 	)
-	updated, err := s.tasks.UpdateFn(taskID, func(t task.Task) (task.Update, error) {
+	result, err := s.tasks.ApplyFn(taskID, func(t task.Task) (task.TransitionIntent, error) {
 		if !t.TamperFlagged {
-			return task.Update{}, conflictError(
-				"task is not tamper-flagged: bless requires status=human-required with a " +
-					"status_reason starting with " + strconv.Quote(workflow.TamperFlaggedReasonPrefix),
+			return task.TransitionIntent{}, conflictError(
+				"task is not tamper-flagged: bless requires status=human-required with blocker.kind=" +
+					strconv.Quote(string(blocker.KindTamperDetected)),
 			)
 		}
 		cur = t
@@ -421,14 +525,21 @@ func (s *TaskService) BlessTampering(taskID string) (task.Task, error) {
 			merged = append(merged, workflow.TamperBlessedTag)
 			tagAdded = true
 		}
-		return task.Update{
-			Tags:   task.Ptr(merged),
-			Status: task.Ptr(task.StatusReadyReview),
+		return task.TransitionIntent{
+			ToStatus: task.StatusReadyReview,
+			Actor:    "svc.tasks.bless_tampering",
+			Extra: task.Update{
+				Tags:              task.Ptr(merged),
+				ClearStatusReason: task.Ptr(true),
+				ClearBlocker:      task.Ptr(true),
+			},
+			OperatorOverride: true,
 		}, nil
 	})
 	if err != nil {
-		return updated, err
+		return result.Task, translateTaskLockTimeout(err)
 	}
+	updated := result.Task
 
 	report, reportErr := s.GetTamperReport(taskID)
 	reportAvailable := reportErr == nil && report.ReportAvailable
@@ -493,7 +604,7 @@ func (s *TaskService) withEstimatedAgentRunCosts(t task.Task) task.Task {
 				patch.Provider = task.Ptr(estimate.Provider)
 				run.Provider = estimate.Provider
 			}
-			if err := s.tasks.UpdateRun(t.ID, run.AgentID, patch); err != nil && s.logger != nil {
+			if err := s.tasks.UpdateRunBy(t.ID, "svc.tasks.estimate_run_cost", run.AgentID, patch); err != nil && s.logger != nil {
 				s.logger.Debug("task.agent-run-cost.persist-skipped", "task_id", t.ID, "agent_id", run.AgentID, "err", err)
 			}
 		}
@@ -541,14 +652,18 @@ func estimateUsageFromEvents(model, provider string, events []agent.StreamEvent,
 	if !resultSeen {
 		return agentRunUsageEstimate{}, false
 	}
-	if cost == 0 {
-		switch provider {
-		case "copilot":
-			cost = stats.EstimateCopilotCost(premiumRequests)
-		case "codex", "claude":
-			cost = stats.EstimateCostDetailed(model, input, output, cacheCreate, cacheRead, reasoning, startedAt)
-		}
-	}
+	cost = stats.EstimateAgentCost(stats.AgentUsage{
+		Provider:        provider,
+		Model:           model,
+		CostUSD:         cost,
+		InputTokens:     input,
+		OutputTokens:    output,
+		CacheCreate:     cacheCreate,
+		CacheRead:       cacheRead,
+		ReasoningTokens: reasoning,
+		PremiumRequests: premiumRequests,
+		StartedAt:       startedAt,
+	})
 	if cost == 0 && premiumRequests == 0 {
 		return agentRunUsageEstimate{}, false
 	}
@@ -564,7 +679,7 @@ func providersForRun(run task.AgentRun) []string {
 	if preferred != "" {
 		providers = append(providers, preferred)
 	}
-	for _, provider := range []string{"codex", "copilot", "claude"} {
+	for _, provider := range []string{providerid.Codex, providerid.Copilot, providerid.Claude} {
 		if provider != preferred {
 			providers = append(providers, provider)
 		}
@@ -581,10 +696,10 @@ func providerForRun(run task.AgentRun) string {
 		model = model[i+1:]
 	}
 	if strings.HasPrefix(model, "gpt-") || strings.HasPrefix(model, "o3") || strings.HasPrefix(model, "o4") {
-		return "codex"
+		return providerid.Codex
 	}
 	if strings.HasPrefix(model, "claude-") || model == "sonnet" || model == "opus" || model == "haiku" {
-		return "claude"
+		return providerid.Claude
 	}
 	return ""
 }
@@ -603,6 +718,9 @@ func (s *TaskService) CreateTask(title, body, mode string) (task.Task, error) {
 // it touches disk; a malformed task is rejected with a 400 rather than
 // corrupting the board.
 func (s *TaskService) AssignTask(t task.Task) error {
+	if t.Degraded {
+		return validationError("assigned task must not be degraded")
+	}
 	if err := task.ValidateID(t.ID); err != nil {
 		return validationError(err.Error())
 	}
@@ -614,6 +732,11 @@ func (s *TaskService) AssignTask(t task.Task) error {
 	}
 	if t.AgentMode != "" {
 		if _, err := task.ValidateAgentMode(t.AgentMode); err != nil {
+			return validationError(err.Error())
+		}
+	}
+	if t.Slug != "" {
+		if err := task.ValidateSlug(t.Slug); err != nil {
 			return validationError(err.Error())
 		}
 	}
@@ -635,9 +758,9 @@ func (s *TaskService) AssignTask(t task.Task) error {
 	// plain staleness guard.
 	t.MirrorRev = 0
 	t.MirrorUpdatedAt = nil
-	saved, created, err := s.tasks.Put(t)
+	saved, created, err := s.tasks.PutBy(t, "cluster.task.assign")
 	if err != nil {
-		return fmt.Errorf("assign task: %w", err)
+		return translateTaskLockTimeout(fmt.Errorf("assign task: %w", err))
 	}
 	if s.audit != nil && created {
 		_ = s.audit.Log(audit.Event{
@@ -659,10 +782,16 @@ func (s *TaskService) RecoverLostAgent(taskID string) error {
 		return validationError("task id is required")
 	}
 	if s.recoverLostAgent == nil {
-		return errors.New("lost-agent recovery unavailable")
+		return unavailableError("lost-agent recovery unavailable")
+	}
+	// Resolve the task first. The writes below log and continue on failure,
+	// so without this an unusable id reached recovery as though it named a
+	// real task, and the caller's mistake came back as a server fault.
+	if _, err := s.tasks.Get(taskID); err != nil {
+		return boardRejectionFor("task", taskID, err)
 	}
 	reason := "monitor: agent lost; recovery will resume"
-	if _, err := s.tasks.Update(taskID, task.Update{StatusReason: &reason}); err != nil && s.logger != nil {
+	if _, err := s.tasks.UpdateBy(taskID, "cluster.task.recover", task.Update{StatusReason: &reason}); err != nil && s.logger != nil {
 		s.logger.Warn("cluster.task.recover.status-reason.failed", "task_id", taskID, "err", err)
 	}
 	if t, err := s.tasks.Get(taskID); err == nil {
@@ -670,7 +799,7 @@ func (s *TaskService) RecoverLostAgent(taskID string) error {
 			if t.AgentRuns[i].State != string(agent.StateRunning) {
 				continue
 			}
-			if err := s.tasks.UpdateRun(taskID, t.AgentRuns[i].AgentID, task.RunPatch{
+			if err := s.tasks.UpdateRunBy(taskID, "cluster.task.recover", t.AgentRuns[i].AgentID, task.RunPatch{
 				State: task.Ptr(string(agent.StateStopped)),
 			}); err != nil && s.logger != nil {
 				s.logger.Warn("cluster.task.recover.update-run.failed", "task_id", taskID, "agent_id", t.AgentRuns[i].AgentID, "err", err)
@@ -767,7 +896,7 @@ func (s *TaskService) CreateTaskWithInit(title, body, mode string, init task.Upd
 	}
 	t, err := s.tasks.CreateFull(title, body, mode, createInit)
 	if err != nil {
-		return t, err
+		return t, boardRejection(translateTaskLockTimeout(err))
 	}
 
 	if prRepo != "" {
@@ -802,7 +931,7 @@ func (s *TaskService) startCreatedWorkflow(t task.Task) {
 	if s.workflowEngine == nil || t.Status != task.StatusTodo {
 		return
 	}
-	if s.cfg != nil && !s.cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride).Local {
+	if cfg := s.config(); !s.leaderRunPlacement && cfg != nil && !cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride).Local {
 		return
 	}
 	// pr-fix / ordinary existing-PR tasks are driven outside task.created.
@@ -835,13 +964,21 @@ func (s *TaskService) startCreatedWorkflow(t task.Task) {
 // the testing workflow needs a clean slate (no in-flight agents or pending
 // human steps) so the user can't accidentally lose context by dragging.
 //
-// Moving a task to "in-progress" when its workflow is terminal (completed or
-// failed) and no agent is running restarts the workflow — allowing the user to
-// retry implementation after a human-required escalation.
+// Moving a task to a dispatching stage when its workflow is terminal (completed
+// or failed) and no agent is running restarts the workflow — allowing the user
+// to retry implementation, review, testing, or PR creation after a failed run.
+//
+//nolint:funlen // Field decoding and one atomic transition are intentionally audited together.
 func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, error) {
 	cur, _ := s.tasks.Get(id)
+	decisionReason := ""
+	if reason, ok := updates["status_reason"].(string); ok {
+		decisionReason = reason
+	}
 
 	if status, ok := updates["status"].(string); ok {
+		s.followerStatusMu.Lock()
+		defer s.followerStatusMu.Unlock()
 		// Reject status regressions while an agent is running on this task.
 		// Moving back to todo/new/done/cancelled while an agent is active loses in-flight work.
 		agentBlockedStatuses := map[string]bool{
@@ -862,11 +999,95 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 					cur.Workflow.WorkflowID, cur.Workflow.State))
 			}
 		}
+		// A follower owns its task's live agents and workflow. Validate this
+		// local request first, then forward before changing the leader mirror so
+		// a rejected remote transition cannot silently revert a success response.
+		if s.assigner != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), fieldPushTimeout)
+			defer cancel()
+			remoteUpdates := map[string]any{"status": status}
+			if statusReason, hasReason := updates["status_reason"]; hasReason {
+				remoteUpdates["status_reason"] = statusReason
+			}
+			remote, forwarded, forwardErr := s.assigner.UpdateTaskStatus(ctx, cur, remoteUpdates)
+			if forwardErr != nil {
+				return cur, forwardErr
+			} else if forwarded {
+				// Merge the follower's returned execution snapshot, including its
+				// clock watermark, instead of rebuilding just status locally. A
+				// delayed mirror poll from before this RPC is then stale by
+				// construction and cannot undo the accepted transition.
+				t, _, putErr := s.tasks.PutFnBy(id, "svc.tasks.update", func(local task.Task) (task.Task, error) {
+					if local.AssignedNode != cur.AssignedNode || local.AssignmentRev != cur.AssignmentRev {
+						return task.Task{}, conflictError("task ownership changed while follower status update was in flight")
+					}
+					merged, ok := clusterlead.Merge(local, remote)
+					if !ok {
+						return local, nil
+					}
+					return merged, nil
+				})
+				if putErr != nil {
+					return cur, translateTaskLockTimeout(putErr)
+				}
+				s.writeMergedSidecarsOrWarn("status_update", id, cur.AssignedNode, t)
+				s.logger.Info("cluster.task.status_update.forwarded", "task_id", id, "node", cur.AssignedNode, "status", status)
+				return t, nil
+			}
+		}
 	}
-	t, err := s.tasks.UpdateMap(id, updates)
+	var t task.Task
+	var err error
+	if statusText, hasStatus := updates["status"].(string); hasStatus {
+		localUpdates := make(map[string]any, len(updates)-1)
+		for key, value := range updates {
+			if key != "status" {
+				localUpdates[key] = value
+			}
+		}
+		extra, parseErr := task.UpdateFromMap(localUpdates)
+		if parseErr != nil {
+			return t, validationError(parseErr.Error())
+		}
+		status, statusErr := task.ValidateStatus(statusText)
+		if statusErr != nil {
+			return t, validationError(statusErr.Error())
+		}
+		if status == task.StatusHumanRequired {
+			display := decisionReason
+			if strings.TrimSpace(display) == "" {
+				display = "operator moved task to human-required"
+			}
+			extra.Escalation = task.OperatorDecisionEvidence("operator.manual_status_change", display)
+			extra.AutonomyOutcome = task.HumanRequiredOutcome()
+		}
+		resume := s.haltedResumeStatus(id)
+		if resume != "" && resume != string(status) && !task.IsTerminalStatus(status) {
+			extra.StatusReason = task.Ptr(haltedUnblockReason(resume))
+		}
+		result, applyErr := s.tasks.Apply(task.TransitionIntent{
+			TaskID: id, ToStatus: status, Actor: "svc.tasks.update",
+			Extra: extra, OperatorOverride: true,
+		})
+		t, err = result.Task, applyErr
+		if applyErr == nil && resume != "" && resume != string(status) && !task.IsTerminalStatus(status) {
+			s.logger.Warn("svc.tasks.halted-unblock",
+				"task_id", id, "requested", string(status), "resume_status", resume)
+		}
+	} else {
+		t, err = s.tasks.UpdateMapBy(id, "svc.tasks.update", updates)
+	}
 	if err != nil {
-		return t, err
+		return t, boardRejectionFor("task", id, translateTaskLockTimeout(err))
 	}
+	s.appendManualHumanRequiredDecision(cur, t, decisionReason)
+	s.wg.Go(func() {
+		// UpdateTask is a Wails-bound method the frontend awaits synchronously;
+		// the follower push carries a bounded remote round trip, so run it
+		// detached to avoid blocking the IPC caller. It's best-effort anyway —
+		// the Mirror drift backstop catches a missed push on the next tick.
+		s.pushFieldEditToFollower(id, updates, t)
+	})
 	if task.IsTerminalStatus(t.Status) {
 		s.wg.Go(func() {
 			// context.Background(): UpdateTask is a Wails-bound method; this
@@ -878,17 +1099,16 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 		})
 	}
 
-	// When manually moved to in-progress with a terminal workflow and no live
-	// agent, dispatch via task.status_changed so the trigger system picks the
-	// right workflow for the new status. Naively restarting cur.Workflow.WorkflowID
-	// would replay whatever flow ran before — for tasks created on the
-	// pre-split monolithic `simple-task` (commit 3764ed9) this re-ran triage
-	// and flipped status back to `planning` instead of running implement.
-	// DispatchEvent matches against current trigger conditions, which is what
-	// the user wants: in-progress → simple-task-implement.
+	// When manually moved to a dispatching stage with a terminal workflow and
+	// no live agent, dispatch via task.status_changed so the trigger system
+	// picks the right workflow for the new status. Naively restarting
+	// cur.Workflow.WorkflowID would replay whatever flow ran before, rather
+	// than the workflow appropriate for the stage the operator selected.
+	// This backstop is needed when the local status hook was unavailable (for
+	// example, an update forwarded from another board process).
 	if s.workflowEngine != nil && s.workflowEngine.AutoDispatchEnabled() {
 		if newStatus, ok := updates["status"].(string); ok &&
-			newStatus == string(task.StatusInProgress) &&
+			isManualDispatchStatus(newStatus) &&
 			cur.Workflow != nil &&
 			(cur.Workflow.State == workflow.ExecCompleted || cur.Workflow.State == workflow.ExecFailed) &&
 			!s.agents.HasRunningAgentForTask(id) {
@@ -910,6 +1130,45 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 	}
 
 	return t, nil
+}
+
+func isManualDispatchStatus(status string) bool {
+	switch task.Status(status) {
+	case task.StatusInProgress, task.StatusReadyReview, task.StatusTesting, task.StatusReadyPR:
+		return true
+	default:
+		return false
+	}
+}
+
+// fieldPushTimeout bounds pushFieldEditToFollower's remote round trip so an
+// unreachable follower can't leave the detached push goroutine hanging.
+const fieldPushTimeout = 5 * time.Second
+
+// pushFieldEditToFollower forwards a Tags/DependsOn edit on an already
+// follower-assigned task to its home node at write time
+// (clusterlead.Assigner.PushFieldUpdate) — the write-time counterpart to
+// clusterlead.Mirror's detect-and-repair drift backstop (Merge never carries
+// either field, so without this a leader-side edit — e.g. a manual
+// `sybra-cli update --tags` — would otherwise only reach the follower via
+// that backstop, one reconcile interval later and after filing a drift
+// alert). Best-effort: a failed push here just leaves the backstop to catch
+// it on the next tick, same as any other transient cluster hiccup.
+func (s *TaskService) pushFieldEditToFollower(id string, updates map[string]any, t task.Task) {
+	if s.assigner == nil {
+		return
+	}
+	_, tagsEdited := updates["tags"]
+	_, depsEdited := updates["depends_on"]
+	_, condsEdited := updates["depends_on_conditions"]
+	if !tagsEdited && !depsEdited && !condsEdited {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), fieldPushTimeout)
+	defer cancel()
+	if _, err := s.assigner.PushFieldUpdate(ctx, t); err != nil {
+		s.logger.Warn("task.update.field_push_failed", "task_id", id, "err", err)
+	}
 }
 
 // redispatchStatusChanged dispatches task.status_changed for the given task
@@ -1016,6 +1275,7 @@ func (s *TaskService) dispatchFromHumanRequiredAllowingAgent(id, target, reason,
 	return result, nil
 }
 
+//nolint:funlen // Dispatch preconditions and the resulting atomic transition must stay contiguous.
 func (s *TaskService) dispatchFromHumanRequiredLockedAllowingAgent(id, target, reason, exceptAgentID string) (task.Task, error) {
 	cur, err := s.tasks.Get(id)
 	if err != nil {
@@ -1027,6 +1287,37 @@ func (s *TaskService) dispatchFromHumanRequiredLockedAllowingAgent(id, target, r
 	spec := dispatchTargets[target]
 	if spec.requiresPR && cur.PRNumber == 0 {
 		return task.Task{}, conflictError(fmt.Sprintf("cannot dispatch to %q: task has no linked PR", target))
+	}
+	if s.assigner != nil {
+		s.followerStatusMu.Lock()
+		ctx, cancel := context.WithTimeout(s.recoveryCtx(), fieldPushTimeout)
+		remote, forwarded, forwardErr := s.assigner.DispatchFromHumanRequired(ctx, cur, target, reason)
+		cancel()
+		if forwardErr != nil {
+			s.followerStatusMu.Unlock()
+			return task.Task{}, forwardErr
+		}
+		if forwarded {
+			local, _, localErr := s.tasks.PutFnBy(id, "svc.tasks.dispatch-human-required", func(current task.Task) (task.Task, error) {
+				if current.AssignedNode != cur.AssignedNode || current.AssignmentRev != cur.AssignmentRev {
+					return task.Task{}, conflictError("task ownership changed while follower dispatch was in flight")
+				}
+				merged, ok := clusterlead.Merge(current, remote)
+				if !ok {
+					return current, nil
+				}
+				return merged, nil
+			})
+			if localErr != nil {
+				s.followerStatusMu.Unlock()
+				return task.Task{}, translateTaskLockTimeout(localErr)
+			}
+			s.writeMergedSidecarsOrWarn("dispatch_human_required", id, cur.AssignedNode, local)
+			s.followerStatusMu.Unlock()
+			s.logDispatchAudit(id, target, string(cur.Status), reason, "forwarded")
+			return local, nil
+		}
+		s.followerStatusMu.Unlock()
 	}
 	hasRunning := s.agents.HasRunningAgentForTask(id)
 	if exceptAgentID != "" {
@@ -1040,15 +1331,22 @@ func (s *TaskService) dispatchFromHumanRequiredLockedAllowingAgent(id, target, r
 			cur.Workflow.WorkflowID, cur.Workflow.State))
 	}
 
-	updates := map[string]any{
-		"status":        target,
-		"status_reason": reason,
+	extra := task.Update{
+		StatusReason: task.Ptr(reason),
+		ClearBlocker: task.Ptr(true),
 	}
 	if spec.clearWorkflow {
-		updates["workflow"] = (*workflow.Execution)(nil)
+		extra.ClearWorkflow = task.Ptr(true)
 	}
-	if _, err := s.tasks.UpdateMap(id, updates); err != nil {
-		return task.Task{}, err
+	if _, err := s.tasks.Apply(task.TransitionIntent{
+		TaskID:           id,
+		ToStatus:         task.Status(target),
+		Actor:            "svc.tasks.dispatch-human-required",
+		ExpectedStatus:   task.Ptr(task.StatusHumanRequired),
+		Extra:            extra,
+		OperatorOverride: true,
+	}); err != nil {
+		return task.Task{}, translateTaskLockTimeout(err)
 	}
 
 	if spec.dispatches {
@@ -1072,24 +1370,83 @@ func (s *TaskService) dispatchFromHumanRequiredLockedAllowingAgent(id, target, r
 			} else {
 				s.logger.Error("task.dispatch.failed", "task_id", id, "target", target, "err", failure)
 				revertReason := fmt.Sprintf("%s (dispatch to %s failed: %s)", reason, target, failure)
-				if _, revertErr := s.tasks.UpdateMap(id, map[string]any{
-					"status":        string(task.StatusHumanRequired),
-					"status_reason": revertReason,
+				if _, revertErr := s.tasks.Apply(task.TransitionIntent{
+					TaskID: id, ToStatus: task.StatusBlocked, Actor: "svc.tasks.dispatch-failure",
+					Extra: task.Update{
+						StatusReason:    task.Ptr(revertReason),
+						Escalation:      task.MachineFailure("dispatch.workflow_start_failed", revertReason),
+						AutonomyOutcome: task.QuarantinedOutcome(),
+					},
+					OperatorOverride: true,
 				}); revertErr != nil {
 					s.logger.Error("task.dispatch.revert-failed", "task_id", id, "target", target, "err", revertErr)
 					s.logDispatchAudit(id, target, string(cur.Status), reason, "revert-failed")
-					return task.Task{}, fmt.Errorf("dispatch to %s failed (%s) and revert to human-required also failed: %w", target, failure, revertErr)
+					return task.Task{}, translateTaskLockTimeout(fmt.Errorf("dispatch to %s failed (%s) and quarantine also failed: %w", target, failure, revertErr))
 				}
-				// The bounce back to human-required is the event an operator most
-				// needs a durable record of — log it, not just the success path.
-				s.logDispatchAudit(id, target, string(cur.Status), reason, "reverted")
+				// A control-plane dispatch failure is machine-owned. Quarantine it
+				// instead of manufacturing another request for human judgment.
+				s.logDispatchAudit(id, target, string(cur.Status), reason, "quarantined")
 				return task.Task{}, conflictError(fmt.Sprintf("dispatch to %q failed: %s", target, failure))
 			}
 		}
 	}
 
 	s.logDispatchAudit(id, target, string(cur.Status), reason, "dispatched")
+	if exceptAgentID == "" {
+		s.appendDecisionProgress(id, artifact.ManualDecisionMessage(string(cur.Status), target, reason))
+	}
+	s.recordInterventionOnUnblock(cur, target, reason, exceptAgentID)
 	return s.tasks.Get(id)
+}
+
+func (s *TaskService) appendManualHumanRequiredDecision(before, after task.Task, reason string) {
+	if before.Status != task.StatusHumanRequired || after.Status == task.StatusHumanRequired {
+		return
+	}
+	s.appendDecisionProgress(after.ID, artifact.ManualDecisionMessage(string(before.Status), string(after.Status), reason))
+	// UpdateTask is the generic GUI/CLI field-edit endpoint, reached only by an
+	// operator (or a script run on their behalf) — never by an automated
+	// recovery path, which exits human-required through
+	// dispatchFromHumanRequiredLockedAllowingAgent or the review package's own
+	// Capture calls instead. Route this exit through the same
+	// guard+scrub+persist+audit pipeline so a plain status/field edit is as
+	// durably attributed as a click on the Dispatch button (issue #2727).
+	s.recordInterventionOnUnblock(before, string(after.Status), reason, "")
+}
+
+func (s *TaskService) appendDecisionProgress(taskID, message string) {
+	if s.artifacts == nil || strings.TrimSpace(message) == "" {
+		return
+	}
+	if err := s.artifacts.AppendProgress(taskID, artifact.ProgressEntry{
+		Kind:    artifact.ProgressKindDecision,
+		Message: message,
+	}); err != nil && s.logger != nil {
+		s.logger.Warn("task.progress.append_failed", "task_id", taskID, "kind", artifact.ProgressKindDecision, "err", err)
+	}
+}
+
+// recordInterventionOnUnblock captures a genuine operator-initiated unblock
+// of a human-required task through intervention.Capture (see
+// internal/intervention) — advisory context for a future replay fixture
+// (sybra#2454), never a routing/admission/completion gate. cur is the task as
+// it stood immediately before this dispatch's status write, so its
+// Status/Blocker/Workflow/StatusReason are exactly the system-state signal
+// being captured.
+//
+// This is one of three real exit paths from human-required — the other two
+// (automated PR-blocker reconciliation and automated PR-landing advance) are
+// hooked the same way from internal/sybra/review; all three route through the
+// same intervention.Capture so a fingerprint dedups identically regardless of
+// which path produced it. exceptAgentID=="" means a human clicked Dispatch;
+// non-empty means an automatic recovery path re-entered the workflow on the
+// operator's behalf.
+func (s *TaskService) recordInterventionOnUnblock(cur task.Task, target, reason, exceptAgentID string) {
+	class := intervention.OperatorActionHuman
+	if exceptAgentID != "" {
+		class = intervention.OperatorActionAutoRecovery
+	}
+	intervention.Capture(s.intervention, s.config(), s.projects, s.audit, s.logger, cur, target, reason, class)
 }
 
 // logDispatchAudit records a human-required dispatch attempt and its outcome
@@ -1117,21 +1474,26 @@ func (s *TaskService) logDispatchAudit(id, target, previousStatus, reason, outco
 // DeleteTask removes a task file from disk and cleans up its worktree.
 func (s *TaskService) DeleteTask(id string) error {
 	s.logger.Info("task.delete", "task_id", id)
+	deleted, err := s.tasks.Get(id)
+	if err != nil {
+		s.logger.Error("task.delete.failed", "task_id", id, "err", err)
+		return boardRejectionFor("task", id, err)
+	}
+	if err := s.tasks.DeleteBy(id, "svc.tasks.delete"); err != nil {
+		s.logger.Error("task.delete.failed", "task_id", id, "err", err)
+		return boardRejectionFor("task", id, translateTaskLockTimeout(err))
+	}
 	s.agents.KillAgentsForTask(id, 10*time.Second)
 	if s.sandboxes != nil {
 		s.sandboxes.Remove(id)
 	}
 	// context.Background(): DeleteTask is a Wails-bound method with no ctx.
-	s.worktrees.Remove(context.Background(), id)
+	s.worktrees.RemoveTask(context.Background(), deleted)
 	if s.audit != nil {
 		_ = s.audit.Log(audit.Event{
 			Type:   audit.EventTaskDeleted,
 			TaskID: id,
 		})
-	}
-	if err := s.tasks.Delete(id); err != nil {
-		s.logger.Error("task.delete.failed", "task_id", id, "err", err)
-		return err
 	}
 	return nil
 }
@@ -1176,8 +1538,12 @@ func (s *TaskService) enrichFromPR(taskID, repo string, number int) {
 
 	isMyPR := strings.EqualFold(pr.Author, viewer)
 	if isMyPR {
-		u.Status = task.Ptr(task.StatusInReview)
-		if _, err := s.tasks.Update(taskID, u); err != nil {
+		if _, err := s.tasks.Apply(task.TransitionIntent{
+			TaskID:   taskID,
+			ToStatus: task.StatusInReview,
+			Actor:    "svc.tasks.enrich_pr.my_pr",
+			Extra:    u,
+		}); err != nil {
 			s.logger.Error("enrich-pr.update", "task_id", taskID, "err", err)
 			return
 		}
@@ -1189,7 +1555,7 @@ func (s *TaskService) enrichFromPR(taskID, repo string, number int) {
 	// Not my PR: add review tag and let the pr-review workflow own dispatch.
 	labels = append(labels, "review")
 	u.Tags = &labels
-	if _, err := s.tasks.Update(taskID, u); err != nil {
+	if _, err := s.tasks.UpdateBy(taskID, "svc.tasks.enrich_pr.review", u); err != nil {
 		s.logger.Error("enrich-pr.update", "task_id", taskID, "err", err)
 		return
 	}
@@ -1260,7 +1626,20 @@ func (s *TaskService) enrichFromIssue(taskID, repo string, number int) {
 		}
 	}
 	u.Tags = &labels
-	updated, err := s.tasks.Update(taskID, u)
+	var updated task.Task
+	if u.Status != nil {
+		toStatus := *u.Status
+		u.Status = nil
+		result, applyErr := s.tasks.Apply(task.TransitionIntent{
+			TaskID:   taskID,
+			ToStatus: toStatus,
+			Actor:    "svc.tasks.enrich_issue",
+			Extra:    u,
+		})
+		updated, err = result.Task, applyErr
+	} else {
+		updated, err = s.tasks.UpdateBy(taskID, "svc.tasks.enrich_issue", u)
+	}
 	if err != nil {
 		s.logger.Error("enrich-issue.update", "task_id", taskID, "err", err)
 		return
@@ -1287,16 +1666,28 @@ func (s *TaskService) enrichFromIssue(taskID, repo string, number int) {
 // way. Driven from the maintenance pass so recovery is continuous rather than a
 // one-shot at startup.
 func (s *TaskService) ReconcilePendingEnrichment() {
-	all, err := s.tasks.List()
+	all, err := s.tasks.ListActive()
 	if err != nil {
 		s.logger.Error("enrich-reconcile.list", "err", err)
 		return
 	}
+	pending, retried := 0, 0
+	defer func() {
+		// A stub can only leave this state through here, so a set that never
+		// shrinks is the one symptom worth seeing. It stayed invisible for a
+		// day when this pass could not even list: the marker holds a task out
+		// of dispatch by design, so nothing downstream complains and the board
+		// simply looks idle.
+		if pending > 0 {
+			s.logger.Info("enrich-reconcile.pending", "tasks", pending, "retried", retried)
+		}
+	}()
 	for i := range all {
 		t := all[i]
 		if !slices.Contains(t.Tags, enrichPendingTag) {
 			continue
 		}
+		pending++
 		// The user took the task out of the queue (e.g. cancelled/done); don't
 		// spend a GitHub fetch reviving it.
 		if task.IsTerminalStatus(t.Status) {
@@ -1333,6 +1724,7 @@ func (s *TaskService) ReconcilePendingEnrichment() {
 		}
 		id := t.ID
 		s.enrichRetryCooldown.Store(id, time.Now().Add(enrichPendingRetryCooldown))
+		retried++
 		s.logger.Info("enrich-reconcile.retry", "task_id", id, "title", t.Title)
 		if prRepo != "" {
 			repo, number := prRepo, prNumber
@@ -1371,7 +1763,8 @@ func (s *TaskService) enrichPendingRetryCoolingDown(taskID string) bool {
 // auto-expanded on the manual-create path. Read live (not wired-once) so a
 // config reload toggling umbrella.enabled takes effect without re-wiring.
 func (s *TaskService) umbrellaExpansionEnabled() bool {
-	return s.cfg != nil && s.cfg.Umbrella.Enabled && s.umbrellaExpand != nil
+	cfg := s.config()
+	return cfg != nil && cfg.Umbrella.Enabled && s.umbrellaExpand != nil
 }
 
 // expandUmbrellaStub expands a manually-created stub whose URL resolved to a
@@ -1386,7 +1779,7 @@ func (s *TaskService) umbrellaExpansionEnabled() bool {
 // (bad URL, GitHub fetch failure) has nothing else to defer to, so the stub
 // itself becomes the identifiable (but inert) record instead.
 func (s *TaskService) expandUmbrellaStub(taskID, repo string, issue github.Issue) {
-	res, err := s.umbrellaExpand(issue.URL)
+	res, err := s.umbrellaExpand(issue.URL, "")
 	if err != nil {
 		s.logger.Error("enrich-issue.umbrella-expand", "task_id", taskID, "issue", issue.URL, "err", err)
 		if s.umbrellaTrackerExistsElsewhere(taskID, issue.URL) {
@@ -1418,7 +1811,7 @@ func (s *TaskService) expandUmbrellaStub(taskID, repo string, issue github.Issue
 // expandUmbrellaStub, whether that failure already has a durable tracker to
 // point at (see recordExpandFailure) or whether this stub is the only record.
 func (s *TaskService) umbrellaTrackerExistsElsewhere(taskID, issueURL string) bool {
-	all, err := s.tasks.List()
+	all, err := s.tasks.ListBoard()
 	if err != nil {
 		// Unreadable store: assume a tracker exists. Claiming this stub as the
 		// only record would mint a second TaskTypeUmbrella task for the same
@@ -1480,7 +1873,7 @@ func (s *TaskService) enrichUmbrellaStub(taskID, repo string, issue github.Issue
 		u.Body = task.Ptr(issue.Body)
 	}
 	u.Tags = &labels
-	if _, err := s.tasks.Update(taskID, u); err != nil {
+	if _, err := s.tasks.UpdateBy(taskID, "svc.tasks.enrich_umbrella_stub", u); err != nil {
 		s.logger.Error("enrich-issue.umbrella-stub-enrich", "task_id", taskID, "err", err)
 	}
 }
@@ -1531,7 +1924,7 @@ func (s *TaskService) claimIngestBranch(projectID, branch, excludeTaskID string)
 	if branch == "" {
 		return "", false
 	}
-	all, err := s.tasks.List()
+	all, err := s.tasks.ListActive()
 	if err != nil {
 		s.logger.Warn("ingest.branch-guard.list", "err", err)
 		return "", false
@@ -1573,4 +1966,20 @@ func (s *TaskService) viewerLinkedPRCount(prs []github.PullRequest) int {
 		}
 	}
 	return count
+}
+
+// haltedResumeStatus names the status that resumes a task whose workflow a
+// circuit-breaker trip halted, or "" when it is not halted.
+func (s *TaskService) haltedResumeStatus(id string) string {
+	if s.workflowEngine == nil {
+		return ""
+	}
+	return s.workflowEngine.HaltedResumeStatus(id)
+}
+
+// haltedUnblockReason tells the operator why the status they chose will not
+// start anything, and which one will.
+func haltedUnblockReason(resume string) string {
+	return "workflow halted by its circuit breaker — this status does not dispatch it; set the task to " +
+		resume + " to resume the step it stopped on"
 }

@@ -1,0 +1,3 @@
+./doc.go
+./fake_certificates_client.go
+./fake_certificatesigningrequest.go

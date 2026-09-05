@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -15,8 +16,10 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/umbrella"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -305,6 +308,9 @@ func TestTaskService_ListTaskAuditEventsNewestFirst(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer al.Close()
+	// The service reads the trail through its store now, not by opening the
+	// directory, so that a database-backed board is readable at all.
+	svc.audit = al
 	if err := al.Log(audit.Event{Type: audit.EventTaskCreated, TaskID: "task-a"}); err != nil {
 		t.Fatal(err)
 	}
@@ -475,9 +481,16 @@ func TestTaskService_BlessTampering(t *testing.T) {
 	}
 	reason := workflow.TamperFlaggedReasonPrefix + " removed-test in internal/foo_test.go"
 	flagged, err := svc.tasks.Update(created.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(reason),
-		Tags:         task.Ptr([]string{"backend", "frontend"}),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr(reason),
+		Blocker: task.Ptr(blocker.State{
+			Kind:       blocker.KindTamperDetected,
+			Actor:      blocker.ActorWorkflow,
+			NextAction: "bless_tampering",
+		}),
+		Tags: task.Ptr([]string{"backend", "frontend"}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -500,7 +513,7 @@ func TestTaskService_BlessTampering(t *testing.T) {
 	}
 
 	statusHook := make(chan [3]string, 1)
-	svc.tasks.SetStatusChangeHook(func(taskID, from, to string) {
+	svc.tasks.SetStatusChangeHook(func(taskID, from, to string, _ task.Task) {
 		statusHook <- [3]string{taskID, from, to}
 	})
 	got, err := svc.BlessTampering(flagged.ID)
@@ -512,6 +525,9 @@ func TestTaskService_BlessTampering(t *testing.T) {
 	}
 	if got.StatusReason != "" {
 		t.Fatalf("StatusReason = %q, want cleared", got.StatusReason)
+	}
+	if !got.Blocker.IsZero() {
+		t.Fatalf("Blocker = %+v, want cleared", got.Blocker)
 	}
 	if !slices.Equal(got.Tags, []string{"backend", "frontend", workflow.TamperBlessedTag}) {
 		t.Fatalf("Tags = %v, want existing tags plus blessed", got.Tags)
@@ -568,9 +584,16 @@ func TestTaskService_BlessTamperingAlreadyBlessed(t *testing.T) {
 	}
 	reason := workflow.TamperFlaggedReasonPrefix + " removed-test in internal/foo_test.go"
 	flagged, err := svc.tasks.Update(created.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(reason),
-		Tags:         task.Ptr([]string{"backend", workflow.TamperBlessedTag}),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr(reason),
+		Blocker: task.Ptr(blocker.State{
+			Kind:       blocker.KindTamperDetected,
+			Actor:      blocker.ActorWorkflow,
+			NextAction: "bless_tampering",
+		}),
+		Tags: task.Ptr([]string{"backend", workflow.TamperBlessedTag}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -593,8 +616,10 @@ func TestTaskService_BlessTamperingRejectsNonTamperTask(t *testing.T) {
 		t.Fatal(err)
 	}
 	human, err := svc.tasks.Update(created.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr("needs human input"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr("needs human input"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -604,7 +629,7 @@ func TestTaskService_BlessTamperingRejectsNonTamperTask(t *testing.T) {
 	if err == nil {
 		t.Fatal("BlessTampering non-tamper err = nil, want error")
 	}
-	if !strings.Contains(err.Error(), "status=human-required") || !strings.Contains(err.Error(), workflow.TamperFlaggedReasonPrefix) {
+	if !strings.Contains(err.Error(), "status=human-required") || !strings.Contains(err.Error(), string(blocker.KindTamperDetected)) {
 		t.Fatalf("BlessTampering non-tamper err = %q, want actionable preconditions", err.Error())
 	}
 	got, err := svc.tasks.Get(human.ID)
@@ -730,7 +755,7 @@ func TestTaskService_CreateTask_UmbrellaIssueExpandsAndDropsStub(t *testing.T) {
 	}
 
 	var expandedURL atomic.Value
-	svc.umbrellaExpand = func(issueURL string) (umbrella.Result, error) {
+	svc.umbrellaExpand = func(issueURL, _ string) (umbrella.Result, error) {
 		expandedURL.Store(issueURL)
 		return umbrella.Result{UmbrellaURL: issueURL, Created: 6}, nil
 	}
@@ -765,7 +790,7 @@ func TestTaskService_CreateTask_UmbrellaExpandFailureKeepsInertStub(t *testing.T
 			Labels:     []string{"umbrella", "backend"},
 		}, nil
 	}
-	svc.umbrellaExpand = func(string) (umbrella.Result, error) {
+	svc.umbrellaExpand = func(string, string) (umbrella.Result, error) {
 		return umbrella.Result{}, errors.New("planner boom")
 	}
 
@@ -837,7 +862,7 @@ func TestTaskService_CreateTask_UmbrellaExpandFailureWithExistingTrackerMarksDup
 	}); err != nil {
 		t.Fatalf("seed failure tracker: %v", err)
 	}
-	svc.umbrellaExpand = func(string) (umbrella.Result, error) {
+	svc.umbrellaExpand = func(string, string) (umbrella.Result, error) {
 		return umbrella.Result{}, errors.New("planner boom")
 	}
 
@@ -874,7 +899,7 @@ func TestTaskService_CreateTask_UmbrellaExpandDeleteFailureKeepsDuplicateNonTrac
 			Labels:     []string{"umbrella", "backend"},
 		}, nil
 	}
-	svc.umbrellaExpand = func(string) (umbrella.Result, error) {
+	svc.umbrellaExpand = func(string, string) (umbrella.Result, error) {
 		return umbrella.Result{UmbrellaURL: "https://github.com/owner/repo/issues/1151", Created: 6}, nil
 	}
 	svc.deleteTask = func(string) error {
@@ -929,7 +954,7 @@ func TestTaskService_CreateTask_UmbrellaDisabledFallsBackToFlat(t *testing.T) {
 	svc.fetchIssueLinkedPRs = func(string, int) ([]github.PullRequest, error) { return nil, nil }
 	svc.viewerLogin = func() string { return "me" }
 	var expanderCalled atomic.Bool
-	svc.umbrellaExpand = func(string) (umbrella.Result, error) {
+	svc.umbrellaExpand = func(string, string) (umbrella.Result, error) {
 		expanderCalled.Store(true)
 		return umbrella.Result{}, nil
 	}
@@ -1276,7 +1301,44 @@ func TestTaskService_EnrichFromPR_BranchAlreadyOwnedSkipsBranch(t *testing.T) {
 }
 
 func TestTaskService_EnrichFromPR_NotMyPRStartsPRReviewWorkflow(t *testing.T) {
-	svc, _ := setupTaskService(t)
+	svc, app := setupTaskService(t)
+
+	// pr-review now requires a certified PR-head checkout. Seed the smallest
+	// real local remote that exposes GitHub's refs/pull/<N>/head shape so this
+	// integration test still proves the workflow reaches agent dispatch.
+	src := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-b", "main", src},
+		{"-C", src, "config", "user.name", "Test"},
+		{"-C", src, "config", "user.email", "test@example.invalid"},
+		{"-C", src, "config", "commit.gpgsign", "false"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(src, "README.md"), []byte("review fixture\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"-C", src, "add", "README.md"},
+		{"-C", src, "commit", "-m", "seed review fixture"},
+		{"-C", src, "update-ref", "refs/pull/7/head", "HEAD"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	proj, err := app.projects.CreateMeta("https://github.com/owner/repo", project.ProjectTypePet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := project.CloneBare(context.Background(), src, proj.ClonePath); err != nil {
+		t.Fatalf("clone synthetic review project: %v", err)
+	}
+	if err := app.projects.MarkReady(proj.ID); err != nil {
+		t.Fatal(err)
+	}
 
 	svc.fetchPR = func(string, int) (github.PullRequest, error) {
 		return github.PullRequest{
@@ -1311,7 +1373,7 @@ func TestTaskService_EnrichFromPR_NotMyPRStartsPRReviewWorkflow(t *testing.T) {
 	if run.Role != "review" || run.RequestedSkill != "staff-code-review" {
 		t.Fatalf("AgentRun = %+v, want staff review run", run)
 	}
-	if !strings.Contains(run.Prompt, "Create exactly one PENDING (draft) pull-request review") ||
+	if !strings.Contains(run.Prompt, "NEVER submit an APPROVE review event") ||
 		!strings.Contains(run.Prompt, "inline comments, not one aggregated comment") {
 		t.Fatalf("AgentRun prompt missing pending inline review contract:\n%s", run.Prompt)
 	}
@@ -1623,5 +1685,43 @@ func TestTaskService_DeleteTaskRemovesAttachmentBlobs(t *testing.T) {
 	}
 	if _, err := os.Stat(uploaded.Path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("attachment blob still exists after task delete: %v", err)
+	}
+}
+
+func TestTaskServiceListOmitsHeavyRunTextButGetKeepsIt(t *testing.T) {
+	svc, _ := setupTaskService(t)
+	created, err := svc.tasks.Create("compact board task", "body stays available", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.tasks.AddRun(created.ID, task.AgentRun{
+		AgentID: "agent-heavy", Mode: "headless", State: "stopped",
+		StartedAt: time.Now().UTC(), CostUSD: 1.25,
+		Prompt: "large historical prompt", Result: "large historical result",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	listed, err := svc.ListTasks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || len(listed[0].AgentRuns) != 1 {
+		t.Fatalf("ListTasks runs = %+v", listed)
+	}
+	run := listed[0].AgentRuns[0]
+	if run.Prompt != "" || run.Result != "" {
+		t.Fatalf("ListTasks retained heavy text: prompt=%q result=%q", run.Prompt, run.Result)
+	}
+	if run.AgentID != "agent-heavy" || run.CostUSD != 1.25 {
+		t.Fatalf("ListTasks dropped card metadata: %+v", run)
+	}
+
+	got, err := svc.GetTask(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AgentRuns[0].Prompt != "large historical prompt" || got.AgentRuns[0].Result != "large historical result" {
+		t.Fatalf("GetTask lost run text: %+v", got.AgentRuns[0])
 	}
 }

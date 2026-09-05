@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -172,6 +173,8 @@ func TestClearStepRecords_ResetsCountForStep(t *testing.T) {
 	e.RecordStep(StepRecord{StepID: "run_test", Status: "failed"})
 	e.RecordStep(StepRecord{StepID: "run_test", Status: "failed"})
 	e.RecordStep(StepRecord{StepID: "implement", Status: "completed"})
+	e.RecordEffectIntent(makeID("run_test", 0), time.Now())
+	e.RecordEffectIntent(makeID("implement", 0), time.Now())
 
 	e.ClearStepRecords("run_test")
 
@@ -180,6 +183,12 @@ func TestClearStepRecords_ResetsCountForStep(t *testing.T) {
 	}
 	if got := e.CountStep("implement"); got != 1 {
 		t.Errorf("expected unrelated step records to survive, got %d", got)
+	}
+	if _, ok := e.EffectIDForStep("run_test", 0); ok {
+		t.Fatal("expected run_test effect log entries to be cleared")
+	}
+	if _, ok := e.EffectIDForStep("implement", 0); !ok {
+		t.Fatal("expected unrelated effect log entries to survive")
 	}
 
 	// Re-arming should let a fresh in-step retry budget accrue again.
@@ -214,5 +223,195 @@ func TestRecordForStep_ReturnsNilForMissing(t *testing.T) {
 
 	if got := e.RecordForStep("missing"); got != nil {
 		t.Errorf("expected nil for missing step, got %v", got)
+	}
+}
+
+func makeID(stepID string, pos int) EffectID {
+	return EffectID{Generation: 1, StepSeq: 1, StepID: stepID, Pos: pos}
+}
+
+func TestEffectLog_RecordIntentIdempotent(t *testing.T) {
+	e := &Execution{}
+	id := makeID("implement", 0)
+	now := time.Now()
+	e.RecordEffectIntent(id, now)
+	e.RecordEffectIntent(id, now.Add(time.Second))
+	if len(e.EffectLog) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(e.EffectLog))
+	}
+}
+
+func TestEffectLog_RecordCompletionOnAbsent(t *testing.T) {
+	e := &Execution{}
+	id := makeID("implement", 0)
+	e.RecordEffectCompletion(id, time.Now())
+	if len(e.EffectLog) != 0 {
+		t.Fatalf("completion before intent should add no record, got %d", len(e.EffectLog))
+	}
+}
+
+func TestEffectLog_RecordCompletionIdempotent(t *testing.T) {
+	e := &Execution{}
+	id := makeID("implement", 0)
+	now := time.Now()
+	e.RecordEffectIntent(id, now)
+	e.RecordEffectCompletion(id, now.Add(time.Second))
+	first := *e.EffectLog[0].CompletedAt
+	e.RecordEffectCompletion(id, now.Add(2*time.Second))
+	if *e.EffectLog[0].CompletedAt != first {
+		t.Fatalf("double completion should be idempotent, CompletedAt changed")
+	}
+}
+
+func TestEffectLog_EffectAppliedAndPending(t *testing.T) {
+	e := &Execution{}
+	id := makeID("implement", 0)
+	now := time.Now()
+
+	// neither intent nor completion
+	if e.EffectApplied(id) || e.EffectPending(id) {
+		t.Fatal("no record: both should be false")
+	}
+
+	// intent only
+	e.RecordEffectIntent(id, now)
+	if e.EffectApplied(id) {
+		t.Fatal("intent-only: EffectApplied should be false")
+	}
+	if !e.EffectPending(id) {
+		t.Fatal("intent-only: EffectPending should be true")
+	}
+
+	// intent + completion
+	e.RecordEffectCompletion(id, now.Add(time.Second))
+	if !e.EffectApplied(id) {
+		t.Fatal("after completion: EffectApplied should be true")
+	}
+	if e.EffectPending(id) {
+		t.Fatal("after completion: EffectPending should be false")
+	}
+}
+
+func TestEffectLog_EffectIDForStep(t *testing.T) {
+	e := &Execution{}
+	now := time.Now()
+	id1 := EffectID{Generation: 1, StepSeq: 1, StepID: "implement", Pos: 0}
+	id2 := EffectID{Generation: 1, StepSeq: 2, StepID: "implement", Pos: 0}
+	e.RecordEffectIntent(id1, now)
+	e.RecordEffectIntent(id2, now.Add(time.Second))
+
+	got, ok := e.EffectIDForStep("implement", 0)
+	if !ok {
+		t.Fatal("expected hit for implement/0")
+	}
+	if !got.Equal(id2) {
+		t.Fatalf("expected most-recent id2, got %v", got)
+	}
+
+	_, ok = e.EffectIDForStep("missing", 0)
+	if ok {
+		t.Fatal("expected miss for unknown step")
+	}
+
+	_, ok = e.EffectIDForStep("implement", 99)
+	if ok {
+		t.Fatal("expected miss for wrong pos")
+	}
+}
+
+func TestEffectLog_TrimToMaxCap(t *testing.T) {
+	e := &Execution{}
+	now := time.Now()
+	for i := range maxEffectLog + 5 {
+		id := EffectID{Generation: 1, StepSeq: i, StepID: "step", Pos: 0}
+		e.RecordEffectIntent(id, now)
+	}
+	if len(e.EffectLog) != maxEffectLog {
+		t.Fatalf("expected log trimmed to %d, got %d", maxEffectLog, len(e.EffectLog))
+	}
+	// oldest entries evicted; first remaining should be index 5
+	if e.EffectLog[0].ID.StepSeq != 5 {
+		t.Fatalf("expected oldest remaining StepSeq=5, got %d", e.EffectLog[0].ID.StepSeq)
+	}
+}
+
+func TestEffectLog_CloneIsolation(t *testing.T) {
+	e := &Execution{}
+	id := makeID("implement", 0)
+	e.RecordEffectIntent(id, time.Now())
+
+	cloned := e.Clone()
+	if cloned == nil {
+		t.Fatal("Clone of non-nil Execution returned nil")
+	}
+	now2 := time.Now().Add(time.Second)
+	cloned.RecordEffectCompletion(id, now2)
+
+	if e.EffectApplied(id) {
+		t.Fatal("mutating clone's EffectLog should not affect original")
+	}
+}
+
+func TestEffectLog_CloneDeepCopiesCompletedAt(t *testing.T) {
+	e := &Execution{}
+	id := makeID("implement", 0)
+	e.RecordEffectIntent(id, time.Now())
+	e.RecordEffectCompletion(id, time.Now())
+
+	cloned := e.Clone()
+	if cloned == nil {
+		t.Fatal("Clone of non-nil Execution returned nil")
+	}
+	if cloned.EffectLog[0].CompletedAt == e.EffectLog[0].CompletedAt {
+		t.Fatal("clone should not alias original's CompletedAt pointer")
+	}
+
+	original := *e.EffectLog[0].CompletedAt
+	*cloned.EffectLog[0].CompletedAt = original.Add(time.Hour)
+	if !e.EffectLog[0].CompletedAt.Equal(original) {
+		t.Fatal("mutating clone's CompletedAt pointee should not affect original")
+	}
+}
+
+func TestEffectLog_CloneDeepCopiesLeaseExpiry(t *testing.T) {
+	e := &Execution{}
+	id := makeID("implement", 0)
+	now := time.Now().UTC()
+	expiresAt := now.Add(time.Minute)
+	e.EffectLog = []EffectRecord{{
+		ID:             id,
+		IntentAt:       now,
+		Owner:          "engine-1",
+		LeaseExpiresAt: &expiresAt,
+	}}
+
+	cloned := e.Clone()
+	if cloned == nil {
+		t.Fatal("Clone of non-nil Execution returned nil")
+	}
+	if cloned.EffectLog[0].LeaseExpiresAt == e.EffectLog[0].LeaseExpiresAt {
+		t.Fatal("clone should not alias original's LeaseExpiresAt pointer")
+	}
+
+	original := *e.EffectLog[0].LeaseExpiresAt
+	*cloned.EffectLog[0].LeaseExpiresAt = original.Add(time.Hour)
+	if !e.EffectLog[0].LeaseExpiresAt.Equal(original) {
+		t.Fatal("mutating clone's LeaseExpiresAt pointee should not affect original")
+	}
+}
+
+func TestExecutionClone_PreservesDefinitionHash(t *testing.T) {
+	e := &Execution{
+		WorkflowID:     "wf-1",
+		DefinitionHash: strings.Repeat("a", 64),
+		Variables:      map[string]string{"k": "v"},
+	}
+
+	cloned := e.Clone()
+	if cloned == nil {
+		t.Fatal("Clone returned nil")
+	}
+	if cloned.DefinitionHash != e.DefinitionHash {
+		t.Fatalf("DefinitionHash = %q, want %q", cloned.DefinitionHash, e.DefinitionHash)
 	}
 }

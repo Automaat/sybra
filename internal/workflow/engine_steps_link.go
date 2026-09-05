@@ -10,6 +10,12 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Automaat/sybra/internal/autonomy"
+	"github.com/Automaat/sybra/internal/errclass"
+
+	"github.com/Automaat/sybra/internal/taskstatus"
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 var prURLRe = regexp.MustCompile(`github\.com/[^/\s]+/[^/\s]+/pull/(\d+)`)
@@ -48,7 +54,7 @@ func (e *Engine) execLinkPRAndReview(taskID string, step *Step, wfExec *Executio
 		if err := e.linkTaskPR(taskID, t, prNumber); err != nil {
 			return StepOutput{}, fmt.Errorf("link pr: %w", err)
 		}
-		if err := e.tasks.UpdateTaskStatus(taskID, "in-review", ""); err != nil {
+		if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.InReview, ""); err != nil {
 			return StepOutput{}, fmt.Errorf("set in-review: %w", err)
 		}
 		msg := fmt.Sprintf("pr #%d found via %s → in-review", prNumber, source)
@@ -64,11 +70,11 @@ func (e *Engine) execLinkPRAndReview(taskID string, step *Step, wfExec *Executio
 	// silently flip the task to in-review against a PR nobody but the agent
 	// will ever look at.
 	if t.PRNumber > 0 {
-		if t.ProjectID == "" || e.prExistence == nil {
+		if t.ProjectID == "" || e.pr.ExistenceChecker == nil {
 			return setInReview(t.PRNumber, "task.pr_number")
 		}
 		ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
-		exists, verifyErr := e.prExistence.PRExists(ctx, t.ProjectID, t.PRNumber)
+		exists, verifyErr := e.pr.ExistenceChecker.PRExists(ctx, t.ProjectID, t.PRNumber)
 		cancel()
 		switch {
 		case exists:
@@ -124,7 +130,7 @@ func (e *Engine) execLinkPRAndReview(taskID string, step *Step, wfExec *Executio
 			if jsonErr != nil {
 				// gh --json returned malformed output. Don't mask the upstream
 				// failure as "no pr found" — log so operators can diagnose.
-				e.logger.Warn("workflow.link-pr.gh-list.parse", "task_id", taskID, "err", jsonErr, "raw", truncate(string(out), 200))
+				e.logger.Warn("workflow.link-pr.gh-list.parse", "task_id", taskID, "err", jsonErr, "raw", textutil.TruncateBytes(string(out), 200, "\n... (truncated)"))
 			}
 		}
 	}
@@ -158,7 +164,7 @@ func (e *Engine) execEvaluate(taskID string, step *Step, wfExec *Execution, t Ta
 				if linkErr := e.linkTaskPR(taskID, t, prNum); linkErr != nil {
 					return StepOutput{}, fmt.Errorf("evaluate: link pr: %w", linkErr)
 				}
-				if linkErr := e.tasks.UpdateTaskStatus(taskID, "in-review", ""); linkErr != nil {
+				if linkErr := e.tasks.UpdateTaskStatus(taskID, taskstatus.InReview, ""); linkErr != nil {
 					return StepOutput{}, fmt.Errorf("evaluate: set in-review: %w", linkErr)
 				}
 				msg := fmt.Sprintf("pr #%d found via late gh pr list → in-review", prNum)
@@ -166,7 +172,7 @@ func (e *Engine) execEvaluate(taskID string, step *Step, wfExec *Execution, t Ta
 				return StepOutput{StepID: step.ID, Status: "completed", Output: msg}, nil
 			}
 			if jsonErr != nil {
-				e.logger.Warn("workflow.evaluate.gh-list.parse", "task_id", taskID, "err", jsonErr, "raw", truncate(string(out), 200))
+				e.logger.Warn("workflow.evaluate.gh-list.parse", "task_id", taskID, "err", jsonErr, "raw", textutil.TruncateBytes(string(out), 200, "\n... (truncated)"))
 			}
 		}
 	}
@@ -182,12 +188,13 @@ func (e *Engine) execEvaluate(taskID string, step *Step, wfExec *Execution, t Ta
 	reason := "no agent result to evaluate"
 	if last != nil {
 		if isPRCreationStep(last.StepID) {
-			switch {
-			case looksLikeGitHubRateLimit(last.Output):
+			class := errclass.Classify(last.Output, errclass.WorkflowProseRetryBiased)
+			switch class {
+			case errclass.RateLimited:
 				return e.parkStepForRetry(taskID, wfExec, t, last.StepID, prCreateRetryStatusReason, "workflow.evaluate.pr-create-rate-limit")
-			case looksLikeTransientGitHub(last.Output):
+			case errclass.Transient:
 				return e.parkStepForRetry(taskID, wfExec, t, last.StepID, prCreateTransientStatusReason, "workflow.evaluate.pr-create-transient-outage")
-			case looksLikeAuthFailure(last.Output):
+			case errclass.Auth:
 				// Bad/expired credentials are not naturally time-bounded like a
 				// rate limit or a network blip, so they only get a bounded
 				// number of retries before escalating to a human.
@@ -197,12 +204,14 @@ func (e *Engine) execEvaluate(taskID string, step *Step, wfExec *Execution, t Ta
 					return e.parkStepForRetry(taskID, wfExec, t, last.StepID, prCreateAuthRetryReason, "workflow.evaluate.pr-create-auth-retry", "attempt", attempts+1, "max", maxPRCreateAuthRetries)
 				}
 				reason = fmt.Sprintf("PR creation failing due to invalid or expired GitHub credentials after %d retries", attempts)
+			case errclass.Unknown, errclass.Permanent:
+				// Continue to the ordinary failed/no-PR evaluation below.
 			}
 		}
 		if reason == "no agent result to evaluate" {
 			switch {
 			case last.Status == "failed":
-				reason = truncate(strings.TrimSpace(last.Output), 200)
+				reason = strings.TrimSpace(last.Output)
 				if reason == "" {
 					reason = "agent failed with no output"
 				}
@@ -223,10 +232,11 @@ func (e *Engine) execEvaluate(taskID string, step *Step, wfExec *Execution, t Ta
 		}
 	}
 
-	if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
-		return StepOutput{}, fmt.Errorf("evaluate: set human-required: %w", err)
+	escalation := autonomy.NewEscalation("workflow.evaluate_no_pr", autonomy.FailureOwnerMachine, autonomy.ProvenanceControlPlane, reason)
+	if err := e.tasks.SetEscalationAndWorkflow(taskID, string(taskstatus.Blocked), reason, escalation, autonomy.OutcomeQuarantined, wfExec); err != nil {
+		return StepOutput{}, fmt.Errorf("evaluate: quarantine missing PR: %w", err)
 	}
-	e.logger.Info("workflow.evaluate.human-required", "task_id", taskID, "reason", reason)
+	e.logger.Info("workflow.evaluate.quarantined", "task_id", taskID, "reason", reason)
 	return StepOutput{StepID: step.ID, Status: "completed", Output: reason}, nil
 }
 
@@ -235,12 +245,9 @@ func (e *Engine) execEvaluate(taskID string, step *Step, wfExec *Execution, t Ta
 func (e *Engine) parkStepForRetry(taskID string, wfExec *Execution, t TaskInfo, stepID, statusReason, logEvent string, logAttrs ...any) (StepOutput, error) {
 	wfExec.CurrentStep = stepID
 	wfExec.State = ExecWaiting
-	wfExec.SetVar(workflowRetryAfterVar, time.Now().UTC().Add(prCreateRetryBackoff).Format(time.RFC3339))
-	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+	wfExec.SetVar(workflowRetryAfterVar, e.now().Add(prCreateRetryBackoff).Format(time.RFC3339))
+	if err := e.tasks.SetStatusAndWorkflow(taskID, string(t.Status), statusReason, wfExec); err != nil {
 		return StepOutput{}, err
-	}
-	if statusErr := e.tasks.UpdateTaskStatus(taskID, t.Status, statusReason); statusErr != nil {
-		return StepOutput{}, statusErr
 	}
 	attrs := append([]any{"task_id", taskID, "step", stepID, "reason", statusReason}, logAttrs...)
 	e.logger.Warn(logEvent, attrs...)
@@ -257,7 +264,7 @@ func (e *Engine) maybeParkImplementGitHubRetry(taskID string, step *Step, wfExec
 	if step == nil || step.Type != StepRunAgent || step.ID != "implement" || step.Config.Role != "implementation" {
 		return false, nil
 	}
-	if t.Status != "human-required" {
+	if t.Status != taskstatus.HumanRequired {
 		return false, nil
 	}
 	msg := strings.TrimSpace(t.StatusReason + "\n" + output.Output)
@@ -273,11 +280,8 @@ func (e *Engine) maybeParkImplementGitHubRetry(taskID string, step *Step, wfExec
 	wfExec.CurrentStep = step.ID
 	wfExec.State = ExecWaiting
 	wfExec.SetVar(implementPushAttemptsVar, strconv.Itoa(attempts+1))
-	wfExec.SetVar(workflowRetryAfterVar, time.Now().UTC().Add(prCreateRetryBackoff).Format(time.RFC3339))
-	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
-		return false, err
-	}
-	if err := e.tasks.UpdateTaskStatus(taskID, "in-progress", implementPushRetryStatusReason); err != nil {
+	wfExec.SetVar(workflowRetryAfterVar, e.now().Add(prCreateRetryBackoff).Format(time.RFC3339))
+	if err := e.tasks.SetStatusAndWorkflow(taskID, string(taskstatus.InProgress), implementPushRetryStatusReason, wfExec); err != nil {
 		return false, err
 	}
 	e.logger.Warn("workflow.implement-push-retry.parked",
@@ -297,113 +301,10 @@ func looksLikeImplementGitHubRetry(output string) bool {
 	if !githubish {
 		return false
 	}
-	return looksLikeGitHubRateLimit(output) ||
-		looksLikeTransientGitHub(output) ||
-		looksLikeAuthFailure(output)
+	class := errclass.Classify(output, errclass.WorkflowProseRetryBiased)
+	return class == errclass.RateLimited || class == errclass.Transient || class == errclass.Auth
 }
 
 func isPRCreationStep(stepID string) bool {
 	return stepID == "create_pr" || stepID == "push_existing_pr"
-}
-
-func looksLikeGitHubRateLimit(output string) bool {
-	lower := strings.ToLower(output)
-	if !strings.Contains(lower, "rate limit") {
-		return false
-	}
-	return strings.Contains(lower, "github") ||
-		strings.Contains(lower, "graphql") ||
-		strings.Contains(lower, "gh ") ||
-		strings.Contains(lower, "api rate limit") ||
-		strings.Contains(lower, "secondary rate limit")
-}
-
-// looksLikeTransientGitHub matches network-level failures that keep a PR
-// creation agent from reaching GitHub at all — DNS/connection errors, TLS
-// failures, timeouts, and 502/503 responses. These are naturally time-bounded
-// (retrying once connectivity is restored is safe) and are distinct from
-// looksLikeGitHubRateLimit (requires "rate limit") and looksLikeAuthFailure
-// (credential problems, which are not naturally time-bounded).
-func looksLikeTransientGitHub(output string) bool {
-	lower := strings.ToLower(output)
-	patterns := []string{
-		"connection refused",
-		"connection reset",
-		"could not resolve host",
-		"no such host",
-		"no route to host",
-		"network is unreachable",
-		"temporary failure in name resolution",
-		"i/o timeout",
-		"timed out",
-		"context deadline exceeded",
-		"tls handshake",
-		"tls:",
-	}
-	for _, p := range patterns {
-		if strings.Contains(lower, p) {
-			return true
-		}
-	}
-	return looksLikeGatewayStatus(lower)
-}
-
-// looksLikeGatewayStatus matches HTTP 502/503 responses regardless of how the
-// status is phrased ("HTTP 502", "502 bad gateway", "503 Service Unavailable",
-// ...) — GitHub/gh can surface either the bare code or a reason phrase.
-func looksLikeGatewayStatus(lower string) bool {
-	for _, code := range []string{"502", "503"} {
-		idx := strings.Index(lower, code)
-		if idx < 0 {
-			continue
-		}
-		// Guard against matching a status embedded in a larger token
-		// (e.g. "15029" or "abc502def") by requiring non-alphanumeric
-		// boundaries around the code.
-		if idx > 0 && !isStatusBoundary(lower[idx-1]) {
-			continue
-		}
-		end := idx + len(code)
-		if end < len(lower) && !isStatusBoundary(lower[end]) {
-			continue
-		}
-		return true
-	}
-	return false
-}
-
-func isDigit(b byte) bool {
-	return b >= '0' && b <= '9'
-}
-
-func isLowerAlpha(b byte) bool {
-	return b >= 'a' && b <= 'z'
-}
-
-func isStatusBoundary(b byte) bool {
-	return !isDigit(b) && !isLowerAlpha(b)
-}
-
-// looksLikeAuthFailure matches bad/expired GitHub credentials. Unlike rate
-// limits or network blips, a broken token does not self-heal, so callers must
-// bound how many times they retry before escalating to a human.
-func looksLikeAuthFailure(output string) bool {
-	lower := strings.ToLower(output)
-	patterns := []string{
-		"bad credentials",
-		"authentication failed",
-		"failed to log in",
-		"gh auth",
-		"gh_token is invalid",
-		"github_token is invalid",
-		"token has expired",
-		"could not read username for 'https://github.com'",
-		"401 unauthorized",
-	}
-	for _, p := range patterns {
-		if strings.Contains(lower, p) {
-			return true
-		}
-	}
-	return false
 }

@@ -3,31 +3,37 @@ package agent
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
-	"net/http"
-	"net/url"
+	"math"
 	"os"
-	"os/exec"
 	"path"
 	"strings"
 	"time"
 
-	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/providerid"
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
+	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
+	"k8s.io/client-go/rest"
 )
 
 const (
-	defaultK8sAPIHost     = "https://kubernetes.default.svc"
 	defaultK8sNamespace   = "default"
 	defaultK8sImage       = "busybox:1.36"
 	defaultK8sWorkdir     = "/tmp/sybra-workspace/repo"
 	k8sRunnerModeFake     = "fake"
 	k8sRunnerModeProvider = "provider"
+	k8sStopTimeout        = 10 * time.Second
 )
 
 type k8sGitWorkspace struct {
@@ -69,6 +75,39 @@ type K8sJobVolume struct {
 	ReadOnly  bool
 }
 
+type k8sJobClient interface {
+	Create(ctx context.Context, job *batchv1.Job, opts metav1.CreateOptions) (*batchv1.Job, error)
+	Delete(ctx context.Context, name string, opts metav1.DeleteOptions) error
+	Get(ctx context.Context, name string, opts metav1.GetOptions) (*batchv1.Job, error)
+	Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts metav1.PatchOptions, subresources ...string) (*batchv1.Job, error)
+}
+
+type k8sPodClient interface {
+	List(ctx context.Context, opts metav1.ListOptions) (*corev1.PodList, error)
+	Logs(ctx context.Context, podName, container string) (string, error)
+}
+
+type k8sTypedPodClient struct {
+	typedcorev1.PodInterface
+}
+
+func (c k8sTypedPodClient) Logs(ctx context.Context, podName, container string) (string, error) {
+	req := c.GetLogs(podName, &corev1.PodLogOptions{Container: container})
+	stream, err := req.Stream(ctx)
+	if err != nil {
+		if apierrors.IsNotFound(err) || apierrors.IsBadRequest(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	defer stream.Close()
+	b, err := io.ReadAll(stream)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
 type k8sJobRunner struct {
 	logger    *slog.Logger
 	namespace string
@@ -82,9 +121,9 @@ type k8sJobRunner struct {
 	secretEnv []K8sJobSecretEnvVar
 	volumes   []K8sJobVolume
 
-	client *http.Client
-	apiURL string
-	token  string
+	jobs      k8sJobClient
+	pods      k8sPodClient
+	clientErr error
 }
 
 func newK8sJobRunner(logger *slog.Logger, cfg K8sJobRunnerConfig) *k8sJobRunner {
@@ -110,6 +149,7 @@ func newK8sJobRunner(logger *slog.Logger, cfg K8sJobRunnerConfig) *k8sJobRunner 
 	if failedTTL == 0 {
 		failedTTL = 86400
 	}
+	jobs, pods, clientErr := inClusterK8sClients(ns)
 	return &k8sJobRunner{
 		logger:    logger,
 		namespace: ns,
@@ -122,40 +162,97 @@ func newK8sJobRunner(logger *slog.Logger, cfg K8sJobRunnerConfig) *k8sJobRunner 
 		env:       append([]K8sJobEnvVar(nil), cfg.Env...),
 		secretEnv: append([]K8sJobSecretEnvVar(nil), cfg.SecretEnv...),
 		volumes:   append([]K8sJobVolume(nil), cfg.Volumes...),
-		client:    inClusterHTTPClient(logger),
-		apiURL:    strings.TrimRight(envOrDefault("KUBERNETES_SERVICE_URL", defaultK8sAPIHost), "/"),
-		token:     readServiceAccountToken(),
+		jobs:      jobs,
+		pods:      pods,
+		clientErr: clientErr,
 	}
 }
 
-func (r *k8sJobRunner) Run(ctx context.Context, m *Manager, a *Agent, cfg RunConfig) {
+func (m *Manager) newK8sExecutionBackend(cfg K8sJobRunnerConfig) ExecutionBackend {
+	runner := newK8sJobRunner(m.logger, cfg)
+	backend := newCallbackExecutionBackend("kubernetes")
+	// The selected backend is immutable for an accepted run, so capturing the
+	// runner here is safe across later runtime-config reloads.
+	return &k8sExecutionBackend{callbackExecutionBackend: backend, runner: runner}
+}
+
+type k8sExecutionBackend struct {
+	*callbackExecutionBackend
+	runner *k8sJobRunner
+}
+
+func (b *k8sExecutionBackend) Start(ctx context.Context, start ExecutionStart) (ExecutionHandle, error) {
+	handle := ExecutionHandle("kubernetes:" + start.Spec.ID)
+	jobName := k8sName("sybra-agent-" + start.Spec.ID)
+	stopObservation := start.stop
+	start.stop = func(stopCtx context.Context) error {
+		deleteCtx, cancelDelete := context.WithTimeout(context.WithoutCancel(stopCtx), k8sStopTimeout)
+		deleteErr := b.runner.deleteJob(deleteCtx, jobName)
+		cancelDelete()
+		var observationErr error
+		if stopObservation != nil {
+			observationErr = stopObservation(stopCtx)
+		}
+		return errors.Join(deleteErr, observationErr)
+	}
+	start.startCommand = "kubernetes job/" + jobName
+	start.backendOwnsCompletion = true
+	start.accept = func(acceptCtx context.Context) error {
+		if b.runner == nil {
+			return fmt.Errorf("kubernetes runner is not configured")
+		}
+		if b.runner.clientErr != nil {
+			return fmt.Errorf("kubernetes client: %w", b.runner.clientErr)
+		}
+		if b.runner.jobs == nil || b.runner.pods == nil {
+			return fmt.Errorf("kubernetes runner client is unavailable")
+		}
+		return b.runner.createJob(acceptCtx, jobName, start.Spec, start.Config)
+	}
+	start.runExisting = func(runCtx context.Context, sink ExecutionEventSink, _ ExecutionHandle) {
+		start.Sink = sink
+		b.runner.observeJob(runCtx, handle, jobName, start)
+	}
+	start.steer = nil
+	return b.callbackExecutionBackend.Start(ctx, start)
+}
+
+func (r *k8sJobRunner) Run(ctx context.Context, handle ExecutionHandle, start ExecutionStart) {
+	spec, cfg, sink := start.Spec, start.Config, start.Sink
+	complete := func(err error) {
+		sink.EmitExecutionEvent(ctx, handle, ExecutionEvent{Kind: ExecutionCompleted, Err: err})
+	}
 	if r == nil {
-		a.SetExitErr(fmt.Errorf("kubernetes runner is not configured"))
-		m.finalizeRun(ctx, a, "agent.k8s.done")
+		complete(fmt.Errorf("kubernetes runner is not configured"))
 		return
 	}
-	if r.token == "" {
-		a.SetExitErr(fmt.Errorf("kubernetes service-account token is unavailable"))
-		m.finalizeRun(ctx, a, "agent.k8s.done")
+	if r.clientErr != nil {
+		complete(fmt.Errorf("kubernetes client: %w", r.clientErr))
+		return
+	}
+	if r.jobs == nil || r.pods == nil {
+		complete(fmt.Errorf("kubernetes runner client is unavailable"))
 		return
 	}
 
-	jobName := k8sName("sybra-agent-" + a.ID)
-	if err := r.createJob(ctx, jobName, a, cfg); err != nil {
-		a.SetExitErr(err)
-		m.finalizeRun(ctx, a, "agent.k8s.done")
+	jobName := k8sName("sybra-agent-" + spec.ID)
+	if err := r.createJob(ctx, jobName, spec, cfg); err != nil {
+		complete(err)
 		return
 	}
-	a.Command = "kubernetes job/" + jobName
-	m.emit(events.AgentState(a.ID), a)
+	r.observeJob(ctx, handle, jobName, start)
+}
 
-	prevLen := len(a.Output())
+func (r *k8sJobRunner) observeJob(ctx context.Context, handle ExecutionHandle, jobName string, start ExecutionStart) {
+	spec, cfg, sink := start.Spec, start.Config, start.Sink
+	complete := func(err error) {
+		sink.EmitExecutionEvent(ctx, handle, ExecutionEvent{Kind: ExecutionCompleted, Err: err})
+	}
 	var logOffset int
-	var lastEmit time.Time
 	var podName string
-	logProvider := a.Provider
+	logProvider := spec.Provider
 	if r.mode == k8sRunnerModeFake {
-		logProvider = "claude"
+		logProvider = providerid.Claude
 	}
 
 	ticker := time.NewTicker(750 * time.Millisecond)
@@ -163,8 +260,7 @@ func (r *k8sJobRunner) Run(ctx context.Context, m *Manager, a *Agent, cfg RunCon
 	for {
 		select {
 		case <-ctx.Done():
-			a.SetExitErr(ctx.Err())
-			m.finalizeRun(ctx, a, "agent.k8s.done")
+			complete(ctx.Err())
 			return
 		case <-ticker.C:
 		}
@@ -175,14 +271,13 @@ func (r *k8sJobRunner) Run(ctx context.Context, m *Manager, a *Agent, cfg RunCon
 		if podName != "" {
 			logs, err := r.podLogs(ctx, podName)
 			if err == nil && logOffset < len(logs) {
-				logOffset += processK8sLogChunk(ctx, m, a, logProvider, []byte(logs[logOffset:]), false, &lastEmit)
+				logOffset += processK8sLogChunk(ctx, sink, handle, logProvider, []byte(logs[logOffset:]), false)
 			}
 		}
 
 		done, failed, err := r.jobDone(ctx, jobName)
 		if err != nil {
-			a.SetExitErr(err)
-			m.finalizeRun(ctx, a, "agent.k8s.done")
+			complete(err)
 			return
 		}
 		if !done {
@@ -190,11 +285,12 @@ func (r *k8sJobRunner) Run(ctx context.Context, m *Manager, a *Agent, cfg RunCon
 		}
 		if podName != "" {
 			if logs, err := r.podLogs(ctx, podName); err == nil && logOffset < len(logs) {
-				processK8sLogChunk(ctx, m, a, logProvider, []byte(logs[logOffset:]), true, &lastEmit)
+				processK8sLogChunk(ctx, sink, handle, logProvider, []byte(logs[logOffset:]), true)
 			}
 		}
+		var runErr error
 		if failed {
-			a.SetExitErr(fmt.Errorf("kubernetes job %s failed", jobName))
+			runErr = fmt.Errorf("kubernetes job %s failed", jobName)
 			if r.failedTTL != r.ttl {
 				if perr := r.patchJobTTL(ctx, jobName, r.failedTTL); perr != nil {
 					r.logger.Warn("agent.k8s.failed_ttl_patch",
@@ -204,19 +300,19 @@ func (r *k8sJobRunner) Run(ctx context.Context, m *Manager, a *Agent, cfg RunCon
 			}
 		} else {
 			if err := syncK8sGitWorkspace(ctx, cfg.Dir); err != nil {
-				a.SetExitErr(err)
-			} else {
-				m.finalizeFromResult(a, prevLen)
+				runErr = err
 			}
 		}
-		m.finalizeRun(ctx, a, "agent.k8s.done")
+		complete(runErr)
 		return
 	}
 }
 
-func processK8sLogChunk(ctx context.Context, m *Manager, a *Agent, providerName string, chunk []byte, final bool, lastEmit *time.Time) int {
-	prov := providerByName(providerName)
+func processK8sLogChunk(ctx context.Context, sink ExecutionEventSink, handle ExecutionHandle, providerName string, chunk []byte, final bool) int {
 	processed := 0
+	emit := func(line []byte) {
+		sink.EmitExecutionEvent(ctx, handle, ExecutionEvent{Kind: ExecutionOutput, Provider: providerName, Output: line})
+	}
 	for len(chunk) > 0 {
 		nl := bytes.IndexByte(chunk, '\n')
 		if nl < 0 {
@@ -226,7 +322,7 @@ func processK8sLogChunk(ctx context.Context, m *Manager, a *Agent, providerName 
 			line := chunk
 			processed += len(line)
 			if len(line) > 0 {
-				m.processHeadlessLine(ctx, a, line, lastEmit, prov)
+				emit(line)
 			}
 			return processed
 		}
@@ -236,94 +332,109 @@ func processK8sLogChunk(ctx context.Context, m *Manager, a *Agent, providerName 
 		if len(line) == 0 {
 			continue
 		}
-		m.processHeadlessLine(ctx, a, line, lastEmit, prov)
+		emit(line)
 	}
 	return processed
 }
 
-func (r *k8sJobRunner) createJob(ctx context.Context, name string, a *Agent, cfg RunConfig) error {
-	command, env, err := r.jobCommandAndEnv(ctx, a, cfg)
+func (r *k8sJobRunner) createJob(ctx context.Context, name string, spec ExecutionSpec, cfg RunConfig) error {
+	command, env, err := r.jobCommandAndEnv(ctx, spec, cfg)
+	if err != nil {
+		return err
+	}
+	ttlSeconds, err := k8sTTLSeconds(r.ttl)
 	if err != nil {
 		return err
 	}
 	volumes, mounts := r.volumeSpec()
-	container := map[string]any{
-		"name":            "agent",
-		"image":           r.image,
-		"imagePullPolicy": "IfNotPresent",
-		"command":         command,
-		"env":             env,
-	}
-	if len(mounts) > 0 {
-		container["volumeMounts"] = mounts
-	}
-	podSpec := map[string]any{
-		"restartPolicy": "Never",
-		"securityContext": map[string]any{
-			"runAsNonRoot": true,
-			"runAsUser":    1000,
-			"runAsGroup":   1000,
-			"fsGroup":      1000,
-		},
-		"containers": []map[string]any{container},
-	}
-	if len(volumes) > 0 {
-		podSpec["volumes"] = volumes
-	}
-	body := map[string]any{
-		"apiVersion": "batch/v1",
-		"kind":       "Job",
-		"metadata": map[string]any{
-			"name": name,
-			"labels": map[string]string{
+	runAsUser := int64(1000)
+	runAsGroup := int64(1000)
+	fsGroup := int64(1000)
+	runAsNonRoot := true
+	noRetries := int32(0)
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+			Labels: map[string]string{
 				"app.kubernetes.io/name": "sybra-agent",
-				"sybra.agent/id":         a.ID,
-				"sybra.task/id":          sanitizeLabelValue(a.TaskID),
+				"sybra.agent/id":         spec.ID,
+				"sybra.task/id":          sanitizeLabelValue(spec.TaskID),
 			},
 		},
-		"spec": map[string]any{
-			"backoffLimit":            0,
-			"ttlSecondsAfterFinished": r.ttl,
-			"template": map[string]any{
-				"metadata": map[string]any{
-					"labels": map[string]string{
+		Spec: batchv1.JobSpec{
+			BackoffLimit:            &noRetries,
+			TTLSecondsAfterFinished: &ttlSeconds,
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
 						"app.kubernetes.io/name": "sybra-agent",
-						"sybra.agent/id":         a.ID,
+						"sybra.agent/id":         spec.ID,
 					},
 				},
-				"spec": podSpec,
+				Spec: corev1.PodSpec{
+					RestartPolicy: corev1.RestartPolicyNever,
+					SecurityContext: &corev1.PodSecurityContext{
+						RunAsNonRoot: &runAsNonRoot,
+						RunAsUser:    &runAsUser,
+						RunAsGroup:   &runAsGroup,
+						FSGroup:      &fsGroup,
+					},
+					Containers: []corev1.Container{{
+						Name:            "agent",
+						Image:           r.image,
+						ImagePullPolicy: corev1.PullIfNotPresent,
+						Command:         command,
+						Env:             env,
+						VolumeMounts:    mounts,
+					}},
+					Volumes: volumes,
+				},
 			},
 		},
 	}
-	var out map[string]any
-	return r.doJSON(ctx, http.MethodPost, "/apis/batch/v1/namespaces/"+url.PathEscape(r.namespace)+"/jobs", body, &out)
+	_, err = r.jobs.Create(ctx, job, metav1.CreateOptions{})
+	return err
 }
 
-func (r *k8sJobRunner) volumeSpec() (volumes, mounts []map[string]any) {
+func (r *k8sJobRunner) deleteJob(ctx context.Context, name string) error {
+	if r == nil || r.jobs == nil {
+		return fmt.Errorf("kubernetes runner client is unavailable")
+	}
+	propagation := metav1.DeletePropagationBackground
+	err := r.jobs.Delete(ctx, name, metav1.DeleteOptions{PropagationPolicy: &propagation})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	return err
+}
+
+func (r *k8sJobRunner) volumeSpec() (volumes []corev1.Volume, mounts []corev1.VolumeMount) {
 	for _, v := range r.volumes {
 		if v.Name == "" || v.ClaimName == "" || v.MountPath == "" {
 			continue
 		}
-		volumes = append(volumes, map[string]any{
-			"name": v.Name,
-			"persistentVolumeClaim": map[string]any{
-				"claimName": v.ClaimName,
+		volumes = append(volumes, corev1.Volume{
+			Name: v.Name,
+			VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+					ClaimName: v.ClaimName,
+				},
 			},
 		})
-		mount := map[string]any{
-			"name":      v.Name,
-			"mountPath": v.MountPath,
+		mount := corev1.VolumeMount{
+			Name:      v.Name,
+			MountPath: v.MountPath,
 		}
 		if v.ReadOnly {
-			mount["readOnly"] = true
+			mount.ReadOnly = true
 		}
 		mounts = append(mounts, mount)
 	}
 	return volumes, mounts
 }
 
-func (r *k8sJobRunner) jobCommandAndEnv(ctx context.Context, a *Agent, cfg RunConfig) (command []string, env []map[string]any, err error) {
-	env = r.baseEnv(a, cfg)
+func (r *k8sJobRunner) jobCommandAndEnv(ctx context.Context, spec ExecutionSpec, cfg RunConfig) (command []string, env []corev1.EnvVar, err error) {
+	env = r.baseEnv(spec, cfg)
 	if len(r.command) > 0 {
 		return append([]string(nil), r.command...), env, nil
 	}
@@ -335,7 +446,7 @@ func (r *k8sJobRunner) jobCommandAndEnv(ctx context.Context, a *Agent, cfg RunCo
 		if err := pushK8sGitWorkspace(ctx, cfg.Dir, workspace); err != nil {
 			return nil, nil, err
 		}
-		inv, err := buildK8sProviderInvocation(a, cfg, defaultK8sWorkdir)
+		inv, err := buildK8sProviderInvocation(spec, cfg, defaultK8sWorkdir)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -346,7 +457,7 @@ func (r *k8sJobRunner) jobCommandAndEnv(ctx context.Context, a *Agent, cfg RunCo
 		for _, pair := range inv.env {
 			name, value, ok := strings.Cut(pair, "=")
 			if ok && name != "" {
-				env = append(env, map[string]any{"name": name, "value": value})
+				env = append(env, corev1.EnvVar{Name: name, Value: value})
 			}
 		}
 		return k8sProviderCommand(inv), env, nil
@@ -356,31 +467,31 @@ printf '{"type":"system","subtype":"init","session_id":"k8s-%s"}\n'
 printf '{"type":"assistant","message":{"content":[{"type":"text","text":"k8s poc agent started for task %s"}]}}\n'
 sleep 2
 printf '{"type":"result","subtype":"success","result":"k8s poc agent completed","session_id":"k8s-%s","total_cost_usd":0}\n'
-`, a.ID, cfg.TaskID, a.ID)
+`, spec.ID, cfg.TaskID, spec.ID)
 	return []string{"sh", "-c", script}, env, nil
 }
 
-func (r *k8sJobRunner) baseEnv(a *Agent, cfg RunConfig) []map[string]any {
-	env := []map[string]any{
-		{"name": "SYBRA_AGENT_ID", "value": a.ID},
-		{"name": "SYBRA_TASK_ID", "value": a.TaskID},
-		{"name": "SYBRA_AGENT_PROMPT", "value": cfg.Prompt},
+func (r *k8sJobRunner) baseEnv(spec ExecutionSpec, cfg RunConfig) []corev1.EnvVar {
+	env := []corev1.EnvVar{
+		{Name: "SYBRA_AGENT_ID", Value: spec.ID},
+		{Name: "SYBRA_TASK_ID", Value: spec.TaskID},
+		{Name: "SYBRA_AGENT_PROMPT", Value: cfg.Prompt},
 	}
 	for _, e := range r.env {
 		if e.Name != "" {
-			env = append(env, map[string]any{"name": e.Name, "value": e.Value})
+			env = append(env, corev1.EnvVar{Name: e.Name, Value: e.Value})
 		}
 	}
 	for _, e := range r.secretEnv {
 		if e.Name == "" || e.SecretName == "" || e.SecretKey == "" {
 			continue
 		}
-		env = append(env, map[string]any{
-			"name": e.Name,
-			"valueFrom": map[string]any{
-				"secretKeyRef": map[string]any{
-					"name": e.SecretName,
-					"key":  e.SecretKey,
+		env = append(env, corev1.EnvVar{
+			Name: e.Name,
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: e.SecretName},
+					Key:                  e.SecretKey,
 				},
 			},
 		})
@@ -388,13 +499,13 @@ func (r *k8sJobRunner) baseEnv(a *Agent, cfg RunConfig) []map[string]any {
 	return env
 }
 
-func appendK8sWorkspaceEnv(env []map[string]any, workspace k8sGitWorkspace) []map[string]any {
-	env = append(env, map[string]any{"name": "SYBRA_K8S_WORKDIR", "value": defaultK8sWorkdir})
+func appendK8sWorkspaceEnv(env []corev1.EnvVar, workspace k8sGitWorkspace) []corev1.EnvVar {
+	env = append(env, corev1.EnvVar{Name: "SYBRA_K8S_WORKDIR", Value: defaultK8sWorkdir})
 	if workspace.Remote != "" {
-		env = append(env, map[string]any{"name": "SYBRA_K8S_GIT_REMOTE", "value": workspace.Remote})
+		env = append(env, corev1.EnvVar{Name: "SYBRA_K8S_GIT_REMOTE", Value: workspace.Remote})
 	}
 	if workspace.Branch != "" {
-		env = append(env, map[string]any{"name": "SYBRA_K8S_GIT_BRANCH", "value": workspace.Branch})
+		env = append(env, corev1.EnvVar{Name: "SYBRA_K8S_GIT_BRANCH", Value: workspace.Branch})
 	}
 	return env
 }
@@ -403,17 +514,21 @@ func appendK8sWorkspaceEnv(env []map[string]any, workspace k8sGitWorkspace) []ma
 // skips a non-GitHub remote: the fake-repo smoke points origin at a bare clone
 // on the PVC, which has no PR to open, and that is a valid setup rather than a
 // misconfiguration worth failing the run over.
-func appendK8sPRRepoEnv(env []map[string]any, remote string, logger *slog.Logger) []map[string]any {
+func appendK8sPRRepoEnv(env []corev1.EnvVar, remote string, logger *slog.Logger) []corev1.EnvVar {
 	owner, repo, err := project.ParseGitHubURL(remote)
 	if err != nil {
 		logger.Info("agent.k8s.pr.skip", "reason", "remote is not a github url", "err", err)
 		return env
 	}
-	return append(env, map[string]any{"name": "SYBRA_K8S_PR_REPO", "value": owner + "/" + repo})
+	return append(env, corev1.EnvVar{Name: "SYBRA_K8S_PR_REPO", Value: owner + "/" + repo})
 }
 
-func buildK8sProviderInvocation(a *Agent, cfg RunConfig, workdir string) (headlessInvocation, error) {
+func buildK8sProviderInvocation(spec ExecutionSpec, cfg RunConfig, workdir string) (headlessInvocation, error) {
 	cfg.Dir = workdir
+	a := &Agent{
+		ID: spec.ID, TaskID: spec.TaskID, Mode: spec.Mode, Provider: spec.Provider,
+		Model: spec.Model, ReasoningEffort: spec.ReasoningEffort,
+	}
 	prov, err := providerForInvocation(a, cfg)
 	if err != nil {
 		return headlessInvocation{}, err
@@ -542,7 +657,7 @@ func pushK8sGitWorkspace(ctx context.Context, dir string, workspace k8sGitWorksp
 	if workspace.Remote == "" || workspace.Branch == "" {
 		return nil
 	}
-	if !hasUnpushedCommits(ctx, dir) {
+	if !k8sGitWorkspaceNeedsPush(ctx, dir) {
 		return nil
 	}
 	if _, err := gitOutput(ctx, dir, "push", "-u", "origin", "HEAD:"+workspace.Branch); err != nil {
@@ -551,15 +666,14 @@ func pushK8sGitWorkspace(ctx context.Context, dir string, workspace k8sGitWorksp
 	return nil
 }
 
-// hasUnpushedCommits reports whether HEAD holds commits that no remote branch
-// contains. Errs toward true: if the count cannot be read, push and let a real
-// failure surface rather than silently dropping work.
-func hasUnpushedCommits(ctx context.Context, dir string) bool {
+// k8sGitWorkspaceNeedsPush deliberately considers only remote-tracking refs.
+// The Job clones the remote and cannot see locally fetched refs/sybra/pr/*, so
+// a PR head reachable only through one of those refs must still be pushed.
+// Fail closed: attempting the push is safer than dispatching from the wrong
+// commit when reachability cannot be determined.
+func k8sGitWorkspaceNeedsPush(ctx context.Context, dir string) bool {
 	out, err := gitOutput(ctx, dir, "rev-list", "--count", "HEAD", "--not", "--remotes")
-	if err != nil {
-		return true
-	}
-	return strings.TrimSpace(out) != "0"
+	return err != nil || out != "0"
 }
 
 func syncK8sGitWorkspace(ctx context.Context, dir string) error {
@@ -577,10 +691,9 @@ func syncK8sGitWorkspace(ctx context.Context, dir string) error {
 }
 
 func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
-	out, err := cmd.CombinedOutput()
+	out, err := gitexec.CombinedOutput(ctx, gitexec.Options{Dir: dir}, args...)
 	if err != nil {
-		return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
 }
@@ -597,52 +710,20 @@ func normalizeK8sRunnerMode(mode string) string {
 }
 
 func (r *k8sJobRunner) podForJob(ctx context.Context, jobName string) string {
-	var pods struct {
-		Items []struct {
-			Metadata struct {
-				Name string `json:"name"`
-			} `json:"metadata"`
-		} `json:"items"`
-	}
-	q := url.Values{"labelSelector": {"job-name=" + jobName}}
-	err := r.doJSON(ctx, http.MethodGet, "/api/v1/namespaces/"+url.PathEscape(r.namespace)+"/pods?"+q.Encode(), nil, &pods)
+	pods, err := r.pods.List(ctx, metav1.ListOptions{LabelSelector: "job-name=" + jobName})
 	if err != nil || len(pods.Items) == 0 {
 		return ""
 	}
-	return pods.Items[0].Metadata.Name
+	return pods.Items[0].Name
 }
 
 func (r *k8sJobRunner) podLogs(ctx context.Context, podName string) (string, error) {
-	endpoint := "/api/v1/namespaces/" + url.PathEscape(r.namespace) + "/pods/" + url.PathEscape(podName) + "/log?container=agent"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.apiURL+endpoint, http.NoBody)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Authorization", "Bearer "+r.token)
-	resp, err := r.client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusBadRequest {
-		return "", nil
-	}
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return "", fmt.Errorf("kubernetes pod log %s: %s", resp.Status, strings.TrimSpace(string(b)))
-	}
-	b, err := io.ReadAll(resp.Body)
-	return string(b), err
+	return r.pods.Logs(ctx, podName, "agent")
 }
 
 func (r *k8sJobRunner) jobDone(ctx context.Context, jobName string) (done, failed bool, err error) {
-	var job struct {
-		Status struct {
-			Succeeded int `json:"succeeded"`
-			Failed    int `json:"failed"`
-		} `json:"status"`
-	}
-	if err := r.doJSON(ctx, http.MethodGet, "/apis/batch/v1/namespaces/"+url.PathEscape(r.namespace)+"/jobs/"+url.PathEscape(jobName), nil, &job); err != nil {
+	job, err := r.jobs.Get(ctx, jobName, metav1.GetOptions{})
+	if err != nil {
 		return false, false, err
 	}
 	if job.Status.Succeeded > 0 {
@@ -655,85 +736,31 @@ func (r *k8sJobRunner) jobDone(ctx context.Context, jobName string) (done, faile
 }
 
 // patchJobTTL overrides a Job's ttlSecondsAfterFinished after the fact. The
-// Kubernetes API only accepts a patch content type here (application/json on
-// a Job PATCH 415s), so this bypasses doJSON's fixed Content-Type rather than
-// complicating it for one caller.
+// runner uses a merge patch so failed Jobs can retain logs longer than
+// succeeded ones without changing the create-time manifest contract.
 func (r *k8sJobRunner) patchJobTTL(ctx context.Context, jobName string, ttlSeconds int) error {
-	data, err := json.Marshal(map[string]any{"spec": map[string]any{"ttlSecondsAfterFinished": ttlSeconds}})
+	boundedTTL, err := k8sTTLSeconds(ttlSeconds)
 	if err != nil {
 		return err
 	}
-	endpoint := "/apis/batch/v1/namespaces/" + url.PathEscape(r.namespace) + "/jobs/" + url.PathEscape(jobName)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, r.apiURL+endpoint, bytes.NewReader(data))
+	data, err := json.Marshal(map[string]any{"spec": map[string]any{"ttlSecondsAfterFinished": boundedTTL}})
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+r.token)
-	req.Header.Set("Content-Type", "application/merge-patch+json")
-	resp, err := r.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("kubernetes PATCH %s: %s: %s", endpoint, resp.Status, strings.TrimSpace(string(b)))
-	}
-	return nil
+	_, err = r.jobs.Patch(ctx, jobName, types.MergePatchType, data, metav1.PatchOptions{})
+	return err
 }
 
-func (r *k8sJobRunner) doJSON(ctx context.Context, method, endpoint string, body, out any) error {
-	var reader io.Reader
-	if body != nil {
-		data, err := json.Marshal(body)
-		if err != nil {
-			return err
-		}
-		reader = bytes.NewReader(data)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, r.apiURL+endpoint, reader)
+func inClusterK8sClients(namespace string) (k8sJobClient, k8sPodClient, error) {
+	cfg, err := rest.InClusterConfig()
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+r.token)
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	resp, err := r.client.Do(req)
+	clientset, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("kubernetes %s %s: %s: %s", method, endpoint, resp.Status, strings.TrimSpace(string(b)))
-	}
-	if out == nil {
-		return nil
-	}
-	return json.NewDecoder(resp.Body).Decode(out)
-}
-
-func inClusterHTTPClient(logger *slog.Logger) *http.Client {
-	caPath := "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
-	ca, err := os.ReadFile(caPath)
-	if err != nil {
-		return http.DefaultClient
-	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(ca) {
-		logger.Warn("agent.k8s.ca", "path", caPath, "err", "no certificates found")
-		return http.DefaultClient
-	}
-	return &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}}}
-}
-
-func readServiceAccountToken() string {
-	data, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/token")
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(data))
+	return clientset.BatchV1().Jobs(namespace), k8sTypedPodClient{PodInterface: clientset.CoreV1().Pods(namespace)}, nil
 }
 
 func inClusterNamespace() string {
@@ -744,11 +771,11 @@ func inClusterNamespace() string {
 	return strings.TrimSpace(string(data))
 }
 
-func envOrDefault(key, fallback string) string {
-	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
-		return value
+func k8sTTLSeconds(v int) (int32, error) {
+	if v < 0 || v > math.MaxInt32 {
+		return 0, fmt.Errorf("kubernetes job ttl %d out of int32 range", v)
 	}
-	return fallback
+	return int32(v), nil
 }
 
 func k8sName(s string) string {

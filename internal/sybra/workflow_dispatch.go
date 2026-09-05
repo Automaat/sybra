@@ -2,10 +2,13 @@ package sybra
 
 import (
 	"slices"
+	"strings"
 
+	"github.com/Automaat/sybra/internal/enrichment"
 	"github.com/Automaat/sybra/internal/promptlab"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/umbrella"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 const (
@@ -19,7 +22,7 @@ const (
 	// expanded, not implemented. The enrich step clears it and then dispatches.
 	// CLI-created URL tasks use plain Create (no marker), so they keep going
 	// through task.created → triage, which fetches the title itself.
-	enrichPendingTag = "enrich-pending"
+	enrichPendingTag = enrichment.PendingTag
 	// umbrellaDuplicateTag marks a stub whose umbrellaExpand succeeded (a real
 	// tracker + gated children already exist elsewhere) but whose own DeleteTask
 	// cleanup failed. It is deliberately distinct from TaskTypeUmbrella: this
@@ -72,6 +75,24 @@ func skipTaskCreatedWorkflow(t task.Task) bool {
 	return false
 }
 
+// hasApprovedPlanContract identifies legacy todo tasks that completed plan
+// review before approval began handing work directly to implementation.
+func hasApprovedPlanContract(t task.Task) bool {
+	if strings.TrimSpace(t.PlanContract) == "" {
+		return false
+	}
+	return len(workflow.ValidatePlanContractForTask(t.PlanContract, t.ID, t.Body)) == 0
+}
+
+func hasBlockingPlanCritique(t task.Task) bool {
+	switch workflow.PlanCritiqueVerdict(t.PlanCritique) {
+	case "REFINE", "REJECT":
+		return true
+	default:
+		return false
+	}
+}
+
 func allowsTaskCreatedWorkflowWithPR(t task.Task) bool {
 	if slices.Contains(t.Tags, "handoff") {
 		return true
@@ -87,4 +108,12 @@ func allowsTaskCreatedWorkflowWithPR(t task.Task) bool {
 	return (t.Status == task.StatusNew || t.Status == task.StatusTodo) &&
 		slices.Contains(t.Tags, "review") &&
 		!slices.Contains(t.Tags, "handoff-pr")
+}
+
+func startPlanningWorkflowForTask(engine *workflow.Engine, t task.Task) error {
+	startStepID := ""
+	if t.Status == task.StatusPlanning {
+		startStepID = "plan"
+	}
+	return engine.StartWorkflowFromStepWithVars(t.ID, "simple-task-plan", startStepID, nil)
 }

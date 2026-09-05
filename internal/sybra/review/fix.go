@@ -10,17 +10,17 @@ import (
 	"slices"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/blocker"
-	"github.com/Automaat/sybra/internal/executil"
+	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/textutil"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
 )
@@ -69,6 +69,7 @@ type taskBranchConflictRecoverySpec struct {
 	retryKind      github.PRIssueKind
 	branchOverride string
 	remoteOverride string
+	trustedOrigin  bool
 	allowRecreate  bool
 	prompt         func(context.Context, task.Task, string) string
 }
@@ -76,10 +77,18 @@ type taskBranchConflictRecoverySpec struct {
 type dispatchFixOptions struct {
 	replaceActiveWorkflow bool
 	cancelReason          string
+	prDispatchReserved    bool
+	// reviewThreads is the harness-side view of the PR's unresolved review
+	// threads, recorded so verify_review_threads can hold the run to it. Empty
+	// for every dispatch that does not include a review-comments issue.
+	reviewThreads reviewThreadBrief
 }
 
 const PRFixResultContract = "\n\nBefore your final response, decide the outcome:\n" +
-	"- If you completed and pushed the fix, end with `SYBRA_PR_FIX_RESULT: continue`.\n" +
+	"- If you completed the fix, end with `SYBRA_PR_FIX_RESULT: continue`.\n" +
+	"- If the live PR no longer needs a change from this run, end with " +
+	"`SYBRA_PR_FIX_RESULT: no-op` and `SYBRA_PR_FIX_REASON: <what is already resolved>`. " +
+	"Reporting `no-op` is a complete outcome and returns the task to PR monitoring.\n" +
 	"- If this PR's diff is correct and CI failed for reasons unrelated to it — a " +
 	"flaky test, an infrastructure failure, or a breakage that reproduces on the " +
 	"base branch — end with `SYBRA_PR_FIX_RESULT: flake` and `SYBRA_PR_FIX_REASON: " +
@@ -94,51 +103,130 @@ const PRFixResultContract = "\n\nBefore your final response, decide the outcome:
 	"test-name>` line per failing test, so the next agent to pick this up " +
 	"gets exact repro info instead of having to rediscover it."
 
-// readyForCopilotAutoMerge reports whether a pet PR satisfies the Copilot
-// auto-merge policy: mechanically mergeable, CI green (or no checks), GitHub
-// Copilot has submitted a review, no unresolved review threads, and no
-// outstanding change request. Human approval is intentionally NOT required —
-// pet PRs never get one; Copilot's review is one acceptable gate.
-//
-// A SourcedViaREST PR always returns false here — REST fetches leave
-// CopilotReviewed/UnresolvedCount/ReviewDecision zero (thread and review data
-// are GraphQL-only), so this gate can never be honestly satisfied over REST;
-// readyForRESTAutoMerge is the REST-sourced equivalent.
-func readyForCopilotAutoMerge(pr github.PullRequest) bool {
-	return !pr.SourcedViaREST &&
-		!pr.IsDraft &&
-		pr.Mergeable == "MERGEABLE" &&
-		(pr.CIStatus == "SUCCESS" || pr.CIStatus == "") &&
-		pr.CopilotReviewed &&
-		pr.UnresolvedCount == 0 &&
-		pr.ReviewDecision != "CHANGES_REQUESTED"
+// MergePolicy selects which review signal MergeGate.ReadyForMerge accepts as
+// having satisfied the PR's review cycle.
+type MergePolicy int
+
+const (
+	// MergePolicyCopilot requires GitHub Copilot to have reviewed the PR. It
+	// also doubles as the REST-sourced default policy: REST never populates
+	// CopilotReviewed/UnresolvedCount/ReviewDecision, so every REST-sourced
+	// merge (other than Renovate's bypass) is gated on RESTApproved instead,
+	// regardless of which of these four values is passed.
+	MergePolicyCopilot MergePolicy = iota
+	// MergePolicySybraReviewed requires the owning task to have completed
+	// Sybra's own review stage. GraphQL-sourced only.
+	MergePolicySybraReviewed
+	// MergePolicyOwnBot requires the PR to be authored by Sybra's own bot
+	// identity. GraphQL-sourced only.
+	MergePolicyOwnBot
+	// MergePolicyRenovate waives the review-signal requirement entirely
+	// (Renovate PRs are never reviewed) and merges on green CI + mergeable +
+	// !draft alone.
+	MergePolicyRenovate
+)
+
+// MergeGate is the single owner of "is this PR ready to merge" and "is this
+// PR ready to have native auto-merge armed" — the six near-identical
+// predicates this consolidates (readyForCopilotAutoMerge,
+// readyForSybraReviewedAutoMerge, readyForOwnBotAutoMerge,
+// readyForRESTAutoMerge, restRenovateGreen, readyToArmNativeAutoMerge) each
+// differed only in which source populated the PR (GraphQL vs REST) and which
+// review signal the policy accepts.
+type MergeGate struct {
+	pr github.PullRequest
 }
 
-// readyForSybraReviewedAutoMerge reports whether a pet PR can merge without an
-// external reviewer because the owning task has completed Sybra's review stage.
-// This keeps externally opened or unreviewed PRs parked, but avoids stranding
-// Sybra-authored pet work forever when Copilot does not produce a review.
-func readyForSybraReviewedAutoMerge(t task.Task, pr github.PullRequest) bool {
-	return t.Reviewed &&
-		!pr.SourcedViaREST &&
-		!pr.IsDraft &&
-		pr.Mergeable == "MERGEABLE" &&
-		(pr.CIStatus == "SUCCESS" || pr.CIStatus == "") &&
-		pr.UnresolvedCount == 0 &&
-		pr.ReviewDecision != "CHANGES_REQUESTED"
+// NewMergeGate builds a MergeGate over a single PR snapshot.
+func NewMergeGate(pr github.PullRequest) MergeGate {
+	return MergeGate{pr: pr}
 }
 
-func readyForOwnBotAutoMerge(pr github.PullRequest) bool {
-	return pr.SelfAuthoredBot &&
-		!pr.SourcedViaREST &&
-		!pr.IsDraft &&
-		pr.Mergeable == "MERGEABLE" &&
-		(pr.CIStatus == "SUCCESS" || pr.CIStatus == "") &&
-		pr.UnresolvedCount == 0 &&
-		pr.ReviewDecision != "CHANGES_REQUESTED"
+// ciGreen reports CI green-or-absent, shared by every policy.
+func (g MergeGate) ciGreen() bool {
+	return g.pr.CIStatus == "SUCCESS" || g.pr.CIStatus == ""
 }
 
-func autoMergeStateSignature(pr github.PullRequest) string {
+// baseReady is the source-appropriate mechanical-mergeability gate: not
+// draft, and mergeable per whichever fetch populated the PR. A REST-sourced
+// PR requires GitHub's raw mergeable_state to be exactly "clean" (blocked/
+// behind/unstable/unknown do NOT authorize it) and both REST CI legs to have
+// been fetched (an unfetched CI status must never read as green).
+func (g MergeGate) baseReady() bool {
+	if g.pr.IsDraft {
+		return false
+	}
+	if g.pr.SourcedViaREST {
+		return g.pr.RESTMergeableState == "clean" && g.pr.RESTCIFetched
+	}
+	return g.pr.Mergeable == "MERGEABLE"
+}
+
+// threadsClear reports no unresolved review threads and no outstanding
+// change request — the GraphQL-only review-cycle signal REST never
+// populates.
+func (g MergeGate) threadsClear() bool {
+	return g.pr.UnresolvedCount == 0 && g.pr.ReviewDecision != "CHANGES_REQUESTED"
+}
+
+// ReadyForMerge reports whether the PR satisfies policy's merge gate.
+// sybraReviewed carries the owning task's Reviewed field; it is only
+// consulted for MergePolicySybraReviewed.
+func (g MergeGate) ReadyForMerge(policy MergePolicy, sybraReviewed bool) bool {
+	if !g.baseReady() || !g.ciGreen() {
+		return false
+	}
+	if g.pr.SourcedViaREST {
+		if policy == MergePolicyRenovate {
+			return true
+		}
+		return g.pr.RESTApproved
+	}
+	switch policy {
+	case MergePolicyCopilot:
+		return g.pr.CopilotReviewed && g.threadsClear()
+	case MergePolicySybraReviewed:
+		return sybraReviewed && g.threadsClear()
+	case MergePolicyOwnBot:
+		return g.pr.SelfAuthoredBot && g.threadsClear()
+	case MergePolicyRenovate:
+		return true
+	default:
+		return false
+	}
+}
+
+// BlockedOnlyByThreads reports whether the PR meets every Copilot auto-merge
+// condition except the unresolved-threads check — the precise state in which
+// resolving addressed Copilot threads can unblock a merge.
+func (g MergeGate) BlockedOnlyByThreads() bool {
+	if g.pr.IsDraft || g.pr.Mergeable != "MERGEABLE" || !g.ciGreen() {
+		return false
+	}
+	return g.pr.CopilotReviewed && g.pr.ReviewDecision != "CHANGES_REQUESTED" && g.pr.UnresolvedCount > 0
+}
+
+// ReadyToArm reports whether a PR is ready to have GitHub's native
+// auto-merge armed: the same review-cycle gate as
+// ReadyForMerge(MergePolicyCopilot) MINUS the CI-green requirement (native
+// auto-merge itself waits for CI to go green) PLUS excluding a PR whose CI is
+// already FAILURE — native auto-merge won't retry a hard failure, so arming
+// on red CI would just strand it — and PRs already armed or bot-authored by
+// Renovate (its own bypass path already merges without this gate).
+func (g MergeGate) ReadyToArm() bool {
+	if g.pr.IsDraft || g.pr.Mergeable != "MERGEABLE" {
+		return false
+	}
+	if g.pr.CIStatus == "FAILURE" || g.pr.AutoMergeEnabled || g.pr.Author == "renovate[bot]" {
+		return false
+	}
+	return g.pr.CopilotReviewed && g.threadsClear()
+}
+
+// StateSignature fingerprints the PR fields every merge/arm policy reads, so
+// callers can detect "nothing relevant changed" between polls.
+func (g MergeGate) StateSignature() string {
+	pr := g.pr
 	return fmt.Sprintf("%s|%t|%s|%s|%s|%d|%t|%t|%s|%t|%t",
 		pr.UpdatedAt,
 		pr.IsDraft,
@@ -160,53 +248,6 @@ type nativeAutoMergeAttemptResult struct {
 	err       error
 }
 
-// readyToArmNativeAutoMerge reports whether a PR is ready to have GitHub's
-// native auto-merge armed: the same review-cycle gate as
-// readyForCopilotAutoMerge MINUS the CI-green requirement (native auto-merge
-// itself waits for CI to go green) PLUS excluding a PR whose CI is already
-// FAILURE — native auto-merge won't retry a hard failure, so arming on red CI
-// would just strand it — and PRs already armed or bot-authored by Renovate
-// (its own bypass path already merges without this gate).
-func readyToArmNativeAutoMerge(pr github.PullRequest) bool {
-	return !pr.IsDraft &&
-		pr.Mergeable == "MERGEABLE" &&
-		pr.CIStatus != "FAILURE" &&
-		pr.CopilotReviewed &&
-		pr.UnresolvedCount == 0 &&
-		pr.ReviewDecision != "CHANGES_REQUESTED" &&
-		!pr.AutoMergeEnabled &&
-		pr.Author != "renovate[bot]"
-}
-
-// readyForRESTAutoMerge reports whether a REST-sourced PR satisfies the
-// REST auto-merge policy: not draft, GitHub's raw mergeable_state is exactly
-// "clean" (blocked/behind/unstable/unknown do NOT authorize it), both REST CI
-// legs were fetched successfully (an unfetched CI status must never read as
-// green), CI is green or genuinely absent, and RESTApproved — an explicit,
-// current-head approval computed over REST review data. Uses only
-// RESTApproved/RESTMergeableState/RESTCIFetched, never the thread-derived
-// UnresolvedCount/CopilotReviewed which REST never populates.
-func readyForRESTAutoMerge(pr github.PullRequest) bool {
-	return !pr.IsDraft &&
-		pr.RESTMergeableState == "clean" &&
-		pr.RESTCIFetched &&
-		(pr.CIStatus == "SUCCESS" || pr.CIStatus == "") &&
-		pr.RESTApproved
-}
-
-// restRenovateGreen reports whether a REST-sourced renovate-fix PR is
-// verified green over REST: strictly clean mergeable state and both CI legs
-// fetched successfully and passing. Mirrors the GraphQL renovate-fix bypass
-// (ReadyToMerge already implies green + mergeable + !draft) but re-derives it
-// from REST-only fields since a REST-sourced PR carries none of the
-// GraphQL-only review/thread data the Copilot gate would otherwise check.
-func restRenovateGreen(pr github.PullRequest) bool {
-	return !pr.IsDraft &&
-		pr.RESTMergeableState == "clean" &&
-		pr.RESTCIFetched &&
-		(pr.CIStatus == "SUCCESS" || pr.CIStatus == "")
-}
-
 // preflightArmNativeAutoMerge prefers arming GitHub's native auto-merge over
 // Sybra's own squash merge when it's available and the PR is otherwise ready
 // — it's cheaper (REST poll on GitHub's side) than Sybra's GraphQL merge-gate
@@ -219,7 +260,7 @@ func restRenovateGreen(pr github.PullRequest) bool {
 // itself keeps failing (bad credentials, a transient API error) must not be
 // retried every poll tick either (#2450).
 func (r *Handler) preflightArmNativeAutoMerge(ctx context.Context, t task.Task, issue github.PRIssue, backoff *github.AutoMergeBackoff, stateSig string) bool {
-	if !r.nativeAutoMergeEnabled() || !readyToArmNativeAutoMerge(issue.PR) {
+	if !r.nativeAutoMergeEnabled() || !NewMergeGate(issue.PR).ReadyToArm() {
 		return false
 	}
 	if !backoff.ShouldAttempt(issue.PR.Repository, issue.PR.Number, issue.PR.HeadSHA, stateSig) {
@@ -265,7 +306,8 @@ func (r *Handler) handleAutoMerge(ctx context.Context, issue github.PRIssue) {
 	}
 
 	backoff := r.mergeBackoff()
-	stateSig := autoMergeStateSignature(issue.PR)
+	gate := NewMergeGate(issue.PR)
+	stateSig := gate.StateSignature()
 
 	if r.preflightArmNativeAutoMerge(ctx, t, issue, backoff, stateSig) {
 		return
@@ -277,10 +319,10 @@ func (r *Handler) handleAutoMerge(ctx context.Context, issue github.PRIssue) {
 	var gateEvidence string
 	if issue.PR.SourcedViaREST {
 		if renovateFix {
-			ready = restRenovateGreen(issue.PR)
+			ready = gate.ReadyForMerge(MergePolicyRenovate, false)
 			gateEvidence = "renovate_green"
 		} else {
-			ready = readyForRESTAutoMerge(issue.PR)
+			ready = gate.ReadyForMerge(MergePolicyCopilot, false)
 			gateEvidence = "approved"
 		}
 	} else {
@@ -296,9 +338,9 @@ func (r *Handler) handleAutoMerge(ctx context.Context, issue github.PRIssue) {
 		// can also proceed after the owning task has completed Sybra's own review
 		// stage, even when Copilot never comments.
 		ready = renovateFix ||
-			readyForOwnBotAutoMerge(issue.PR) ||
-			readyForCopilotAutoMerge(issue.PR) ||
-			readyForSybraReviewedAutoMerge(t, issue.PR)
+			gate.ReadyForMerge(MergePolicyOwnBot, false) ||
+			gate.ReadyForMerge(MergePolicyCopilot, false) ||
+			gate.ReadyForMerge(MergePolicySybraReviewed, t.Reviewed)
 	}
 	if !ready {
 		return
@@ -363,8 +405,8 @@ func (r *Handler) handleAutoMerge(ctx context.Context, issue github.PRIssue) {
 }
 
 // mergeBackoff lazily initializes the handler's auto-merge backoff tracker.
-// Mirrors readyPRCache/prPollState's lazy-init pattern so tests that
-// construct a bare Handler{} literal work without a dedicated constructor.
+// Mirrors prSnapshots's lazy-init pattern so tests that construct a bare
+// Handler{} literal work without a dedicated constructor.
 func (r *Handler) mergeBackoff() *github.AutoMergeBackoff {
 	if r.autoMergeBackoff == nil {
 		r.autoMergeBackoff = github.NewAutoMergeBackoff()
@@ -463,21 +505,26 @@ func (r *Handler) escalateExhaustedFix(issue github.PRIssue) {
 	if err != nil || t.Status == task.StatusHumanRequired || t.Status == task.StatusBlocked {
 		return
 	}
-	reason := exhaustedFixReason(github.MaxRetries, issue.Kind)
+	maxRetries := r.prFixMaxRetries()
+	reason := exhaustedFixReason(maxRetries, issue.Kind)
 	tags := slices.DeleteFunc(slices.Clone(t.Tags), func(tag string) bool {
 		return tag == reconciledLatchTag
 	})
-	if _, err := r.tasks.Update(issue.TaskID, task.Update{
-		Status:       task.Ptr(task.StatusBlocked),
-		StatusReason: task.Ptr(reason),
-		Blocker: &blocker.State{
-			Kind:       blocker.KindReviewFixExhausted,
-			Actor:      blocker.ActorReview,
-			Code:       string(issue.Kind),
-			NextAction: "reprobe_pr",
-			Exhausted:  true,
+	if _, err := r.tasks.Apply(task.TransitionIntent{
+		TaskID:   issue.TaskID,
+		ToStatus: task.StatusBlocked,
+		Actor:    "review.pr-monitor.fix-exhausted.escalate",
+		Extra: task.Update{
+			StatusReason: task.Ptr(reason),
+			Blocker: &blocker.State{
+				Kind:       blocker.KindReviewFixExhausted,
+				Actor:      blocker.ActorReview,
+				Code:       string(issue.Kind),
+				NextAction: "reprobe_pr",
+				Exhausted:  true,
+			},
+			Tags: task.Ptr(tags),
 		},
-		Tags: task.Ptr(tags),
 	}); err != nil {
 		r.logger.Error("pr-monitor.fix-exhausted.escalate", "task_id", issue.TaskID, "err", err)
 		return
@@ -485,11 +532,18 @@ func (r *Handler) escalateExhaustedFix(issue github.PRIssue) {
 	r.prTracker.Clear(issue.TaskID, issue.Kind)
 	r.logAudit(audit.EventPRFixExhausted, issue.TaskID, "", map[string]any{
 		"pr": issue.PR.Number, "repo": issue.PR.Repository,
-		"kind": string(issue.Kind), "attempts": github.MaxRetries,
+		"kind": string(issue.Kind), "attempts": maxRetries,
 	})
 	r.logger.Warn("pr-monitor.fix-exhausted",
 		"task_id", issue.TaskID, "pr", issue.PR.Number,
-		"kind", string(issue.Kind), "attempts", github.MaxRetries)
+		"kind", string(issue.Kind), "attempts", maxRetries)
+}
+
+func (r *Handler) prFixMaxRetries() int {
+	if r == nil || r.prTracker == nil {
+		return github.MaxRetries
+	}
+	return r.prTracker.MaxRetries()
 }
 
 // exhaustedFixIsFlaky reports whether an exhausted ci_failure issue should
@@ -581,18 +635,25 @@ func (r *Handler) handleFlakyCI(issue github.PRIssue) {
 	r.logger.Info("pr-monitor.ci-flaky-detected", "task_id", issue.TaskID, "pr", issue.PR.Number)
 
 	t, err := r.tasks.Get(issue.TaskID)
-	if err != nil || t.Status == task.StatusHumanRequired {
+	if err != nil || t.Status == task.StatusHumanRequired || t.Status == task.StatusBlocked {
 		return
 	}
 
 	if r.prTracker != nil && r.prTracker.AtCap(t.ID, ciInfraRerunKind) {
+		maxRetries := r.prFixMaxRetries()
 		tags := slices.DeleteFunc(slices.Clone(t.Tags), func(tag string) bool {
 			return tag == reconciledLatchTag
 		})
-		if _, err := r.tasks.Update(t.ID, task.Update{
-			Status:       task.Ptr(task.StatusHumanRequired),
-			StatusReason: task.Ptr(persistentFlakyCIReason),
-			Tags:         task.Ptr(tags),
+		if _, err := r.tasks.Apply(task.TransitionIntent{
+			TaskID:   t.ID,
+			ToStatus: task.StatusBlocked,
+			Actor:    "review.pr-monitor.ci-flaky.escalate",
+			Extra: task.Update{
+				StatusReason:    task.Ptr(persistentFlakyCIReason),
+				Tags:            task.Ptr(tags),
+				Escalation:      task.ExternalFailure("github.ci_flake_persistent", persistentFlakyCIReason),
+				AutonomyOutcome: task.WaitingExternalOutcome(),
+			},
 		}); err != nil {
 			r.logger.Error("pr-monitor.ci-flaky.escalate", "task_id", t.ID, "err", err)
 			return
@@ -600,7 +661,7 @@ func (r *Handler) handleFlakyCI(issue github.PRIssue) {
 		r.prTracker.Clear(t.ID, ciInfraRerunKind)
 		r.logAudit(audit.EventPRFixExhausted, t.ID, "", map[string]any{
 			"pr": issue.PR.Number, "repo": issue.PR.Repository,
-			"kind": string(ciInfraRerunKind), "attempts": github.MaxRetries,
+			"kind": string(ciInfraRerunKind), "attempts": maxRetries,
 		})
 		r.logger.Warn("pr-monitor.ci-flaky.exhausted", "task_id", t.ID, "pr", issue.PR.Number)
 		return
@@ -657,6 +718,26 @@ const prFixTamperingRules = "Never weaken, skip, delete, or hardcode tests, " +
 	"`--force-with-lease`, `commit --amend`, rebase onto a pushed base). Append a " +
 	"new commit instead; a force-push can destroy work this PR depends on."
 
+func prFixLiveStateGuard(pr github.PullRequest) string {
+	repoFlag := ""
+	if repo := strings.TrimSpace(pr.Repository); repo != "" {
+		repoFlag = " --repo " + repo
+	}
+	return fmt.Sprintf(
+		"Before any \"already fixed\" / \"already merged\" / \"no work needed\" conclusion, re-check the LIVE PR state:\n"+
+			"```sh\n"+
+			"LIVE_BASE=$(gh pr view %d%s --json baseRefName --jq .baseRefName)\n"+
+			"git fetch origin \"+refs/heads/$LIVE_BASE:refs/remotes/origin/$LIVE_BASE\"\n"+
+			"gh pr view %d%s --json state,mergeable,baseRefName\n"+
+			"```\n\n"+
+			"- Do not trust NOTES.md, a prior run's recorded merge commit, or an unchanged local worktree as proof the PR is still mergeable.\n"+
+			"- Treat GitHub's current `mergeable` value plus the freshly fetched `refs/remotes/origin/$LIVE_BASE` as the source of truth.\n"+
+			"- If GitHub says `mergeable=CONFLICTING`, or the refreshed base branch creates a new conflict, resolve that live conflict now instead of reporting `continue` or \"no work needed\" from stale local state.\n"+
+			"- If the live probe shows the PR no longer needs a code change from this run, stop without pushing and report `SYBRA_PR_FIX_RESULT: no-op` with `SYBRA_PR_FIX_REASON: <what is already resolved>`. This returns the task to PR monitoring; it is not a human escalation.",
+		pr.Number, repoFlag, pr.Number, repoFlag,
+	)
+}
+
 // prFixPushPrompt renders the create-pr-equivalent push snippet for a pr-fix
 // agent. When fenced is true it emits a standalone ```sh block (optionally
 // preceded by intro); when false it emits only the command lines so the caller
@@ -699,14 +780,14 @@ func prFixPushPromptWithRemote(branch, intro string, fenced, allowHistoryRewrite
 // prIssueBody returns the pr-fix agent prompt for one fixable issue kind. ok is
 // false for kinds with no agent prompt (ready_to_merge), which never reach the
 // dispatch path.
-func prIssueBody(ctx context.Context, issue github.PRIssue) (string, bool) {
+func prIssueBody(ctx context.Context, issue github.PRIssue, signing project.SigningPolicy, brief reviewThreadBrief) (string, bool) {
 	switch issue.Kind {
 	case github.PRIssueConflict:
-		return conflictPrompt(ctx, issue.PR), true
+		return conflictPrompt(ctx, issue.PR, signing), true
 	case github.PRIssueCIFailure:
 		return ciFailurePrompt(issue.PR), true
 	case github.PRIssueComments:
-		return commentsPrompt(ctx, issue.PR), true
+		return commentsPrompt(ctx, issue.PR, signing, brief), true
 	default:
 		return "", false
 	}
@@ -773,23 +854,26 @@ func (r *Handler) logPRIssueDetected(taskID string, issue github.PRIssue) {
 // review-hold setting is on AND the set includes a review-comments issue — the
 // only kind that posts thread replies. It overrides the "reply live and push"
 // instructions above, so it must land after them.
-func coalescedFixPrompt(ctx context.Context, issues []github.PRIssue, holdSuffix string) string {
+func coalescedFixPrompt(ctx context.Context, issues []github.PRIssue, holdSuffix string, signing project.SigningPolicy, brief reviewThreadBrief) string {
 	var prompt string
 	if len(issues) == 1 {
-		prompt, _ = prIssueBody(ctx, issues[0])
+		prompt, _ = prIssueBody(ctx, issues[0], signing, brief)
 	} else {
 		var b strings.Builder
 		b.WriteString("This PR has multiple open issues from the same push. Address " +
 			"ALL of them in one pass, then push once at the end (the per-section push " +
 			"commands are equivalent — run it a single time).\n\n")
 		for i := range issues {
-			body, ok := prIssueBody(ctx, issues[i])
+			body, ok := prIssueBody(ctx, issues[i], signing, brief)
 			if !ok {
 				continue
 			}
 			fmt.Fprintf(&b, "=== Issue %d: %s ===\n%s\n\n", i+1, fixKindLabel(issues[i].Kind), body)
 		}
 		prompt = strings.TrimRight(b.String(), "\n")
+	}
+	if len(issues) > 0 {
+		prompt += "\n\n" + prFixLiveStateGuard(issues[0].PR)
 	}
 	if holdSuffix != "" && slices.ContainsFunc(issues, func(i github.PRIssue) bool {
 		return i.Kind == github.PRIssueComments
@@ -802,15 +886,16 @@ func coalescedFixPrompt(ctx context.Context, issues []github.PRIssue, holdSuffix
 		prompt += "\n\nApproval preservation:\n" +
 			"- This PR is already approved. Do not merge/rebase/update the base branch or push a clean/base-only merge that only changes the merge-base.\n" +
 			"- Push only if you make a substantive code, test, or documentation fix for the failing CI, conflict, or review feedback.\n" +
-			"- If no substantive fix is needed, stop without pushing and report `SYBRA_PR_FIX_RESULT: human-required` with the reason."
+			"- If no substantive fix is needed, stop without pushing and report `SYBRA_PR_FIX_RESULT: no-op` with `SYBRA_PR_FIX_REASON: <what is already resolved>`."
 	}
 	return prompt
 }
 
-func (r *Handler) handlePRIssueReplacingWorkflow(ctx context.Context, issue github.PRIssue, cancelReason string) bool {
+func (r *Handler) handlePRIssueReplacingWorkflowReserved(ctx context.Context, issue github.PRIssue, cancelReason string, prDispatchReserved bool) bool {
 	return r.dispatchFixIssuesWithOptions(ctx, issue.TaskID, []github.PRIssue{issue}, dispatchFixOptions{
 		replaceActiveWorkflow: true,
 		cancelReason:          cancelReason,
+		prDispatchReserved:    prDispatchReserved,
 	})
 }
 
@@ -832,6 +917,14 @@ func (r *Handler) dispatchFixIssuesWithOptions(ctx context.Context, taskID strin
 	if err != nil {
 		return false
 	}
+	if !opts.prDispatchReserved {
+		releasePRDispatch, ok := r.tryReservePRDispatch(taskID)
+		if !ok {
+			r.logger.Info("pr-monitor.dispatch-busy", "task_id", taskID)
+			return false
+		}
+		defer releasePRDispatch()
+	}
 	// Stable-sort by fix priority so the primary (index 0) drives worktree prep
 	// and the prompt reads in execution order (conflicts → comments → CI).
 	slices.SortStableFunc(handle, func(a, b github.PRIssue) int {
@@ -841,6 +934,12 @@ func (r *Handler) dispatchFixIssuesWithOptions(ctx context.Context, taskID strin
 		r.logPRIssueDetected(t.ID, handle[i])
 	}
 	primary := handle[0]
+
+	if t.IsPRReview() && r.foreignPR(ctx, primary.PR) {
+		r.logger.Warn("pr-monitor.foreign-pr.refused",
+			"task_id", t.ID, "pr", primary.PR.Number, "repo", primary.PR.Repository, "author", primary.PR.Author)
+		return false
+	}
 
 	// Early mutation guard: a workflow may already be active for this task
 	// (e.g. an in-flight pr-fix step) — never let the deterministic fast-path
@@ -859,6 +958,17 @@ func (r *Handler) dispatchFixIssuesWithOptions(ctx context.Context, taskID strin
 		return true
 	}
 
+	var preparationClaim workflow.DispatchClaim
+	if r.agents != nil && !opts.prDispatchReserved {
+		var claimed bool
+		preparationClaim, claimed = r.agents.TryClaimDispatch(t.ID)
+		if !claimed {
+			r.logger.Info("pr-monitor.dispatch-busy", "task_id", taskID, "reason", "agent_dispatch")
+			return false
+		}
+		defer preparationClaim.Release()
+	}
+
 	dir, ok := r.prepareWorktree(ctx, t, primary)
 	if !ok {
 		return false
@@ -868,11 +978,12 @@ func (r *Handler) dispatchFixIssuesWithOptions(ctx context.Context, taskID strin
 		return handled
 	}
 
-	if !opts.replaceActiveWorkflow &&
+	singleConflict := len(handle) == 1 && handle[0].Kind == github.PRIssueConflict
+	autoResolveAdmitted := !opts.replaceActiveWorkflow &&
 		r.cfg != nil && r.cfg.GitHub.AutoResolveCleanMerges &&
-		len(handle) == 1 && handle[0].Kind == github.PRIssueConflict &&
-		!prHasCurrentApproval(primary.PR) &&
-		r.autoResolveConflict(ctx, t, primary.PR, dir) {
+		!prHasCurrentApproval(primary.PR)
+
+	if autoResolveAdmitted && singleConflict && r.autoResolveConflict(ctx, t, primary.PR, dir) {
 		return true
 	}
 
@@ -887,11 +998,30 @@ func (r *Handler) dispatchFixIssuesWithOptions(ctx context.Context, taskID strin
 	// e.ctx field (Engine.SetContext), not an explicit parameter threaded here.
 	// contextcheck no longer flags this call site (verified with a clean
 	// build+lint cache), so no suppression directive is needed here.
-	return r.dispatchPRIssueWithOptions(ctx, t, primary, handle, coalescedFixPrompt(ctx, handle, reviewHoldFixSuffix(r.cfg)), dir, opts)
+	if preparationClaim != nil {
+		preparationClaim.Release()
+	}
+	// Fetched once here, then used twice: to brief the agent in the prompt and
+	// to hold it to that same set after the run. Read from the comments issue's
+	// own PR, not primary.PR - a coalesced dispatch sorts conflicts first, and
+	// a task can match two different PRs, so the primary is not always the PR
+	// the review threads live on.
+	if i := slices.IndexFunc(handle, func(i github.PRIssue) bool { return i.Kind == github.PRIssueComments }); i >= 0 {
+		opts.reviewThreads = fetchReviewThreadBrief(ctx, handle[i].PR, r.agentLogin(ctx))
+	}
+	return r.dispatchPRIssueWithOptions(ctx, t, primary, handle, coalescedFixPrompt(ctx, handle, reviewHoldFixSuffix(r.cfg), r.signingPolicy(), opts.reviewThreads), dir, opts)
 }
 
 func prHasCurrentApproval(pr github.PullRequest) bool {
 	return pr.ReviewDecision == "APPROVED" || pr.RESTApproved
+}
+
+// pushPreflightFailureReason builds the status_reason for a failed credential
+// preflight. git surfaces remote output verbatim, so err can carry raw bytes
+// in whatever encoding the remote used — sanitize before it reaches YAML.
+func pushPreflightFailureReason(err error) string {
+	return "GitHub push credential preflight failed before starting PR fix: " +
+		textutil.TruncateBytesTrimmed(strings.ToValidUTF8(err.Error(), ""), 240, "...")
 }
 
 func (r *Handler) preflightPushCredentials(ctx context.Context, taskID, dir string) (admit, handled bool) {
@@ -900,10 +1030,16 @@ func (r *Handler) preflightPushCredentials(ctx context.Context, taskID, dir stri
 		preflight = project.PreflightPushCredentials
 	}
 	if err := preflight(ctx, dir); err != nil {
-		reason := "GitHub push credential preflight failed before starting PR fix: " + truncatePushPreflightReason(err.Error(), 240)
-		if _, updateErr := r.tasks.Update(taskID, task.Update{
-			Status:       task.Ptr(task.StatusHumanRequired),
-			StatusReason: task.Ptr(reason),
+		reason := pushPreflightFailureReason(err)
+		if _, updateErr := r.tasks.Apply(task.TransitionIntent{
+			TaskID:   taskID,
+			ToStatus: task.StatusHumanRequired,
+			Actor:    "review.pr-monitor.push-preflight",
+			Extra: task.Update{
+				StatusReason:    task.Ptr(reason),
+				Escalation:      task.OperatorAuthorityRequired("github.push_credentials_required", reason),
+				AutonomyOutcome: task.HumanRequiredOutcome(),
+			},
 		}); updateErr != nil {
 			r.logger.Error("pr-monitor.push-preflight.status", "task_id", taskID, "err", updateErr)
 			return false, false
@@ -912,21 +1048,6 @@ func (r *Handler) preflightPushCredentials(ctx context.Context, taskID, dir stri
 		return false, true
 	}
 	return true, false
-}
-
-func truncatePushPreflightReason(s string, limit int) string {
-	s = strings.ToValidUTF8(s, "")
-	if limit <= 0 || len(s) <= limit {
-		return s
-	}
-	var b strings.Builder
-	for _, r := range s {
-		if b.Len()+utf8.RuneLen(r) > limit {
-			break
-		}
-		b.WriteRune(r)
-	}
-	return strings.TrimSpace(b.String()) + "..."
 }
 
 // A rerun re-runs jobs the repo already ran and sends no content anywhere, so the work/pet split does not apply. EXC:FILE011:load-bearing-invariant
@@ -952,9 +1073,15 @@ func (r *Handler) rerunCIFailure(t task.Task, issue github.PRIssue) bool {
 	}
 	if err := rerun(issue.PR.Repository, issue.PR.Number); err != nil {
 		if isRerunPermissionDenied(err) {
-			if _, updateErr := r.tasks.Update(t.ID, task.Update{
-				Status:       task.Ptr(task.StatusHumanRequired),
-				StatusReason: task.Ptr(ciInfraRerunPermissionReason),
+			if _, updateErr := r.tasks.Apply(task.TransitionIntent{
+				TaskID:   t.ID,
+				ToStatus: task.StatusHumanRequired,
+				Actor:    "review.pr-monitor.ci-rerun.permission",
+				Extra: task.Update{
+					StatusReason:    task.Ptr(ciInfraRerunPermissionReason),
+					Escalation:      task.OperatorAuthorityRequired("github.check_rerun_permission_required", ciInfraRerunPermissionReason),
+					AutonomyOutcome: task.HumanRequiredOutcome(),
+				},
 			}); updateErr != nil {
 				r.logger.Error("pr-monitor.ci-rerun.permission-status",
 					"task_id", t.ID, "pr", issue.PR.Number, "err", updateErr)
@@ -1021,7 +1148,7 @@ func (r *Handler) autoResolveConflict(ctx context.Context, t task.Task, pr githu
 		return false
 	}
 
-	preMergeHead, err := executil.Output(ctx, dir, "git", "rev-parse", "--verify", "HEAD")
+	preMergeHead, err := gitexec.Output(ctx, gitexec.Options{Dir: dir}, "rev-parse", "--verify", "HEAD")
 	if err != nil {
 		r.logger.Warn("pr-monitor.auto-resolve.pre-merge-head", "task_id", t.ID, "pr", pr.Number, "err", err)
 		return false
@@ -1029,7 +1156,7 @@ func (r *Handler) autoResolveConflict(ctx context.Context, t task.Task, pr githu
 	preMergeHead = strings.TrimSpace(preMergeHead)
 
 	refspec := fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", base, base)
-	if err := executil.Run(ctx, dir, "git", "fetch", "origin", refspec); err != nil {
+	if err := gitexec.Run(ctx, gitexec.Options{Dir: dir}, "fetch", "origin", refspec); err != nil {
 		r.logger.Warn("pr-monitor.auto-resolve.fetch", "task_id", t.ID, "pr", pr.Number, "err", err)
 		return false
 	}
@@ -1047,7 +1174,7 @@ func (r *Handler) autoResolveConflict(ctx context.Context, t task.Task, pr githu
 		return false
 	}
 
-	mergedHead, err := executil.Output(ctx, dir, "git", "rev-parse", "--verify", "HEAD")
+	mergedHead, err := gitexec.Output(ctx, gitexec.Options{Dir: dir}, "rev-parse", "--verify", "HEAD")
 	if err != nil {
 		r.logger.Warn("pr-monitor.auto-resolve.post-merge-head", "task_id", t.ID, "pr", pr.Number, "err", err)
 		r.rollbackAutoResolvedMerge(ctx, t.ID, pr.Number, dir, preMergeHead, "post-merge-head")
@@ -1070,7 +1197,12 @@ func (r *Handler) autoResolveConflict(ctx context.Context, t task.Task, pr githu
 		return false
 	}
 
-	r.prTracker.MarkHandled(t.ID, github.PRIssueConflict, mergedHead)
+	pr.HeadSHA = mergedHead
+	r.prTracker.MarkHandled(t.ID, github.PRIssueConflict, r.prIssueDispatchSHA(ctx, github.PRIssue{
+		Kind:   github.PRIssueConflict,
+		TaskID: t.ID,
+		PR:     pr,
+	}))
 	r.evictReadyPRCache(pr.Repository, pr.Number)
 	r.logAudit(audit.EventPRConflictAutoResolved, t.ID, "", map[string]any{
 		"pr": pr.Number, "issue": string(github.PRIssueConflict),
@@ -1091,7 +1223,7 @@ func resolveAutoResolveBase(ctx context.Context, dir string, pr github.PullReque
 	if base == "" {
 		return "", errors.New("base branch is empty")
 	}
-	if err := executil.Run(ctx, dir, "git", "check-ref-format", "--branch", base); err != nil {
+	if err := gitexec.Run(ctx, gitexec.Options{Dir: dir}, "check-ref-format", "--branch", base); err != nil {
 		return "", fmt.Errorf("validate base branch %q: %w", base, err)
 	}
 	return base, nil
@@ -1103,7 +1235,7 @@ func (r *Handler) rollbackAutoResolvedMerge(ctx context.Context, taskID string, 
 	}
 	resetCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
 	defer cancel()
-	if err := executil.Run(resetCtx, dir, "git", "reset", "--hard", preMergeHead); err != nil {
+	if err := gitexec.Run(resetCtx, gitexec.Options{Dir: dir}, "reset", "--hard", preMergeHead); err != nil {
 		r.logger.Error("pr-monitor.auto-resolve.rollback-failed",
 			"task_id", taskID, "pr", prNumber, "reason", reason, "pre_merge_head", preMergeHead, "err", err)
 		return
@@ -1143,7 +1275,11 @@ func (r *Handler) dispatchPRIssueWithOptions(ctx context.Context, t task.Task, p
 		// Same reasoning: the test_fix step's static YAML prompt needs the
 		// host-appropriate commit flags (-s vs -s -S) for its own commit
 		// instruction, computed once here rather than hardcoded in the YAML.
-		"commit_sign_flags": project.CommitSignFlags(ctx),
+		workflow.WorkflowVarCommitSignFlags: r.signingPolicy().CommitFlags(ctx),
+	}
+	if brief := opts.reviewThreads.vars(); brief != "" {
+		vars[workflow.PRReviewThreadBriefVar] = brief
+		vars[workflow.PRReviewAgentLoginVar] = opts.reviewThreads.agentLogin
 	}
 	// Deterministic backstop for review-hold: when the hold is active and this
 	// fix touches review comments, the agent drafted its replies into a pending
@@ -1187,7 +1323,7 @@ func (r *Handler) dispatchPRIssueWithOptions(ctx context.Context, t task.Task, p
 	}
 
 	for i := range handle {
-		r.prTracker.MarkHandled(t.ID, handle[i].Kind, handle[i].PR.HeadSHA)
+		r.prTracker.MarkHandled(t.ID, handle[i].Kind, r.prIssueDispatchSHA(ctx, handle[i]))
 	}
 	r.logAudit(audit.EventPRFixAgentStarted, t.ID, "", map[string]any{
 		"issue": string(primary.Kind), "kinds": strings.Join(kinds, ","),
@@ -1215,9 +1351,15 @@ func (r *Handler) markConflictRecoveryExhausted(taskID string, kind github.PRIss
 	reason := fmt.Sprintf(
 		"branch conflict recovery attempted %d time(s) and failed: resolve conflicts or recreate the task branch",
 		attempts)
-	if _, err := r.tasks.Update(taskID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(reason),
+	if _, err := r.tasks.Apply(task.TransitionIntent{
+		TaskID:   taskID,
+		ToStatus: task.StatusBlocked,
+		Actor:    "review.pr-monitor.branch-conflict.exhausted",
+		Extra: task.Update{
+			StatusReason:    task.Ptr(reason),
+			Escalation:      task.MachineFailure("git.conflict_recovery_exhausted", reason),
+			AutonomyOutcome: task.QuarantinedOutcome(),
+		},
 	}); err != nil {
 		r.logger.Error("pr-monitor.branch-conflict.exhausted-status", "task_id", taskID, "err", err)
 	}
@@ -1249,6 +1391,14 @@ func (r *Handler) markConflictRecoveryExhausted(taskID string, kind github.PRIss
 // without ever actually attempting conflict resolution. ResumeStalled is the
 // only thing that should re-drive a parked step once a slot frees.
 func (r *Handler) RecoverStaleBranchConflict(taskID string) bool {
+	return r.recoverStaleBranchConflict(taskID, false)
+}
+
+func (r *Handler) recoverStaleBranchConflictReserved(taskID string) bool {
+	return r.recoverStaleBranchConflict(taskID, true)
+}
+
+func (r *Handler) recoverStaleBranchConflict(taskID string, prDispatchReserved bool) bool {
 	if r == nil || r.WorkflowEngine == nil || r.prTracker == nil {
 		return false
 	}
@@ -1289,9 +1439,9 @@ func (r *Handler) RecoverStaleBranchConflict(taskID string) bool {
 	// context.Background() is a dead end here: RecoverStaleBranchConflict is
 	// wired as agentorch.Orchestrator.ConflictRecovery, a fixed func(taskID string)
 	// bool callback (see internal/sybra/agentorch) with no ctx parameter to thread from.
-	return r.handlePRIssueReplacingWorkflow(context.Background(),
+	return r.handlePRIssueReplacingWorkflowReserved(context.Background(),
 		github.PRIssue{TaskID: taskID, Kind: github.PRIssueConflict, PR: pr},
-		"rebase conflict recovery")
+		"rebase conflict recovery", prDispatchReserved)
 }
 
 // prFixParkedOnConflict reports whether the task's active workflow is a pr-fix
@@ -1318,11 +1468,11 @@ func (r *Handler) prFixParkedOnConflict(taskID string) bool {
 // success resumes the task's original interrupted workflow/stage rather than
 // jumping to a terminal status.
 //
-// Guards fail closed exactly like the PR-numbered path: a missing dependency,
-// an exhausted no-PR branch-conflict retry budget, or an already-in-flight
-// recovery for this task
-// (branchRecoveryMu/branchRecoveryInFlight) all return false so the caller
-// (agentorch.MarkRebaseBlocked helper) escalates to human-required as before. Never loops:
+// Guards fail closed exactly like the PR-numbered path: missing dependencies
+// and exhausted no-PR branch-conflict retry budgets return false so the caller
+// (agentorch.MarkRebaseBlocked helper) escalates to human-required. An
+// already-in-flight recovery is treated as handled, so a concurrent caller
+// cannot cancel the workflow the first caller is preparing. Never loops:
 // a conflict discovered while resolving THIS conflict re-enters
 // agentorch.MarkRebaseBlocked -> RecoverStaleBranchConflict -> here, and the in-flight
 // marker (still held from the outer call, since this method runs
@@ -1332,11 +1482,13 @@ func (r *Handler) recoverBranchConflictNoPR(t task.Task) bool {
 	return r.recoverTaskBranchConflict(context.Background(), t, taskBranchConflictRecoverySpec{
 		retryKind:     branchConflictRetryKind,
 		allowRecreate: true,
-		prompt:        branchConflictPrompt,
+		prompt: func(ctx context.Context, t task.Task, base string) string {
+			return branchConflictPrompt(ctx, t, base, r.signingPolicy())
+		},
 	})
 }
 
-func (r *Handler) recoverSameBranchConflict(ctx context.Context, t task.Task, branch, remote string) bool {
+func (r *Handler) recoverSameBranchConflict(ctx context.Context, t task.Task, branch, remote string, trustedOrigin bool) bool {
 	if remote == "" {
 		remote = "origin"
 	}
@@ -1344,13 +1496,14 @@ func (r *Handler) recoverSameBranchConflict(ctx context.Context, t task.Task, br
 		retryKind:      sameBranchConflictRetryKind,
 		branchOverride: branch,
 		remoteOverride: remote,
+		trustedOrigin:  trustedOrigin && remote == "origin",
 		prompt: func(ctx context.Context, t task.Task, _ string) string {
-			return sameBranchConflictPrompt(ctx, t, remote)
+			return sameBranchConflictPrompt(ctx, t, remote, r.signingPolicy())
 		},
 	})
 }
 
-func (r *Handler) sameBranchConflictRemote(ctx context.Context, t task.Task, pr github.PullRequest) string {
+func (r *Handler) sameBranchConflictRemote(ctx context.Context, t task.Task, pr github.PullRequest) (remote string, trustedOrigin bool) {
 	baseOwner := ""
 	if pr.Repository != "" {
 		baseOwner, _, _ = strings.Cut(pr.Repository, "/")
@@ -1358,17 +1511,17 @@ func (r *Handler) sameBranchConflictRemote(ctx context.Context, t task.Task, pr 
 	if baseOwner == "" && t.ProjectID != "" {
 		baseOwner, _, _ = strings.Cut(t.ProjectID, "/")
 	}
-	if pr.HeadRepoOwner == "" || strings.EqualFold(pr.HeadRepoOwner, baseOwner) {
-		return "origin"
+	if pr.HeadRepoOwner != "" && baseOwner != "" && strings.EqualFold(pr.HeadRepoOwner, baseOwner) {
+		return "origin", true
 	}
 	if r.projects == nil || t.ProjectID == "" {
-		return "origin"
+		return "origin", false
 	}
 	proj, err := r.projects.Get(t.ProjectID)
 	if err != nil || proj.ClonePath == "" {
-		return "origin"
+		return "origin", false
 	}
-	return project.PushRemote(ctx, proj.ClonePath)
+	return project.PushRemote(ctx, proj.ClonePath), false
 }
 
 func (r *Handler) recoverTaskBranchConflict(ctx context.Context, t task.Task, spec taskBranchConflictRecoverySpec) bool {
@@ -1377,7 +1530,7 @@ func (r *Handler) recoverTaskBranchConflict(ctx context.Context, t task.Task, sp
 		return false
 	}
 	if spec.branchOverride != "" && t.Branch != spec.branchOverride {
-		if _, err := r.tasks.Update(taskID, task.Update{Branch: task.Ptr(spec.branchOverride)}); err != nil {
+		if _, err := r.tasks.UpdateBy(taskID, "review.fix.recover_branch_conflict", task.Update{Branch: task.Ptr(spec.branchOverride)}); err != nil {
 			r.logger.Warn("pr-monitor.branch-conflict.branch-override", "task_id", taskID, "branch", spec.branchOverride, "err", err)
 			return false
 		}
@@ -1397,7 +1550,12 @@ func (r *Handler) recoverTaskBranchConflict(ctx context.Context, t task.Task, sp
 	}
 	if _, busy := r.branchRecoveryInFlight[taskID]; busy {
 		r.branchRecoveryMu.Unlock()
-		return false
+		// Another caller is already preparing or dispatching the bounded
+		// recovery for this task. Treat that as handled: callers interpret
+		// false as "escalate to human-required", which would otherwise cancel
+		// the recovery workflow the first caller has just started. The owner
+		// of the in-flight attempt still reports its own real failure.
+		return true
 	}
 	r.branchRecoveryInFlight[taskID] = struct{}{}
 	r.branchRecoveryMu.Unlock()
@@ -1447,7 +1605,23 @@ func (r *Handler) recoverTaskBranchConflict(ctx context.Context, t task.Task, sp
 	if shaErr != nil {
 		r.logger.Warn("pr-monitor.branch-conflict.head-sha", "task_id", taskID, "err", shaErr)
 	}
-	return r.dispatchBranchConflictRecovery(ctx, taskID, dir, spec.prompt(ctx, t, base), t, headSHA, resume, hadActiveWorkflow, spec.retryKind)
+	trustedPushURL := ""
+	if spec.trustedOrigin {
+		hasGuard, guardErr := project.OriginPushHasForkOnlyGuard(ctx, dir)
+		if guardErr != nil {
+			r.logger.Warn("pr-monitor.branch-conflict.origin-push-guard", "task_id", taskID, "err", guardErr)
+			return false
+		}
+		if hasGuard {
+			var urlErr error
+			trustedPushURL, urlErr = project.RemoteURL(ctx, dir, "origin")
+			if urlErr != nil || trustedPushURL == "" {
+				r.logger.Warn("pr-monitor.branch-conflict.origin-url", "task_id", taskID, "err", urlErr)
+				return false
+			}
+		}
+	}
+	return r.dispatchBranchConflictRecoveryToRemote(ctx, taskID, dir, spec.prompt(ctx, t, base), t, headSHA, resume, hadActiveWorkflow, spec.retryKind, trustedPushURL)
 }
 
 func (r *Handler) recreateExhaustedNoPRBranch(ctx context.Context, t task.Task) bool {
@@ -1469,9 +1643,13 @@ func (r *Handler) recreateExhaustedNoPRBranch(ctx context.Context, t task.Task) 
 		}
 	}
 	reason := "branch recreated from a fresh base after conflict recovery was exhausted; re-implementing (diverged commits saved under refs/sybra-backup)"
-	if _, err := r.tasks.Update(taskID, task.Update{
-		Status:       task.Ptr(task.StatusInProgress),
-		StatusReason: task.Ptr(reason),
+	if _, err := r.tasks.Apply(task.TransitionIntent{
+		TaskID:   taskID,
+		ToStatus: task.StatusInProgress,
+		Actor:    "review.pr-monitor.branch-recreate",
+		Extra: task.Update{
+			StatusReason: task.Ptr(reason),
+		},
 	}); err != nil {
 		r.logger.Error("pr-monitor.branch-recreate.status", "task_id", taskID, "err", err)
 		return false
@@ -1514,7 +1692,7 @@ func (r *Handler) recoverRetryablePRFixDispatch(taskID string, startErr error) b
 		r.logger.Warn("pr-monitor.workflow-dispatch-retry.get", "task_id", taskID, "err", err)
 		return false
 	}
-	if fresh.Status != task.StatusHumanRequired || fresh.Workflow == nil {
+	if (fresh.Status != task.StatusHumanRequired && fresh.Status != task.StatusBlocked) || fresh.Workflow == nil {
 		return false
 	}
 	if fresh.Workflow.WorkflowID != prFixWorkflowID || fresh.Workflow.CurrentStep != "fix" {
@@ -1526,13 +1704,18 @@ func (r *Handler) recoverRetryablePRFixDispatch(taskID string, startErr error) b
 	case workflow.ExecRunning, workflow.ExecWaiting:
 	}
 
-	update := task.Update{Status: task.Ptr(task.StatusInReview)}
+	update := task.Update{}
 	if failure.Reason != "" {
 		update.StatusReason = task.Ptr(failure.Reason)
 	} else {
 		update.StatusReason = task.Ptr("")
 	}
-	if _, err := r.tasks.Update(taskID, update); err != nil {
+	if _, err := r.tasks.Apply(task.TransitionIntent{
+		TaskID:   taskID,
+		ToStatus: task.StatusInReview,
+		Actor:    "review.pr-monitor.workflow-dispatch-retry",
+		Extra:    update,
+	}); err != nil {
 		r.logger.Error("pr-monitor.workflow-dispatch-retry.status", "task_id", taskID, "err", err)
 		return false
 	}
@@ -1551,11 +1734,19 @@ func (r *Handler) recoverRetryablePRFixDispatch(taskID string, startErr error) b
 // what avoids a guaranteed reentrant "start in progress" failure there (see
 // workflow.Engine.ReplaceWorkflow's doc).
 func (r *Handler) dispatchBranchConflictRecovery(ctx context.Context, taskID, dir, prompt string, t task.Task, headSHA string, resume branchConflictResumeState, hadActiveWorkflow bool, retryKind github.PRIssueKind) bool {
+	return r.dispatchBranchConflictRecoveryToRemote(ctx, taskID, dir, prompt, t, headSHA, resume, hadActiveWorkflow, retryKind, "")
+}
+
+func (r *Handler) dispatchBranchConflictRecoveryToRemote(ctx context.Context, taskID, dir, prompt string, t task.Task, headSHA string, resume branchConflictResumeState, hadActiveWorkflow bool, retryKind github.PRIssueKind, trustedPushURL string) bool {
 	vars := map[string]string{
 		"prompt":                prompt + PRFixResultContract,
 		workflow.WorkflowVarDir: dir,
 		"resume_status":         resume.status,
 		"resume_status_reason":  resume.statusReason,
+	}
+	if trustedPushURL != "" {
+		vars[workflow.WorkflowVarBranchConflictPushRemote] = "origin"
+		vars[workflow.WorkflowVarBranchConflictPushURL] = trustedPushURL
 	}
 	if resume.workflowID != "" {
 		vars["resume_workflow_id"] = resume.workflowID
@@ -1598,11 +1789,16 @@ func (r *Handler) dispatchBranchConflictRecovery(ctx context.Context, taskID, di
 			// resurrect the already-cancelled workflow. Mirror the sticky guard
 			// surfaceStartFailureClassified applies: leave a task a downstream
 			// handler already parked on a human alone.
-			if cur, getErr := r.tasks.Get(taskID); getErr == nil && cur.Status == task.StatusHumanRequired {
+			if cur, getErr := r.tasks.Get(taskID); getErr == nil &&
+				(cur.Status == task.StatusHumanRequired || cur.Status == task.StatusBlocked) {
 				r.logger.Info("pr-monitor.branch-conflict.restore-skipped-escalated", "task_id", taskID)
-			} else if _, restoreErr := r.tasks.Update(taskID, task.Update{
-				Status:   task.Ptr(task.Status(resume.status)),
-				Workflow: task.Ptr(resume.prior),
+			} else if _, restoreErr := r.tasks.Apply(task.TransitionIntent{
+				TaskID:   taskID,
+				ToStatus: task.Status(resume.status),
+				Actor:    "review.pr-monitor.branch-conflict.restore",
+				Extra: task.Update{
+					Workflow: task.Ptr(resume.prior),
+				},
 			}); restoreErr != nil {
 				r.logger.Error("pr-monitor.branch-conflict.restore-prior-workflow", "task_id", taskID, "err", restoreErr)
 			}
@@ -1675,9 +1871,15 @@ func (r *Handler) parkOrEscalateBranchConflictDispatchFailure(taskID string, dis
 	reason := fmt.Sprintf(
 		"branch-conflict-fix dispatch failed %d time(s), most recently: %s",
 		attempts, dispatchErr.Error())
-	if _, err := r.tasks.Update(taskID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(reason),
+	if _, err := r.tasks.Apply(task.TransitionIntent{
+		TaskID:   taskID,
+		ToStatus: task.StatusBlocked,
+		Actor:    "review.pr-monitor.branch-conflict.dispatch-exhausted",
+		Extra: task.Update{
+			StatusReason:    task.Ptr(reason),
+			Escalation:      task.MachineFailure("dispatch.conflict_recovery_exhausted", reason),
+			AutonomyOutcome: task.QuarantinedOutcome(),
+		},
 	}); err != nil {
 		r.logger.Error("pr-monitor.branch-conflict.dispatch-exhausted-status", "task_id", taskID, "err", err)
 	}
@@ -1685,12 +1887,26 @@ func (r *Handler) parkOrEscalateBranchConflictDispatchFailure(taskID string, dis
 	return false
 }
 
+// worktreeBusyTransient reports whether a worktree entry point refused only
+// because something else currently owns the path — a live agent, or another
+// mutating operation mid-flight. Both clear on their own within one poll
+// interval, so neither may count toward the worktree-failure circuit breaker
+// (wtFailureLimit refusals escalate the task to human-required).
+func worktreeBusyTransient(err error) bool {
+	return errors.Is(err, worktree.ErrAgentRunning) || errors.Is(err, worktree.ErrPreparationInFlight)
+}
+
 func (r *Handler) parkOrEscalateBranchFixFailure(taskID string, wtErr error) bool {
+	if worktreeBusyTransient(wtErr) {
+		r.logger.Info("pr-monitor.branch-conflict.busy", "task_id", taskID, "err", wtErr)
+		return true
+	}
 	if r.dropTerminalWorktreeFailure(taskID, wtErr) {
 		return false
 	}
 	attempts := r.recordWorktreeFailure(taskID, wtErr)
-	if t, gerr := r.tasks.Get(taskID); gerr == nil && t.Status == task.StatusHumanRequired {
+	if t, gerr := r.tasks.Get(taskID); gerr == nil &&
+		(t.Status == task.StatusHumanRequired || t.Status == task.StatusBlocked) {
 		return false
 	}
 	r.logger.Info("pr-monitor.branch-conflict.parked-retry",
@@ -1702,7 +1918,7 @@ func worktreeFailureTerminal(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, worktree.ErrTaskBranchMissing) {
+	if errors.Is(err, worktree.ErrTaskBranchMissing) || errors.Is(err, worktree.ErrLocalWorkPreserved) {
 		return true
 	}
 	return strings.Contains(err.Error(), "invalid reference")
@@ -1730,11 +1946,26 @@ func (r *Handler) dropTerminalWorktreeFailure(taskID string, wtErr error) bool {
 		return false
 	}
 	r.clearWorktreeFailure(taskID)
-	if got.Status != task.StatusHumanRequired {
+	if got.Status != task.StatusHumanRequired && got.Status != task.StatusBlocked {
 		reason := fmt.Sprintf("branch deleted: fix worktree cannot be created (%s)", wtErr)
-		if _, uerr := r.tasks.Update(taskID, task.Update{
-			Status:       task.Ptr(task.StatusHumanRequired),
-			StatusReason: task.Ptr(reason),
+		toStatus := task.StatusBlocked
+		escalation := task.MachineFailure("git.task_branch_missing", reason)
+		outcome := task.QuarantinedOutcome()
+		if errors.Is(wtErr, worktree.ErrLocalWorkPreserved) {
+			reason = fmt.Sprintf("local worktree state was preserved; inspect and resolve local changes or an in-progress git operation before retrying (%s)", wtErr)
+			toStatus = task.StatusHumanRequired
+			escalation = task.OperatorDecisionRequired("git.worktree_local_state_preserved", reason)
+			outcome = task.HumanRequiredOutcome()
+		}
+		if _, uerr := r.tasks.Apply(task.TransitionIntent{
+			TaskID:   taskID,
+			ToStatus: toStatus,
+			Actor:    "review.pr-monitor.worktree.terminal-escalate",
+			Extra: task.Update{
+				StatusReason:    task.Ptr(reason),
+				Escalation:      escalation,
+				AutonomyOutcome: outcome,
+			},
 		}); uerr != nil {
 			r.logger.Error("pr-monitor.worktree.terminal-escalate", "task_id", taskID, "err", uerr)
 		}
@@ -1788,9 +2019,15 @@ func (r *Handler) recordWorktreeFailure(taskID string, wtErr error) int {
 		r.failureMu.Unlock()
 		r.logger.Error("pr-monitor.worktree.circuit-open",
 			"task_id", taskID, "failures", wtFailureLimit, "err", wtErr)
-		if _, uerr := r.tasks.Update(taskID, task.Update{
-			Status:       task.Ptr(task.StatusHumanRequired),
-			StatusReason: task.Ptr(fmt.Sprintf("pr-monitor: worktree creation failed %d times", wtFailureLimit)),
+		if _, uerr := r.tasks.Apply(task.TransitionIntent{
+			TaskID:   taskID,
+			ToStatus: task.StatusBlocked,
+			Actor:    "review.pr-monitor.worktree.escalate",
+			Extra: task.Update{
+				StatusReason:    task.Ptr(fmt.Sprintf("pr-monitor: worktree creation failed %d times", wtFailureLimit)),
+				Escalation:      task.MachineFailure("runenv.worktree_prepare_exhausted", "worktree preparation exhausted"),
+				AutonomyOutcome: task.QuarantinedOutcome(),
+			},
 		}); uerr != nil {
 			r.logger.Error("pr-monitor.worktree.escalate", "task_id", taskID, "err", uerr)
 		}
@@ -1829,7 +2066,7 @@ func (r *Handler) allowPreparedWorktree(taskID, dir string) bool {
 		r.logger.Error("pr-monitor.worktree.setup-fail-refetch", "task_id", taskID, "err", err)
 		return false
 	}
-	return got.Status != task.StatusHumanRequired
+	return got.Status != task.StatusHumanRequired && got.Status != task.StatusBlocked
 }
 
 // branchConflictPrompt is the no-PR analog of buildConflictPrompt: there is no
@@ -1837,7 +2074,7 @@ func (r *Handler) allowPreparedWorktree(taskID, dir string) bool {
 // by PrepareForBranchFix before this is called). Unlike the PR-backed conflict
 // prompt, this path may allow a rebase plus force-with-lease because no PR
 // exists yet.
-func branchConflictPrompt(ctx context.Context, t task.Task, base string) string {
+func branchConflictPrompt(ctx context.Context, t task.Task, base string, signing project.SigningPolicy) string {
 	branch := t.Branch
 	if branch == "" {
 		branch = "the task's current branch"
@@ -1869,11 +2106,11 @@ func branchConflictPrompt(ctx context.Context, t task.Task, base string) string 
 			"- Before pushing, run tests for touched code as a single blocking foreground command (e.g. `go test ./pkg/foo/...`) and wait for it to exit — never background a test run or narrate/poll its progress; if it has not finished within a couple of minutes, stop and report a blocker instead of waiting indefinitely\n"+
 			"- Stop only for a concrete blocker: binary conflict, missing secret/credential, deleted context you cannot reconstruct, or a semantic decision that the task context does not answer\n"+
 			"- No investigation, no extra commits, no unrelated changes",
-		branch, base, project.CommitSignFlags(ctx), base, prFixPushPrompt(branch, "", false, true), base, base,
+		branch, base, signing.CommitFlags(ctx), base, prFixPushPrompt(branch, "", false, true), base, base,
 	)
 }
 
-func sameBranchConflictPrompt(ctx context.Context, t task.Task, remote string) string {
+func sameBranchConflictPrompt(ctx context.Context, t task.Task, remote string, signing project.SigningPolicy) string {
 	branch := t.Branch
 	if branch == "" {
 		branch = "the task's current branch"
@@ -1898,10 +2135,9 @@ func sameBranchConflictPrompt(ctx context.Context, t task.Task, remote string) s
 			"# If the merge already completed on its own (clean/no-op), do not run git\n"+
 			"# commit again.\n"+
 			"# Do NOT rebase, amend, or force-push: this branch already backs a live PR.\n"+
-			"%s\n"+
 			"```\n\n"+
-			"After pushing, summarize what conflicted and how you resolved it.",
-		branch, prCtx, remote, branch, remote, branch, remote, branch, project.CommitSignFlags(ctx), prFixPushPromptWithRemote(branch, "", false, false, remote),
+			"Do not push: Sybra will verify and publish this completed merge through its trusted, non-force workflow step. Summarize what conflicted and how you resolved it.",
+		branch, prCtx, remote, branch, remote, branch, remote, branch, signing.CommitFlags(ctx),
 	)
 }
 
@@ -1931,13 +2167,13 @@ func (r *Handler) prepareWorktree(ctx context.Context, t task.Task, issue github
 		d, wtErr = r.worktrees.PrepareForTask(ctx, t, nil)
 	}
 	if wtErr != nil {
-		if errors.Is(wtErr, worktree.ErrAgentRunning) {
-			r.logger.Warn("pr-monitor.worktree.agent-running", "task_id", t.ID, "err", wtErr)
+		if worktreeBusyTransient(wtErr) {
+			r.logger.Warn("pr-monitor.worktree.busy", "task_id", t.ID, "err", wtErr)
 			return "", false
 		}
 		if errors.Is(wtErr, project.ErrBranchDiverged) {
-			remote := r.sameBranchConflictRemote(ctx, t, issue.PR)
-			if r.recoverSameBranchConflict(ctx, t, issue.PR.HeadRefName, remote) {
+			remote, trustedOrigin := r.sameBranchConflictRemote(ctx, t, issue.PR)
+			if r.recoverSameBranchConflict(ctx, t, issue.PR.HeadRefName, remote, trustedOrigin) {
 				return "", false
 			}
 		}
@@ -1947,7 +2183,7 @@ func (r *Handler) prepareWorktree(ctx context.Context, t task.Task, issue github
 		// IS a conflict fix (avoid re-entering ourselves).
 		var recoverFn func(string) bool
 		if issue.Kind != github.PRIssueConflict {
-			recoverFn = r.RecoverStaleBranchConflict
+			recoverFn = r.recoverStaleBranchConflictReserved
 		}
 		if agentorch.MarkRebaseBlocked(r.tasks, t.ID, wtErr, r.logger, recoverFn) {
 			return "", false
@@ -1964,29 +2200,7 @@ func (r *Handler) prepareWorktree(ctx context.Context, t task.Task, issue github
 	return d, true
 }
 
-// commentsPrompt instructs the fix agent to address unresolved review comments
-// on the user's own PR via the /fix-review skill (which replies on every
-// thread), then push and re-request review.
-func commentsPrompt(ctx context.Context, pr github.PullRequest) string {
-	return fmt.Sprintf(
-		"Run /fix-review %s --auto\n\n"+
-			"This is your own PR (#%d) — reviewers left comments or unresolved "+
-			"threads. Address the valid ones, reply on every thread, and push.\n\n"+
-			"End every thread reply and any PR comment you post with a blank line "+
-			"then the harness attribution footer, exactly: `_Generated by Sybra "+
-			"harness_`.\n\n"+
-			"Never weaken, skip, delete, or hardcode tests to satisfy a comment "+
-			"— fix the underlying code; tampering is detected and blocks the "+
-			"task.\n\n"+
-			"IMPORTANT: when committing, use conventional commit format "+
-			"`fix(review): address PR review comments` (type(scope) required by "+
-			"repo hooks). Sign the commit with `git commit %s`.\n\n"+
-			"%s",
-		pr.URL, pr.Number, project.CommitSignFlags(ctx), prFixPushPrompt(pr.HeadRefName, "Push to the same remote create-pr would target for this worktree:", true, false),
-	)
-}
-
-func conflictPrompt(ctx context.Context, pr github.PullRequest) string {
+func conflictPrompt(ctx context.Context, pr github.PullRequest, signing project.SigningPolicy) string {
 	var filesCtx string
 	if files, err := github.FetchPRFiles(pr.Repository, pr.Number); err == nil && len(files) > 0 {
 		var sb strings.Builder
@@ -1999,10 +2213,10 @@ func conflictPrompt(ctx context.Context, pr github.PullRequest) string {
 		filesCtx = sb.String()
 	}
 
-	return buildConflictPrompt(ctx, pr, filesCtx)
+	return buildConflictPrompt(ctx, pr, filesCtx, signing)
 }
 
-func buildConflictPrompt(ctx context.Context, pr github.PullRequest, filesCtx string) string {
+func buildConflictPrompt(ctx context.Context, pr github.PullRequest, filesCtx string, signing project.SigningPolicy) string {
 	base := pr.BaseRefName
 	if base == "" {
 		base = "main"
@@ -2033,6 +2247,6 @@ func buildConflictPrompt(ctx context.Context, pr github.PullRequest, filesCtx st
 			"- Stop only for a concrete blocker: binary conflict, missing secret/credential, deleted context you cannot reconstruct, or a semantic decision that the task/PR context does not answer\n"+
 			"- No investigation, no extra commits, no unrelated changes"+
 			"%s",
-		pr.HeadRefName, pr.Number, baseRef, project.CommitSignFlags(ctx), prFixPushPrompt(pr.HeadRefName, "", false, false), baseRef, filesCtx,
+		pr.HeadRefName, pr.Number, baseRef, signing.CommitFlags(ctx), prFixPushPrompt(pr.HeadRefName, "", false, false), baseRef, filesCtx,
 	)
 }

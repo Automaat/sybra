@@ -2,6 +2,7 @@ package agent
 
 import (
 	"errors"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 // received.
 func fakeGhOnPath(t *testing.T) string {
 	t.Helper()
+	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	script := "#!/bin/sh\nprintf 'REAL-GH:'\nfor a in \"$@\"; do printf ' [%s]' \"$a\"; done\nprintf '\\n'\n"
 	path := filepath.Join(dir, "gh")
@@ -22,6 +24,13 @@ func fakeGhOnPath(t *testing.T) string {
 		t.Fatal(err)
 	}
 	if err := os.Chmod(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cli := filepath.Join(dir, "sybra-cli")
+	if err := os.WriteFile(cli, []byte("#!/bin/sh\nexit 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(cli, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -59,6 +68,518 @@ func runShim(t *testing.T, shimDir string, args ...string) (stdout, stderr strin
 	return out.String(), errBuf.String(), code
 }
 
+func runCredentialShim(t *testing.T, shimDir, input string, args ...string) (stdout, stderr string, code int) {
+	t.Helper()
+	cmd := exec.Command(filepath.Join(shimDir, "git-credential-sybra"), args...)
+	cmd.Stdin = strings.NewReader(input)
+	var out, errBuf strings.Builder
+	cmd.Stdout = &out
+	cmd.Stderr = &errBuf
+	err := cmd.Run()
+	var exitErr *exec.ExitError
+	switch {
+	case err == nil:
+	case errors.As(err, &exitErr):
+		code = exitErr.ExitCode()
+	default:
+		t.Fatalf("run git credential shim: %v", err)
+	}
+	return out.String(), errBuf.String(), code
+}
+
+func TestGhShim_MintsFreshAppTokenPerGhInvocation(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ghDir := t.TempDir()
+	realGh := filepath.Join(ghDir, "gh")
+	ghScript := "#!/bin/sh\nprintf 'REAL-GH GH_TOKEN=%s GITHUB_TOKEN=%s:' \"$GH_TOKEN\" \"$GITHUB_TOKEN\"\nfor a in \"$@\"; do printf ' [%s]' \"$a\"; done\nprintf '\\n'\n"
+	if err := os.WriteFile(realGh, []byte(ghScript), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(realGh, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cliDir := t.TempDir()
+	counter := filepath.Join(cliDir, "counter")
+	fakeCLI := filepath.Join(cliDir, "sybra-cli")
+	cliScript := "#!/bin/sh\n[ \"$1\" = \"github-app-token\" ] || exit 2\nn=$(cat '" + counter + "' 2>/dev/null || echo 0)\nn=$((n + 1))\nprintf '%s\\n' \"$n\" > '" + counter + "'\nprintf 'token-%s\\n' \"$n\"\n"
+	if err := os.WriteFile(fakeCLI, []byte(cliScript), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(fakeCLI, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("PATH", ghDir+string(os.PathListSeparator)+cliDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	shimDir, err := writeGhShim(t.TempDir())
+	if err != nil {
+		t.Fatalf("writeGhShim: %v", err)
+	}
+
+	stdout, stderr, code := runShim(t, shimDir, "api", "rate_limit")
+	if code != 0 {
+		t.Fatalf("first shim call failed: exit=%d stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stdout, "GH_TOKEN=token-1 GITHUB_TOKEN=token-1") {
+		t.Fatalf("first call did not use freshly minted token: %q", stdout)
+	}
+
+	stdout, stderr, code = runShim(t, shimDir, "api", "rate_limit")
+	if code != 0 {
+		t.Fatalf("second shim call failed: exit=%d stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stdout, "GH_TOKEN=token-2 GITHUB_TOKEN=token-2") {
+		t.Fatalf("second call reused stale token or missed the helper: %q", stdout)
+	}
+}
+
+func TestGhShimUsesRotatedManagerTokenWithoutControlHome(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ghDir := t.TempDir()
+	realGh := filepath.Join(ghDir, "gh")
+	if err := os.WriteFile(realGh, []byte("#!/bin/sh\nprintf 'GH=%s GITHUB=%s\\n' \"$GH_TOKEN\" \"$GITHUB_TOKEN\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cliDir := t.TempDir()
+	marker := filepath.Join(cliDir, "minted")
+	if err := os.WriteFile(filepath.Join(cliDir, "sybra-cli"), []byte("#!/bin/sh\ntouch '"+marker+"'\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", ghDir+string(os.PathListSeparator)+cliDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	shimDir, err := writeGhShim(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &Manager{ghShimDir: shimDir, logger: slog.New(slog.DiscardHandler)}
+	token := "author-token-1"
+	m.SetGHAppToken(func() string { return token })
+	t.Setenv(ghAuthFileEnv, filepath.Join(shimDir, ".token"))
+	t.Setenv("GH_TOKEN", "expired-ambient-token")
+	t.Setenv("GITHUB_TOKEN", "expired-ambient-token")
+	t.Setenv("SYBRA_HOME", t.TempDir())
+
+	stdout, stderr, code := runShim(t, shimDir, "api", "rate_limit")
+	if code != 0 || !strings.Contains(stdout, "GH=author-token-1 GITHUB=author-token-1") {
+		t.Fatalf("shim did not use published token: exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+
+	token = "author-token-2"
+	if err := m.SyncGHAppToken(); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, code = runShim(t, shimDir, "api", "rate_limit")
+	if code != 0 || !strings.Contains(stdout, "GH=author-token-2 GITHUB=author-token-2") {
+		t.Fatalf("shim did not use rotated token: exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("shim called task-local token mint fallback despite published token: %v", err)
+	}
+	info, err := os.Stat(filepath.Join(shimDir, ".token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("published token mode = %o, want 600", got)
+	}
+}
+
+func TestGhShimPreservesPreScopedVerifierToken(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ghDir := t.TempDir()
+	realGh := filepath.Join(ghDir, "gh")
+	if err := os.WriteFile(realGh, []byte("#!/bin/sh\nprintf 'GH=%s GITHUB=%s\\n' \"$GH_TOKEN\" \"$GITHUB_TOKEN\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cliDir := t.TempDir()
+	marker := filepath.Join(cliDir, "minted")
+	fakeCLI := filepath.Join(cliDir, "sybra-cli")
+	if err := os.WriteFile(fakeCLI, []byte("#!/bin/sh\nprintf full-token\ntouch '"+marker+"'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", ghDir+string(os.PathListSeparator)+cliDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	shimDir, err := writeGhShim(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GH_TOKEN", "contents-read-pr-write-token")
+	t.Setenv("GITHUB_TOKEN", "contents-read-pr-write-token")
+
+	stdout, stderr, code := runShim(t, filepath.Join(shimDir, "verifier"), "pr", "view", "1")
+	if code != 0 || !strings.Contains(stdout, "GH=contents-read-pr-write-token GITHUB=contents-read-pr-write-token") {
+		t.Fatalf("shim replaced scoped token: exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("full-token mint helper ran despite pre-scoped token: %v", err)
+	}
+}
+
+func TestVerifierGhShimNeverMintsBroadToken(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ghDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(ghDir, "gh"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cliDir := t.TempDir()
+	marker := filepath.Join(cliDir, "minted")
+	if err := os.WriteFile(filepath.Join(cliDir, "sybra-cli"), []byte("#!/bin/sh\ntouch '"+marker+"'\nprintf full-token\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", ghDir+string(os.PathListSeparator)+cliDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	shimDir, err := writeGhShim(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", "")
+	_, stderr, code := runShim(t, filepath.Join(shimDir, "verifier"), "pr", "view", "1")
+	if code == 0 || !strings.Contains(stderr, "restricted verifier GitHub token is unavailable") {
+		t.Fatalf("verifier shim fallback = exit %d stderr %q", code, stderr)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("verifier shim invoked broad-token helper: %v", err)
+	}
+}
+
+func TestVerifierGhShimUsesRotatedManagerToken(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ghDir := t.TempDir()
+	realGh := filepath.Join(ghDir, "gh")
+	if err := os.WriteFile(realGh, []byte("#!/bin/sh\nprintf 'GH=%s GITHUB=%s\\n' \"$GH_TOKEN\" \"$GITHUB_TOKEN\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", ghDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	shimDir, err := writeGhShim(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &Manager{ghShimDir: shimDir, logger: slog.New(slog.DiscardHandler)}
+	token := "rotated-restricted-token"
+	m.SetGHVerifierAppToken(func() string { return token })
+	t.Setenv("GH_TOKEN", "stale-restricted-token")
+	t.Setenv("GITHUB_TOKEN", "stale-restricted-token")
+
+	stdout, stderr, code := runShim(t, filepath.Join(shimDir, "verifier"), "pr", "view", "1")
+	if code != 0 || !strings.Contains(stdout, "GH=rotated-restricted-token GITHUB=rotated-restricted-token") {
+		t.Fatalf("shim did not use rotated token: exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+
+	token = ""
+	if err := m.SyncGHVerifierAppToken(); err != nil {
+		t.Fatal(err)
+	}
+	_, stderr, code = runShim(t, filepath.Join(shimDir, "verifier"), "pr", "view", "1")
+	if code == 0 || !strings.Contains(stderr, "restricted verifier GitHub token is unavailable") {
+		t.Fatalf("blank rotated token reused stale environment: exit=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestVerifierGhShimUsesRotatedManagerTokenWhenInvokedThroughPath(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ghDir := t.TempDir()
+	realGh := filepath.Join(ghDir, "gh")
+	if err := os.WriteFile(realGh, []byte("#!/bin/sh\nprintf 'GH=%s GITHUB=%s\\n' \"$GH_TOKEN\" \"$GITHUB_TOKEN\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", ghDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	shimDir, err := writeGhShim(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &Manager{ghShimDir: shimDir, logger: slog.New(slog.DiscardHandler)}
+	m.SetGHVerifierAppToken(func() string { return "rotated-restricted-token" })
+	t.Setenv("GH_TOKEN", "stale-restricted-token")
+	t.Setenv("GITHUB_TOKEN", "stale-restricted-token")
+	t.Setenv("PATH", filepath.Join(shimDir, "verifier")+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	ghCommand := "gh"
+	cmd := exec.Command(ghCommand, "pr", "view", "1")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run verifier gh through PATH: %v: %s", err, output)
+	}
+	if !strings.Contains(string(output), "GH=rotated-restricted-token GITHUB=rotated-restricted-token") {
+		t.Fatalf("PATH-invoked shim did not use rotated token: %q", output)
+	}
+}
+
+func TestGhShim_UsesResolvedSybraCLIWhenInvocationPathOmitsIt(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ghDir := t.TempDir()
+	realGh := filepath.Join(ghDir, "gh")
+	ghScript := "#!/bin/sh\nprintf 'REAL-GH GH_TOKEN=%s GITHUB_TOKEN=%s\\n' \"$GH_TOKEN\" \"$GITHUB_TOKEN\"\n"
+	if err := os.WriteFile(realGh, []byte(ghScript), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(realGh, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cliDir := t.TempDir()
+	fakeCLI := filepath.Join(cliDir, "sybra-cli")
+	cliScript := "#!/bin/sh\n[ \"$1\" = \"github-app-token\" ] || exit 2\nprintf 'resolved-token\\n'\n"
+	if err := os.WriteFile(fakeCLI, []byte(cliScript), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(fakeCLI, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("PATH", ghDir+string(os.PathListSeparator)+cliDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	shimDir, err := writeGhShim(t.TempDir())
+	if err != nil {
+		t.Fatalf("writeGhShim: %v", err)
+	}
+
+	t.Setenv("PATH", ghDir)
+	stdout, stderr, code := runShim(t, shimDir, "api", "rate_limit")
+	if code != 0 {
+		t.Fatalf("shim call failed without sybra-cli on PATH: exit=%d stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stdout, "GH_TOKEN=resolved-token GITHUB_TOKEN=resolved-token") {
+		t.Fatalf("shim did not use resolved sybra-cli path: %q", stdout)
+	}
+}
+
+func TestLookRealSybraCLI_ReturnsAbsolutePath(t *testing.T) {
+	fakeGhOnPath(t)
+	root := t.TempDir()
+	binDir := filepath.Join(root, "bin")
+	if err := os.Mkdir(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fakeCLI := filepath.Join(binDir, "sybra-cli")
+	if err := os.WriteFile(fakeCLI, []byte("#!/bin/sh\nexit 0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(fakeCLI, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+	t.Setenv("PATH", "bin")
+
+	got := lookRealSybraCLI()
+	if !filepath.IsAbs(got) {
+		t.Fatalf("lookRealSybraCLI() = %q, want absolute path", got)
+	}
+	gotInfo, err := os.Stat(got)
+	if err != nil {
+		t.Fatalf("stat resolved path %q: %v", got, err)
+	}
+	wantInfo, err := os.Stat(fakeCLI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(gotInfo, wantInfo) {
+		t.Fatalf("lookRealSybraCLI() = %q, not same file as %q", got, fakeCLI)
+	}
+}
+
+func TestLookRealSybraCLI_PrefersStableHomeInstallOverStalePathEntry(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	staleDir := filepath.Join(root, "mise", "installs", "go", "old", "bin")
+	stableDir := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(staleDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(stableDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	staleCLI := filepath.Join(staleDir, "sybra-cli")
+	stableCLI := filepath.Join(stableDir, "sybra-cli")
+	if err := os.WriteFile(staleCLI, []byte("#!/bin/sh\nexit 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(staleCLI, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stableCLI, []byte("#!/bin/sh\nexit 0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(stableCLI, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", staleDir+string(os.PathListSeparator)+stableDir)
+
+	got := lookRealSybraCLI()
+	gotInfo, err := os.Stat(got)
+	if err != nil {
+		t.Fatalf("stat resolved path %q: %v", got, err)
+	}
+	wantInfo, err := os.Stat(stableCLI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(gotInfo, wantInfo) {
+		t.Fatalf("lookRealSybraCLI() = %q, want stable home install %q over stale PATH entry %q", got, stableCLI, staleCLI)
+	}
+}
+
+func TestGitCredentialShim_MintsFreshAppTokenPerLookup(t *testing.T) {
+	fakeGhOnPath(t)
+	cliDir := t.TempDir()
+	counter := filepath.Join(cliDir, "counter")
+	fakeCLI := filepath.Join(cliDir, "sybra-cli")
+	cliScript := "#!/bin/sh\n[ \"$1\" = \"github-app-token\" ] || exit 2\nn=$(cat '" + counter + "' 2>/dev/null || echo 0)\nn=$((n + 1))\nprintf '%s\\n' \"$n\" > '" + counter + "'\nprintf 'token-%s\\n' \"$n\"\n"
+	if err := os.WriteFile(fakeCLI, []byte(cliScript), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(fakeCLI, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", cliDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	shimDir, err := writeGhShim(t.TempDir())
+	if err != nil {
+		t.Fatalf("writeGhShim: %v", err)
+	}
+
+	stdout, stderr, code := runCredentialShim(t, shimDir, "protocol=https\nhost=github.com\n\n", "get")
+	if code != 0 {
+		t.Fatalf("first credential lookup failed: exit=%d stderr=%q", code, stderr)
+	}
+	if stdout != "username=x-access-token\npassword=token-1\n" {
+		t.Fatalf("first credential lookup = %q, want fresh token-1", stdout)
+	}
+
+	stdout, stderr, code = runCredentialShim(t, shimDir, "protocol=https\nhost=github.com\n\n", "get")
+	if code != 0 {
+		t.Fatalf("second credential lookup failed: exit=%d stderr=%q", code, stderr)
+	}
+	if stdout != "username=x-access-token\npassword=token-2\n" {
+		t.Fatalf("second credential lookup = %q, want fresh token-2", stdout)
+	}
+}
+
+func TestGitCredentialShimUsesRotatedManagerTokenWithoutControlHome(t *testing.T) {
+	fakeGhOnPath(t)
+	cliDir := t.TempDir()
+	marker := filepath.Join(cliDir, "minted")
+	if err := os.WriteFile(filepath.Join(cliDir, "sybra-cli"), []byte("#!/bin/sh\ntouch '"+marker+"'\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", cliDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	shimDir, err := writeGhShim(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &Manager{ghShimDir: shimDir, logger: slog.New(slog.DiscardHandler)}
+	token := "author-token-1"
+	m.SetGHAppToken(func() string { return token })
+	t.Setenv(ghAuthFileEnv, filepath.Join(shimDir, ".token"))
+	t.Setenv("GH_TOKEN", "expired-ambient-token")
+	t.Setenv("GITHUB_TOKEN", "expired-ambient-token")
+	t.Setenv("SYBRA_HOME", t.TempDir())
+
+	input := "protocol=https\nhost=github.com\n\n"
+	stdout, stderr, code := runCredentialShim(t, shimDir, input, "get")
+	if code != 0 || stdout != "username=x-access-token\npassword=author-token-1\n" {
+		t.Fatalf("credential lookup = stdout %q stderr %q code %d", stdout, stderr, code)
+	}
+
+	token = "author-token-2"
+	if err := m.SyncGHAppToken(); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, code = runCredentialShim(t, shimDir, input, "get")
+	if code != 0 || stdout != "username=x-access-token\npassword=author-token-2\n" {
+		t.Fatalf("rotated credential lookup = stdout %q stderr %q code %d", stdout, stderr, code)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("credential shim called task-local token mint fallback despite published token: %v", err)
+	}
+}
+
+func TestGitCredentialShim_IgnoresNonGitHubAndStoreErase(t *testing.T) {
+	fakeGhOnPath(t)
+	cliDir := t.TempDir()
+	marker := filepath.Join(cliDir, "minted")
+	fakeCLI := filepath.Join(cliDir, "sybra-cli")
+	cliScript := "#!/bin/sh\n[ \"$1\" = \"github-app-token\" ] || exit 2\nprintf minted > '" + marker + "'\nprintf 'token\\n'\n"
+	if err := os.WriteFile(fakeCLI, []byte(cliScript), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(fakeCLI, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", cliDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	shimDir, err := writeGhShim(t.TempDir())
+	if err != nil {
+		t.Fatalf("writeGhShim: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		args  []string
+		input string
+	}{
+		{"non github", []string{"get"}, "protocol=https\nhost=example.com\n\n"},
+		{"plain http github", []string{"get"}, "protocol=http\nhost=github.com\n\n"},
+		{"ssh github", []string{"get"}, "protocol=ssh\nhost=github.com\n\n"},
+		{"store", []string{"store"}, "protocol=https\nhost=github.com\n\n"},
+		{"erase", []string{"erase"}, "protocol=https\nhost=github.com\n\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, stderr, code := runCredentialShim(t, shimDir, tc.input, tc.args...)
+			if code != 0 || stdout != "" || stderr != "" {
+				t.Fatalf("credential shim = stdout %q stderr %q code %d, want quiet success", stdout, stderr, code)
+			}
+		})
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("credential shim minted token for a non-credential lookup")
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("stat marker: %v", err)
+	}
+}
+
+func TestGhShim_DoesNotMintAppTokenForBlockedInvocation(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ghDir := t.TempDir()
+	realGh := filepath.Join(ghDir, "gh")
+	if err := os.WriteFile(realGh, []byte("#!/bin/sh\nprintf 'REAL-GH\\n'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(realGh, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cliDir := t.TempDir()
+	marker := filepath.Join(cliDir, "minted")
+	fakeCLI := filepath.Join(cliDir, "sybra-cli")
+	cliScript := "#!/bin/sh\n[ \"$1\" = \"github-app-token\" ] || exit 2\nprintf minted > '" + marker + "'\nprintf 'token\\n'\n"
+	if err := os.WriteFile(fakeCLI, []byte(cliScript), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(fakeCLI, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("PATH", ghDir+string(os.PathListSeparator)+cliDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	shimDir, err := writeGhShim(t.TempDir())
+	if err != nil {
+		t.Fatalf("writeGhShim: %v", err)
+	}
+
+	stdout, stderr, code := runShim(t, shimDir, "pr", "review", "--approve", "1")
+	if code == 0 {
+		t.Fatal("blocked invocation unexpectedly succeeded")
+	}
+	if strings.Contains(stdout, "REAL-GH") {
+		t.Fatalf("blocked invocation reached real gh: %q", stdout)
+	}
+	if !strings.Contains(stderr, GhShimReason) {
+		t.Fatalf("stderr = %q, want gh shim reason", stderr)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("blocked invocation minted a GitHub App token")
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("stat marker: %v", err)
+	}
+}
+
 // The shim sees real argv, so every shell shape that defeated string-parsing —
 // trailing separators, subshells, command substitution, quoted flags — reduces
 // to the same argv here. These are the reproductions that broke the previous
@@ -70,8 +591,6 @@ func TestGhShim_BlocksSubmittedReviews(t *testing.T) {
 		name string
 		args []string
 	}{
-		{"comment review", []string{"pr", "review", "--comment", "-b", "summary", "1"}},
-		{"request changes", []string{"pr", "review", "--request-changes", "-b", "fix this", "1"}},
 		{"long flag", []string{"pr", "review", "--approve", "1"}},
 		{"short flag", []string{"pr", "review", "-a", "1"}},
 		{"flag after number", []string{"pr", "review", "1", "--approve"}},
@@ -81,10 +600,11 @@ func TestGhShim_BlocksSubmittedReviews(t *testing.T) {
 		{"approve after a body-file flag", []string{"pr", "review", "-F", "notes.md", "--approve", "1"}},
 		{"approve after an inline body", []string{"pr", "review", "--body=lgtm", "--approve", "1"}},
 		{"repo flag first", []string{"pr", "review", "-R", "owner/repo", "--approve", "1"}},
-		{"rest comment event", []string{"api", "-X", "POST", "repos/owner/repo/pulls/1/reviews", "-f", "event=COMMENT"}},
-		{"rest request changes event", []string{"api", "-X", "POST", "repos/owner/repo/pulls/1/reviews", "-f", "event=REQUEST_CHANGES"}},
+		{"no verdict flag at all", []string{"pr", "review", "1", "-b", "lgtm"}},
+		{"no verdict flag, long body only", []string{"pr", "review", "1"}},
+		{"unrecognized short flag", []string{"pr", "review", "1", "-z"}},
+		{"approve bundled with comment", []string{"pr", "review", "1", "-ac"}},
 		{"rest approve event", []string{"api", "-X", "POST", "repos/owner/repo/pulls/1/reviews", "-f", "event=APPROVE"}},
-		{"rest pending submit", []string{"api", "-X", "POST", "repos/owner/repo/pulls/1/reviews/99/events", "-f", "event=COMMENT"}},
 		{"graphql add review", []string{"api", "graphql", "-f", `query=mutation { addPullRequestReview(input: {event: APPROVED}) { id } }`}},
 		{"graphql submit review", []string{"api", "graphql", "-f", `query=mutation { submitPullRequestReview(input: {event: APPROVE}) { id } }`}},
 	}
@@ -98,7 +618,7 @@ func TestGhShim_BlocksSubmittedReviews(t *testing.T) {
 			if strings.Contains(stdout, "REAL-GH") {
 				t.Fatalf("shim executed real gh for %v: %s", tc.args, stdout)
 			}
-			if !strings.Contains(stderr, "pending PR review drafts") {
+			if !strings.Contains(stderr, GhShimReason) {
 				t.Fatalf("shim stderr missing reason for %v: %q", tc.args, stderr)
 			}
 		})
@@ -138,6 +658,17 @@ func TestGhShim_AllowsPendingDraftReviews(t *testing.T) {
 		{"listing approved reviews", []string{"api", "graphql", "-f", `query=query { reviews(states: APPROVED) { id } }`}},
 		{"merge is gated elsewhere", []string{"pr", "merge", "1", "--squash"}},
 		{"unrelated", []string{"repo", "view"}},
+		{"comment review", []string{"pr", "review", "--comment", "-b", "summary", "1"}},
+		{"request changes", []string{"pr", "review", "--request-changes", "-b", "fix this", "1"}},
+		{"request changes short flag", []string{"pr", "review", "1", "-r", "-b", "fix this"}},
+		{"comment with repo flag", []string{"pr", "review", "-R", "owner/repo", "--comment", "-b", "fix this", "1"}},
+		// A body value that starts with '-' is a value, not a flag bundle: it must
+		// not be misread as an unrecognized short flag and blocked.
+		{"request changes with dash-leading body", []string{"pr", "review", "123", "--request-changes", "-b", "-1, this design has issues"}},
+		{"comment with dash-leading body-file", []string{"pr", "review", "123", "--comment", "-F", "-notes.md"}},
+		{"rest comment event", []string{"api", "-X", "POST", "repos/owner/repo/pulls/1/reviews", "-f", "event=COMMENT"}},
+		{"rest request changes event", []string{"api", "-X", "POST", "repos/owner/repo/pulls/1/reviews", "-f", "event=REQUEST_CHANGES"}},
+		{"rest pending submit with comment event", []string{"api", "-X", "POST", "repos/owner/repo/pulls/1/reviews/99/events", "-f", "event=COMMENT"}},
 	}
 
 	for _, tc := range tests {
@@ -189,16 +720,34 @@ func TestWriteGhShim_RewriteIsAtomicAndIdempotent(t *testing.T) {
 	for _, e := range entries {
 		names = append(names, e.Name())
 	}
-	if len(names) != 1 || names[0] != "gh" {
-		t.Fatalf("shim dir = %v, want exactly [gh] (no staging leftovers)", names)
+	wantNames := []string{"gh", "git-credential-sybra", "verifier"}
+	slices.Sort(names)
+	if !slices.Equal(names, wantNames) {
+		t.Fatalf("shim dir = %v, want exactly %v (no staging leftovers)", names, wantNames)
 	}
 
-	info, err := os.Stat(filepath.Join(dir, "gh"))
+	for _, name := range []string{"gh", "git-credential-sybra"} {
+		info, err := os.Stat(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm()&0o111 == 0 {
+			t.Fatalf("%s mode = %v, want executable", name, info.Mode().Perm())
+		}
+	}
+	verifierEntries, err := os.ReadDir(filepath.Join(dir, "verifier"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm()&0o111 == 0 {
-		t.Fatalf("shim mode = %v, want executable", info.Mode().Perm())
+	if len(verifierEntries) != 1 || verifierEntries[0].Name() != "gh" {
+		t.Fatalf("verifier shim dir = %v, want exactly [gh] (no staging leftovers)", verifierEntries)
+	}
+	verifierInfo, err := os.Stat(filepath.Join(dir, "verifier", "gh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verifierInfo.Mode().Perm()&0o111 == 0 {
+		t.Fatalf("verifier gh mode = %v, want executable", verifierInfo.Mode().Perm())
 	}
 
 	_, _, code := runShim(t, dir, "pr", "review", "--approve", "1")
@@ -208,13 +757,21 @@ func TestWriteGhShim_RewriteIsAtomicAndIdempotent(t *testing.T) {
 }
 
 func TestWriteGhShim_NoGhInstalled(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	t.Setenv("PATH", t.TempDir())
 	dir, err := writeGhShim(t.TempDir())
 	if err != nil {
 		t.Fatalf("writeGhShim: %v", err)
 	}
-	if dir != "" {
-		t.Fatalf("writeGhShim returned %q, want empty when gh is absent", dir)
+	if dir == "" {
+		t.Fatal("writeGhShim returned empty; git credential helper should still be installed without gh")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "git-credential-sybra" {
+		t.Fatalf("shim dir entries = %v, want only git-credential-sybra", entries)
 	}
 }
 
@@ -365,6 +922,225 @@ func TestGhShim_AllowsInspectableAndUnrelatedCalls(t *testing.T) {
 			_, stderr, _ := runShim(t, shim, tt.args...)
 			if strings.Contains(stderr, GhShimReason) {
 				t.Fatalf("shim blocked a legitimate call: %v", tt.args)
+			}
+		})
+	}
+}
+
+// TestGhShim_BlocksRawFieldFileValue pins #3376. gh reads a file into a value
+// only for --field; on --raw-field the "@path" is sent verbatim, so the
+// request carries the operator's path instead of the reply and GitHub answers
+// 201. Four review threads on an external pull request were posted that way.
+func TestGhShim_BlocksRawFieldFileValue(t *testing.T) {
+	shimDir := newShim(t)
+	reply := filepath.Join(t.TempDir(), "reply1.txt")
+	if err := os.WriteFile(reply, []byte("the actual reply\n"), 0o600); err != nil {
+		t.Fatalf("write reply: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"separate short flag", []string{"api", "--method", "POST", "/repos/o/r/pulls/1/comments/2/replies", "-f", "body=@" + reply}},
+		{"attached short flag", []string{"api", "--method", "POST", "/repos/o/r/pulls/1/comments/2/replies", "-fbody=@" + reply}},
+		{"long flag", []string{"api", "--raw-field", "body=@" + reply}},
+		{"long flag with equals", []string{"api", "--raw-field=body=@" + reply}},
+		{"nested field key", []string{"api", "-f", "comments[][body]=@" + reply}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, stderr, code := runShim(t, shimDir, tc.args...)
+			if code == 0 {
+				t.Fatalf("shim allowed %v (exit 0)", tc.args)
+			}
+			if strings.Contains(stdout, "REAL-GH") {
+				t.Fatalf("shim executed real gh for %v: %s", tc.args, stdout)
+			}
+			if !strings.Contains(stderr, GhShimRawFieldReason) {
+				t.Fatalf("stderr lacks the raw-field reason for %v: %q", tc.args, stderr)
+			}
+		})
+	}
+}
+
+// The guard keys on the filesystem, not on a leading @, so the bodies an agent
+// legitimately writes still post. Refusing every "@..." value would block an
+// at-mention, and refusing --field would block the flag that actually works.
+func TestGhShim_AllowsAtValuesThatNameNoFile(t *testing.T) {
+	shimDir := newShim(t)
+	reply := filepath.Join(t.TempDir(), "reply1.txt")
+	if err := os.WriteFile(reply, []byte("the actual reply\n"), 0o600); err != nil {
+		t.Fatalf("write reply: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"at-mention opens the body", []string{"api", "-f", "body=@octocat can you take another look"}},
+		{"missing path", []string{"api", "-f", "body=@/no/such/reply.txt"}},
+		{"field flag reads the file", []string{"api", "-F", "body=@" + reply}},
+		{"field flag attached", []string{"api", "-Fbody=@" + reply}},
+		{"long field flag", []string{"api", "--field", "body=@" + reply}},
+		{"body mentioning a raw field", []string{"api", "-f", "body=use -f body=@file next time"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, stderr, code := runShim(t, shimDir, tc.args...)
+			if code != 0 {
+				t.Fatalf("shim blocked %v: exit=%d stderr=%q", tc.args, code, stderr)
+			}
+			if !strings.Contains(stdout, "REAL-GH") {
+				t.Fatalf("real gh not reached for %v: %s", tc.args, stdout)
+			}
+		})
+	}
+}
+
+// TestGhShim_AllowsThreadReplyMutation pins the refusal that caused #3376.
+// addPullRequestReviewThreadReply contains addPullRequestReview as a
+// substring, so the review-mutation glob refused every GraphQL reply to a
+// review thread — a comment carrying no event — and the agent improvised a
+// REST call that published a local path. A payload that also submits a review
+// must still be refused.
+func TestGhShim_AllowsThreadReplyMutation(t *testing.T) {
+	shimDir := newShim(t)
+	reply := `mutation($threadId: ID!, $body: String!) {
+  addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $threadId, body: $body }) {
+    comment { id url }
+  }
+}`
+	stdout, stderr, code := runShim(t, shimDir, "api", "graphql", "-f", "threadId=T", "-f", "body=ok", "-f", "query="+reply)
+	if code != 0 {
+		t.Fatalf("shim refused a thread reply: exit=%d stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stdout, "REAL-GH") {
+		t.Fatalf("real gh not reached: %s", stdout)
+	}
+
+	both := reply + `
+mutation { submitPullRequestReview(input: { event: APPROVE }) { clientMutationId } }`
+	_, stderr, code = runShim(t, shimDir, "api", "graphql", "-f", "query="+both)
+	if code == 0 {
+		t.Fatal("shim allowed a payload that submits a review alongside a thread reply")
+	}
+	if !strings.Contains(stderr, GhShimReason) {
+		t.Fatalf("stderr lacks the approval reason: %q", stderr)
+	}
+}
+
+// TestGhShim_RawFieldGuardKeysOnTheFieldName keeps the guard off ordinary
+// prose. It fires on a raw field whose value is a path, not on a body that
+// happens to contain "=@" followed by something that exists — which the skill
+// now makes likely, since it tells agents to write "-F body=@file".
+func TestGhShim_RawFieldGuardKeysOnTheFieldName(t *testing.T) {
+	shimDir := newShim(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "reply1.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("write reply: %v", err)
+	}
+
+	run := func(t *testing.T, args ...string) (stdout, stderr string, code int) {
+		t.Helper()
+		cmd := exec.Command(filepath.Join(shimDir, "gh"), args...)
+		cmd.Dir = dir
+		var out, errBuf strings.Builder
+		cmd.Stdout = &out
+		cmd.Stderr = &errBuf
+		err := cmd.Run()
+		var exitErr *exec.ExitError
+		switch {
+		case err == nil:
+		case errors.As(err, &exitErr):
+			code = exitErr.ExitCode()
+		default:
+			t.Fatalf("run shim: %v", err)
+		}
+		return out.String(), errBuf.String(), code
+	}
+
+	allowed := []struct {
+		name string
+		args []string
+	}{
+		{"body quotes the guidance", []string{"api", "-f", "body=Applied. Posted with -F body=@reply1.txt"}},
+		{"body mentions a relative file", []string{"api", "-f", "body=see docs=@reply1.txt"}},
+		{"field flag attached with a bundle", []string{"api", "-Freply1.txt=@reply1.txt"}},
+	}
+	for _, tc := range allowed {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, stderr, code := run(t, tc.args...)
+			if code != 0 {
+				t.Fatalf("shim blocked %v: exit=%d stderr=%q", tc.args, code, stderr)
+			}
+			if !strings.Contains(stdout, "REAL-GH") {
+				t.Fatalf("real gh not reached for %v: %s", tc.args, stdout)
+			}
+		})
+	}
+
+	blocked := []struct {
+		name string
+		args []string
+	}{
+		{"relative path", []string{"api", "-f", "body=@reply1.txt"}},
+		{"stdin marker", []string{"api", "-f", "body=@-"}},
+		{"bundled shorthand", []string{"api", "-sf", "body=@reply1.txt"}},
+	}
+	for _, tc := range blocked {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, stderr, code := run(t, tc.args...)
+			if code == 0 {
+				t.Fatalf("shim allowed %v (exit 0): %s", tc.args, stdout)
+			}
+			if !strings.Contains(stderr, GhShimRawFieldReason) {
+				t.Fatalf("stderr lacks the raw-field reason for %v: %q", tc.args, stderr)
+			}
+		})
+	}
+}
+
+// TestGhShim_AcceptsBundledSkillCommands runs the commands the bundled
+// fix-review-auto skill tells agents to use. The skill and the wrapper are
+// written apart from each other, and the wrapper wins: a documented command it
+// refuses sends every agent down an improvised path, which is how #3376
+// happened.
+func TestGhShim_AcceptsBundledSkillCommands(t *testing.T) {
+	shimDir := newShim(t)
+	skill, err := os.ReadFile(filepath.Join("..", "skills", "data", "fix-review-auto.md"))
+	if err != nil {
+		t.Fatalf("read bundled skill: %v", err)
+	}
+	text := string(skill)
+	if strings.Contains(text, "-F query=@-") {
+		t.Fatal("skill still documents a stdin GraphQL query, which the shim refuses")
+	}
+
+	// The two gh api invocations the skill prescribes, reduced to the argv a
+	// shell would deliver.
+	fetch := []string{"api", "graphql", "-f", "owner=o", "-f", "repo=r", "-F", "pr=1", "-f", `
+query($owner: String!, $repo: String!, $pr: Int!) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $pr) { reviewThreads(first: 100) { nodes { id isResolved } } }
+  }
+}`}
+	post := []string{"api", "graphql", "-f", "threadId=T", "-f", "body=Applied.", "-f", `
+mutation($threadId: ID!, $body: String!) {
+  addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $threadId, body: $body }) {
+    comment { id url }
+  }
+}`}
+	rest := []string{"api", "-X", "POST", "/repos/o/r/pulls/1/comments/2/replies", "-f", "body=Applied."}
+
+	for name, args := range map[string][]string{"fetch": fetch, "post": post, "rest fallback": rest} {
+		t.Run(name, func(t *testing.T) {
+			stdout, stderr, code := runShim(t, shimDir, args...)
+			if code != 0 {
+				t.Fatalf("shim refused the documented %s command: exit=%d stderr=%q", name, code, stderr)
+			}
+			if !strings.Contains(stdout, "REAL-GH") {
+				t.Fatalf("real gh not reached for %s: %s", name, stdout)
 			}
 		})
 	}

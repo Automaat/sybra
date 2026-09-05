@@ -1,0 +1,16 @@
+./allocator.go
+./doc.go
+./fields.go
+./jsontagutil.go
+./list.go
+./listreflect.go
+./listunstructured.go
+./map.go
+./mapreflect.go
+./mapunstructured.go
+./reflectcache.go
+./scalar.go
+./structreflect.go
+./value.go
+./valuereflect.go
+./valueunstructured.go

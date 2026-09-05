@@ -17,13 +17,21 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/errclass"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/providerid"
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 var providerOrder = providerid.All()
 
 const streamScannerBuffer = 4 * 1024 * 1024
+
+// providerWaitDelay bounds how long Wait blocks after ctx cancellation before
+// force-closing the provider's output pipes. Kept well under App.Shutdown's
+// grace so a one-shot provider call can never be the goroutine that outlives
+// shutdown.
+const providerWaitDelay = 5 * time.Second
 
 // errSchemaDelivery wraps failures creating/writing the codex output-schema
 // temp file. RunJSON treats it as a failover-eligible provider failure rather
@@ -31,21 +39,40 @@ const streamScannerBuffer = 4 * 1024 * 1024
 // provider instead of aborting the whole call.
 var errSchemaDelivery = errors.New("schema delivery failed")
 
+// errWorkdir wraps failures preparing the call's working directory. Treated
+// like errSchemaDelivery: a local filesystem problem is the host's, not this
+// provider's, but failing the whole call over it would take down a classifier
+// that another provider could still answer.
+var errWorkdir = errors.New("working directory unavailable")
+
 // Options configures a one-shot provider invocation.
 type Options struct {
 	// Provider is the preferred provider. Empty means claude first, then peers.
 	Provider string
 	// Models maps provider name to the model slug passed to that provider's CLI.
 	Models map[string]string
-	// DisableTools runs the call with no tool access instead of the default
-	// full-tool bypass. Use for classifiers/summarizers whose prompt embeds
-	// any text a prior model turn authored — without this, that text runs in
-	// a tool-enabled session and a prompt-injected instruction could act on
-	// it. Claude denies every tool (--disallowedTools "*"); other providers
-	// are invoked unchanged (RunJSON has no tool-enabled peer path today).
-	DisableTools bool
-	Logger       *slog.Logger
-	Gate         provider.HealthGate
+	// EnableTools gives the call tool access. It is off by default: these are
+	// classifiers, judges and planners that answer from their prompt. The
+	// default used to be the opposite, which put a fully-permissioned CLI
+	// behind prompts built from GitHub issue and pull-request text (#3383).
+	//
+	// One caller sets it. agent.Inspect hands the model a log path and tells
+	// it to read the tail, and a tools-off run there returns hallucinated
+	// tool-call markup — which the watchdog only logs, so the stall detector
+	// would go quietly dead. Weigh a new true against that: it is the bar,
+	// not a formality.
+	//
+	// Off means claude denies every tool, codex runs read-only, and copilot
+	// is not given blanket tool permission. Providers differ in what they
+	// offer here, so the process sandbox below is the containment that does
+	// not depend on a CLI honouring a flag.
+	EnableTools bool
+	// Dir is the working directory for the CLI. Empty means a fresh empty
+	// directory per call, removed afterwards — never the serving process's
+	// cwd, which is a source checkout on the deploy host.
+	Dir    string
+	Logger *slog.Logger
+	Gate   provider.HealthGate
 	// Schema is an optional JSON Schema describing the expected result shape.
 	// Codex receives it natively via `--output-schema <tempfile>` (no prose);
 	// claude and copilot have no such flag, so it is embedded as prose in the
@@ -66,7 +93,7 @@ type Result struct {
 // RunJSON runs prompt against the preferred provider and falls back to peers
 // when the provider is unavailable, unhealthy, logged out, or rate-limited.
 func RunJSON(ctx context.Context, prompt string, opts Options) (Result, error) {
-	candidates := candidates(opts.Provider)
+	candidates := candidates(opts.Provider, opts.EnableTools)
 	var failures []string
 	var lastProvider string
 	for _, p := range candidates {
@@ -83,9 +110,9 @@ func RunJSON(ctx context.Context, prompt string, opts Options) (Result, error) {
 			continue
 		}
 
-		raw, stderrOut, err := runProvider(ctx, p, prompt, opts.Models[p], opts.DisableTools, opts.Schema)
+		raw, stderrOut, err := runProvider(ctx, p, prompt, opts.Models[p], opts, opts.Schema)
 		if err != nil {
-			if errors.Is(err, errSchemaDelivery) {
+			if errors.Is(err, errSchemaDelivery) || errors.Is(err, errWorkdir) {
 				failures = append(failures, fmt.Sprintf("%s: %s", p, err))
 				continue
 			}
@@ -99,14 +126,14 @@ func RunJSON(ctx context.Context, prompt string, opts Options) (Result, error) {
 				failures = append(failures, fmt.Sprintf("%s: overloaded", p))
 				continue
 			}
-			sig, reason, retryAfter := classifyError(p, stderrOut, string(raw))
-			if sig != provider.SignalNone {
-				reportSignal(opts.Gate, p, sig, reason, retryAfter)
-				logFallback(opts.Logger, p, sig, reason)
-				failures = append(failures, fmt.Sprintf("%s: %s", p, reason))
+			c := classifyError(p, stderrOut, string(raw))
+			if c.Signal != provider.SignalNone {
+				reportSignal(opts.Gate, p, c)
+				logFallback(opts.Logger, p, c.Signal, c.Reason)
+				failures = append(failures, fmt.Sprintf("%s: %s", p, c.Reason))
 				continue
 			}
-			return Result{Provider: p}, providerError(p, err, stderrOut)
+			return Result{Provider: p}, providerError(p, err, stderrOut, string(raw))
 		}
 
 		text, cost, parseErr := parseProviderText(p, raw)
@@ -121,11 +148,11 @@ func RunJSON(ctx context.Context, prompt string, opts Options) (Result, error) {
 				failures = append(failures, fmt.Sprintf("%s: overloaded", p))
 				continue
 			}
-			sig, reason, retryAfter := classifyError(p, stderrOut, string(raw))
-			if sig != provider.SignalNone {
-				reportSignal(opts.Gate, p, sig, reason, retryAfter)
-				logFallback(opts.Logger, p, sig, reason)
-				failures = append(failures, fmt.Sprintf("%s: %s", p, reason))
+			c := classifyError(p, stderrOut, string(raw))
+			if c.Signal != provider.SignalNone {
+				reportSignal(opts.Gate, p, c)
+				logFallback(opts.Logger, p, c.Signal, c.Reason)
+				failures = append(failures, fmt.Sprintf("%s: %s", p, c.Reason))
 				continue
 			}
 			return Result{Provider: p}, fmt.Errorf("%s output: %w", p, parseErr)
@@ -138,47 +165,68 @@ func RunJSON(ctx context.Context, prompt string, opts Options) (Result, error) {
 	return Result{Provider: lastProvider}, fmt.Errorf("all providers failed: %s", strings.Join(failures, "; "))
 }
 
-func candidates(preferred string) []string {
+// candidates orders the failover chain, dropping any provider that cannot run
+// with tools off when the call asked for that. A chain whose last hop quietly
+// restores tool access is worse than a shorter chain: the caller reads one
+// guarantee from Options and gets another from whichever provider answered.
+func candidates(preferred string, enableTools bool) []string {
 	preferred = normalizeProvider(preferred)
-	if preferred == "" {
-		return slices.Clone(providerOrder)
+	out := make([]string, 0, len(providerOrder)+1)
+	if preferred != "" {
+		out = append(out, preferred)
 	}
-	out := []string{preferred}
 	for _, p := range providerOrder {
 		if p != preferred {
 			out = append(out, p)
 		}
 	}
-	return out
+	if enableTools {
+		return out
+	}
+	// An explicit preference is honoured — the caller named that CLI and can
+	// read this guarantee for itself. What is dropped is the silent fallback:
+	// a chain that ends at a tool-enabled provider hands back a different
+	// guarantee than the one the caller set, and nothing in the result says so.
+	return slices.DeleteFunc(out, func(p string) bool {
+		return p != preferred && !supportsToolsOff(p)
+	})
+}
+
+// supportsToolsOff reports whether this CLI has a flag that denies tool use.
+// claude denies every tool, codex runs read-only, copilot is simply not given
+// blanket permission. opencode's non-interactive mode is --auto, which
+// approves every call, and it offers no verified alternative.
+func supportsToolsOff(p string) bool {
+	return p != providerid.OpenCode
 }
 
 func normalizeProvider(p string) string {
 	switch strings.ToLower(strings.TrimSpace(p)) {
-	case "", "claude":
-		return "claude"
-	case "codex":
-		return "codex"
-	case "copilot":
-		return "copilot"
-	case "opencode":
-		return "opencode"
+	case "", providerid.Claude:
+		return providerid.Claude
+	case providerid.Codex:
+		return providerid.Codex
+	case providerid.Copilot:
+		return providerid.Copilot
+	case providerid.OpenCode:
+		return providerid.OpenCode
 	default:
 		return ""
 	}
 }
 
 func binaryName(p string) string {
-	if p == "copilot" {
-		return "copilot"
+	if p == providerid.Copilot {
+		return providerid.Copilot
 	}
 	return p
 }
 
-func runProvider(ctx context.Context, p, prompt, model string, disableTools bool, schema string) (stdout []byte, stderrOut string, err error) {
+func runProvider(ctx context.Context, p, prompt, model string, opts Options, schema string) (stdout []byte, stderrOut string, err error) {
 	effectivePrompt := prompt
 	schemaPath := ""
 	if strings.TrimSpace(schema) != "" {
-		if p == "codex" {
+		if p == providerid.Codex {
 			path, schemaErr := writeSchemaTempFile(schema)
 			if schemaErr != nil {
 				return nil, "", fmt.Errorf("%w: %w", errSchemaDelivery, schemaErr)
@@ -190,8 +238,18 @@ func runProvider(ctx context.Context, p, prompt, model string, disableTools bool
 		}
 	}
 
-	name, args, stdin := invocation(p, effectivePrompt, model, disableTools, schemaPath)
-	cmd := exec.CommandContext(ctx, name, args...)
+	name, args, stdin := invocation(p, effectivePrompt, model, opts.EnableTools, schemaPath)
+	cmd, release, err := providerCommand(ctx, opts, name, args)
+	if err != nil {
+		return nil, "", err
+	}
+	defer release()
+	// Without WaitDelay, cancelling ctx kills the provider CLI but Wait still
+	// blocks until every write end of the output pipe closes — a grandchild
+	// that outlives its parent holds it open indefinitely, so the exec
+	// survives shutdown and keeps writing into SYBRA_HOME. Same failure the
+	// agent runners already guard against.
+	cmd.WaitDelay = providerWaitDelay
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
 	}
@@ -218,12 +276,16 @@ func writeSchemaTempFile(schema string) (string, error) {
 	return f.Name(), nil
 }
 
-func invocation(p, prompt, model string, disableTools bool, schemaPath string) (name string, args []string, stdin string) {
+func invocation(p, prompt, model string, enableTools bool, schemaPath string) (name string, args []string, stdin string) {
 	switch p {
-	case "codex":
+	case providerid.Codex:
 		args := []string{
 			"exec", "--json", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules",
-			"--dangerously-bypass-approvals-and-sandbox",
+		}
+		if enableTools {
+			args = append(args, "--dangerously-bypass-approvals-and-sandbox")
+		} else {
+			args = append(args, "--sandbox", "read-only")
 		}
 		if model != "" {
 			args = append(args, "--model", model)
@@ -232,43 +294,49 @@ func invocation(p, prompt, model string, disableTools bool, schemaPath string) (
 			args = append(args, "--output-schema", schemaPath)
 		}
 		args = append(args, "-")
-		return "codex", args, prompt
-	case "copilot":
-		args := []string{"-p", prompt, "--output-format", "json", "--allow-all-tools", "--no-ask-user"}
+		return providerid.Codex, args, prompt
+	case providerid.Copilot:
+		args := []string{"-p", prompt, "--output-format", "json", "--no-ask-user"}
+		if enableTools {
+			args = append(args, "--allow-all-tools")
+		}
 		if model != "" {
 			args = append(args, "--model", model)
 		}
-		return "copilot", args, ""
-	case "opencode":
+		return providerid.Copilot, args, ""
+	case providerid.OpenCode:
+		// --auto approves every tool call. There is no verified no-tool flag
+		// for this CLI, so candidates() drops opencode entirely when tools
+		// are off; reaching here means the caller asked for them.
 		args := []string{"run", "--format", "json", "--auto"}
 		if model != "" {
 			args = append(args, "--model", model)
 		}
 		args = append(args, prompt)
-		return "opencode", args, ""
+		return providerid.OpenCode, args, ""
 	default:
 		args := []string{"-p", prompt, "--output-format", "json"}
-		if disableTools {
-			args = append(args, "--disallowedTools", "*")
-		} else {
+		if enableTools {
 			args = append(args, "--dangerously-skip-permissions")
+		} else {
+			args = append(args, "--disallowedTools", "*")
 		}
 		if model != "" {
 			args = append(args, "--model", model)
 		}
-		return "claude", args, ""
+		return providerid.Claude, args, ""
 	}
 }
 
 func parseProviderText(p string, raw []byte) (text string, costUSD float64, err error) {
 	switch p {
-	case "codex":
+	case providerid.Codex:
 		text, err := parseCodexText(raw)
 		return text, 0, err
-	case "copilot":
+	case providerid.Copilot:
 		text, err := parseCopilotText(raw)
 		return text, 0, err
-	case "opencode":
+	case providerid.OpenCode:
 		text, err := parseOpenCodeText(raw)
 		return text, 0, err
 	default:
@@ -422,14 +490,14 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func classifyError(p, stderrOut, content string) (provider.Signal, string, time.Duration) {
+func classifyError(p, stderrOut, content string) provider.Classification {
 	sample := provider.ErrorSample{Stderr: stderrOut, Content: content}
 	switch p {
-	case "codex":
+	case providerid.Codex:
 		return provider.ClassifyCodexError(sample)
-	case "copilot":
+	case providerid.Copilot:
 		return provider.ClassifyCopilotError(sample)
-	case "opencode":
+	case providerid.OpenCode:
 		return provider.ClassifyOpenCodeError(sample)
 	default:
 		return provider.ClassifyClaudeError(sample)
@@ -438,8 +506,7 @@ func classifyError(p, stderrOut, content string) (provider.Signal, string, time.
 
 func overloaded(parts ...string) bool {
 	for _, p := range parts {
-		lower := strings.ToLower(p)
-		if strings.Contains(lower, "529") || strings.Contains(lower, "overloaded") {
+		if errclass.Classify(p, errclass.LLMExecRecoveryBiased) == errclass.RateLimited {
 			return true
 		}
 	}
@@ -447,7 +514,7 @@ func overloaded(parts ...string) bool {
 }
 
 func schemaFlagRejected(providerName, schema string, parts ...string) bool {
-	if providerName != "codex" || strings.TrimSpace(schema) == "" {
+	if providerName != providerid.Codex || strings.TrimSpace(schema) == "" {
 		return false
 	}
 	for _, part := range parts {
@@ -485,15 +552,15 @@ func containsAnyString(haystack string, needles ...string) bool {
 	return false
 }
 
-func reportSignal(g provider.HealthGate, p string, sig provider.Signal, reason string, retryAfter time.Duration) {
+func reportSignal(g provider.HealthGate, p string, c provider.Classification) {
 	if g == nil {
 		return
 	}
-	switch sig {
+	switch c.Signal {
 	case provider.SignalAuthFailure:
-		g.ReportAuthFailure(p, reason)
+		g.ReportAuthFailure(p, c.Reason)
 	case provider.SignalRateLimit:
-		g.ReportRateLimit(p, retryAfter, reason)
+		g.ReportRateLimit(p, c.RetryAfter, c.Reason, c.Source)
 	case provider.SignalNone:
 	}
 }
@@ -505,10 +572,86 @@ func logFallback(logger *slog.Logger, p string, sig provider.Signal, reason stri
 	logger.Warn("llmexec.provider_fallback", "from", p, "signal", sig, "reason", reason)
 }
 
-func providerError(p string, err error, stderrOut string) error {
+func providerError(p string, err error, stderrOut, stdoutOut string) error {
 	msg := strings.TrimSpace(stderrOut)
+	if msg == "" {
+		msg = providerStdoutDetail(stdoutOut)
+	}
 	if msg == "" {
 		return fmt.Errorf("%s: %w", p, err)
 	}
 	return fmt.Errorf("%s: %w: %s", p, err, msg)
 }
+
+// providerStdoutDetail salvages a reason from stdout for a CLI that reports
+// the failure there and exits with an empty stderr — codex prints the API's
+// rejection as a JSON error event, so "exit status 1" is otherwise all the
+// operator ever sees. Only an event that identifies itself as a failure is
+// read: this text reaches a task status reason, so an ordinary assistant
+// message that merely contains the word must never be reported as the cause.
+func providerStdoutDetail(stdoutOut string) string {
+	for line := range strings.SplitSeq(stdoutOut, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || line[0] != '{' {
+			continue
+		}
+		var event struct {
+			Type    string          `json:"type"`
+			Message string          `json:"message"`
+			IsError bool            `json:"is_error"`
+			Error   json.RawMessage `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			continue
+		}
+		detail := errorEventDetail(event.Type, event.Message, event.IsError, event.Error)
+		if detail == "" {
+			continue
+		}
+		return textutil.TruncateBytesTrimmed(strings.ToValidUTF8(detail, ""), providerDetailMax, "...")
+	}
+	return ""
+}
+
+// errorEventDetail reads a failure reason out of one decoded stream event,
+// accepting the shapes the supported CLIs emit: a string "error", an object
+// carrying "message", or a failure-typed event whose own "message" is the
+// reason. Only an event that announces a failure is read at all, so an
+// ordinary message that happens to carry an error field is never reported.
+func errorEventDetail(eventType, message string, isError bool, rawError json.RawMessage) string {
+	if !isFailureEvent(eventType, isError) {
+		return ""
+	}
+	if len(rawError) > 0 && string(rawError) != "null" {
+		var asString string
+		if err := json.Unmarshal(rawError, &asString); err == nil {
+			if detail := strings.TrimSpace(asString); detail != "" {
+				return detail
+			}
+		} else {
+			var asObject struct {
+				Message string `json:"message"`
+			}
+			if err := json.Unmarshal(rawError, &asObject); err == nil {
+				if detail := strings.TrimSpace(asObject.Message); detail != "" {
+					return detail
+				}
+			}
+		}
+	}
+	return strings.TrimSpace(message)
+}
+
+// isFailureEvent reports whether a stream event announces a failure, by its
+// own type or an explicit is_error flag — never by a substring of free text.
+func isFailureEvent(eventType string, isError bool) bool {
+	if isError {
+		return true
+	}
+	lowered := strings.ToLower(strings.TrimSpace(eventType))
+	return strings.Contains(lowered, "error") || strings.Contains(lowered, "failed")
+}
+
+// providerDetailMax bounds the salvaged stdout reason: an API rejection can
+// echo the whole schema back, and this error reaches a task status reason.
+const providerDetailMax = 400

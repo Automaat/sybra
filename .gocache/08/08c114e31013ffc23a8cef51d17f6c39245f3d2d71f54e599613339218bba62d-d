@@ -1,0 +1,11 @@
+./client.go
+./config.go
+./exec.go
+./plugin.go
+./request.go
+./transport.go
+./url_utils.go
+./urlbackoff.go
+./warnings.go
+./with_retry.go
+./zz_generated.deepcopy.go

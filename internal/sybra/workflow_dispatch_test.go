@@ -8,6 +8,42 @@ import (
 	"github.com/Automaat/sybra/internal/umbrella"
 )
 
+func TestHasApprovedPlanContractEmpty(t *testing.T) {
+	tsk := task.Task{ID: "t1", Status: task.StatusTodo}
+	if hasApprovedPlanContract(tsk) {
+		t.Error("expected a brand-new todo task with no plan contract to report false")
+	}
+}
+
+func TestHasApprovedPlanContractValid(t *testing.T) {
+	tsk := task.Task{ID: "t1", Status: task.StatusTodo, PlanContract: validTestPlanContract("t1")}
+	if !hasApprovedPlanContract(tsk) {
+		t.Error("expected a todo task with a structurally valid plan contract to report true")
+	}
+}
+
+func TestHasApprovedPlanContractInvalid(t *testing.T) {
+	tsk := task.Task{ID: "t1", Status: task.StatusTodo, PlanContract: "not json"}
+	if hasApprovedPlanContract(tsk) {
+		t.Error("expected a todo task with a malformed plan contract to report false")
+	}
+}
+
+func validTestPlanContract(taskID string) string {
+	return `{
+  "task_id": "` + taskID + `",
+  "branch": "feat/example-` + taskID + `",
+  "worktree": "/home/sybra/.sybra/worktrees/example-` + taskID + `",
+  "files": [{"path": "internal/workflow/engine.go", "purpose": "edit"}],
+  "steps": ["wire the contract through the workflow"],
+  "verification": [{"command": "go test ./internal/workflow", "expected": "tests pass"}],
+  "acceptance_criteria": ["implementation prompt includes the contract"],
+  "risk_tier": "medium",
+  "permission_tier": "repo-write",
+  "rollback": "revert the workflow and sidecar changes"
+}`
+}
+
 func TestSkipTaskCreatedWorkflowUmbrellaGated(t *testing.T) {
 	tsk := task.Task{Tags: []string{umbrella.GatedTag}}
 	if !skipTaskCreatedWorkflow(tsk) {

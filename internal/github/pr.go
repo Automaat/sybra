@@ -110,10 +110,18 @@ type PRReviewComment struct {
 
 // FetchPR fetches a single pull request by repo (owner/repo) and number.
 func FetchPR(repo string, number int) (PullRequest, error) {
-	return fetchPRWith(defaultExecer, repo, number)
+	return fetchPRMetaContextWith(context.Background(), defaultExecer, repo, number)
 }
 
 func fetchPRWith(e execer, repo string, number int) (PullRequest, error) {
+	return fetchPRMetaContextWith(context.Background(), e, repo, number)
+}
+
+func FetchPRMetaContext(ctx context.Context, repo string, number int) (PullRequest, error) {
+	return fetchPRMetaContextWith(ctx, defaultExecer, repo, number)
+}
+
+func fetchPRMetaContextWith(ctx context.Context, e execer, repo string, number int) (PullRequest, error) {
 	key := prCacheKey(repo, number)
 	if runtimeCacheEnabled(e) {
 		if cached, ok := prCache.Get(key); ok {
@@ -121,8 +129,8 @@ func fetchPRWith(e execer, repo string, number int) (PullRequest, error) {
 		}
 	}
 
-	out, err := e.run("pr", "view", strconv.Itoa(number),
-		"--repo", repo, "--json", "number,title,body,url,headRefName,headRepositoryOwner,author,labels")
+	out, err := runE(ctx, e, "pr", "view", strconv.Itoa(number),
+		"--repo", repo, "--json", "number,title,body,url,headRefName,headRepositoryOwner,headRepository,author,labels")
 	if err != nil {
 		return PullRequest{}, fmt.Errorf("gh pr view %d: %s: %w", number, strings.TrimSpace(string(out)), err)
 	}
@@ -135,6 +143,9 @@ func fetchPRWith(e execer, repo string, number int) (PullRequest, error) {
 		HeadRepositoryOwner struct {
 			Login string `json:"login"`
 		} `json:"headRepositoryOwner"`
+		HeadRepository *struct {
+			NameWithOwner string `json:"nameWithOwner"`
+		} `json:"headRepository"`
 		Author struct {
 			Login string `json:"login"`
 		} `json:"author"`
@@ -154,12 +165,17 @@ func fetchPRWith(e execer, repo string, number int) (PullRequest, error) {
 	if len(parts) == 2 {
 		repoName = parts[1]
 	}
+	headRepo := ""
+	if raw.HeadRepository != nil {
+		headRepo = raw.HeadRepository.NameWithOwner
+	}
 	pr := PullRequest{
 		Number:        raw.Number,
 		Title:         raw.Title,
 		URL:           raw.URL,
 		HeadRefName:   raw.HeadRefName,
 		HeadRepoOwner: raw.HeadRepositoryOwner.Login,
+		HeadRepo:      headRepo,
 		Repository:    repo,
 		RepoName:      repoName,
 		Author:        raw.Author.Login,
@@ -1005,9 +1021,92 @@ func RequestCopilotReview(repo string, number int) error {
 	return RequestCopilotReviewCtx(context.Background(), repo, number)
 }
 
-// RequestCopilotReviewCtx requests GitHub Copilot code review under ctx.
+// copilotReviewerBotID is Copilot's fixed review-bot node ID, the same one
+// GitHub's own web UI targets when a user clicks "Request review" on Copilot.
+const copilotReviewerBotID = "BOT_kgDOCnlnWA"
+
+const prNodeIDQuery = `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) { id }
+  }
+}`
+
+const requestReviewsMutation = `mutation($prId: ID!, $botId: ID!) {
+  requestReviews(input: {pullRequestId: $prId, botIds: [$botId], union: true}) {
+    pullRequest { id }
+  }
+}`
+
+// RequestCopilotReviewCtx requests a GitHub Copilot code review under ctx.
+//
+// This must go through the GraphQL requestReviews mutation, not the REST
+// POST /pulls/{number}/requested_reviewers endpoint: REST accepts
+// "copilot-pull-request-reviewer[bot]" and even echoes it back in
+// requested_reviewers without erroring, but it never actually enqueues a
+// Copilot review — only requestReviews with Copilot's bot node ID does
+// (confirmed against Automaat/sybra PRs #2548-#2567: every PR that went
+// through the old REST call landed with zero Copilot reviews until a human
+// re-requested it via this exact mutation).
 func RequestCopilotReviewCtx(ctx context.Context, repo string, number int) error {
-	return requestReviewersCtxWith(ctx, defaultExecer, repo, number, []string{"copilot-pull-request-reviewer[bot]"})
+	return requestCopilotReviewCtxWith(ctx, defaultExecer, repo, number)
+}
+
+func requestCopilotReviewCtxWith(ctx context.Context, e execer, repo string, number int) error {
+	owner, name, ok := strings.Cut(repo, "/")
+	if !ok || owner == "" || name == "" {
+		return fmt.Errorf("invalid repo %q", repo)
+	}
+
+	idResp, err := runGHAPICtxWith(ctx, e, "", "graphql",
+		"-f", "query="+prNodeIDQuery,
+		"-f", "owner="+owner,
+		"-f", "name="+name,
+		"-F", fmt.Sprintf("number=%d", number))
+	if err != nil {
+		return fmt.Errorf("gh api graphql pr id %s#%d: %s: %w", repo, number, sanitizeGHOutput(idResp.body), err)
+	}
+	var idParsed struct {
+		Data struct {
+			Repository struct {
+				PullRequest struct {
+					ID string `json:"id"`
+				} `json:"pullRequest"`
+			} `json:"repository"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(idResp.body, &idParsed); err != nil {
+		return fmt.Errorf("parse graphql pr id response: %w", err)
+	}
+	if len(idParsed.Errors) > 0 {
+		return fmt.Errorf("graphql pr id %s#%d: %s", repo, number, idParsed.Errors[0].Message)
+	}
+	prID := idParsed.Data.Repository.PullRequest.ID
+	if prID == "" {
+		return fmt.Errorf("graphql pr id %s#%d: pull request not found (no top-level error, but repository.pullRequest resolved empty — check the repo/number and app installation access)", repo, number)
+	}
+
+	mutResp, err := runGHAPICtxWith(ctx, e, "", "graphql",
+		"-f", "query="+requestReviewsMutation,
+		"-f", "prId="+prID,
+		"-f", "botId="+copilotReviewerBotID)
+	if err != nil {
+		return fmt.Errorf("gh api graphql request copilot review %s#%d: %s: %w", repo, number, sanitizeGHOutput(mutResp.body), err)
+	}
+	var mutParsed struct {
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(mutResp.body, &mutParsed); err != nil {
+		return fmt.Errorf("parse graphql request copilot review response: %w", err)
+	}
+	if len(mutParsed.Errors) > 0 {
+		return fmt.Errorf("graphql request copilot review %s#%d: %s", repo, number, mutParsed.Errors[0].Message)
+	}
+	return nil
 }
 
 func requestReviewersWith(e execer, repo string, number int, reviewers []string) error {

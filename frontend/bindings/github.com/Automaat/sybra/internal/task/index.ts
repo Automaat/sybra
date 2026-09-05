@@ -4,10 +4,19 @@
 export {
     AgentRun,
     Attachment,
+    DepCondition,
+    DocumentCompaction,
+    PlanDraftEntry,
     Priority,
     ReviewComment,
-    Status,
     Task,
     TaskType,
+    TransitionIntent,
+    TransitionResult,
+    TrashEntry,
     Update
+} from "./models.js";
+
+export type {
+    Status
 } from "./models.js";

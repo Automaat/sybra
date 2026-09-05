@@ -3,12 +3,14 @@
 package fsutil
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestTryLockPath_SecondCallerFails(t *testing.T) {
@@ -91,5 +93,71 @@ func TestTryLockPath_CreatesParentDir(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Dir(path)); err != nil {
 		t.Fatalf("stat parent dir: %v", err)
+	}
+}
+
+func TestLockFileWithin_TimesOutWhenHeld(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "store.json")
+
+	unlock, err := LockFile(path)
+	if err != nil {
+		t.Fatalf("LockFile: %v", err)
+	}
+	t.Cleanup(func() { _ = unlock() })
+
+	start := time.Now()
+	_, err = LockFileWithin(path, 30*time.Millisecond)
+	if !errors.Is(err, ErrLockTimeout) {
+		t.Fatalf("LockFileWithin error = %v, want ErrLockTimeout", err)
+	}
+	if got := err.Error(); !strings.Contains(got, path+".lock") {
+		t.Fatalf("error %q missing lock path %q", got, path+".lock")
+	}
+	if got := err.Error(); !strings.Contains(got, strconv.Itoa(os.Getpid())) {
+		t.Fatalf("error %q missing holder pid %d", got, os.Getpid())
+	}
+	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
+		t.Fatalf("LockFileWithin took %s, want bounded wait", elapsed)
+	}
+}
+
+func TestLockFileContext_CancelledWaitReturnsTypedTimeout(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "store.json")
+
+	unlock, err := LockFile(path)
+	if err != nil {
+		t.Fatalf("LockFile: %v", err)
+	}
+	defer func() { _ = unlock() }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err = LockFileContext(ctx, path)
+	if !errors.Is(err, ErrLockTimeout) {
+		t.Fatalf("LockFileContext error = %v, want ErrLockTimeout", err)
+	}
+}
+func TestLockFileWithin_RetriesUntilReleased(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "store.json")
+
+	unlock, err := LockFile(path)
+	if err != nil {
+		t.Fatalf("LockFile: %v", err)
+	}
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		_ = unlock()
+	}()
+
+	unlock2, err := LockFileWithin(path, time.Second)
+	if err != nil {
+		t.Fatalf("LockFileWithin: %v", err)
+	}
+	if err := unlock2(); err != nil {
+		t.Fatalf("unlock: %v", err)
 	}
 }

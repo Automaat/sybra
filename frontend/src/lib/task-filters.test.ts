@@ -3,7 +3,6 @@ import {
   matchesQuery,
   matchesProject,
   matchesTags,
-  matchesAgentMode,
   matchesDateRange,
 } from './task-filters.js'
 import type { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
@@ -68,16 +67,6 @@ describe('matchesTags', () => {
   })
   it('rejects when task tags missing', () => {
     expect(matchesTags(task({ tags: undefined as unknown as string[] }), ['a'])).toBe(false)
-  })
-})
-
-describe('matchesAgentMode', () => {
-  it('passes empty', () => {
-    expect(matchesAgentMode(task(), '')).toBe(true)
-  })
-  it('matches and rejects', () => {
-    expect(matchesAgentMode(task({ agentMode: 'headless' }), 'headless')).toBe(true)
-    expect(matchesAgentMode(task({ agentMode: 'interactive' }), 'headless')).toBe(false)
   })
 })
 

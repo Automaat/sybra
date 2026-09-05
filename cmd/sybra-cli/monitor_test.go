@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/task"
 )
@@ -190,6 +191,61 @@ func TestMonitorScanNoArgsFails(t *testing.T) {
 	code, _ := runCLIStderr(t, "monitor")
 	if code == 0 {
 		t.Fatal("expected non-zero exit with no subcommand")
+	}
+}
+
+func TestMonitorMapDuplicatesRejectsConfidentialIncidentBeforeGitHub(t *testing.T) {
+	setupStore(t)
+	ledger, err := monitor.NewIncidentStore(config.MonitorIncidentsDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cause := monitor.RootCause{FailureCode: "lost_agent", ProjectScope: "work-opaque", ConfigGeneration: "g"}
+	in, _, err := ledger.Observe(monitor.Anomaly{Kind: monitor.KindLostAgent, Confidential: true, DetectedAt: time.Now().UTC()}, cause, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.Link(in.Fingerprint, "https://github.com/example/repo/issues/9", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	code, _ := runCLIStderr(t, "monitor", "map-duplicates", "--fingerprint", in.Fingerprint, "--issues", "1", "--coverage", "covered")
+	if code == 0 {
+		t.Fatal("confidential mapping was not rejected")
+	}
+}
+
+func TestMonitorMapDuplicatesRejectsCanonicalIssue(t *testing.T) {
+	setupStore(t)
+	ledger, err := monitor.NewIncidentStore(config.MonitorIncidentsDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cause := monitor.RootCause{FailureCode: "lost_agent", ProjectScope: "public/repo", ConfigGeneration: "g"}
+	in, _, err := ledger.Observe(monitor.Anomaly{Kind: monitor.KindLostAgent, DetectedAt: time.Now().UTC()}, cause, "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.Link(in.Fingerprint, "https://github.com/example/repo/issues/9", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	code, _ := runCLIStderr(t, "monitor", "map-duplicates", "--fingerprint", in.Fingerprint, "--issues", "9", "--coverage", "covered")
+	if code == 0 {
+		t.Fatal("canonical issue was accepted as its own duplicate")
+	}
+}
+
+func TestMonitorMapDuplicatesRejectsUnsafeFingerprint(t *testing.T) {
+	setupStore(t)
+	for _, fingerprint := range []string{
+		"../outside",
+		"incident:../../outside",
+		"incident:ABCDEF0123456789ABCDEF01",
+		"incident:abc",
+	} {
+		code, _ := runCLIStderr(t, "monitor", "map-duplicates", "--fingerprint", fingerprint, "--issues", "1", "--coverage", "covered")
+		if code == 0 {
+			t.Errorf("unsafe fingerprint %q was accepted", fingerprint)
+		}
 	}
 }
 

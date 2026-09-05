@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -14,6 +13,7 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/sysopen"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/worktree"
@@ -36,14 +36,32 @@ func (s *AgentService) StopAgent(agentID string) error {
 	return s.agents.StopAgent(agentID)
 }
 
-// ListAgents returns all in-memory agents (managed and external).
-func (s *AgentService) ListAgents() []*agent.Agent {
-	return s.agents.ListAgents()
+// ListAgents returns compact in-memory agent cards. Large prompts and command
+// lines are fetched only when the operator opens one agent.
+func (s *AgentService) ListAgents() []agent.View {
+	return listAgentViews(s.agents.ListAgents())
 }
 
 // DiscoverAgents scans running Claude processes and refreshes state.
-func (s *AgentService) DiscoverAgents() []*agent.Agent {
-	return s.agents.DiscoverAgents()
+func (s *AgentService) DiscoverAgents() []agent.View {
+	return listAgentViews(s.agents.DiscoverAgents())
+}
+
+func listAgentViews(agents []*agent.Agent) []agent.View {
+	views := make([]agent.View, 0, len(agents))
+	for _, ag := range agents {
+		views = append(views, ag.ListView())
+	}
+	return views
+}
+
+// GetAgent returns the complete live snapshot for the detail view.
+func (s *AgentService) GetAgent(agentID string) (agent.View, error) {
+	ag, err := s.agents.GetAgent(agentID)
+	if err != nil {
+		return agent.View{}, err
+	}
+	return ag.View(), nil
 }
 
 // GetAgentOutput returns buffered stream events for a headless agent.
@@ -186,21 +204,14 @@ func (s *AgentService) GetAgentDiff(taskID string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	env := append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_PAGER=cat")
-
-	diffCmd := exec.CommandContext(ctx, "git", "diff", "HEAD", "--patch", "-M", "--no-color")
-	diffCmd.Dir = dir
-	diffCmd.Env = env
-	diffOut, err := diffCmd.Output()
+	opts := gitexec.Options{Dir: dir, ExtraEnv: []string{"GIT_PAGER=cat"}}
+	diffOut, err := gitexec.RawOutput(ctx, opts, "diff", "HEAD", "--patch", "-M", "--no-color")
 	if err != nil {
 		s.logger.Warn("agent.diff.git-diff-failed", "task_id", taskID, "err", err)
 		return "", nil
 	}
 
-	lsCmd := exec.CommandContext(ctx, "git", "ls-files", "--others", "--exclude-standard")
-	lsCmd.Dir = dir
-	lsCmd.Env = env
-	lsOut, err := lsCmd.Output()
+	lsOut, err := gitexec.RawOutput(ctx, opts, "ls-files", "--others", "--exclude-standard")
 	if err != nil {
 		s.logger.Warn("agent.diff.ls-files-failed", "task_id", taskID, "err", err)
 		return string(diffOut), nil
@@ -238,14 +249,14 @@ func (s *AgentService) GetAgentDiff(taskID string) (string, error) {
 // Returns an error if the worktree does not exist or the OS command fails.
 func (s *AgentService) OpenWorktree(taskID string) error {
 	if s.worktrees == nil {
-		return errors.New("worktree manager not available")
+		return unavailableError("worktrees unavailable")
 	}
 	t, err := s.tasks.Get(taskID)
 	if err != nil {
-		return fmt.Errorf("task %s: %w", taskID, err)
+		return boardRejectionFor("task", taskID, err)
 	}
 	if !s.worktrees.Exists(t) {
-		return fmt.Errorf("no worktree for task %s", taskID)
+		return notFoundError("worktree", taskID)
 	}
 	return sysopen.Dir(context.Background(), s.worktrees.PathFor(t))
 }

@@ -208,7 +208,7 @@ func TestPromptLabServiceHTTPAllowlist(t *testing.T) {
 
 	staleStatus := task.StatusTodo
 	staleTags := []string{promptlab.ProposalTag}
-	stale, err := mgr.CreateFull("Stale proposal", "body", task.AgentModeInteractive, task.Update{
+	stale, err := mgr.CreateFull("Stale proposal", "body", task.AgentModeHeadless, task.Update{
 		Status: &staleStatus,
 		Tags:   &staleTags,
 	})
@@ -237,9 +237,11 @@ func TestPromptLabServiceHTTPAllowlist(t *testing.T) {
 
 	pendingStatus := task.StatusHumanRequired
 	pendingTags := []string{promptlab.ProposalTag, "requires-human"}
-	pending, err := mgr.CreateFull("Pending proposal", "body", task.AgentModeInteractive, task.Update{
-		Status: &pendingStatus,
-		Tags:   &pendingTags,
+	pending, err := mgr.CreateFull("Pending proposal", "body", task.AgentModeHeadless, task.Update{
+		Status:          &pendingStatus,
+		Tags:            &pendingTags,
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
 	})
 	if err != nil {
 		t.Fatalf("create pending proposal: %v", err)

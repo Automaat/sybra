@@ -1,19 +1,33 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent } from '@testing-library/svelte'
+import { SvelteMap } from 'svelte/reactivity'
 
 const mockTasksNeedingPlanApproval = vi.fn()
 const mockApprovePlan = vi.fn()
 const mockRejectPlan = vi.fn()
 const mockSendPlanMessage = vi.fn()
 const mockHasLivePlanAgent = vi.fn()
+const mockGetTask = vi.fn()
 const mockCommentLoad = vi.fn()
 const mockUnresolvedCount = vi.fn()
 
 const taskItemsMap = new Map<string, any>()
+const hydratedTasks = new SvelteMap<string, object>()
 
 vi.mock('../stores/tasks.svelte.js', () => ({
   taskStore: {
     get items() { return taskItemsMap },
+    detail: (id: string) => taskItemsMap.get(id),
+    isDetailHydrated: (id: string) => hydratedTasks.has(id),
+    retainDetail: () => () => {},
+    get: async (...args: unknown[]) => {
+      const result = await mockGetTask(...args)
+      // Match production setTask: every successful fetch writes a fresh value,
+      // even when this id was already hydrated. A selection effect that tracks
+      // this map will therefore expose itself as an unbounded fetch loop.
+      hydratedTasks.set(String(args[0]), {})
+      return result
+    },
     tasksNeedingPlanApproval: (...args: unknown[]) => mockTasksNeedingPlanApproval(...args),
     approvePlan: (...args: unknown[]) => mockApprovePlan(...args),
     rejectPlan: (...args: unknown[]) => mockRejectPlan(...args),
@@ -62,10 +76,12 @@ describe('Reviews', () => {
     mockRejectPlan.mockReset()
     mockSendPlanMessage.mockReset()
     mockHasLivePlanAgent.mockResolvedValue(false)
+    mockGetTask.mockImplementation(async (id: string) => taskItemsMap.get(id))
     mockCommentLoad.mockResolvedValue(undefined)
     mockUnresolvedCount.mockReturnValue(0)
     mockTasksNeedingPlanApproval.mockReturnValue([])
     taskItemsMap.clear()
+    hydratedTasks.clear()
   })
 
   afterEach(() => {
@@ -120,6 +136,8 @@ describe('Reviews', () => {
     // Task title appears in the detail panel header
     const titles = screen.getAllByText('Auth refactor plan')
     expect(titles.length).toBeGreaterThanOrEqual(1)
+    expect(mockGetTask).toHaveBeenCalledWith('t1')
+    expect(mockGetTask).toHaveBeenCalledTimes(1)
   })
 
   it('shows Approve and Reject buttons after selecting a task', async () => {
@@ -132,6 +150,36 @@ describe('Reviews', () => {
       expect(screen.getByText('Approve')).toBeDefined()
       expect(screen.getByText('Reject')).toBeDefined()
     })
+  })
+
+  it('keeps review actions disabled when the complete task cannot be loaded', async () => {
+    const task = makeTask({ id: 't1', title: 'Unavailable plan' })
+    mockTasksNeedingPlanApproval.mockReturnValue([task])
+    taskItemsMap.set('t1', task)
+    mockGetTask.mockRejectedValue(new Error('detail unavailable'))
+    render(Reviews)
+
+    await fireEvent.click(screen.getByText('Unavailable plan'))
+
+    await vi.waitFor(() => expect(screen.getByText('Unable to load the complete plan.')).toBeDefined())
+    expect(screen.getByText('Approve').getAttribute('disabled')).not.toBeNull()
+    expect(screen.getByText('Reject').getAttribute('disabled')).not.toBeNull()
+  })
+
+  it('recovers when a retained detail is hydrated after the initial fetch fails', async () => {
+    const task = makeTask({ id: 't1', title: 'Reconnect plan' })
+    mockTasksNeedingPlanApproval.mockReturnValue([task])
+    taskItemsMap.set('t1', task)
+    mockGetTask.mockRejectedValue(new Error('offline'))
+    render(Reviews)
+    await fireEvent.click(screen.getByText('Reconnect plan'))
+    await vi.waitFor(() => expect(screen.getByText('Unable to load the complete plan.')).toBeDefined())
+
+    hydratedTasks.set('t1', {})
+
+    await vi.waitFor(() => expect(screen.queryByText('Unable to load the complete plan.')).toBeNull())
+    expect(screen.getByText('Approve').getAttribute('disabled')).toBeNull()
+    expect(screen.getByText('Reject').getAttribute('disabled')).toBeNull()
   })
 
   it('calls approvePlan and clears selection on Approve', async () => {

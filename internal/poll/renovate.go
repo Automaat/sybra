@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/errclass"
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/metrics"
@@ -26,6 +27,7 @@ type RenovateHandler struct {
 	logger              *slog.Logger
 	emit                func(string, any)
 	cfg                 *config.RenovateConfig
+	config              func() *config.RenovateConfig
 	allowsType          func(project.ProjectType) bool
 	fetchPRsFn          func(context.Context, string, []string) ([]github.RenovatePR, error)
 	lastPRsCount        atomic.Int64
@@ -70,8 +72,18 @@ func NewRenovateHandler(
 		logger:      logger,
 		emit:        emit,
 		cfg:         cfg,
+		config:      func() *config.RenovateConfig { return cfg },
 		allowsType:  allowsType,
 		authCircuit: NewAuthCircuit("renovate", logger),
+	}
+}
+
+// SetConfigSource makes each poll read one immutable Renovate configuration
+// snapshot. It is installed during app wiring and remains safe across hot
+// reloads because the source itself is never replaced.
+func (h *RenovateHandler) SetConfigSource(source func() *config.RenovateConfig) {
+	if source != nil {
+		h.config = source
 	}
 }
 
@@ -125,11 +137,16 @@ func (h *RenovateHandler) pollRenovatePRs(ctx context.Context) time.Duration {
 	if h.fetchPRsFn != nil {
 		fetchFn = h.fetchPRsFn
 	}
-	prs, err := fetchFn(ctx, h.cfg.Author, repos)
+	cfg := h.cfg
+	if h.config != nil {
+		cfg = h.config()
+	}
+	prs, err := fetchFn(ctx, cfg.Author, repos)
 	metrics.RenovatePoll(ctx, err == nil)
 	if err != nil {
-		switch {
-		case github.IsAuthError(err):
+		class := github.ClassifyError(err, errclass.GitHubCircuitEscalationBiased)
+		switch class {
+		case errclass.Auth:
 			h.transientFetchFails = 0
 			h.authCircuit.RecordFailure(err)
 			if h.authCircuit.Open() {
@@ -138,7 +155,7 @@ func (h *RenovateHandler) pollRenovatePRs(ctx context.Context) time.Duration {
 			// Pre-trip: Info, not Warn, so up-to-threshold auth failures don't
 			// flood before the circuit's single trip line.
 			h.logger.Info("renovate.fetch", "err", err)
-		case github.IsTransientError(err):
+		case errclass.Transient, errclass.RateLimited:
 			h.transientFetchFails++
 			if h.transientFetchFails < renovateTransientWarnThreshold {
 				h.logger.Info("renovate.fetch", "err", err)

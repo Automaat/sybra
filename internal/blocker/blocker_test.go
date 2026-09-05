@@ -3,6 +3,8 @@ package blocker
 import (
 	"testing"
 	"time"
+
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 func TestStateIsZero(t *testing.T) {
@@ -30,24 +32,29 @@ func TestStateIsZero(t *testing.T) {
 
 // TestAllowsHumanRequired_OnlyOperatorFacingKinds is the property test named
 // in the task's own test approach: every Kind constant is exercised, and only
-// the three operator-facing kinds (operator_decision, credential_required,
-// policy_approval) may ever authorize a human-required transition. Any new
-// Kind added to the package must be explicitly classified here — an
-// unlisted/typo'd kind defaults to "not allowed", which is the safe direction
-// (see TestAllowsHumanRequired_UnknownKindDenied).
+// the operator-facing kinds (operator_decision, credential_required,
+// policy_approval, dependency_scope_unmet) may ever authorize a
+// human-required transition. Any new Kind added to the package must be
+// explicitly classified here — an unlisted/typo'd kind defaults to "not
+// allowed", which is the safe direction (see
+// TestAllowsHumanRequired_UnknownKindDenied).
 func TestAllowsHumanRequired_OnlyOperatorFacingKinds(t *testing.T) {
 	allKinds := []Kind{
 		KindOperatorDecision,
 		KindCredentialRequired,
 		KindPolicyApproval,
+		KindTamperDetected,
 		KindWorktreeRepair,
 		KindReviewFixExhausted,
 		KindTriageRetryExhausted,
+		KindDependencyScopeUnmet,
 	}
 	humanAllowed := map[Kind]bool{
-		KindOperatorDecision:   true,
-		KindCredentialRequired: true,
-		KindPolicyApproval:     true,
+		KindOperatorDecision:     true,
+		KindCredentialRequired:   true,
+		KindPolicyApproval:       true,
+		KindTamperDetected:       true,
+		KindDependencyScopeUnmet: true,
 	}
 	for _, kind := range allKinds {
 		t.Run(string(kind), func(t *testing.T) {
@@ -99,6 +106,16 @@ func TestValidateStatus(t *testing.T) {
 			name:   "policy_approval may reach human-required",
 			status: "human-required",
 			state:  State{Kind: KindPolicyApproval},
+		},
+		{
+			name:   "tamper_detected may reach human-required",
+			status: string(taskstatus.HumanRequired),
+			state:  State{Kind: KindTamperDetected},
+		},
+		{
+			name:   "dependency_scope_unmet may reach human-required",
+			status: "human-required",
+			state:  State{Kind: KindDependencyScopeUnmet},
 		},
 		{
 			name:    "worktree_repair must never reach human-required",
@@ -155,9 +172,11 @@ func TestValidateStatus_IllegalTransitionProperty(t *testing.T) {
 		KindOperatorDecision,
 		KindCredentialRequired,
 		KindPolicyApproval,
+		KindTamperDetected,
 		KindWorktreeRepair,
 		KindReviewFixExhausted,
 		KindTriageRetryExhausted,
+		KindDependencyScopeUnmet,
 	}
 	statuses := []string{
 		"new", "todo", "in-progress", "blocked", "human-required", "done", "cancelled",

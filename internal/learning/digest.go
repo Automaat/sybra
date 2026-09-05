@@ -14,6 +14,7 @@ import (
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/llmexec"
 	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/stats"
 )
 
@@ -35,7 +36,7 @@ func AuditDirReader(dir string) auditReader {
 	return auditFunc(func(q audit.Query) ([]audit.Event, error) { return audit.Read(dir, q) })
 }
 
-// auditWriter is the subset of *audit.Logger the digest service needs to
+// auditWriter is the subset of audit.Store the digest service needs to
 // record its own generation/failure events.
 type auditWriter interface {
 	Log(audit.Event) error
@@ -310,22 +311,21 @@ func (s *Service) readAudit(since, until time.Time) ([]audit.Event, error) {
 // only: the digest is a read-only aggregate summary with no mutation
 // powers, and claude is the only provider this feature has been validated
 // against. claudeOnlyGate masks every other provider unhealthy so
-// llmexec.RunJSON's fallback loop never reaches them. DisableTools keeps
-// that "no mutation powers" claim true even though the prompt embeds the
-// previous digest's model-authored NextBets text — a prompt-injected
-// instruction in that text has no tool to act through.
+// llmexec.RunJSON's fallback loop never reaches them. Tools stay off, which
+// is now llmexec's default, keeping that "no mutation powers" claim true even
+// though the prompt embeds the previous digest's model-authored NextBets text
+// — a prompt-injected instruction in that text has no tool to act through.
 func (s *Service) callSummarizer(ctx context.Context, prompt string) (llmexec.Result, error) {
 	res, err := s.runJSON(ctx, prompt, llmexec.Options{
-		Provider:     "claude",
-		Models:       map[string]string{"claude": s.cfg.Model},
-		DisableTools: true,
-		Logger:       s.logger,
-		Gate:         claudeOnlyGate{base: s.gate},
+		Provider: providerid.Claude,
+		Models:   map[string]string{providerid.Claude: s.cfg.Model},
+		Logger:   s.logger,
+		Gate:     claudeOnlyGate{base: s.gate},
 	})
 	if err != nil {
 		return llmexec.Result{}, err
 	}
-	if res.Provider != "claude" {
+	if res.Provider != providerid.Claude {
 		return llmexec.Result{}, fmt.Errorf("expected claude provider, got %q", res.Provider)
 	}
 	return res, nil
@@ -339,7 +339,7 @@ type claudeOnlyGate struct {
 }
 
 func (g claudeOnlyGate) IsHealthy(p string) bool {
-	if p != "claude" {
+	if p != providerid.Claude {
 		return false
 	}
 	if g.base == nil {
@@ -349,7 +349,7 @@ func (g claudeOnlyGate) IsHealthy(p string) bool {
 }
 
 func (g claudeOnlyGate) RateLimited(p string) bool {
-	if p != "claude" {
+	if p != providerid.Claude {
 		return false
 	}
 	return g.base != nil && g.base.RateLimited(p)
@@ -365,14 +365,14 @@ func (g claudeOnlyGate) Reason(p string) string {
 }
 
 func (g claudeOnlyGate) ReportAuthFailure(p, reason string) {
-	if g.base != nil && p == "claude" {
+	if g.base != nil && p == providerid.Claude {
 		g.base.ReportAuthFailure(p, reason)
 	}
 }
 
-func (g claudeOnlyGate) ReportRateLimit(p string, retryAfter time.Duration, reason string) {
-	if g.base != nil && p == "claude" {
-		g.base.ReportRateLimit(p, retryAfter, reason)
+func (g claudeOnlyGate) ReportRateLimit(p string, retryAfter time.Duration, reason string, source provider.CooldownSource) {
+	if g.base != nil && p == providerid.Claude {
+		g.base.ReportRateLimit(p, retryAfter, reason, source)
 	}
 }
 
@@ -428,4 +428,20 @@ func (s *Service) interval() time.Duration {
 		interval = 24 * time.Hour
 	}
 	return interval
+}
+
+// AuditStoreReader adapts the board's audit store into a reader.
+//
+// The directory-backed reader above only sees what a file-backed trail wrote.
+// Under a database backend the day-files stop growing, so a consumer left on
+// the directory reads an empty trail and reports the fleet as idle.
+func AuditStoreReader(store interface {
+	Read(audit.Query) ([]audit.Event, error)
+}) auditReader {
+	return auditFunc(func(q audit.Query) ([]audit.Event, error) {
+		if store == nil {
+			return nil, nil
+		}
+		return store.Read(q)
+	})
 }

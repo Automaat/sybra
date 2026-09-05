@@ -2,23 +2,46 @@ package workflow
 
 import (
 	"context"
+	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Automaat/sybra/internal/buildcache"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
+
+type miseTrustVerificationRunner struct {
+	trusted  bool
+	commands []string
+}
+
+func (r *miseTrustVerificationRunner) RunVerificationCommand(
+	_ context.Context, _, _, command string, _ []string, _ io.Writer,
+) error {
+	r.commands = append(r.commands, command)
+	if command == "mise trust --yes" {
+		r.trusted = true
+		return nil
+	}
+	if strings.Contains(command, "mise exec") && !r.trusted {
+		return errors.New("mise config is not trusted in ephemeral HOME")
+	}
+	return nil
+}
 
 func newCodegenGateStep() *Step { return &Step{ID: "codegen_gate", Type: StepCodegenGate} }
 
 func newCodegenGateEngine(t *testing.T, wt string, cmds []string) (*Engine, *memTasks) {
 	t.Helper()
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wt, ok: true})
-	engine.SetCheckConfigGetter(&fakeCheckGetter{codegen: cmds})
+	engine.setCheckConfigGetterForTest(&fakeCheckGetter{codegen: cmds})
 	return engine, engine.tasks.(*memTasks)
 }
 
@@ -33,17 +56,17 @@ func codegenGitOutput(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
-func TestExecCodegenGate_NoGetterSkips(t *testing.T) {
+func TestExecCodegenGate_DefaultGetterSkips(t *testing.T) {
 	t.Parallel()
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: t.TempDir(), ok: true})
 
 	out, err := engine.execCodegenGate("t1", newCodegenGateStep())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if out.Output != "skipped: no check config getter" {
-		t.Fatalf("Output = %q, want no-getter skip", out.Output)
+	if out.Output != "skipped: no codegen commands configured" {
+		t.Fatalf("Output = %q, want no-commands skip", out.Output)
 	}
 }
 
@@ -63,8 +86,8 @@ func TestExecCodegenGate_NoCommandsSkips(t *testing.T) {
 
 func TestExecCodegenGate_NoWorktreeGetterSkips(t *testing.T) {
 	t.Parallel()
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
-	engine.SetCheckConfigGetter(&fakeCheckGetter{codegen: []string{"true"}})
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine.setCheckConfigGetterForTest(&fakeCheckGetter{codegen: []string{"true"}})
 
 	out, err := engine.execCodegenGate("t1", newCodegenGateStep())
 	if err != nil {
@@ -77,8 +100,8 @@ func TestExecCodegenGate_NoWorktreeGetterSkips(t *testing.T) {
 
 func TestExecCodegenGate_NoWorktreeForTaskSkips(t *testing.T) {
 	t.Parallel()
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
-	engine.SetCheckConfigGetter(&fakeCheckGetter{codegen: []string{"true"}})
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine.setCheckConfigGetterForTest(&fakeCheckGetter{codegen: []string{"true"}})
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{ok: false})
 
 	out, err := engine.execCodegenGate("t1", newCodegenGateStep())
@@ -119,6 +142,28 @@ func TestExecCodegenGate_CleanTreeNoOp(t *testing.T) {
 	}
 }
 
+func TestExecCodegenGateTrustsMiseInsideVerificationSandbox(t *testing.T) {
+	wt := makeBaseRepo(t, map[string]string{
+		"README.md": "init\n",
+		"mise.toml": "[tools]\ngo = '1.26'\n",
+	})
+	engine, tasks := newCodegenGateEngine(t, wt, []string{"mise exec -- true"})
+	runner := &miseTrustVerificationRunner{}
+	engine.execution.VerificationCommands = runner
+	tasks.Put(TaskInfo{ID: "t1", Status: taskstatus.InProgress})
+
+	out, err := engine.execCodegenGate("t1", newCodegenGateStep())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "clean" {
+		t.Fatalf("Output = %q, want clean", out.Output)
+	}
+	if got, want := runner.commands, []string{"mise trust --yes", "mise exec -- true"}; !slices.Equal(got, want) {
+		t.Fatalf("verification commands = %q, want %q", got, want)
+	}
+}
+
 func TestExecCodegenGate_DriftCommits(t *testing.T) {
 	t.Parallel()
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
@@ -145,6 +190,35 @@ func TestExecCodegenGate_DriftCommits(t *testing.T) {
 	}
 	if len(rec.puts) != 1 || !strings.Contains(rec.puts[0].content, `"committed": true`) {
 		t.Fatalf("artifact content = %+v, want committed=true artifact", rec.puts)
+	}
+}
+
+// Regression: the artifact used to cap stored output to the last 8000 bytes
+// (tailString), which silently drops whatever ran before the cut. The stored
+// output must never be cut.
+func TestExecCodegenGate_LongOutputNotTruncated(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	engine, tasks := newCodegenGateEngine(t, wt, []string{"echo MARKER_START; yes x | head -c 9000"})
+	rec := &recordingArtifactRecorder{}
+	engine.SetArtifactRecorder(rec)
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execCodegenGate("t1", newCodegenGateStep())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "clean" {
+		t.Fatalf("Output = %q, want clean", out.Output)
+	}
+	if len(rec.puts) != 1 || rec.puts[0].name != "codegen-gate.json" {
+		t.Fatalf("artifacts = %+v, want one codegen-gate.json artifact", rec.puts)
+	}
+	if len(rec.puts[0].content) < 9000 {
+		t.Fatalf("artifact content = %d bytes, want the full >9000-byte output preserved", len(rec.puts[0].content))
+	}
+	if !strings.Contains(rec.puts[0].content, "MARKER_START") {
+		t.Errorf("artifact lost the start of the output — the old tail-only truncation would have dropped it")
 	}
 }
 
@@ -247,7 +321,14 @@ func TestExecCodegenGate_TimeoutFlagsHumanRequired(t *testing.T) {
 
 func TestExecCodegenGate_ScaledTimeoutAbsorbsHostOversubscription(t *testing.T) {
 	orig := workflowCheckLoadPerCPU
-	workflowCheckLoadPerCPU = func() (float64, bool) { return 3.0, true }
+	// Stubbed at the scale ceiling, not just above 1: the assertion needs the
+	// scaled budget to clear `sleep 0.2` plus real process-spawn cost on a
+	// machine already running the rest of the suite. At load 3 the budget was
+	// 300ms against a 200ms sleep, and that 100ms margin is what made this
+	// flake under `go test ./...` while passing in isolation. At the ceiling
+	// the budget is 800ms, while the unscaled 100ms still fails without
+	// scaling — so the test proves the same thing with 4x the headroom.
+	workflowCheckLoadPerCPU = func() (float64, bool) { return verifyTimeoutScaleCeilingLoad, true }
 	t.Cleanup(func() { workflowCheckLoadPerCPU = orig })
 
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})

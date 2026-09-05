@@ -1,0 +1,39 @@
+[Unit]
+Description=Sybra thin agent execution daemon
+Documentation=https://github.com/Automaat/sybra/blob/main/docs/agentd.md
+After=network-online.target sybra.service
+Wants=network-online.target
+PartOf=sybra.service
+
+StartLimitIntervalSec=600
+StartLimitBurst=10
+
+[Service]
+Type=exec
+User=sybra
+Group=sybra
+WorkingDirectory=/opt/sybra/src
+StateDirectory=sybra-agentd
+StateDirectoryMode=0700
+# Reuse the service account's HOME/PATH/toolchain environment, then layer the
+# daemon-only leader token and provider secrets on top.
+EnvironmentFile=/etc/sybra/sybra.env
+EnvironmentFile=/etc/sybra/sybra-agentd.env
+# EnvironmentFile entries override Environment= regardless of directive order,
+# so apply the daemon-specific PATH at exec time. Keep provider CLIs on their
+# real Node installation; the later mise shim entry exposes repo-scoped tools.
+ExecStart=/usr/bin/env PATH=/home/sybra/.local/share/mise/installs/node/24/bin:/home/sybra/.local/bin:/home/sybra/.local/share/mise/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /opt/sybra/current/sybra-agentd -config /etc/sybra/sybra-agentd.yaml
+
+# Stop only the daemon. Provider subprocesses are detached and recorded below
+# state_root, so the replacement daemon can re-adopt them after an upgrade.
+KillMode=process
+KillSignal=SIGTERM
+TimeoutStopSec=45
+
+Restart=on-failure
+RestartSec=3
+
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

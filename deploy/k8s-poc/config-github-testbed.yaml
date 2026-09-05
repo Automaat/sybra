@@ -11,6 +11,12 @@ metadata:
   namespace: sybra-poc
 data:
   config.yaml: |
+    # Exercises the Kubernetes job runner against the same backend a real
+    # deployment runs. The real-testbed project is registered through
+    # `sybra-cli project create --url` (see scripts/smoke-k3d.sh), which was
+    # already API-based and never needed the file backend.
+    database:
+      backend: sqlite
     agent:
       provider: claude
       model: sonnet

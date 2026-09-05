@@ -11,17 +11,33 @@ import { mockGitHub } from './lib/github-mocks.js'
 import { mockProjects } from './lib/project-mocks.js'
 import { mockProviderHealth } from './lib/provider-mocks.js'
 import { mockReviewComments } from './lib/review-mocks.js'
-import { copyFile, mkdir } from 'node:fs/promises'
-import { existsSync } from 'node:fs'
+import { copyFile, mkdir, readFile } from 'node:fs/promises'
+import { load as parseYAML } from 'js-yaml'
 import { join } from 'node:path'
 
 import { isolatedSybraHome } from './lib/sybra-home'
+import { apiCall } from './lib/api'
 
 const SYBRA_HOME = isolatedSybraHome()
 const TASKS_DIR = join(SYBRA_HOME, 'tasks')
-const WORKFLOWS_DIR = join(SYBRA_HOME, 'workflows')
 
 const OUT_DIR = join(import.meta.dirname, '..', '..', 'docs', 'screenshots')
+
+/**
+ * Seed the workflow fixture through the API rather than the workflows
+ * directory.
+ *
+ * The directory is only the store under the `file` backend. Writing a YAML
+ * there after the server booted is invisible to every other backend, because
+ * those read rows and the one-time file import has already run by then —
+ * see frontend/e2e/workflow-editor.spec.ts for the suite that first hit this.
+ */
+async function seedWorkflowFixture() {
+  const src = join(import.meta.dirname, 'fixtures', 'wf-editor-e2e.yaml')
+  await apiCall(SYBRA_HOME, 'WorkflowService', 'SaveWorkflow', [
+    parseYAML(await readFile(src, 'utf8')),
+  ])
+}
 
 async function shot(page: Page, theme: 'light' | 'dark', name: string) {
   await page.screenshot({
@@ -49,21 +65,13 @@ test.beforeAll(async () => {
   await mkdir(join(OUT_DIR, 'light'), { recursive: true })
   await mkdir(join(OUT_DIR, 'dark'), { recursive: true })
 
-  // Ensure task fixtures are present
   for (const f of ['auth0001.md', 'test0001.md', 'db0001.md', 'plan0001.md']) {
     const src = join(import.meta.dirname, 'fixtures', f)
     const dst = join(TASKS_DIR, f)
     await copyFile(src, dst)
   }
 
-  // Ensure workflow fixture is present
-  if (!existsSync(WORKFLOWS_DIR)) {
-    await mkdir(WORKFLOWS_DIR, { recursive: true })
-  }
-  await copyFile(
-    join(import.meta.dirname, 'fixtures', 'wf-editor-e2e.yaml'),
-    join(WORKFLOWS_DIR, 'wf-editor-e2e.yaml'),
-  )
+  await seedWorkflowFixture()
 })
 
 // Run every screenshot block in both themes

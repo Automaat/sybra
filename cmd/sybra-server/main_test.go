@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -31,6 +32,87 @@ func testLogger() *slog.Logger {
 	return slog.New(slog.DiscardHandler)
 }
 
+// syncBuffer is a concurrency-safe log sink: slog handlers are written to from
+// whatever background goroutines the App starts, not just the test goroutine.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// stubProviderCLIs shadows the provider binaries with stubs that fail
+// immediately, for the length of the test.
+//
+// With workflows enabled, creating a task drives the engine's classify step
+// into llmexec, which shells out to whichever provider CLI is on PATH. On a
+// developer machine that is the real, metered `claude` — so `go test ./...`
+// would spend credits and block App.Shutdown for its whole grace waiting on
+// the child. On CI, where no provider is installed, the exec fails instantly
+// and the same test passes. Stubbing makes both behave like CI.
+//
+// Only the provider names are shadowed; git and everything else still resolve
+// from the rest of PATH.
+func stubProviderCLIs(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	for _, name := range []string{"claude", "codex", "copilot"} {
+		stub := "#!/bin/sh\necho 'provider CLI stubbed in tests' >&2\nexit 1\n"
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(stub), 0o755); err != nil {
+			t.Fatalf("write %s stub: %v", name, err)
+		}
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// startupLikeApp boots a real App against a throwaway SYBRA_HOME and tears it
+// down on cleanup.
+//
+// The home is deliberately not t.TempDir(). App.Shutdown waits a bounded grace
+// (appShutdownWaitGrace) for background goroutines and then proceeds
+// regardless, so on a loaded machine a straggler can still write into
+// home/tasks after Shutdown returns. Under t.TempDir that surfaces as
+// "TempDir RemoveAll cleanup: directory not empty" — a failure that names the
+// filesystem rather than the goroutine, and lands on whichever test was
+// running. Removal here is best-effort instead, and the condition that actually
+// matters is asserted directly: if Shutdown's wait ever times out, the test
+// fails with the goroutine dump Shutdown already logs.
+func startupLikeApp(t *testing.T, opts ...sybra.Option) *sybra.App {
+	t.Helper()
+	home, err := os.MkdirTemp("", "sybra-server-test-*")
+	if err != nil {
+		t.Fatalf("create test home: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	t.Setenv("SYBRA_HOME", home)
+	t.Setenv("SYBRA_DISABLE_WORKFLOWS", "0")
+	stubProviderCLIs(t)
+
+	var logs syncBuffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	app := sybra.NewApp(logger, &slog.LevelVar{}, startupLikeServerTestConfig(home), opts...)
+	if err := app.Startup(context.Background()); err != nil {
+		t.Fatalf("Startup: %v", err)
+	}
+	t.Cleanup(func() {
+		app.Shutdown(context.Background())
+		if strings.Contains(logs.String(), "app.shutdown.wait_timeout") {
+			t.Errorf("App.Shutdown timed out waiting for background goroutines; a straggler outlived shutdown and can still write into SYBRA_HOME:\n%s", logs.String())
+		}
+	})
+	return app
+}
+
 func okHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -40,6 +122,8 @@ func okHandler() http.Handler {
 type fakeWebhookTaskCreator struct {
 	created task.Task
 	err     error
+	listed  []task.Task
+	listErr error
 
 	gotTitle string
 	gotBody  string
@@ -58,6 +142,13 @@ func (f *fakeWebhookTaskCreator) CreateTaskWithInit(title, body, mode string, in
 		return task.Task{}, f.err
 	}
 	return f.created, nil
+}
+
+func (f *fakeWebhookTaskCreator) ListTasks() ([]task.Task, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	return append([]task.Task(nil), f.listed...), nil
 }
 
 type recordedEvent struct {
@@ -171,7 +262,7 @@ func TestWebhookHandlerCreatesUnsignedTaskWithDefaultsAndMetadata(t *testing.T) 
 func TestWebhookHandlerCreatesSignedTask(t *testing.T) {
 	creator := &fakeWebhookTaskCreator{created: task.Task{ID: "task-signed"}}
 	handler := newWebhookHandler(testLogger(), "secret", creator, nil)
-	body := []byte(`{"title":"signed","mode":"interactive"}`)
+	body := []byte(`{"title":"signed","mode":"headless"}`)
 
 	req := httptest.NewRequest(http.MethodPost, "/webhook/task", strings.NewReader(string(body)))
 	req.Header.Set(webhookSignatureHeader, webhookSignature("secret", body))
@@ -181,8 +272,23 @@ func TestWebhookHandlerCreatesSignedTask(t *testing.T) {
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want 201", rr.Code)
 	}
-	if creator.gotMode != task.AgentModeInteractive {
-		t.Fatalf("mode = %q, want %q", creator.gotMode, task.AgentModeInteractive)
+	if creator.gotMode != task.AgentModeHeadless {
+		t.Fatalf("mode = %q, want %q", creator.gotMode, task.AgentModeHeadless)
+	}
+}
+
+func TestWebhookHandlerRejectsInteractiveMode(t *testing.T) {
+	creator := &fakeWebhookTaskCreator{created: task.Task{ID: "task-rejected"}}
+	handler := newWebhookHandler(testLogger(), "secret", creator, nil)
+	body := []byte(`{"title":"signed","mode":"interactive"}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook/task", strings.NewReader(string(body)))
+	req.Header.Set(webhookSignatureHeader, webhookSignature("secret", body))
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rr.Code)
 	}
 }
 
@@ -280,28 +386,16 @@ func TestShutdownHardDeadlineCoversSequentialGracefulBudgets(t *testing.T) {
 }
 
 func TestWebhookHandlerPersistsTaskAndEmitsCreatedEvent(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("SYBRA_HOME", home)
-	t.Setenv("SYBRA_DISABLE_WORKFLOWS", "0")
-
-	cfg := startupLikeServerTestConfig(home)
-	logger := slog.New(slog.DiscardHandler)
 	var emitted eventRecorder
-	app := sybra.NewApp(logger, &slog.LevelVar{}, cfg, sybra.WithEmit(func(event string, data any) {
+	app := startupLikeApp(t, sybra.WithEmit(func(event string, data any) {
 		emitted.append(event, data)
 	}))
-	if err := app.Startup(context.Background()); err != nil {
-		t.Fatalf("Startup: %v", err)
-	}
-	t.Cleanup(func() {
-		app.Shutdown(context.Background())
-	})
 
 	creator, err := resolveWebhookTaskCreator(app)
 	if err != nil {
 		t.Fatalf("resolveWebhookTaskCreator: %v", err)
 	}
-	handler := newWebhookHandler(logger, "", creator, nil)
+	handler := newWebhookHandler(testLogger(), "", creator, nil)
 	body := []byte(`{"title":"from webhook","body":"hook body","tags":["webhook","ext"],"project_id":"Automaat/sybra"}`)
 	req := httptest.NewRequest(http.MethodPost, "/webhook/task", strings.NewReader(string(body)))
 	rr := httptest.NewRecorder()
@@ -353,25 +447,13 @@ func TestWebhookHandlerPersistsTaskAndEmitsCreatedEvent(t *testing.T) {
 }
 
 func TestWebhookHandlerRejectsTaskCreationDuringDrain(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("SYBRA_HOME", home)
-	t.Setenv("SYBRA_DISABLE_WORKFLOWS", "0")
-
-	cfg := startupLikeServerTestConfig(home)
-	logger := slog.New(slog.DiscardHandler)
-	app := sybra.NewApp(logger, &slog.LevelVar{}, cfg)
-	if err := app.Startup(context.Background()); err != nil {
-		t.Fatalf("Startup: %v", err)
-	}
-	t.Cleanup(func() {
-		app.Shutdown(context.Background())
-	})
+	app := startupLikeApp(t)
 
 	creator, err := resolveWebhookTaskCreator(app)
 	if err != nil {
 		t.Fatalf("resolveWebhookTaskCreator: %v", err)
 	}
-	handler := newWebhookHandler(logger, "", creator, func() error {
+	handler := newWebhookHandler(testLogger(), "", creator, func() error {
 		return app.HTTPAdmission("TaskService", "CreateTask", httpapi.MethodMeta{})
 	})
 	app.BeginDrain()
@@ -405,7 +487,7 @@ func TestWebhookHandlerRejectsTaskCreationDuringDrain(t *testing.T) {
 }
 
 func TestStartWebhookServerDisabledNoop(t *testing.T) {
-	srv, errCh, err := startWebhookServerWithHandler(t.Context(), config.WebhookConfig{}, okHandler(), testLogger())
+	srv, errCh, err := startWebhookServerWithHandler(t.Context(), config.GitHubWebhookConfig{}, okHandler(), testLogger())
 	if err != nil {
 		t.Fatalf("startWebhookServerWithHandler: %v", err)
 	}
@@ -415,13 +497,13 @@ func TestStartWebhookServerDisabledNoop(t *testing.T) {
 }
 
 func TestStartWebhookServerFailsOnBindError(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := net.Listen("tcp", ":0")
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
 	defer ln.Close()
 
-	cfg := config.WebhookConfig{Enabled: true, Port: ln.Addr().(*net.TCPAddr).Port}
+	cfg := config.GitHubWebhookConfig{Enabled: true, Port: ln.Addr().(*net.TCPAddr).Port}
 	srv, errCh, err := startWebhookServerWithHandler(t.Context(), cfg, okHandler(), testLogger())
 	if err == nil {
 		if srv != nil {
@@ -641,7 +723,7 @@ func TestSPAHandlerFallsBackToIndexForUnknownRoute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := spaHandler{fs: http.FileServer(http.FS(sub)), staticDir: staticDir}
+	h := spaHandler{FS: http.FileServer(http.FS(sub)), Root: sub}
 
 	// Representative deep links across the frontend's URL-backed routes,
 	// including one encoded dynamic segment (a project id containing '/').
@@ -667,4 +749,42 @@ func TestSPAHandlerFallsBackToIndexForUnknownRoute(t *testing.T) {
 			t.Fatalf("%s: body = %q, want %q", path, body, "index")
 		}
 	}
+}
+
+// TestRunCheckConfig exercises the -check-config deploy preflight (see
+// deploy/bin/sybra-build.sh): it must accept a valid live config and reject
+// one with an unknown key, in both cases without starting a server or
+// mutating config.yaml on disk (LoadNoPersist, not Load).
+func TestRunCheckConfig(t *testing.T) {
+	t.Run("valid config", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("SYBRA_HOME", home)
+
+		if code := runCheckConfig(); code != 0 {
+			t.Fatalf("runCheckConfig() = %d, want 0", code)
+		}
+		if _, err := os.Stat(filepath.Join(home, "config.yaml")); !os.IsNotExist(err) {
+			t.Fatalf("runCheckConfig must not persist config.yaml, stat err = %v", err)
+		}
+	})
+
+	t.Run("unknown key rejected", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("SYBRA_HOME", home)
+		configPath := filepath.Join(home, "config.yaml")
+		if err := os.WriteFile(configPath, []byte("this_key_does_not_exist: true\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		if code := runCheckConfig(); code != 1 {
+			t.Fatalf("runCheckConfig() = %d, want 1 for an unknown config key", code)
+		}
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(data) != "this_key_does_not_exist: true\n" {
+			t.Fatalf("runCheckConfig must not rewrite an invalid config.yaml, got %q", data)
+		}
+	})
 }

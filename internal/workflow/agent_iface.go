@@ -1,5 +1,34 @@
 package workflow
 
+import (
+	"context"
+	"io"
+
+	"github.com/Automaat/sybra/internal/executioncontract"
+)
+
+// VerificationWorkspace is a writable, disposable clone pinned to SourceSHA.
+// Its concrete lease remains owned by the application adapter.
+type VerificationWorkspace struct {
+	ID        string
+	Dir       string
+	SourceSHA string
+}
+
+// VerificationWorkspaceManager isolates deterministic verifier mutations from
+// the authoritative task checkout. Implementations must make Release
+// idempotent and Finalize must reject evidence after source movement.
+type VerificationWorkspaceManager interface {
+	PrepareVerification(context.Context, string, string, string) (VerificationWorkspace, error)
+	FinalizeVerification(context.Context, VerificationWorkspace, []string, string) error
+	ValidateVerification(context.Context, VerificationWorkspace) error
+	ReleaseVerification(VerificationWorkspace)
+}
+
+type VerificationCommandRunner interface {
+	RunVerificationCommand(context.Context, string, string, string, []string, io.Writer) error
+}
+
 // AgentCompletion carries the result of an agent run to the workflow engine.
 // Using a typed struct instead of positional string args makes the
 // success/failure contract explicit and independent of agent package constants.
@@ -21,9 +50,11 @@ type AgentCompletion struct {
 // CompletionWorkflow is the subset of Engine used by completion.Handler.
 type CompletionWorkflow interface {
 	HandleAgentComplete(taskID string, c AgentCompletion)
-	ClearAgentStep(agentID string)
+	ClearAgentStep(taskID, agentID string)
+	RescheduleInterruptedAgent(taskID, agentID string)
 	RescheduleRateLimitedAgent(taskID, agentID string)
 	RescheduleCheckpointedAgent(taskID, agentID string)
+	ReschedulePromptUndeliveredAgent(taskID, agentID string)
 	DispatchEvent(taskID, event string, extra map[string]string, vars map[string]string) (string, error)
 }
 
@@ -97,17 +128,33 @@ type DispatchClaim interface {
 
 // AgentAssignment carries A/B experiment attribution selected before dispatch.
 type AgentAssignment struct {
-	ExperimentID    string
-	Kind            string
-	VariantID       string
-	RoutingReason   string
-	Provider        string
-	Model           string
-	AssignmentUnit  string
-	AssignmentKey   string
-	ReasoningEffort string
-	PromptTransform *PromptTransform
-	SkillAliases    map[string]string
+	// IntentID is the durable workflow-effect identity used by admission to
+	// reject a replay while the original attempt is still owned, preventing a
+	// second provider process from being spawned for the same effect.
+	IntentID         string
+	AdmissionTaskKey string
+	AdmissionObserve bool
+	ExperimentID     string
+	Kind             string
+	VariantID        string
+	RoutingReason    string
+	Provider         string
+	Model            string
+	AssignmentUnit   string
+	AssignmentKey    string
+	ReasoningEffort  string
+	PromptTransform  *PromptTransform
+	SkillAliases     map[string]string
+	// ReadOnlyPaths are additional paths a diagnostic agent may inspect under
+	// the deny-by-default sandbox read posture. They never grant write access.
+	ReadOnlyPaths []string
+	// GitRoots identifies the subset of ReadOnlyPaths that are checkouts whose
+	// Git metadata and referenced objects must be certified before dispatch.
+	GitRoots      []string
+	RemoteOutputs []executioncontract.ExpectedOutput
+	// RemoteSidecarDir is the leader-local rendered root to virtualize out of
+	// remote prompts. It never crosses the execution contract.
+	RemoteSidecarDir string
 	// ForceInjectedSkill forces provider prep to inject the resolved skill
 	// instructions instead of relying on native visibility. Used by the
 	// automatic retry after a missing mandatory-skill receipt.
@@ -166,3 +213,28 @@ type AttemptWorktreeManager interface {
 // the engine. Callers set this before StartWorkflowWithVars when they have
 // already prepared the worktree (e.g. PR-fix flow that needs PrepareForFix).
 const WorkflowVarDir = "_dir"
+
+// WorkflowVarBranchConflictPushRemote is the trusted origin remote for a
+// verified same-repository branch-conflict recovery. Ordinary workflow pushes
+// continue to use project.PushRemote and therefore retain the fork-only policy.
+const WorkflowVarBranchConflictPushRemote = "_branch_conflict_push_remote"
+
+// WorkflowVarBranchConflictPushURL pins the source URL captured before the
+// recovery agent started. It is required with WorkflowVarBranchConflictPushRemote
+// before the workflow may use the trusted origin push path.
+const WorkflowVarBranchConflictPushURL = "_branch_conflict_push_url"
+
+// WorkflowVarSidecarDir is the reserved variable naming a per-task directory
+// that stays writable even when the worktree does not. Verifier roles
+// (review, plan, plan-critic, eval) run against a read-only worktree so they
+// cannot alter the code they are judging, but they still have to write their
+// own output somewhere — that output goes here rather than into the tree.
+//
+// Empty when no resolver is wired, in which case steps fall back to
+// WorkflowVarDir and behave exactly as they did before.
+const WorkflowVarSidecarDir = "_sidecar_dir"
+
+// SidecarDirResolver returns the writable per-task directory for workflow
+// scratch output. Wired from the sandbox manager, whose per-task home is
+// already an allowed write root under the OS sandbox.
+type SidecarDirResolver func(taskID string) (string, error)

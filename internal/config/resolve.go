@@ -6,26 +6,30 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 // Environment holds the supported config env overrides so Resolve is
 // deterministic and testable.
 type Environment struct {
-	LogLevel       string
-	LogDir         string
-	TasksDir       string
-	AuthToken      string
-	WebhookSecret  string
-	AllowedOrigins []string
+	LogLevel            string
+	LogDir              string
+	TasksDir            string
+	AuthToken           string
+	WebhookSecret       string
+	GitHubWebhookSecret string
+	AllowedOrigins      []string
 }
 
 func environmentFromOS() Environment {
 	env := Environment{
-		LogLevel:      os.Getenv("SYBRA_LOG_LEVEL"),
-		LogDir:        os.Getenv("SYBRA_LOG_DIR"),
-		TasksDir:      os.Getenv("SYBRA_TASKS_DIR"),
-		AuthToken:     os.Getenv("SYBRA_AUTH_TOKEN"),
-		WebhookSecret: os.Getenv("SYBRA_WEBHOOK_SECRET"),
+		LogLevel:            os.Getenv("SYBRA_LOG_LEVEL"),
+		LogDir:              os.Getenv("SYBRA_LOG_DIR"),
+		TasksDir:            os.Getenv("SYBRA_TASKS_DIR"),
+		AuthToken:           os.Getenv("SYBRA_AUTH_TOKEN"),
+		WebhookSecret:       os.Getenv("SYBRA_WEBHOOK_SECRET"),
+		GitHubWebhookSecret: os.Getenv("SYBRA_GITHUB_WEBHOOK_SECRET"),
 	}
 	if raw := os.Getenv("SYBRA_ALLOWED_ORIGINS"); raw != "" {
 		parts := strings.Split(raw, ",")
@@ -91,6 +95,13 @@ func Resolve(file *FileConfig, env Environment, opts ResolveOptions) (*ResolveRe
 	return &ResolveResult{Config: cfg}, nil
 }
 
+// applyLegacyReviewLoopCompat preserves a pre-schema-v2 config's intent: back
+// when review_until_clean was the only knob, setting it true meant an
+// uncapped review→fix→review loop. That posture is now expressed through the
+// single review-rate-limit knob (agent.review_rounds_per_hour) rather than a
+// second allow-unbounded flag, so a legacy config that opted in keeps that
+// behavior by disabling the rate limit instead of losing it silently once the
+// old key is gone.
 func applyLegacyReviewLoopCompat(file *FileConfig, cfg *ResolvedConfig) {
 	if file == nil || cfg == nil {
 		return
@@ -98,7 +109,9 @@ func applyLegacyReviewLoopCompat(file *FileConfig, cfg *ResolvedConfig) {
 	if file.SchemaVersion() >= CurrentSchemaVersion {
 		return
 	}
-	if file.Has("agent", "allow_unbounded_review_rounds") || file.Has("agent", "max_review_rounds") {
+	// github.review_rounds_per_hour is the field's legacy (schema v2, one-day)
+	// home; an explicit value there must win over the implicit -1 below.
+	if file.Has("agent", "review_rounds_per_hour") || file.Has("github", "review_rounds_per_hour") {
 		return
 	}
 	node, ok := file.nodeAt("agent", "review_until_clean")
@@ -109,7 +122,7 @@ func applyLegacyReviewLoopCompat(file *FileConfig, cfg *ResolvedConfig) {
 	if err := node.Decode(&enabled); err != nil || !enabled {
 		return
 	}
-	cfg.Agent.AllowUnboundedReviewRounds = &enabled
+	cfg.Agent.ReviewRoundsPerHour = -1
 }
 
 func applyEnvironmentOverrides(cfg *ResolvedConfig, env Environment) {
@@ -126,7 +139,10 @@ func applyEnvironmentOverrides(cfg *ResolvedConfig, env Environment) {
 		cfg.Server.AuthToken = env.AuthToken
 	}
 	if env.WebhookSecret != "" {
-		cfg.Webhook.Secret = env.WebhookSecret
+		cfg.GitHub.Webhook.TaskSecret = env.WebhookSecret
+	}
+	if env.GitHubWebhookSecret != "" {
+		cfg.GitHub.Webhook.Secret = env.GitHubWebhookSecret
 	}
 	if len(env.AllowedOrigins) > 0 {
 		cfg.Server.AllowedOrigins = append([]string(nil), env.AllowedOrigins...)
@@ -164,8 +180,14 @@ func applyResolvedDefaults(cfg *ResolvedConfig, file *FileConfig) {
 	if cfg.Attachments.MaxSizeMB <= 0 {
 		cfg.Attachments.MaxSizeMB = DefaultAttachmentMaxSizeMB
 	}
-	if cfg.Webhook.Port <= 0 {
-		cfg.Webhook.Port = DefaultWebhookPort
+	if cfg.GitHub.Webhook.Port <= 0 {
+		cfg.GitHub.Webhook.Port = DefaultWebhookPort
+	}
+	if strings.TrimSpace(cfg.GitHub.Webhook.CommandPrefix) == "" {
+		cfg.GitHub.Webhook.CommandPrefix = DefaultGitHubWebhookCommandPrefix
+	}
+	if file != nil && file.Has("webhook", "enabled") && cfg.GitHub.Webhook.Enabled {
+		cfg.GitHub.Webhook.TaskEnabled = true
 	}
 	if cfg.Renovate.Author == "" {
 		cfg.Renovate.Author = "app/renovate"
@@ -174,7 +196,7 @@ func applyResolvedDefaults(cfg *ResolvedConfig, file *FileConfig) {
 		cfg.Triage.PollSeconds = 60
 	}
 	if cfg.Agent.Provider == "" {
-		cfg.Agent.Provider = "claude"
+		cfg.Agent.Provider = providerid.Claude
 	}
 	applyProvidersDefaults(cfg)
 	applyMonitorDefaults(cfg, file)
@@ -190,4 +212,7 @@ func applyResolvedDefaults(cfg *ResolvedConfig, file *FileConfig) {
 	applyAutoUpdateDefaults(cfg)
 	applyGitHubPollingCompat(cfg, file)
 	applyReviewHoldDefaults(cfg)
+	applyAdmissionDefaults(cfg, file)
+	applyEvidenceDefaults(cfg, file)
+	applyInterventionDefaults(cfg, file)
 }

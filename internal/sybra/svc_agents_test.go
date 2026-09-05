@@ -56,7 +56,7 @@ func TestGetAgentRunConvoLog_ReplaysFromDisk(t *testing.T) {
 	}
 	taskMgr := task.NewManager(store, nil)
 
-	tk, err := store.Create("history replay", "", "interactive")
+	tk, err := store.Create("history replay", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestGetAgentRunConvoLog_MissingFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	taskMgr := task.NewManager(store, nil)
-	tk, err := store.Create("no log task", "", "interactive")
+	tk, err := store.Create("no log task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestGetAgentRunConvoLog_UsesTaskLogFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	taskMgr := task.NewManager(store, nil)
-	tk, err := store.Create("custom log task", "", "interactive")
+	tk, err := store.Create("custom log task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}

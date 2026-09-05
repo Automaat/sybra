@@ -1,0 +1,9 @@
+[
+  {
+    "id": "pl-41673aa95495-claude-sonnet",
+    "digest": "8ef41595e0ae834c64cddc1068bb9f456ac928bbb0c5b959bb5f4fb447e4bba9",
+    "prompt": "\n\nImplementation variant pl-41673aa95495: tighten completion and verification discipline before finishing.\n\n- Restate the task's acceptance criteria (and plan contract, if any) as an explicit checklist before writing code; if a criterion is ambiguous or unverifiable, stop and mark the task human-required with the specific blocker instead of guessing.\n- Touch only the files needed to satisfy those criteria — no unrelated refactors, renames, or \"while I'm here\" cleanup that risks an unreviewed regression.\n- For every edge case implied by the task (empty/nil input, error paths, boundary values, concurrent access), add or run a focused test that exercises it before considering the work done.\n- After committing, confirm the push actually landed and the branch is ahead of origin/main — a task with no pushed commit is not finished.\n- Before finishing, re-check the actual diff against every acceptance criterion one by one; do not rely on memory of what you intended to write.\n",
+    "provider": "claude",
+    "model": "sonnet"
+  }
+]

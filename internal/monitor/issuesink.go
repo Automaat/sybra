@@ -1,14 +1,18 @@
 package monitor
 
 import (
+	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"os/exec"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/Automaat/sybra/internal/errclass"
 
 	"github.com/Automaat/sybra/internal/attribution"
 	"github.com/Automaat/sybra/internal/github"
@@ -26,45 +30,51 @@ type IssueSink interface {
 	Submit(ctx context.Context, a Anomaly, body string) (created bool, err error)
 }
 
-// ghExecer abstracts gh invocation for tests. The default impl shells out via
-// exec.CommandContext. Mirrors the pattern in internal/github/client.go.
+// IssueCloser is an optional IssueSink capability: closes whatever open
+// issue (or local task, for monitorRoutingSink's work-project path) matches
+// an anomaly's fingerprint, once its condition has cleared. Not every sink
+// implements it (NoopSink and test fakes don't); callers type-assert and
+// skip closing when it's absent.
+type IssueCloser interface {
+	CloseIfOpen(ctx context.Context, a Anomaly, comment string) (closed bool, err error)
+}
+
+type IncidentArtifact struct {
+	Number int
+	URL    string
+}
+
+// IncidentSink applies a material incident revision to one canonical
+// artifact. Identity is the stable body marker, not a mutable title.
+type IncidentSink interface {
+	ApplyIncident(context.Context, Incident, IncidentChange, string) (created bool, artifact IncidentArtifact, err error)
+	ResolveIncident(context.Context, Incident, string) (closed bool, err error)
+	MapDuplicateIncidents(context.Context, Incident, []int, string) error
+}
+
+// ghExecer abstracts gh invocation for tests. The default impl routes through
+// github.RunWithEnv. Mirrors the pattern in internal/github/client.go.
 type ghExecer interface {
 	run(ctx context.Context, args ...string) ([]byte, error)
 }
 
 type defaultGHExecer struct{}
 
-var (
-	ghEnv = github.GHEnv
-	// authCircuitOpen/observeGHResult mirror the centralized GitHub
-	// auth-health circuit breaker (internal/github/authhealth.go) the same
-	// way ghEnv already mirrors credential injection — this sink shells out
-	// directly instead of going through internal/github's request gate, so
-	// without this it would keep hammering `gh` during an auth outage the
-	// rest of the process has already backed off from, and would never
-	// report its own failures into the shared state for other callers (or
-	// the health/metrics surfaces) to see. See #2453.
-	authCircuitOpen = github.AuthCircuitOpen
-	observeGHResult = github.ObserveCallResultCtx
-)
+// ghEnv is indirected (rather than calling github.GHEnv directly) so tests
+// can inject a synthetic token without a real App-auth mint. Share the same
+// credential source as every other gh call in the process (internal/github's
+// ghExecer/ghRunCtx): the cached GitHub App installation token when one is
+// configured, so this sink isn't silently dependent on an ambient `gh auth
+// login`/GH_TOKEN that the App-auth setup was specifically meant to replace.
+// See #2032.
+var ghEnv = github.GHEnv
 
+// run routes through github.RunWithEnv — the same request gate (pacing,
+// rate-limit bookkeeping, auth-circuit breaker) every other gh call in the
+// process gets — instead of shelling out directly, so this sink's traffic
+// isn't invisible to the shared rate budget. See #2496.
 func (defaultGHExecer) run(ctx context.Context, args ...string) ([]byte, error) {
-	if open, retryAfter := authCircuitOpen(); open {
-		github.RecordSuppressedCall()
-		return nil, github.NewAuthCircuitOpenError(retryAfter)
-	}
-	cmd := exec.CommandContext(ctx, "gh", args...)
-	// Share the same credential source as every other gh call in the
-	// process (internal/github's ghExecer/ghRunCtx): inject the cached
-	// GitHub App installation token when one is configured, so this sink
-	// isn't silently dependent on an ambient `gh auth login`/GH_TOKEN that
-	// the App-auth setup was specifically meant to replace. See #2032.
-	if env := ghEnv(); env != nil {
-		cmd.Env = env
-	}
-	out, err := cmd.CombinedOutput()
-	observeGHResult(ctx, out, err)
-	return out, err
+	return github.RunWithEnv(ctx, ghEnv(), args...)
 }
 
 // GHIssueSink is the production IssueSink: searches by title, comments on hit,
@@ -75,6 +85,7 @@ type GHIssueSink struct {
 	label      string
 	repo       string
 	labelsOnce sync.Once
+	applyMu    sync.Mutex
 }
 
 // NewGHIssueSink returns a sink wired to the real gh CLI. label is the
@@ -95,6 +106,202 @@ func NewGHIssueSink(label, repo string) *GHIssueSink {
 func (s *GHIssueSink) Submit(ctx context.Context, a Anomaly, body string) (bool, error) {
 	created, _, err := s.SubmitIssue(ctx, IssueTitle(a.Kind, a.Fingerprint), body, []string{"bug"})
 	return created, err
+}
+
+func IncidentTitle(in Incident) string {
+	return "[monitor] incident " + in.FailureCode + ": " + strings.TrimPrefix(in.Fingerprint, "incident:")
+}
+
+func incidentMarker(fp string) string { return "<!-- sybra-incident:v1:" + fp + " -->" }
+
+type ghIncident struct {
+	Number      int
+	URL         string
+	State       string
+	HasRevision bool
+	Duplicates  []int
+}
+
+func incidentRevisionMarker(in Incident) string {
+	return fmt.Sprintf("<!-- sybra-incident-revision:v1:%s:%d:%s -->", in.Fingerprint, in.Revision, in.State)
+}
+
+func (s *GHIssueSink) findIncident(ctx context.Context, fp, revisionMarker string) (ghIncident, error) {
+	marker := incidentMarker(fp)
+	type incidentRow struct {
+		Number int    `json:"number"`
+		URL    string `json:"url"`
+		State  string `json:"state"`
+		Body   string `json:"body"`
+	}
+	var rows []incidentRow
+	queries := []struct {
+		args         []string
+		requireLabel bool
+	}{
+		{args: []string{"--search", marker + " in:body", "--limit", "100"}}, // historical canonical, via exact marker search
+		{args: []string{"--limit", "1000"}, requireLabel: true},             // immediately visible recent rows, for create-race convergence
+	}
+	seenRows := map[int]bool{}
+	for _, query := range queries {
+		args := append(s.repoArgs(), "issue", "list", "--state", "all")
+		if query.requireLabel {
+			args = append(args, "--label", s.label)
+		}
+		args = append(args, "--json", "number,url,state,body")
+		out, err := s.exec.run(ctx, append(args, query.args...)...)
+		if err != nil {
+			return ghIncident{}, classifyGHError("gh incident list", out, err)
+		}
+		var page []incidentRow
+		if err := json.Unmarshal(out, &page); err != nil {
+			return ghIncident{}, fmt.Errorf("decode gh incident list: %w", err)
+		}
+		for _, row := range page {
+			if !seenRows[row.Number] {
+				seenRows[row.Number] = true
+				rows = append(rows, row)
+			}
+		}
+	}
+	var matches []incidentRow
+	for _, row := range rows {
+		if strings.Contains(row.Body, marker) {
+			matches = append(matches, row)
+		}
+	}
+	if len(matches) == 0 {
+		return ghIncident{}, nil
+	}
+	slices.SortFunc(matches, func(a, b incidentRow) int { return cmp.Compare(a.Number, b.Number) })
+	canonical := matches[0]
+	found := ghIncident{Number: canonical.Number, URL: canonical.URL, State: strings.ToUpper(canonical.State)}
+	for _, duplicate := range matches[1:] {
+		if !strings.EqualFold(duplicate.State, "CLOSED") {
+			found.Duplicates = append(found.Duplicates, duplicate.Number)
+		}
+	}
+	found.HasRevision = revisionMarker != "" && strings.Contains(canonical.Body, revisionMarker)
+	if revisionMarker != "" && !found.HasRevision {
+		viewOut, viewErr := s.exec.run(ctx, append(s.repoArgs(), "issue", "view", strconv.Itoa(canonical.Number), "--json", "comments")...)
+		if viewErr != nil {
+			return ghIncident{}, classifyGHError("gh incident view", viewOut, viewErr)
+		}
+		var viewed struct {
+			Comments []struct {
+				Body string `json:"body"`
+			} `json:"comments"`
+		}
+		if decodeErr := json.Unmarshal(viewOut, &viewed); decodeErr != nil {
+			return ghIncident{}, fmt.Errorf("decode gh incident comments: %w", decodeErr)
+		}
+		for _, comment := range viewed.Comments {
+			found.HasRevision = strings.Contains(comment.Body, revisionMarker)
+			if found.HasRevision {
+				break
+			}
+		}
+	}
+	return found, nil
+}
+
+func (s *GHIssueSink) ApplyIncident(ctx context.Context, in Incident, change IncidentChange, body string) (bool, IncidentArtifact, error) {
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
+	s.labelsOnce.Do(func() { s.ensureLabels(ctx) })
+	revisionMarker := incidentRevisionMarker(in)
+	found, err := s.findIncident(ctx, in.Fingerprint, revisionMarker)
+	if err != nil {
+		return false, IncidentArtifact{}, err
+	}
+	body = incidentMarker(in.Fingerprint) + "\n" + revisionMarker + "\n" + body
+	if len(found.Duplicates) > 0 {
+		canonical := in
+		canonical.IssueURL = found.URL
+		if mapErr := s.MapDuplicateIncidents(ctx, canonical, found.Duplicates, "same stable incident fingerprint marker"); mapErr != nil {
+			return false, IncidentArtifact{}, mapErr
+		}
+	}
+	if found.Number == 0 {
+		out, createErr := s.exec.run(ctx, append(s.repoArgs(), "issue", "create", "--title", IncidentTitle(in), "--body", attribution.Append(body), "--label", s.label, "--label", "bug")...)
+		if createErr != nil {
+			return false, IncidentArtifact{}, classifyGHError("gh incident create", out, createErr)
+		}
+		createdURL := parseIssueCreateURL(out)
+		// A second process may have won the same list-then-create race. Re-query
+		// and converge all marker-identical artifacts on the oldest canonical.
+		canonical, reconcileErr := s.findIncident(ctx, in.Fingerprint, revisionMarker)
+		if reconcileErr != nil {
+			return false, IncidentArtifact{}, fmt.Errorf("reconcile created incident %s: %w", createdURL, reconcileErr)
+		}
+		if canonical.Number != 0 {
+			if len(canonical.Duplicates) > 0 {
+				linked := in
+				linked.IssueURL = canonical.URL
+				if mapErr := s.MapDuplicateIncidents(ctx, linked, canonical.Duplicates, "same stable incident fingerprint marker"); mapErr != nil {
+					return false, IncidentArtifact{}, mapErr
+				}
+			}
+			return true, IncidentArtifact{Number: canonical.Number, URL: canonical.URL}, nil
+		}
+		return true, IncidentArtifact{URL: createdURL}, nil
+	}
+	if found.State == "CLOSED" && in.State == IncidentActive {
+		out, reopenErr := s.exec.run(ctx, append(s.repoArgs(), "issue", "reopen", strconv.Itoa(found.Number), "--comment", attribution.Append(body))...)
+		if reopenErr != nil {
+			return false, IncidentArtifact{}, classifyGHError("gh incident reopen", out, reopenErr)
+		}
+		return false, IncidentArtifact{Number: found.Number, URL: found.URL}, nil
+	}
+	if found.HasRevision {
+		return false, IncidentArtifact{Number: found.Number, URL: found.URL}, nil
+	}
+	if change != IncidentUnchanged {
+		out, commentErr := s.exec.run(ctx, append(s.repoArgs(), "issue", "comment", strconv.Itoa(found.Number), "--body", attribution.Append(body))...)
+		if commentErr != nil {
+			return false, IncidentArtifact{}, classifyGHError("gh incident comment", out, commentErr)
+		}
+	}
+	return false, IncidentArtifact{Number: found.Number, URL: found.URL}, nil
+}
+
+func (s *GHIssueSink) ResolveIncident(ctx context.Context, in Incident, comment string) (bool, error) {
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
+	revisionMarker := incidentRevisionMarker(in)
+	found, err := s.findIncident(ctx, in.Fingerprint, revisionMarker)
+	if err != nil || found.Number == 0 {
+		return false, err
+	}
+	if len(found.Duplicates) > 0 {
+		canonical := in
+		canonical.IssueURL = found.URL
+		if mapErr := s.MapDuplicateIncidents(ctx, canonical, found.Duplicates, "same stable incident fingerprint marker"); mapErr != nil {
+			return false, mapErr
+		}
+	}
+	if found.State == "CLOSED" {
+		return false, nil
+	}
+	out, closeErr := s.exec.run(ctx, append(s.repoArgs(), "issue", "close", strconv.Itoa(found.Number), "--reason", "completed", "--comment", attribution.Append(revisionMarker+"\n"+comment))...)
+	if closeErr != nil {
+		return false, classifyGHError("gh incident close", out, closeErr)
+	}
+	return true, nil
+}
+
+func (s *GHIssueSink) MapDuplicateIncidents(ctx context.Context, in Incident, duplicates []int, coverage string) error {
+	if strings.TrimSpace(coverage) == "" || in.IssueURL == "" {
+		return errors.New("incident duplicate mapping requires canonical URL and reproduction coverage")
+	}
+	for _, number := range duplicates {
+		body := fmt.Sprintf("Covered by canonical incident %s. Reproduction coverage: %s", in.IssueURL, coverage)
+		out, err := s.exec.run(ctx, append(s.repoArgs(), "issue", "close", strconv.Itoa(number), "--reason", "not planned", "--comment", attribution.Append(body))...)
+		if err != nil {
+			return classifyGHError("gh duplicate incident close", out, err)
+		}
+	}
+	return nil
 }
 
 // SubmitIssue is the generic, anomaly-agnostic dedup-and-file primitive used
@@ -138,6 +345,27 @@ func (s *GHIssueSink) SubmitIssue(ctx context.Context, title, body string, extra
 		return false, "", classifyGHError("gh issue create", out, err)
 	}
 	return true, parseIssueCreateURL(out), nil
+}
+
+// CloseIfOpen implements IssueCloser: closes the open issue matching the
+// anomaly's fingerprint title, if one exists. Used to auto-resolve a
+// deterministic-kind issue (e.g. lost_agent) once its condition has stayed
+// clear for the configured number of consecutive scans — the same intent as
+// the #2433 merged-PR task auto-close, applied to monitor-filed issues.
+func (s *GHIssueSink) CloseIfOpen(ctx context.Context, a Anomaly, comment string) (bool, error) {
+	num, _, err := s.findOpenIssue(ctx, IssueTitle(a.Kind, a.Fingerprint))
+	if err != nil {
+		return false, err
+	}
+	if num == 0 {
+		return false, nil
+	}
+	args := append(s.repoArgs(), "issue", "close", strconv.Itoa(num), "--reason", "completed", "--comment", attribution.Append(comment))
+	out, err := s.exec.run(ctx, args...)
+	if err != nil {
+		return false, classifyGHError("gh issue close", out, err)
+	}
+	return true, nil
 }
 
 // parseIssueCreateURL pulls the first line of `gh issue create` stdout that
@@ -299,7 +527,7 @@ func classifyGHError(op string, out []byte, err error) error {
 	}
 	out = redactSecrets(out)
 	msg := err.Error() + "\n" + string(out)
-	if strings.Contains(msg, "API rate limit exceeded") || strings.Contains(msg, "secondary rate limit") {
+	if errclass.Classify(msg, errclass.MonitorCooldownBiased) == errclass.RateLimited {
 		return ErrGHRateLimit
 	}
 	if detail := sanitizeGHOutput(out); detail != "" {

@@ -66,24 +66,20 @@ When a task's project has `type: work`, apply these overrides during triage:
 | Rule | Effect |
 |------|--------|
 | Forced planning | all non-review work tasks MUST go to `planning` before implementation |
-| Default interactive | Agent mode defaults to `interactive` unless task is a review |
 | PR required | Task cannot move to `in-review` without a linked PR |
 
 ## Triage Rules
 
 When new tasks arrive (status: `new`), analyze and assign:
 
-### Agent Mode Selection
+### Agent Mode
 
-| Signal | Mode | Rationale |
-|--------|------|-----------|
-| PR review URL | headless | Automated review, structured output |
-| Bug with clear repro | headless | Can diagnose and fix autonomously |
-| Simple refactor/rename | headless | Mechanical, low ambiguity |
-| Feature with unclear scope | interactive | Needs human guidance |
-| Architecture decision | interactive | Requires discussion |
-| Complex debugging | interactive | May need iterative exploration |
-| Security-sensitive change | interactive | Human must verify |
+Agent mode is always `headless` — the interactive runner was removed and no
+dispatch path honors any other value. Tasks that need human guidance
+(unclear scope, architecture decisions, complex debugging, security-sensitive
+changes) are not routed by mode: send them through `planning` for a human
+plan-review gate, or straight to `human-required` if they can't proceed at
+all without a person.
 
 ### Tag Assignment
 
@@ -162,7 +158,6 @@ Sybra supports two agent providers: `claude` (default) and `codex`. The active p
 - No session resume — every headless run starts fresh; multi-turn recovery requires re-stating context in the prompt
 - No `--allowedTools` — use `RequirePermissions=true` to restrict to `workspace-write` sandbox, or `RequirePermissions=false` for full bypass (`--dangerously-bypass-approvals-and-sandbox`)
 - Cost not reported in stream — usage visible on OpenAI dashboard, not in Sybra UI
-- Interactive mode spawns a new process per turn (no persistent stdin)
 
 If the provider is `codex`, Sybra calls:
 ```bash
@@ -177,14 +172,12 @@ See `docs/codex-setup.md` for full setup and auth details.
 
 ### Agent Spawn
 
-Headless tasks get a structured prompt:
+Tasks get a structured prompt:
 
 ```bash
 sybra-cli --json update <id> --status in-progress
 # Then start agent via Sybra GUI
 ```
-
-For interactive tasks, just update status — human will attach.
 
 ## Monitoring
 
@@ -223,12 +216,12 @@ Signs an agent is stuck or failed:
 
 1. Check agent output for error patterns
 2. If retriable: reset task to `todo`, record failure context with `sybra-cli progress add <id> --kind failure --message "..."`
-3. If needs different approach: record what was tried with `sybra-cli progress add <id> --kind decision --message "..."`, change mode to `interactive`
+3. If needs different approach: record what was tried with `sybra-cli progress add <id> --kind decision --message "..."`, then retry from `todo` with the revised approach
 4. If blocked on external dependency: set status to human-required, record what's needed with `sybra-cli progress add <id> --kind blocker --message "..."`
 
 ## Escalation Rules
 
-Escalate to human (mark as `interactive` or `human-required`) when:
+Escalate to human (mark as `human-required`) when:
 
 - Task requires access to credentials or secrets
 - Change affects production infrastructure

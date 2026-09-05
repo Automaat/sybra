@@ -2,8 +2,11 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,9 +14,13 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/evaluation"
+	"github.com/Automaat/sybra/internal/fsutil"
+	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/tasksnapshot"
@@ -26,13 +33,15 @@ func mustUnmarshal(t *testing.T, data string, v any) {
 	}
 }
 
+// setupStore gives a test an isolated home and the board server every command
+// now needs. The CLI has no filesystem path left, so a test without a server
+// would only ever assert that the command refuses to run.
 func setupStore(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("SYBRA_HOME", dir)
 	t.Setenv("SYBRA_CONTROL_HOME", "")
-	t.Setenv("SYBRA_TASKS_DIR", filepath.Join(dir, "tasks"))
-	t.Setenv(serverTargetEnv, "")
+	startTestBoard(t, dir)
 	return dir
 }
 
@@ -96,11 +105,71 @@ func runGit(t *testing.T, dir string, args ...string) string {
 	return string(out)
 }
 
+func TestGithubAppTokenRequiresAppAuth(t *testing.T) {
+	setupStore(t)
+
+	code, stdout, stderr := runCLIWithStderr(t, "github-app-token")
+	if code == 0 {
+		t.Fatalf("github-app-token succeeded with github.app disabled; stdout=%q stderr=%q", stdout, stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("github-app-token wrote stdout despite failing: %q", stdout)
+	}
+	if !strings.Contains(stderr, "github.app is not enabled") {
+		t.Fatalf("stderr = %q, want github.app disabled error", stderr)
+	}
+}
+
+func TestGithubAppTokenPlainAndJSONOutput(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.GitHub.App.Enabled = true
+	cfg.GitHub.App.AppID = 42
+	cfg.GitHub.App.InstallationID = 7
+	cfg.GitHub.App.PrivateKeyPath = "/tmp/app.pem"
+
+	origEnable := enableCLIAppAuth
+	origRefresh := refreshCLIAppToken
+	origCurrent := currentCLIAppToken
+	t.Cleanup(func() {
+		enableCLIAppAuth = origEnable
+		refreshCLIAppToken = origRefresh
+		currentCLIAppToken = origCurrent
+	})
+	enableCLIAppAuth = func(creds github.AppCredentials) error {
+		if creds.AppID != 42 || creds.InstallationID != 7 || creds.PrivateKeyPath != "/tmp/app.pem" {
+			t.Fatalf("credentials = %+v, want configured app credentials", creds)
+		}
+		return nil
+	}
+	refreshCLIAppToken = func(context.Context) error { return nil }
+	currentCLIAppToken = func() string { return "installation-token" }
+
+	code, plain := captureStdout(t, func() int { return cmdGithubAppToken(cfg, false) })
+	if code != 0 {
+		t.Fatalf("plain cmdGithubAppToken exit = %d output=%q", code, plain)
+	}
+	if plain != "installation-token\n" {
+		t.Fatalf("plain output = %q", plain)
+	}
+
+	code, rawJSON := captureStdout(t, func() int { return cmdGithubAppToken(cfg, true) })
+	if code != 0 {
+		t.Fatalf("json cmdGithubAppToken exit = %d output=%q", code, rawJSON)
+	}
+	var payload map[string]string
+	if err := json.Unmarshal([]byte(rawJSON), &payload); err != nil {
+		t.Fatalf("unmarshal json output %q: %v", rawJSON, err)
+	}
+	if payload["token"] != "installation-token" {
+		t.Fatalf("json token = %q", payload["token"])
+	}
+}
+
 func TestListEmpty(t *testing.T) {
 	setupStore(t)
 	code, out := runCLI(t, "--json", "list")
 	if code != 0 {
-		t.Fatalf("exit %d", code)
+		t.Fatalf("exit %d: %s", code, out)
 	}
 	var tasks []task.Task
 	if err := json.Unmarshal([]byte(out), &tasks); err != nil {
@@ -217,6 +286,42 @@ func TestGetCompactOmitsPlanningSupportSidecars(t *testing.T) {
 	}
 }
 
+func TestGetPrintsSidecarHeadingsOnce(t *testing.T) {
+	dir := setupStore(t)
+
+	store, err := task.NewStore(filepath.Join(dir, "tasks"))
+	if err != nil {
+		t.Fatalf("task.NewStore: %v", err)
+	}
+	manager := task.NewManager(store, nil)
+	created, err := manager.Create("sidecar task", "body", "headless")
+	if err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+	if err := store.CurrentTestFailures().Write(created.ID, "## Test Failures\n\nfailing assertion"); err != nil {
+		t.Fatalf("write current test failures: %v", err)
+	}
+	if err := store.AcceptanceLedgers().Write(created.ID, "## Acceptance Ledger\n\nledger entry"); err != nil {
+		t.Fatalf("write acceptance ledger: %v", err)
+	}
+	if err := store.SpecDecisions().Write(created.ID, "## Spec Decision Needed\n\nneeds a call"); err != nil {
+		t.Fatalf("write spec decision: %v", err)
+	}
+
+	code, out := runCLI(t, "get", created.ID)
+	if code != 0 {
+		t.Fatalf("get exit %d: %s", code, out)
+	}
+	if strings.Contains(out, "## Current Test Failures") {
+		t.Fatalf("get output duplicated current test failures heading:\n%s", out)
+	}
+	for _, heading := range []string{"## Test Failures", "## Acceptance Ledger", "## Spec Decision Needed"} {
+		if strings.Count(out, heading) != 1 {
+			t.Fatalf("heading %q count = %d, want 1\n%s", heading, strings.Count(out, heading), out)
+		}
+	}
+}
+
 func validCLIPlanContract(taskID, extra string) string {
 	return fmt.Sprintf(`{
   "task_id": %q,
@@ -251,6 +356,37 @@ func TestUpdateStatus(t *testing.T) {
 	mustUnmarshal(t, out, &updated)
 	if updated.Status != "in-progress" {
 		t.Errorf("status = %q", updated.Status)
+	}
+}
+
+func TestUpdateRetryableLockTimeoutExitsTempFail(t *testing.T) {
+	setupStore(t)
+
+	code, out := runCLI(t, "--json", "create", "--title", "locked update")
+	if code != 0 {
+		t.Fatalf("create exit %d: %s", code, out)
+	}
+	var created task.Task
+	mustUnmarshal(t, out, &created)
+
+	unlock, err := fsutil.LockFile(created.FilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = unlock() }()
+
+	code, _, errOut := runCLIWithStderr(t, "--json", "update", created.ID, "--status", "in-progress")
+	if code != 75 {
+		t.Fatalf("update exit = %d, want 75 (stderr: %s)", code, errOut)
+	}
+	// The reason, not the path: the board's absolute lock path is the server's
+	// and stays there. What the caller needs is that this is worth retrying,
+	// which is what exit 75 above encodes.
+	if !strings.Contains(errOut, "locked") {
+		t.Fatalf("stderr %q does not say the record was locked", errOut)
+	}
+	if strings.Contains(errOut, created.FilePath) {
+		t.Fatalf("stderr %q leaks the board's filesystem path", errOut)
 	}
 }
 
@@ -302,169 +438,13 @@ func TestCLIWorksWithV2ObservabilityConfig(t *testing.T) {
 	}
 }
 
-func TestCLIGetAndUpdateFallbackWhenConfigLoadFails(t *testing.T) {
-	dir := setupStore(t)
-	t.Setenv("SYBRA_TASKS_DIR", "")
-	if err := os.WriteFile(config.ConfigPath(), []byte("future_namespace:\n  enabled: true\n"), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	store, err := task.NewStore(filepath.Join(dir, "tasks"))
-	if err != nil {
-		t.Fatalf("task.NewStore: %v", err)
-	}
-	manager := task.NewManager(store, nil)
-	created, err := manager.Create("fallback task", "body", "headless")
-	if err != nil {
-		t.Fatalf("seed task: %v", err)
-	}
-
-	code, stdout, stderr := runCLIWithStderr(t, "--json", "get", "--compact", created.ID)
-	if code != 0 {
-		t.Fatalf("get exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
-	}
-	if !strings.Contains(stderr, "falling back to direct task store") {
-		t.Fatalf("stderr missing fallback warning:\n%s", stderr)
-	}
-	var got task.Task
-	mustUnmarshal(t, stdout, &got)
-	if got.ID != created.ID {
-		t.Fatalf("get id = %q, want %q", got.ID, created.ID)
-	}
-
-	code, stdout, stderr = runCLIWithStderr(t, "--json", "update", created.ID, "--status", "in-progress", "--status-reason", "fallback path")
-	if code != 0 {
-		t.Fatalf("update exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
-	}
-	if !strings.Contains(stderr, "falling back to direct task store") {
-		t.Fatalf("stderr missing fallback warning on update:\n%s", stderr)
-	}
-	mustUnmarshal(t, stdout, &got)
-	if got.Status != task.StatusInProgress {
-		t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
-	}
-	if got.StatusReason != "fallback path" {
-		t.Fatalf("status reason = %q, want fallback path", got.StatusReason)
-	}
-}
-
-func TestCLIFallbackSupportsBroadenedTaskStoreCommands(t *testing.T) {
-	dir := setupStore(t)
-	t.Setenv("SYBRA_TASKS_DIR", "")
-
-	store, err := task.NewStore(filepath.Join(dir, "tasks"))
-	if err != nil {
-		t.Fatalf("task.NewStore: %v", err)
-	}
-	manager := task.NewManager(store, nil)
-	seeded, err := manager.Create("seed task", "body", "headless")
-	if err != nil {
-		t.Fatalf("seed task: %v", err)
-	}
-	toDelete, err := manager.Create("delete me", "body", "headless")
-	if err != nil {
-		t.Fatalf("seed delete task: %v", err)
-	}
-
-	if err := os.WriteFile(config.ConfigPath(), []byte("future_namespace:\n  enabled: true\n"), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	assertFallback := func(t *testing.T, stderr string) {
-		t.Helper()
-		if !strings.Contains(stderr, "falling back to direct task store") {
-			t.Fatalf("stderr missing fallback warning:\n%s", stderr)
-		}
-	}
-
-	code, stdout, stderr := runCLIWithStderr(t, "--json", "list")
-	if code != 0 {
-		t.Fatalf("list exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
-	}
-	assertFallback(t, stderr)
-	var listed []task.Task
-	mustUnmarshal(t, stdout, &listed)
-	if len(listed) != 2 {
-		t.Fatalf("list returned %d tasks, want 2", len(listed))
-	}
-
-	code, stdout, stderr = runCLIWithStderr(t, "--json", "create", "--title", "fallback created")
-	if code != 0 {
-		t.Fatalf("create exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
-	}
-	assertFallback(t, stderr)
-	var created task.Task
-	mustUnmarshal(t, stdout, &created)
-	if created.Title != "fallback created" {
-		t.Fatalf("created title = %q, want %q", created.Title, "fallback created")
-	}
-
-	code, stdout, stderr = runCLIWithStderr(t, "--json", "link-pr", seeded.ID, "42")
-	if code != 0 {
-		t.Fatalf("link-pr exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
-	}
-	assertFallback(t, stderr)
-	var linked task.Task
-	mustUnmarshal(t, stdout, &linked)
-	if linked.PRNumber != 42 {
-		t.Fatalf("pr number = %d, want 42", linked.PRNumber)
-	}
-	if linked.Status != task.StatusInReview {
-		t.Fatalf("status after link-pr = %q, want %q", linked.Status, task.StatusInReview)
-	}
-
-	code, stdout, stderr = runCLIWithStderr(t, "--json", "reopen", seeded.ID)
-	if code != 0 {
-		t.Fatalf("reopen exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
-	}
-	assertFallback(t, stderr)
-	reopened, err := store.Get(seeded.ID)
-	if err != nil {
-		t.Fatalf("get after reopen: %v", err)
-	}
-	if reopened.Status != task.StatusTodo {
-		t.Fatalf("status after reopen = %q, want %q", reopened.Status, task.StatusTodo)
-	}
-
-	code, stdout, stderr = runCLIWithStderr(t, "--json", "board")
-	if code != 0 {
-		t.Fatalf("board exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
-	}
-	assertFallback(t, stderr)
-	var board struct {
-		Counts map[string]int `json:"counts"`
-	}
-	mustUnmarshal(t, stdout, &board)
-	if board.Counts[string(task.StatusTodo)] < 1 {
-		t.Fatalf("board counts missing todo task: %+v", board.Counts)
-	}
-
-	code, stdout, stderr = runCLIWithStderr(t, "--json", "delete", toDelete.ID)
-	if code != 0 {
-		t.Fatalf("delete exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
-	}
-	assertFallback(t, stderr)
-	if _, err := store.Get(toDelete.ID); err == nil {
-		t.Fatalf("task %s still present after delete", toDelete.ID)
-	}
-
-	code, stdout, stderr = runCLIWithStderr(t, "--json", "trash", "list")
-	if code != 0 {
-		t.Fatalf("trash list exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
-	}
-	assertFallback(t, stderr)
-	var trashed []task.TrashEntry
-	mustUnmarshal(t, stdout, &trashed)
-	found := false
-	for _, entry := range trashed {
-		if entry.ID == toDelete.ID {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("trash list missing deleted task %s: %+v", toDelete.ID, trashed)
-	}
-}
+// The pair of tests that used to live here required an unparseable config to
+// fall back to the board's files for get/update and the broader task-store
+// commands. That path is gone — a config the CLI cannot read says nothing about
+// whether the board is up, and opening its files behind the owning instance is
+// the failure this issue removed. The replacement lives in
+// unknown_key_test.go's TestUnparseableConfigFailsRatherThanEditingFiles, which
+// pins the refusal and that no fallback warning is printed.
 
 func TestDelete(t *testing.T) {
 	setupStore(t)
@@ -810,7 +790,7 @@ func TestConfigDoctorJSONReturnsNonZeroForErrors(t *testing.T) {
 	cfg.Agent.Provider = "nope"
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code == 0 {
 		t.Fatalf("expected non-zero exit for JSON doctor errors, output:\n%s", out)
@@ -833,7 +813,7 @@ func TestConfigDoctorJSONReportsGitHubPollingStates(t *testing.T) {
 	cfg.GitHub.Polling.AssignedPRs.Enabled = false
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code != 0 {
 		t.Fatalf("expected status-only doctor to stay non-fatal, got %d:\n%s", code, out)
@@ -854,6 +834,59 @@ func TestConfigDoctorJSONReportsGitHubPollingStates(t *testing.T) {
 	}
 }
 
+func TestConfigDoctorJSONWarnsOnHarnessEvolutionWithoutSelfMonitor(t *testing.T) {
+	setupStore(t)
+
+	// The shipped defaults are exactly this combination (harness_evolution
+	// defaults enabled, self_monitor defaults disabled pending opt-in), so
+	// this must warn rather than error — an error here would fail `config
+	// doctor` on every fresh install.
+	cfg := config.DefaultConfig()
+	if !cfg.HarnessEvolve.Enabled || cfg.SelfMonitor.Enabled {
+		t.Fatalf("test assumes default HarnessEvolve.Enabled=true, SelfMonitor.Enabled=false; got %+v / %+v",
+			cfg.HarnessEvolve, cfg.SelfMonitor)
+	}
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true, false, nil)
+	})
+	if code != 0 {
+		t.Fatalf("expected the warning to stay non-fatal, got %d:\n%s", code, out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	if !slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+		return f.Severity == "warning" &&
+			strings.Contains(f.Message, "harness_evolution.enabled=true") &&
+			strings.Contains(f.Message, "self_monitor.enabled=false")
+	}) {
+		t.Fatalf("expected a harness_evolution/self_monitor dependency warning in doctor report: %+v", report.Findings)
+	}
+}
+
+func TestConfigDoctorJSONNoWarningWhenSelfMonitorEnabled(t *testing.T) {
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	cfg.SelfMonitor.Enabled = true
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true, false, nil)
+	})
+	if code != 0 {
+		t.Fatalf("expected doctor to stay non-fatal, got %d:\n%s", code, out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	if slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+		return strings.Contains(f.Message, "self_monitor.enabled=false")
+	}) {
+		t.Fatalf("did not expect the dependency warning once self_monitor is enabled: %+v", report.Findings)
+	}
+}
+
 func TestConfigDoctorJSONReportsSandboxModeErrors(t *testing.T) {
 	setupStore(t)
 
@@ -861,7 +894,7 @@ func TestConfigDoctorJSONReportsSandboxModeErrors(t *testing.T) {
 	cfg.Agent.SandboxMode = "definitely-not-valid"
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code == 0 {
 		t.Fatalf("expected non-zero exit for JSON doctor errors, output:\n%s", out)
@@ -887,7 +920,7 @@ func TestConfigDoctorJSONReportsIncompleteK8sSecretEnv(t *testing.T) {
 	}
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code == 0 {
 		t.Fatalf("expected non-zero exit for an incomplete secret_env entry, output:\n%s", out)
@@ -913,7 +946,7 @@ func TestConfigDoctorJSONReportsAllMissingK8sSecretEnvFields(t *testing.T) {
 	}
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code == 0 {
 		t.Fatalf("expected non-zero exit for an empty secret_env entry, output:\n%s", out)
@@ -943,7 +976,7 @@ func TestConfigDoctorJSONAcceptsCompleteK8sSecretEnv(t *testing.T) {
 	}
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code != 0 {
 		t.Fatalf("expected a complete secret_env entry to stay non-fatal, got %d:\n%s", code, out)
@@ -974,7 +1007,7 @@ func TestConfigDoctorJSONValidatesK8sSecretEnvRegardlessOfMode(t *testing.T) {
 	}
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code == 0 {
 		t.Fatalf("expected mode: fake to still validate secret_env, output:\n%s", out)
@@ -990,7 +1023,7 @@ func TestConfigDoctorJSONWarnsOnLowTTLWithDifferingFailedTTL(t *testing.T) {
 	cfg.Agent.K8sJobs.FailedTTL = 86400
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code != 0 {
 		t.Fatalf("expected a warning-only doctor to exit zero, got %d:\n%s", code, out)
@@ -1014,7 +1047,7 @@ func TestConfigDoctorJSONAcceptsTypicalTTLDefaults(t *testing.T) {
 	cfg.Agent.K8sJobs.FailedTTL = 86400
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code != 0 {
 		t.Fatalf("expected typical TTL defaults to stay clean, got %d:\n%s", code, out)
@@ -1040,7 +1073,7 @@ func TestConfigDoctorJSONReportsWhitespaceOnlyK8sSecretEnvFields(t *testing.T) {
 	}
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code == 0 {
 		t.Fatalf("expected a whitespace-only secret_key to be treated as missing, output:\n%s", out)
@@ -1062,7 +1095,7 @@ func TestConfigDoctorJSONAcceptsSupportedEnforceHosts(t *testing.T) {
 	cfg.Agent.SandboxMode = "enforce"
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code != 0 {
 		t.Fatalf("expected supported-host enforce config to stay non-fatal, got %d:\n%s", code, out)
@@ -1089,7 +1122,7 @@ func TestConfigDoctorJSONReportsConfigPermissionWarnings(t *testing.T) {
 
 	cfg := config.DefaultConfig()
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code != 0 {
 		t.Fatalf("expected warnings-only doctor to exit zero, got %d:\n%s", code, out)
@@ -1119,7 +1152,7 @@ func TestConfigDoctorJSONAcceptsStricterConfigPermissions(t *testing.T) {
 
 	cfg := config.DefaultConfig()
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code != 0 {
 		t.Fatalf("expected warnings-only doctor to exit zero, got %d:\n%s", code, out)
@@ -1155,7 +1188,7 @@ func TestConfigDoctorJSONReportsRoutingSummaryAndWarnings(t *testing.T) {
 	}}
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code != 0 {
 		t.Fatalf("expected warnings-only routing doctor to exit zero, got %d:\n%s", code, out)
@@ -1203,7 +1236,7 @@ func TestConfigDoctorWarnsOnNonRemappableConcreteFailoverModel(t *testing.T) {
 	cfg.Monitor.Model = "claude-fable-5"
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code != 0 {
 		t.Fatalf("expected warnings-only doctor to exit zero, got %d:\n%s", code, out)
@@ -1223,12 +1256,161 @@ func TestConfigDoctorWarnsOnNonRemappableConcreteFailoverModel(t *testing.T) {
 	}
 }
 
+func TestConfigDoctorJSONWarnsOnABTestingWithoutEvaluation(t *testing.T) {
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	enabled := true
+	cfg.ABTesting.Enabled = &enabled
+	cfg.Evaluation.Enabled = false
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true, false, nil)
+	})
+	if code != 0 {
+		t.Fatalf("expected warnings-only doctor to exit zero, got %d:\n%s", code, out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	want := "ab_testing.enabled is true but evaluation.enabled is false — experiment traffic is being split with no evaluation signal to know whether any variant is winning"
+	if !slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+		return f.Severity == "warning" && f.Message == want
+	}) {
+		t.Fatalf("expected warning %q in %+v", want, report.Findings)
+	}
+}
+
+func TestConfigDoctorJSONWarnsOnRoutingWithoutEvaluation(t *testing.T) {
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	cfg.Routing.Enabled = true
+	cfg.Evaluation.Enabled = false
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true, false, nil)
+	})
+	if code != 0 {
+		t.Fatalf("expected warnings-only doctor to exit zero, got %d:\n%s", code, out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	want := "routing.enabled is true but evaluation.enabled is false — adaptive weight promotion has no trustworthy evaluation signal and will stay in shadow/baseline-only mode"
+	if !slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+		return f.Severity == "warning" && f.Message == want
+	}) {
+		t.Fatalf("expected warning %q in %+v", want, report.Findings)
+	}
+}
+
+func TestConfigDoctorJSONNoExperimentEvaluationWarningWhenEvaluationEnabled(t *testing.T) {
+	home := setupStore(t)
+	writeEvaluationReport(t, home, evaluation.Report{
+		SchemaVersion: evaluation.ScorecardSchemaVersion,
+		GeneratedAt:   time.Now(),
+	})
+
+	cfg := config.DefaultConfig()
+	enabled := true
+	cfg.ABTesting.Enabled = &enabled
+	cfg.Routing.Enabled = true
+	cfg.Evaluation.Enabled = true
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true, false, nil)
+	})
+	if code != 0 {
+		t.Fatalf("expected warnings-only doctor to exit zero, got %d:\n%s", code, out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	if slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+		return strings.Contains(f.Message, "evaluation signal")
+	}) {
+		t.Fatalf("did not expect an evaluation-signal warning with a fresh, schema-matched report: %+v", report.Findings)
+	}
+}
+
+func TestConfigDoctorJSONWarnsOnStaleEvaluationReport(t *testing.T) {
+	home := setupStore(t)
+	writeEvaluationReport(t, home, evaluation.Report{
+		SchemaVersion: evaluation.ScorecardSchemaVersion,
+		GeneratedAt:   time.Now().Add(-30 * 24 * time.Hour),
+	})
+
+	cfg := config.DefaultConfig()
+	enabled := true
+	cfg.ABTesting.Enabled = &enabled
+	cfg.Routing.Enabled = true
+	cfg.Evaluation.Enabled = true
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true, false, nil)
+	})
+	if code != 0 {
+		t.Fatalf("expected warnings-only doctor to exit zero, got %d:\n%s", code, out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	for _, wantSubstr := range []string{
+		"ab_testing.enabled is true and evaluation.enabled is true, but the persisted evaluation report",
+		"routing.enabled is true and evaluation.enabled is true, but the persisted evaluation report",
+	} {
+		if !slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+			return f.Severity == "warning" && strings.Contains(f.Message, wantSubstr) && strings.Contains(f.Message, "is not trustworthy")
+		}) {
+			t.Fatalf("expected stale-report warning containing %q in %+v", wantSubstr, report.Findings)
+		}
+	}
+}
+
+func TestConfigDoctorJSONWarnsOnMissingEvaluationReport(t *testing.T) {
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	enabled := true
+	cfg.ABTesting.Enabled = &enabled
+	cfg.Routing.Enabled = true
+	cfg.Evaluation.Enabled = true
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true, false, nil)
+	})
+	if code != 0 {
+		t.Fatalf("expected warnings-only doctor to exit zero, got %d:\n%s", code, out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	if !slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+		return f.Severity == "warning" && strings.Contains(f.Message, "no evaluation report has been generated yet")
+	}) {
+		t.Fatalf("expected missing-report warning in %+v", report.Findings)
+	}
+}
+
+func writeEvaluationReport(t *testing.T, home string, rep evaluation.Report) {
+	t.Helper()
+	data, err := json.Marshal(rep)
+	if err != nil {
+		t.Fatalf("marshal evaluation report: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "evaluation-report.json"), data, 0o600); err != nil {
+		t.Fatalf("write evaluation report: %v", err)
+	}
+}
+
 func TestConfigDumpRedactsTaggedSecrets(t *testing.T) {
 	setupStore(t)
 
 	cfg := config.DefaultConfig()
 	cfg.Server.AuthToken = "server-secret"
-	cfg.Webhook.Secret = "webhook-secret"
+	cfg.GitHub.Webhook.Secret = "github-webhook-secret"
+	cfg.GitHub.Webhook.TaskSecret = "webhook-secret"
 
 	code, out := captureStdout(t, func() int {
 		return cmdConfigDump(cfg, false)
@@ -1236,11 +1418,12 @@ func TestConfigDumpRedactsTaggedSecrets(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("config dump exit %d:\n%s", code, out)
 	}
-	if strings.Contains(out, "server-secret") || strings.Contains(out, "webhook-secret") {
+	if strings.Contains(out, "server-secret") || strings.Contains(out, "webhook-secret") ||
+		strings.Contains(out, "github-webhook-secret") {
 		t.Fatalf("config dump leaked secret:\n%s", out)
 	}
-	if strings.Count(out, config.RedactedPlaceholder) != 2 {
-		t.Fatalf("config dump redaction count = %d, want 2:\n%s", strings.Count(out, config.RedactedPlaceholder), out)
+	if strings.Count(out, config.RedactedPlaceholder) != 3 {
+		t.Fatalf("config dump redaction count = %d, want 3:\n%s", strings.Count(out, config.RedactedPlaceholder), out)
 	}
 }
 
@@ -1623,7 +1806,7 @@ func TestUpdateMultipleFields(t *testing.T) {
 		"--title", "new title",
 		"--status", "done",
 		"--body", "new body",
-		"--mode", "interactive",
+		"--mode", "headless",
 		"--tags", "x,y,z")
 	if code != 0 {
 		t.Fatalf("update exit %d: %s", code, out)
@@ -1640,8 +1823,8 @@ func TestUpdateMultipleFields(t *testing.T) {
 	if updated.Body != "new body" {
 		t.Errorf("Body = %q, want %q", updated.Body, "new body")
 	}
-	if updated.AgentMode != "interactive" {
-		t.Errorf("AgentMode = %q, want %q", updated.AgentMode, "interactive")
+	if updated.AgentMode != "headless" {
+		t.Errorf("AgentMode = %q, want %q", updated.AgentMode, "headless")
 	}
 	if len(updated.Tags) != 3 {
 		t.Fatalf("Tags len = %d, want 3", len(updated.Tags))
@@ -1805,14 +1988,22 @@ func TestListBothFilters(t *testing.T) {
 
 func TestCreateWithMode(t *testing.T) {
 	setupStore(t)
-	code, out := runCLI(t, "--json", "create", "--title", "interactive task", "--mode", "interactive")
+	code, out := runCLI(t, "--json", "create", "--title", "headless task", "--mode", "headless")
 	if code != 0 {
 		t.Fatalf("exit %d", code)
 	}
 	var created task.Task
 	mustUnmarshal(t, out, &created)
-	if created.AgentMode != "interactive" {
-		t.Errorf("AgentMode = %q, want %q", created.AgentMode, "interactive")
+	if created.AgentMode != "headless" {
+		t.Errorf("AgentMode = %q, want %q", created.AgentMode, "headless")
+	}
+}
+
+func TestCreateRejectsInteractiveMode(t *testing.T) {
+	setupStore(t)
+	code, _ := runCLI(t, "--json", "create", "--title", "removed mode task", "--mode", "interactive")
+	if code == 0 {
+		t.Fatal("expected non-zero exit creating a task with the removed interactive mode")
 	}
 }
 
@@ -2803,5 +2994,302 @@ func TestHookCmd_FailsOpenOnBadConfig(t *testing.T) {
 	}
 	if out != "" {
 		t.Errorf("hook must produce no stdout; got %q", out)
+	}
+}
+
+// The CLI must reject a config the server would reject, rather than tolerating
+// it. Its normal path falls back to a direct task store on a load failure, so
+// a key the server understands and the CLI does not is a per-invocation
+// warning instead of a failure — that is how a deployed CLI warned "unknown
+// config key agent.sandbox_read_mode" on every call while the server ran fine.
+// The deploy preflight runs this against the live config for exactly that
+// reason.
+func TestRunCheckConfig(t *testing.T) {
+	t.Run("valid config accepted", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("SYBRA_HOME", home)
+		if err := os.WriteFile(filepath.Join(home, "config.yaml"), []byte("schema_version: 2\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if code := runCheckConfig(); code != 0 {
+			t.Fatalf("runCheckConfig() = %d, want 0 for a valid config", code)
+		}
+	})
+
+	t.Run("unknown key rejected", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("SYBRA_HOME", home)
+		configPath := filepath.Join(home, "config.yaml")
+		if err := os.WriteFile(configPath, []byte("this_key_does_not_exist: true\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if code := runCheckConfig(); code != 1 {
+			t.Fatalf("runCheckConfig() = %d, want 1 for an unknown config key", code)
+		}
+		// LoadNoPersist, not Load: a preflight must never rewrite the live
+		// config.yaml it is validating.
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(data) != "this_key_does_not_exist: true\n" {
+			t.Fatalf("runCheckConfig must not rewrite an invalid config.yaml, got %q", data)
+		}
+	})
+
+	// Assert the SUCCESS case through run(): an unrecognised flag also exits
+	// 1 as an unknown command, so asserting the failure path here would pass
+	// whether or not the flag is wired at all.
+	t.Run("flag is routed by run", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("SYBRA_HOME", home)
+		if err := os.WriteFile(filepath.Join(home, "config.yaml"), []byte("schema_version: 2\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for _, flag := range []string{"-check-config", "--check-config"} {
+			if code := run([]string{flag}); code != 0 {
+				t.Errorf("run(%s) = %d, want 0 — the flag is not routed", flag, code)
+			}
+		}
+	})
+
+	// Position must not matter: the CLI already strips --json and --home
+	// wherever they appear, and a caller that puts one first would otherwise
+	// have -check-config treated as a subcommand and skip the preflight
+	// entirely.
+	t.Run("flag is routed after other global flags", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("SYBRA_HOME", home)
+		if err := os.WriteFile(filepath.Join(home, "config.yaml"), []byte("schema_version: 2\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if code := run([]string{"--json", "-check-config"}); code != 0 {
+			t.Errorf("run(--json -check-config) = %d, want 0", code)
+		}
+	})
+
+	// --home must select the home the preflight validates, not be ignored.
+	t.Run("home override targets the validated config", func(t *testing.T) {
+		good := t.TempDir()
+		bad := t.TempDir()
+		t.Setenv("SYBRA_HOME", good)
+		if err := os.WriteFile(filepath.Join(good, "config.yaml"), []byte("schema_version: 2\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(bad, "config.yaml"), []byte("this_key_does_not_exist: true\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if code := run([]string{"--home", bad, "-check-config"}); code != 1 {
+			t.Errorf("run(--home <invalid> -check-config) = %d, want 1 — the override was ignored", code)
+		}
+	})
+}
+
+// The whole point of the capacity section is that an operator diagnosing a
+// stalled board should not have to SSH to the host and grep the app log for
+// provider.health.flip. Live health lives in the server process, so an
+// unreachable server must say "unknown" rather than report a fabricated zero.
+func TestBuildCapacityReport_NoServerIsUnknownNotEmpty(t *testing.T) {
+	t.Parallel()
+	cfg := config.DefaultConfig()
+	cfg.Providers.Claude.Enabled = true
+	cfg.Providers.Codex.Enabled = true
+	cfg.Providers.Copilot.Enabled = false
+	cfg.Providers.OpenCode.Enabled = false
+
+	report := buildCapacityReport(cfg, nil, time.Now())
+
+	if report.Available {
+		t.Error("capacity reported as known without a reachable server")
+	}
+	if report.Unavailable == "" {
+		t.Error("no reason given for unknown capacity")
+	}
+	if !slices.Equal(report.Enabled, []string{"claude", "codex"}) {
+		t.Errorf("enabled = %v, want the configured chain in preference order", report.Enabled)
+	}
+	if report.HealthyLegs != 0 {
+		t.Errorf("HealthyLegs = %d, want 0 when nothing was probed", report.HealthyLegs)
+	}
+}
+
+func TestAddCapacityFindings(t *testing.T) {
+	t.Parallel()
+	reset := time.Date(2026, 8, 8, 9, 41, 0, 0, time.UTC)
+
+	cases := []struct {
+		name         string
+		report       doctorCapacityReport
+		wantSeverity string
+		wantContains string
+	}{
+		{
+			name:         "single enabled provider has no failover",
+			report:       doctorCapacityReport{Enabled: []string{"claude"}, Available: true, HealthyLegs: 1},
+			wantSeverity: "warning",
+			wantContains: "no failover chain",
+		},
+		{
+			name: "every provider unhealthy is an error",
+			report: doctorCapacityReport{
+				Enabled: []string{"claude", "codex"}, Available: true, HealthyLegs: 0,
+				Providers: []doctorCapacityStatus{{Provider: "codex", ResetsAt: &reset}},
+			},
+			wantSeverity: "error",
+			wantContains: "nothing can dispatch",
+		},
+		{
+			name:         "one healthy leg is a warning",
+			report:       doctorCapacityReport{Enabled: []string{"claude", "codex"}, Available: true, HealthyLegs: 1},
+			wantSeverity: "warning",
+			wantContains: "only 1 healthy provider",
+		},
+		{
+			name:   "two healthy legs are silent",
+			report: doctorCapacityReport{Enabled: []string{"claude", "codex"}, Available: true, HealthyLegs: 2},
+		},
+		{
+			name:   "unknown capacity raises no health finding",
+			report: doctorCapacityReport{Enabled: []string{"claude", "codex"}},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var got []configDoctorFinding
+			add := func(severity, format string, a ...any) {
+				got = append(got, configDoctorFinding{Severity: severity, Message: fmt.Sprintf(format, a...)})
+			}
+			report := tc.report
+			addCapacityFindings(&report, add)
+
+			if tc.wantSeverity == "" {
+				if len(got) != 0 {
+					t.Fatalf("expected no findings, got %+v", got)
+				}
+				return
+			}
+			if !slices.ContainsFunc(got, func(f configDoctorFinding) bool {
+				return f.Severity == tc.wantSeverity && strings.Contains(f.Message, tc.wantContains)
+			}) {
+				t.Fatalf("no %s finding containing %q: %+v", tc.wantSeverity, tc.wantContains, got)
+			}
+		})
+	}
+}
+
+// config doctor is the surface an operator reaches for, so the section has to
+// be in its output, not merely computed.
+func TestConfigDoctorReportsCapacity(t *testing.T) {
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	cfg.Providers.Claude.Enabled = true
+	cfg.Providers.Codex.Enabled = false
+	cfg.Providers.Copilot.Enabled = false
+	cfg.Providers.OpenCode.Enabled = false
+
+	_, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true, false, nil)
+	})
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	if report.Capacity == nil {
+		t.Fatal("doctor report carries no capacity section")
+	}
+	if !slices.Equal(report.Capacity.Enabled, []string{"claude"}) {
+		t.Errorf("capacity.enabled = %v, want [claude]", report.Capacity.Enabled)
+	}
+	if !slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+		return strings.Contains(f.Message, "no failover chain")
+	}) {
+		t.Errorf("single-provider chain raised no finding: %+v", report.Findings)
+	}
+
+	_, human := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, false, false, nil)
+	})
+	if !strings.Contains(human, "provider capacity enabled: claude") {
+		t.Errorf("human output omits the capacity section:\n%s", human)
+	}
+}
+
+// GetProviderHealth returns an empty slice when the health-check loop is
+// disabled on the server. Reading that as "nothing is healthy" reports an
+// outage that is not happening, which is worse than reporting unknown.
+func TestBuildCapacityReport_EmptyHealthIsUnknown(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg := config.DefaultConfig()
+	cfg.Providers.Claude.Enabled = true
+	cfg.Providers.Codex.Enabled = true
+	api := &apiClient{baseURL: srv.URL, token: "t", http: srv.Client()}
+
+	report := buildCapacityReport(cfg, api, time.Now())
+
+	if report.Available {
+		t.Error("empty health response reported as known capacity")
+	}
+	if !strings.Contains(report.Unavailable, "disabled") {
+		t.Errorf("unavailable reason = %q, want it to name the disabled health check", report.Unavailable)
+	}
+
+	var findings []configDoctorFinding
+	addCapacityFindings(report, func(severity, format string, a ...any) {
+		findings = append(findings, configDoctorFinding{Severity: severity, Message: fmt.Sprintf(format, a...)})
+	})
+	if slices.ContainsFunc(findings, func(f configDoctorFinding) bool { return f.Severity == "error" }) {
+		t.Errorf("disabled health checking raised an outage error: %+v", findings)
+	}
+}
+
+// TestIsRetryableCLIError_CoversACallDeadline pins that a board too contended
+// to answer inside the call deadline is retryable like the 503 it is.
+//
+// Exit 1 tells an agent the work failed; exit 75 tells it to try again. Under
+// real board contention this path fired dozens of times in a row, and the
+// requests frequently committed server-side anyway — so the plain failure sent
+// agents to abandon work that had already partly happened.
+//
+// It asserts the predicate only, never fatal(). fatal writes the message to
+// the process-wide os.Stderr, which races captureStderr in whichever parallel
+// test happens to be running beside it — the race detector caught exactly that
+// pairing with TestUmbrella_JSONStdoutStaysClean. That fatal maps a retryable
+// error to 75 is pinned end-to-end, through a captured stderr, by the
+// lock-timeout case above.
+func TestIsRetryableCLIError_CoversACallDeadline(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "call deadline", err: context.DeadlineExceeded, want: true},
+		{name: "wrapped call deadline", err: fmt.Errorf("post update: %w", context.DeadlineExceeded), want: true},
+		{name: "socket deadline", err: os.ErrDeadlineExceeded, want: true},
+		{name: "board busy", err: &apiError{Status: http.StatusServiceUnavailable}, want: true},
+		{name: "cancelled by the caller", err: context.Canceled, want: false},
+		{name: "ordinary failure", err: fmt.Errorf("task not found"), want: false},
+		{name: "no error", err: nil, want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := isRetryableCLIError(tc.err); got != tc.want {
+				t.Errorf("isRetryableCLIError(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
 	}
 }

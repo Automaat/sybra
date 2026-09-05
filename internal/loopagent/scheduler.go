@@ -28,13 +28,15 @@ type EmitFunc func(event string, data any)
 // called from the service layer after every CRUD mutation and once at boot.
 type Scheduler struct {
 	parent  context.Context
-	store   *Store
+	store   Repository
 	runner  AgentRunner
 	logger  *slog.Logger
 	emit    EmitFunc
 	homeDir string
 
 	mu          sync.Mutex
+	runMu       sync.Mutex // serializes RunNow admission with Stop
+	stopped     bool
 	fetchers    map[string]*runningFetcher
 	agentToLoop map[string]string
 	wg          sync.WaitGroup
@@ -49,7 +51,7 @@ type runningFetcher struct {
 // NewScheduler builds a Scheduler. homeDir is the cwd handed to spawned
 // agents — must be a directory whose .claude/skills/ holds the slash
 // commands the loop prompts reference.
-func NewScheduler(parent context.Context, store *Store, runner AgentRunner, logger *slog.Logger, emit EmitFunc, homeDir string) *Scheduler {
+func NewScheduler(parent context.Context, store Repository, runner AgentRunner, logger *slog.Logger, emit EmitFunc, homeDir string) *Scheduler {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -72,7 +74,7 @@ func (s *Scheduler) Sync() {
 }
 
 func (s *Scheduler) SyncContext(ctx context.Context) {
-	all, err := s.store.List()
+	all, err := s.store.List(ctx)
 	if err != nil {
 		s.logger.Error("loopagent.sync.list", "err", err)
 		return
@@ -87,6 +89,9 @@ func (s *Scheduler) SyncContext(ctx context.Context) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.stopped {
+		return
+	}
 
 	// Cancel fetchers whose record is gone, disabled, or has changed
 	// timing fields. Restart-on-change ensures interval edits take effect.
@@ -157,7 +162,7 @@ func (s *Scheduler) tick(ctx context.Context, loopID string) time.Duration {
 	if ctx.Err() != nil {
 		return 0
 	}
-	la, err := s.store.Get(loopID)
+	la, err := s.store.Get(ctx, loopID)
 	if err != nil {
 		s.logger.Error("loopagent.tick.get", "id", loopID, "err", err)
 		return time.Minute
@@ -166,7 +171,7 @@ func (s *Scheduler) tick(ctx context.Context, loopID string) time.Duration {
 		// Sync should have cancelled us already, but be defensive.
 		return time.Duration(la.IntervalSec) * time.Second
 	}
-	if _, err := s.fire(la); err != nil {
+	if _, err := s.fire(ctx, la); err != nil {
 		if errors.Is(err, provider.ErrProviderUnhealthy) {
 			s.logger.Info("loopagent.tick.skip", "id", loopID, "reason", "provider_unhealthy", "err", err)
 		} else {
@@ -178,17 +183,16 @@ func (s *Scheduler) tick(ctx context.Context, loopID string) time.Duration {
 
 // fire spawns one headless agent and records LastRun{At,ID}. The cost is
 // filled in later by OnAgentComplete when the agent finishes.
-func (s *Scheduler) fire(la LoopAgent) (string, error) {
+func (s *Scheduler) fire(ctx context.Context, la LoopAgent) (string, error) {
 	cfg := agent.RunConfig{
-		Name:                   la.AgentName(),
-		Role:                   agent.RoleLoop,
-		Mode:                   "headless",
-		Prompt:                 la.Prompt,
-		Dir:                    s.homeDir,
-		Provider:               la.Provider,
-		Model:                  la.Model,
-		AllowedTools:           la.AllowedTools,
-		IgnoreConcurrencyLimit: true,
+		Name:         la.AgentName(),
+		Role:         agent.RoleLoop,
+		Mode:         "headless",
+		Prompt:       la.Prompt,
+		Dir:          s.homeDir,
+		Provider:     la.Provider,
+		Model:        la.Model,
+		AllowedTools: la.AllowedTools,
 	}
 	ag, err := s.runner.Run(cfg)
 	if err != nil {
@@ -201,7 +205,7 @@ func (s *Scheduler) fire(la LoopAgent) (string, error) {
 
 	la.LastRunAt = time.Now().UTC()
 	la.LastRunID = ag.ID
-	if _, err := s.persistRun(la.ID, func(rec *LoopAgent) {
+	if _, err := s.persistRun(ctx, la.ID, func(rec *LoopAgent) {
 		rec.LastRunAt = la.LastRunAt
 		rec.LastRunID = la.LastRunID
 	}); err != nil {
@@ -219,11 +223,19 @@ func (s *Scheduler) fire(la LoopAgent) (string, error) {
 // next tick still happens at its natural time — RunNow does not reset the
 // fetcher's clock.
 func (s *Scheduler) RunNow(id string) (string, error) {
-	la, err := s.store.Get(id)
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	s.mu.Lock()
+	stopped := s.stopped
+	s.mu.Unlock()
+	if stopped {
+		return "", errors.New("loop agent scheduler stopped")
+	}
+	la, err := s.store.Get(s.parent, id)
 	if err != nil {
 		return "", err
 	}
-	return s.fire(la)
+	return s.fire(s.parent, la)
 }
 
 // OnAgentComplete is invoked from the app's onAgentComplete hook for every
@@ -243,7 +255,7 @@ func (s *Scheduler) OnAgentComplete(ag *agent.Agent) {
 	}
 
 	cost := ag.GetCostUSD()
-	if _, err := s.persistRun(loopID, func(rec *LoopAgent) {
+	if _, err := s.persistRun(s.parent, loopID, func(rec *LoopAgent) {
 		rec.LastRunCost = cost
 	}); err != nil {
 		s.logger.Error("loopagent.complete.persist", "loop_id", loopID, "agent_id", ag.ID, "err", err)
@@ -256,14 +268,21 @@ func (s *Scheduler) OnAgentComplete(ag *agent.Agent) {
 
 // persistRun applies a mutator to a record and writes it back through the
 // store's locked run-metadata path, so it participates in the same
-// cross-process flock as Update instead of racing it.
-func (s *Scheduler) persistRun(id string, mutate func(*LoopAgent)) (LoopAgent, error) {
-	return s.store.UpdateRunMetadata(id, mutate)
+// cross-process serialization as Update instead of racing it.
+func (s *Scheduler) persistRun(ctx context.Context, id string, mutate func(*LoopAgent)) (LoopAgent, error) {
+	return s.store.UpdateRunMetadata(ctx, id, mutate)
 }
 
 // Stop cancels every running fetcher and waits for the goroutines to drain.
 func (s *Scheduler) Stop() {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
 	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		return
+	}
+	s.stopped = true
 	for id, rf := range s.fetchers {
 		rf.cancel()
 		delete(s.fetchers, id)

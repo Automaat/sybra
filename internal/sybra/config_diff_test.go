@@ -128,6 +128,53 @@ func TestDiffConfig_BrowserOmittedAndExplicitFalseMatch(t *testing.T) {
 	}
 }
 
+// TestDiffConfig_EvidenceChildOverridesAgentParent locks in that flipping the
+// restart-policy child agent.evidence does NOT also fire the hot agent parent:
+// the workflow engine caches agent.evidence once at init, so a hot apply of it
+// would silently diverge the live engine from the stored/UI value. The change
+// must land as restart-required only.
+func TestDiffConfig_EvidenceChildOverridesAgentParent(t *testing.T) {
+	t.Parallel()
+	old := config.DefaultConfig()
+	next := *old
+	next.Agent.Evidence.Enabled = !old.Agent.Evidence.Enabled
+
+	got := diffConfig(*old, next)
+
+	if !slices.Contains(got.RestartRequired, "agent.evidence") {
+		t.Errorf("expected agent.evidence in restartRequired, got %+v", got)
+	}
+	if slices.Contains(got.Applied, "agent") {
+		t.Errorf("agent must not be applied when only the restart-policy child changed, got %+v", got)
+	}
+	if slices.Contains(got.appliedLeaves, "agent.evidence.enabled") {
+		t.Errorf("restart-policy leaf must not be scheduled for hot copy, got %+v", got.appliedLeaves)
+	}
+}
+
+// TestDiffConfig_AgentHotChangeExcludesEvidenceLeaf ensures a genuine hot agent
+// change still applies, but never carries the restart-policy evidence child
+// along in the hot copy set even when both change at once.
+func TestDiffConfig_AgentHotChangeExcludesEvidenceLeaf(t *testing.T) {
+	t.Parallel()
+	old := config.DefaultConfig()
+	next := *old
+	next.Agent.MaxConcurrent = old.Agent.MaxConcurrent + 4
+	next.Agent.Evidence.Enabled = !old.Agent.Evidence.Enabled
+
+	got := diffConfig(*old, next)
+
+	if !slices.Contains(got.Applied, "agent") {
+		t.Errorf("expected agent in applied, got %+v", got)
+	}
+	if !slices.Contains(got.RestartRequired, "agent.evidence") {
+		t.Errorf("expected agent.evidence in restartRequired, got %+v", got)
+	}
+	if slices.Contains(got.appliedLeaves, "agent.evidence.enabled") {
+		t.Errorf("evidence leaf must be excluded from hot copy, got %+v", got.appliedLeaves)
+	}
+}
+
 func TestConfigRegistryCoversEveryConfigLeaf(t *testing.T) {
 	t.Parallel()
 

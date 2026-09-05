@@ -1,19 +1,41 @@
 package sybra
 
-import "github.com/Automaat/sybra/internal/config"
+import (
+	"fmt"
+
+	"github.com/Automaat/sybra/internal/config"
+)
 
 // ReloadFromDisk re-reads ~/.sybra/config.yaml, validates it, diffs against
 // the persisted intent snapshot, and applies only hot-reloadable changes.
-// Restart-required values stay pending until process restart. Never writes to disk.
+// Restart-required values stay pending until process restart. If an external
+// writer leaves config.yaml unreadable or invalid, restore the last-known-good
+// file so the process does not stay wedged on a broken operator config.
 func (s *ConfigService) ReloadFromDisk() (ConfigMutationResult, error) {
 	next, err := config.LoadNoPersist()
 	if err != nil {
-		return ConfigMutationResult{}, err
+		result := ConfigMutationResult{}
+		if restoreErr := config.RestoreLastKnownGoodConfig(); restoreErr != nil {
+			result.Recovery = &ConfigRecovery{
+				Message: fmt.Sprintf("config reload failed and last-known-good restore failed: %v", restoreErr),
+			}
+			return result, err
+		}
+		result.Recovery = &ConfigRecovery{
+			RestoredLastKnownGood: true,
+			Message:               "restored config.yaml from last-known-good after reload failure",
+		}
+		return result, err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.mutateLocked(next, nil)
+	result, pending, err := func() (ConfigMutationResult, pendingNotify, error) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.mutateLocked(next, nil)
+	}()
+	// Outside the lock: subscribers may read config back through this service.
+	pending.run()
+	return result, err
 }
 
 // configToSettings converts a *config.Config into AppSettings for validation
@@ -38,7 +60,7 @@ func configToSettings(c *config.Config) AppSettings {
 			ABTestingMinSamplesPerVariant: c.ABTesting.MinSamplesPerVariant,
 			Summary:                       config.BuildRoutingSummary(c),
 		},
-		GitHub:       c.GitHub,
+		GitHub:       githubSettingsWithoutSecrets(c.GitHub),
 		Monitor:      c.Monitor,
 		SelfMonitor:  c.SelfMonitor,
 		Triage:       c.Triage,

@@ -8,11 +8,11 @@ import (
 	"slices"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/scrub"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 // RecoveryOutcome classifies how a RecoverDegraded run concluded.
@@ -304,7 +304,7 @@ type umbrellaScanState struct {
 }
 
 func scanUmbrellaState(tasks *task.Manager, umbrellaURL string) (umbrellaScanState, error) {
-	all, err := tasks.List()
+	all, err := tasks.ListBoard()
 	if err != nil {
 		return umbrellaScanState{}, err
 	}
@@ -413,7 +413,7 @@ func applyChildDeps(tasks *task.Manager, plan Plan, byRef map[string]github.Issu
 		if !ok {
 			continue // closed sub-issue, or not covered by this plan — nothing to reconcile
 		}
-		_, err := tasks.UpdateFn(childID, func(cur task.Task) (task.Update, error) {
+		_, err := tasks.UpdateFnBy(childID, "umbrella.recover.apply_child_deps", func(cur task.Task) (task.Update, error) {
 			if !childMutable(cur) {
 				return task.Update{}, errSkipUpdate
 			}
@@ -453,7 +453,7 @@ func hasSingleTag(tags []string, prefix, want string) bool {
 // tracker down to exactly MaxParallelTag(n), idempotently.
 func replaceMaxParallelTag(tasks *task.Manager, trackerID string, n int) error {
 	want := MaxParallelTag(n)
-	_, err := tasks.UpdateFn(trackerID, func(cur task.Task) (task.Update, error) {
+	_, err := tasks.UpdateFnBy(trackerID, "umbrella.recover.replace_max_parallel_tag", func(cur task.Task) (task.Update, error) {
 		if hasSingleTag(cur.Tags, MaxParallelTagPrefix, want) {
 			return task.Update{}, errSkipUpdate
 		}
@@ -471,7 +471,7 @@ func replaceMaxParallelTag(tasks *task.Manager, trackerID string, n int) error {
 // Idempotent: a no-op when the tracker already carries no recovery tags and
 // no recovery-owned reason.
 func clearRecoveryState(tasks *task.Manager, trackerID string) error {
-	_, err := tasks.UpdateFn(trackerID, func(cur task.Task) (task.Update, error) {
+	_, err := tasks.UpdateFnBy(trackerID, "umbrella.recover.clear_recovery_state", func(cur task.Task) (task.Update, error) {
 		hasRecoveryTags := slices.ContainsFunc(cur.Tags, isRecoveryTag)
 		ownsReason := strings.HasPrefix(cur.StatusReason, RecoveryFailureReasonPrefix)
 		if !hasRecoveryTags && !ownsReason {
@@ -497,7 +497,7 @@ func isRecoveryTag(t string) bool {
 // removeFallbackTag drops FallbackTag from the tracker if present.
 // Idempotent.
 func removeFallbackTag(tasks *task.Manager, trackerID string) error {
-	_, err := tasks.UpdateFn(trackerID, func(cur task.Task) (task.Update, error) {
+	_, err := tasks.UpdateFnBy(trackerID, "umbrella.recover.remove_fallback_tag", func(cur task.Task) (task.Update, error) {
 		if !slices.Contains(cur.Tags, FallbackTag) {
 			return task.Update{}, errSkipUpdate
 		}
@@ -526,7 +526,7 @@ func removeFallbackTag(tasks *task.Manager, trackerID string) error {
 // time), so that reason is never clobbered by a stale recovery attempt.
 func recordRecoveryFailure(tasks *task.Manager, trackerID string, outcome RecoveryOutcome, cause error) (RecoveryResult, error) {
 	var result RecoveryResult
-	_, err := tasks.UpdateFn(trackerID, func(cur task.Task) (task.Update, error) {
+	_, err := tasks.UpdateFnBy(trackerID, "umbrella.recover.record_failure", func(cur task.Task) (task.Update, error) {
 		count := ParseRecoverFailCount(cur.Tags) + 1
 		newTags := ReplaceTagPrefix(cur.Tags, RecoverFailTagPrefix, RecoverFailTag(count))
 		after := time.Now().Add(RecoverBackoff(count))
@@ -565,7 +565,7 @@ func safeRecoveryFailureReason(cause error) string {
 	reason := cause.Error()
 	reason, _ = scrub.Scrub(reason, nil)
 	reason = stripRecoveryPayloads(reason)
-	return truncateUTF8(reason, 160)
+	return textutil.TruncateBytesTotal(reason, 160, "...")
 }
 
 func stripRecoveryPayloads(reason string) string {
@@ -608,20 +608,5 @@ func stripDelimitedPayloads(s string, open, closing rune) string {
 func formatRecoveryFailureReason(count int, reason string) string {
 	reason = fmt.Sprintf("%s%d): %s", RecoveryFailureReasonPrefix, count, reason)
 	const maxLen = 200
-	return truncateUTF8(reason, maxLen)
-}
-
-func truncateUTF8(s string, maxLen int) string {
-	if maxLen <= 0 || len(s) <= maxLen {
-		return s
-	}
-	const tail = "..."
-	if maxLen <= len(tail) {
-		return tail[:maxLen]
-	}
-	cut := maxLen - len(tail)
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
-	}
-	return s[:cut] + tail
+	return textutil.TruncateBytesTotal(reason, maxLen, "...")
 }

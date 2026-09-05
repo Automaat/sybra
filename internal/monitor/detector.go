@@ -30,6 +30,22 @@ type DetectInput struct {
 	LiveAgents    []liveAgent
 	Cfg           config.MonitorConfig
 	AllowsProject func(projectID string) bool
+	// Providers is the health of every configured provider, one entry each.
+	// Empty means the caller did not wire provider health, and the
+	// no-capacity rule stays silent rather than guessing.
+	Providers []ProviderHealth
+}
+
+// ProviderHealth is the slice of provider state the no-capacity rule needs,
+// kept as a local struct so internal/monitor does not depend on
+// internal/provider's Checker.
+type ProviderHealth struct {
+	Name    string
+	Enabled bool
+	Healthy bool
+	Reason  string
+	// Until is the rate-limit window end, zero when unknown or not throttled.
+	Until time.Time
 }
 
 // Detect runs every threshold rule against the snapshot and returns a Report
@@ -41,6 +57,8 @@ func Detect(in DetectInput) Report {
 		Counts:      countByStatus(in.Tasks),
 	}
 	report.Anomalies = append(report.Anomalies, detectBoardWide(in, report.Counts)...)
+	report.Anomalies = append(report.Anomalies, detectBoardStalled(in, report.Counts)...)
+	report.Anomalies = append(report.Anomalies, detectNoProviderCapacity(in, report.Counts)...)
 	report.Anomalies = append(report.Anomalies, detectPerTask(in)...)
 	report.Anomalies = append(report.Anomalies, detectFromAudit(in)...)
 	return report
@@ -95,6 +113,141 @@ func detectBoardWide(in DetectInput, counts Counts) []Anomaly {
 	}}
 }
 
+// defaultStallBudgetHours is how long queued work may sit with nothing running
+// before the board counts as stalled. Deliberately short: the failure this
+// catches is total, so waiting out a 12-hour bottleneck budget means noticing
+// a dead board the next day.
+const defaultStallBudgetHours = 1.0
+
+// detectBoardStalled reports a board with queued work, nothing running, and
+// spare capacity — the shape of a dispatcher that has stopped dispatching.
+//
+// This reads task state rather than audit events on purpose. KindBottleneck
+// derives its dwell from HourSummary.StatusBottlenecks, which is built from
+// the last hour of audit events — so a board that has genuinely stopped
+// produces no events, and the detector meant to notice is blind precisely
+// when it matters. Measured: a stall ran from 2026-08-01 to 2026-08-03,
+// reporting in_progress=0 todo=12 on every tick, and nothing escalated.
+//
+// RequiresLLM is false for the same reason: acting on this must not depend on
+// the dispatch path that is the thing suspected of being broken.
+func detectBoardStalled(in DetectInput, counts Counts) []Anomaly {
+	// Running, not merely present: LiveAgents carries entries with
+	// Running=false, and counting those would suppress the anomaly while
+	// nothing is actually executing — the exact condition this detects.
+	if counts.Todo == 0 || counts.InProgress > 0 || anyAgentRunning(in.LiveAgents) {
+		return nil
+	}
+	budget := stallBudgetHours(in.Cfg)
+	oldest := 0.0
+	for i := range in.Tasks {
+		t := &in.Tasks[i]
+		if t.Status != task.StatusTodo || t.StatusChangedAt.IsZero() {
+			continue
+		}
+		if !projectAllowed(in.AllowsProject, t.ProjectID) {
+			continue
+		}
+		if h := in.Now.Sub(t.StatusChangedAt).Hours(); h > oldest {
+			oldest = h
+		}
+	}
+	if oldest <= budget {
+		return nil
+	}
+	ev := map[string]any{
+		"todo":          counts.Todo,
+		"in_progress":   counts.InProgress,
+		"oldest_todo_h": oldest,
+		"budget_h":      budget,
+	}
+	return []Anomaly{{
+		Kind:        KindBoardStalled,
+		Severity:    SeverityError,
+		RequiresLLM: false,
+		Fingerprint: Fingerprint(KindBoardStalled, "", ev),
+		Evidence:    ev,
+		DetectedAt:  in.Now,
+	}}
+}
+
+// detectNoProviderCapacity fires when every enabled provider is unhealthy and
+// there is work that would otherwise dispatch.
+//
+// The distinction that matters is "nothing to do" versus "cannot do anything":
+// an idle board and a board with nowhere to run both report dispatched:0, and
+// the only way to tell them apart was to grep provider.health.flip out of the
+// app log. The evidence carries each provider's reason and reset time so the
+// expected recovery is visible without doing that.
+func detectNoProviderCapacity(in DetectInput, counts Counts) []Anomaly {
+	if len(in.Providers) == 0 {
+		return nil
+	}
+	// Work that would dispatch if anything could run. An idle board must not
+	// raise this: a fleet with no capacity and nothing to do is not degraded.
+	pending := counts.Todo + counts.InProgress
+	if pending == 0 {
+		return nil
+	}
+
+	enabled := 0
+	reasons := make(map[string]string)
+	var until []string
+	for i := range in.Providers {
+		p := in.Providers[i]
+		if !p.Enabled {
+			continue
+		}
+		enabled++
+		if p.Healthy {
+			return nil
+		}
+		reasons[p.Name] = p.Reason
+		if !p.Until.IsZero() {
+			until = append(until, p.Name+"="+p.Until.UTC().Format(time.RFC3339))
+		}
+	}
+	if enabled == 0 {
+		return nil
+	}
+	slices.Sort(until)
+
+	ev := map[string]any{
+		"pending":           pending,
+		"enabled_providers": enabled,
+		"reasons":           reasons,
+	}
+	if len(until) > 0 {
+		ev["rate_limited_until"] = strings.Join(until, ",")
+	}
+	return []Anomaly{{
+		Kind:        KindNoProviderCapacity,
+		Severity:    SeverityError,
+		RequiresLLM: false,
+		Fingerprint: Fingerprint(KindNoProviderCapacity, "", ev),
+		Evidence:    ev,
+		DetectedAt:  in.Now,
+	}}
+}
+
+func anyAgentRunning(agents []liveAgent) bool {
+	for i := range agents {
+		if agents[i].Running {
+			return true
+		}
+	}
+	return false
+}
+
+// stallBudgetHours reuses the todo bottleneck budget when an operator has set
+// one, rather than adding a second knob for the same idea.
+func stallBudgetHours(cfg config.MonitorConfig) float64 {
+	if v, ok := cfg.BottleneckHours["todo"]; ok && v > 0 {
+		return v
+	}
+	return defaultStallBudgetHours
+}
+
 func detectPerTask(in DetectInput) []Anomaly {
 	var out []Anomaly
 	stuckBudget := time.Duration(in.Cfg.StuckHumanHours * float64(time.Hour))
@@ -128,6 +281,10 @@ const monitorAutoRetriedTag = "monitor:auto-retried"
 // lostAgentInvestigationTag is the tag monitorRoutingSink stamps on a local
 // task it files for a KindLostAgent anomaly (see internal/sybra/monitor_sink.go).
 const lostAgentInvestigationTag = "monitor:" + string(KindLostAgent)
+
+// untriagedInvestigationTag is the tag monitorRoutingSink stamps on a local
+// task it files for a KindUntriaged anomaly.
+const untriagedInvestigationTag = "monitor:" + string(KindUntriaged)
 
 // affectedTaskMarkerPrefix precedes the origin task id in a deterministic
 // issue body's "## Affected task" section (see DeterministicIssueBody). Used
@@ -179,6 +336,38 @@ func openLostAgentInvestigations(tasks []task.Task) map[string]openLostAgentInve
 	return out
 }
 
+// openUntriagedInvestigations returns the open investigation fingerprint for
+// each task that already has a monitor-filed untriaged chore tracking it.
+// Used to auto-close stale investigations once the source task is triaged or
+// deleted, even after a process restart where in-memory runState is empty.
+func openUntriagedInvestigations(tasks []task.Task) map[string]string {
+	out := make(map[string]string)
+	for i := range tasks {
+		t := &tasks[i]
+		if task.IsTerminalStatus(t.Status) {
+			continue
+		}
+		if !slices.Contains(t.Tags, untriagedInvestigationTag) {
+			continue
+		}
+		idx := strings.Index(t.Body, affectedTaskMarkerPrefix)
+		if idx < 0 {
+			continue
+		}
+		rest := t.Body[idx+len(affectedTaskMarkerPrefix):]
+		originID, _, ok := strings.Cut(rest, "`")
+		if !ok || originID == "" {
+			continue
+		}
+		fp := Fingerprint(KindUntriaged, originID, nil)
+		if !strings.Contains(t.Body, "- Fingerprint: `"+fp+"`") {
+			continue
+		}
+		out[originID] = fp
+	}
+	return out
+}
+
 // untriagedGracePeriod is how long a freshly created task is left alone before
 // it can be flagged as untriaged. A new task.created workflow (triage) needs a
 // moment to pick the task up and assign tags/mode; flagging immediately
@@ -220,7 +409,11 @@ func detectStuckHumanBlocked(t *task.Task, now time.Time, budget time.Duration, 
 	if t.Status != task.StatusHumanRequired {
 		return nil
 	}
-	dwell := now.Sub(t.UpdatedAt)
+	dwellStart := t.StatusChangedAt
+	if dwellStart.IsZero() {
+		dwellStart = t.UpdatedAt
+	}
+	dwell := now.Sub(dwellStart)
 	if dwell <= budget {
 		return nil
 	}
@@ -284,7 +477,10 @@ func currentLostAgentInvestigation(t *task.Task, tracked map[string]openLostAgen
 	if !ok || inv.observedAt.IsZero() {
 		return false
 	}
-	cutoff := t.UpdatedAt
+	cutoff := t.StatusChangedAt
+	if cutoff.IsZero() {
+		cutoff = t.UpdatedAt
+	}
 	if started := latestAgentRunStarted(t.AgentRuns); !started.IsZero() {
 		cutoff = started
 	}
@@ -309,20 +505,24 @@ func detectPRGap(t *task.Task, now time.Time, grace time.Duration) *Anomaly {
 		return nil
 	}
 	dwell := time.Duration(0)
-	if !t.UpdatedAt.IsZero() {
-		dwell = now.Sub(t.UpdatedAt)
+	dwellStart := t.StatusChangedAt
+	if dwellStart.IsZero() {
+		dwellStart = t.UpdatedAt
 	}
-	if grace > 0 && !t.UpdatedAt.IsZero() && dwell >= 0 && dwell < grace {
+	if !dwellStart.IsZero() {
+		dwell = now.Sub(dwellStart)
+	}
+	if grace > 0 && !dwellStart.IsZero() && dwell >= 0 && dwell < grace {
 		return nil
 	}
 	ev := map[string]any{
-		"task_id":       t.ID,
-		"title":         t.Title,
-		"project_id":    t.ProjectID,
-		"branch":        t.Branch,
-		"updated_at":    t.UpdatedAt.Format(time.RFC3339),
-		"dwell_minutes": dwell.Minutes(),
-		"grace_minutes": grace.Minutes(),
+		"task_id":           t.ID,
+		"title":             t.Title,
+		"project_id":        t.ProjectID,
+		"branch":            t.Branch,
+		"status_changed_at": dwellStart.Format(time.RFC3339),
+		"dwell_minutes":     dwell.Minutes(),
+		"grace_minutes":     grace.Minutes(),
 	}
 	return &Anomaly{
 		Kind:        KindPRGap,

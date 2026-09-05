@@ -1,0 +1,3 @@
+./doc.go
+./fake_storagemigration_client.go
+./fake_storageversionmigration.go

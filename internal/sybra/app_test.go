@@ -100,9 +100,12 @@ func setupManualQueueApp(t *testing.T, taskDir, queueDir string, maxConcurrent i
 	fakebin := t.TempDir()
 	fakeClaude := filepath.Join(fakebin, "claude")
 	if err := os.WriteFile(fakeClaude, []byte("#!/usr/bin/env bash\n"+
-		"trap 'exit 0' TERM INT\n"+
+		"child=''\n"+
+		"trap 'test -z \"$child\" || { kill \"$child\" 2>/dev/null; wait \"$child\" 2>/dev/null; }; exit 0' TERM INT\n"+
+		"sleep 5 &\n"+
+		"child=$!\n"+
 		"printf '{\"type\":\"system\",\"session_id\":\"fake-session\"}\\n'\n"+
-		"sleep 5\n"+
+		"wait \"$child\"\n"+
 		"printf '{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"fake-session\",\"result\":\"done\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0}}\\n'\n"),
 		0o755); err != nil {
 		t.Fatalf("write fake claude: %v", err)
@@ -269,6 +272,26 @@ func setupTaskService(t *testing.T) (*TaskService, *App) {
 	a := setupApp(t)
 	var wg sync.WaitGroup
 
+	// Workflow run_agent steps that declare needs_worktree use the same
+	// project-aware adapter wiring as production. Individual tests can seed a
+	// synthetic project through a.projects when they expect such a step to
+	// launch; tests without one exercise the fail-closed preparation path.
+	projects, err := project.NewStore(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wm := worktree.New(worktree.Config{
+		WorktreesDir:     t.TempDir(),
+		Projects:         projects,
+		Tasks:            a.tasks,
+		Logger:           a.logger,
+		AgentChecker:     a.agents.HasRunningAgentForTask,
+		LiveAgentChecker: a.agents.HasLiveRegisteredAgentForTask,
+	})
+	a.projects = projects
+	a.worktrees = wm
+	a.agentOrch = agentorch.New(a.tasks, projects, a.agents, nil, a.logger, wm, nil)
+
 	wfDir := t.TempDir()
 	wfStore, err := workflow.NewStore(wfDir)
 	if err != nil {
@@ -278,8 +301,8 @@ func setupTaskService(t *testing.T) (*TaskService, *App) {
 		t.Fatal(err)
 	}
 	ta := &taskAdapter{tasks: a.tasks}
-	aa := &agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks}
-	engine := workflow.NewEngine(wfStore, ta, aa, a.logger)
+	aa := &agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks, projects: projects}
+	engine := workflow.NewTestEngine(wfStore, ta, aa, a.logger)
 	// Bind the test context so a background workflow (spawned by CreateTask)
 	// unwinds when the test ends — otherwise classify_task's retry backoff can
 	// outlive the task dir's cleanup and leak a sleeping goroutine.
@@ -311,6 +334,13 @@ func setupTaskService(t *testing.T) (*TaskService, *App) {
 			t.Fatalf("attachments.DeleteTask(%s): %v", id, err)
 		}
 	})
+	// t.Cleanup runs last-added-first: registering this after every t.TempDir()
+	// above (including setupApp's WorktreesDir) joins CreateTask's background
+	// workflow goroutine before any of those dirs are removed, closing a race
+	// where a goroutine still mid-write when the context cancels loses to
+	// RemoveAll ("directory not empty") — reproduced live under the OS
+	// sandbox's added scheduling latency.
+	t.Cleanup(wg.Wait)
 	return svc, a
 }
 

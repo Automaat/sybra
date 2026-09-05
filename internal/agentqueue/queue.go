@@ -8,13 +8,21 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/task"
 )
 
 // Item is one entry in the queue: a task/role pair awaiting dispatch.
 type Item struct {
-	TaskID   string        `yaml:"task_id"`
-	Role     string        `yaml:"role"`
+	TaskID string `yaml:"task_id"`
+	Role   string `yaml:"role"`
+	// Class is the item's WorkloadClass (agent.Role.WorkloadClass), persisted
+	// as a plain string so this package does not need to import internal/agent.
+	// Populated at every Offer site from the same role the item queues under.
+	// Advisory only today (no queue-side admission logic reads it yet) — it
+	// exists so a restart reconciles the class an operator configured
+	// class_reservations against instead of silently losing it.
+	Class    string        `yaml:"class,omitempty"`
 	Priority task.Priority `yaml:"priority"`
 	Status   task.Status   `yaml:"status"`
 	Manual   bool          `yaml:"manual"`
@@ -38,6 +46,9 @@ type Options struct {
 	// The boost is applied only inside PopReady's snapshot re-rank via an
 	// injected clock; it never mutates the heap's own clock-free ordering.
 	StarvationBoostAfter time.Duration
+	// Store mirrors the queue for durability. Nil keeps the per-item YAML files
+	// under dir, which is what an install with no database backend uses.
+	Store Persistence
 }
 
 // queueHeap implements container/heap.Interface ordered by Less, and keeps
@@ -80,7 +91,7 @@ func (h *queueHeap) Pop() any {
 type Queue struct {
 	mu    sync.Mutex
 	h     *queueHeap
-	store *store
+	store Persistence
 	log   *slog.Logger
 	now   func() time.Time
 	opts  Options
@@ -101,9 +112,13 @@ func New(dir string, opts Options, log *slog.Logger) (*Queue, error) {
 	if log == nil {
 		log = slog.Default()
 	}
-	st, err := newStore(dir)
-	if err != nil {
-		return nil, fmt.Errorf("agentqueue: init store: %w", err)
+	st := opts.Store
+	if st == nil {
+		fileStore, err := newStore(dir)
+		if err != nil {
+			return nil, fmt.Errorf("agentqueue: init store: %w", err)
+		}
+		st = fileStore
 	}
 
 	q := &Queue{
@@ -139,7 +154,7 @@ func (q *Queue) Restore(it Item) bool {
 }
 
 func (q *Queue) offer(it Item, restore bool) bool {
-	if !safeTaskID(it.TaskID) {
+	if fsutil.ValidateKey(it.TaskID) != nil {
 		q.log.Warn("agentqueue.offer.unsafe-task-id", "task_id", it.TaskID)
 		return false
 	}
@@ -185,7 +200,7 @@ func earliestEnqueued(existing, incoming time.Time) time.Time {
 // Remove drops taskID from the queue and its store file, if present. An
 // unsafe or absent TaskID is a no-op.
 func (q *Queue) Remove(taskID string) {
-	if !safeTaskID(taskID) {
+	if fsutil.ValidateKey(taskID) != nil {
 		return
 	}
 

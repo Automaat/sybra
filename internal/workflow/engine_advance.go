@@ -6,11 +6,15 @@ import (
 	"maps"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/evidence"
+	"github.com/Automaat/sybra/internal/reviewbudget"
+	"github.com/Automaat/sybra/internal/taskstatus"
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 const triageRetryableStatusReasonPrefix = "triage retryable: "
@@ -24,7 +28,7 @@ const triageRetryableStatusReasonPrefix = "triage retryable: "
 // double-delivered callback — from triggering "step not found" errors that
 // would otherwise spam the log and re-persist the task file on every hit.
 func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
-	e.acquireInflight(taskID) // blocks until any concurrent advance releases
+	unlockInflight := e.acquireInflight(taskID) // blocks until any concurrent advance releases
 
 	// Use an idempotent release so we can unlock before executeSteps while
 	// still having a defer as a safety net for early-return paths. Releasing
@@ -36,7 +40,7 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 	release := func() {
 		if !released {
 			released = true
-			e.releaseInflight(taskID)
+			unlockInflight()
 		}
 	}
 	defer release()
@@ -46,6 +50,7 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 		return err
 	}
 	wfExec, def, currentStep := ctx.WfExec, ctx.Def, ctx.Step
+	defer e.shadowCompareAdvance(e.snapshotForShadowAdvance(taskID, def, ctx.Task, wfExec, output)) // read-only, see shadow_reducer.go
 
 	// Parallel-child / best-of-N-attempt completion: route to the fan-out-
 	// aware path. The parent step's record + transitions are emitted only
@@ -66,12 +71,28 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 	wfExec.RecordStep(StepRecord{
 		StepID:    output.StepID,
 		Status:    output.Status,
-		Output:    truncate(output.Output, 4000),
+		Output:    textutil.TruncateBytes(output.Output, 4000, "\n... (truncated)"),
 		AgentID:   output.AgentID,
 		Provider:  output.Provider,
 		StartedAt: now,
 		EndedAt:   now,
 	})
+
+	if ctx.Task.Status == taskstatus.Done || ctx.Task.Status == taskstatus.Cancelled {
+		// The task itself already landed a terminal status out-of-band (e.g.
+		// an agent's own tool call, or a merged/closed PR) independently of
+		// this Execution ever reaching ExecCompleted/ExecFailed. Persist the
+		// step record above (real work happened and must stay visible in
+		// history) but stop here: any further transition logic below would
+		// attempt an illegal move out of done/cancelled (see internal/task's
+		// allowed-transition table) and fail on every retry instead of
+		// quietly no-op'ing like the workflow_terminal case in
+		// loadAdvanceContext.
+		e.logger.Debug("workflow.advance.skip",
+			"task_id", taskID, "reason", "task_terminal",
+			"status", ctx.Task.Status, "step_id", output.StepID)
+		return e.tasks.SetWorkflow(taskID, wfExec)
+	}
 	if output.Status == "completed" {
 		// A clean completion means this fix_review round is done — the
 		// review-finding the retry pointed at got fixed. Drop the retry
@@ -79,10 +100,10 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 		// round (reached only after a fresh code_review cycle re-enters this
 		// same step ID) starts from a full budget instead of inheriting an
 		// already-exhausted counter from a prior round (#2229 stop-and-reset).
-		clearWatchdogRewardHackingRetry(wfExec, output.StepID)
+		clearWatchdogRetryCounters(wfExec, output.StepID)
 	}
 	if output.Output != "" {
-		wfExec.SetVar("step."+output.StepID+".output", truncate(output.Output, 2000))
+		wfExec.SetVar("step."+output.StepID+".output", textutil.TruncateBytes(output.Output, 2000, "\n... (truncated)"))
 		// Extract the adversarial test verdict from the UNtruncated output and
 		// stash it in a tiny dedicated var. The verdict marker sits on the final
 		// line and would otherwise be lost to the 2000-byte prefix truncation
@@ -114,13 +135,7 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 		return rErr
 	}
 
-	// Mark task reviewed after a review-role step succeeds.
-	// Persisted so a re-triggered workflow run skips code_review (idempotent).
-	if currentStep.Config.Role == "review" && output.Status == "completed" {
-		if mErr := e.tasks.MarkTaskReviewed(taskID); mErr != nil {
-			e.logger.Warn("workflow.mark-reviewed.failed", "task_id", taskID, "err", mErr)
-		}
-	}
+	e.recordRoleCompletionSideEffects(taskID, currentStep, wfExec, output)
 
 	t, parked, comp, err := e.reloadTaskAndCheckImplementRetry(taskID, currentStep, wfExec, output, release)
 	if err != nil || parked {
@@ -147,13 +162,59 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 	return e.executeNextSteps(taskID, &def, nextStep, wfExec)
 }
 
+// recordRoleCompletionSideEffects applies the role-specific bookkeeping a
+// completed step needs before the engine resolves the next transition:
+// marking the task reviewed, stashing structured review/plan-critique
+// verdicts for the route_* steps, and refreshing stale review evidence for
+// the single-pass review posture.
+func (e *Engine) recordRoleCompletionSideEffects(taskID string, currentStep *Step, wfExec *Execution, output StepOutput) {
+	// Mark task reviewed after a review-role step succeeds.
+	// Persisted so a re-triggered workflow run skips code_review (idempotent).
+	if currentStep.Config.Role == reviewAgentRole && output.Status == "completed" {
+		if mErr := e.tasks.MarkTaskReviewed(taskID); mErr != nil {
+			e.logger.Warn("workflow.mark-reviewed.failed", "task_id", taskID, "err", mErr)
+		}
+		e.recordEvidence(taskID, currentStep.ID, evidenceCriterionReview, evidence.ProofReviewFinding, 0, "", output.Output)
+		// Stash the structured verdict (see ExtractReviewVerdict) and which
+		// step produced it, so route_review_verdict can route on it without
+		// re-parsing the review sidecar markdown and can rewind to the
+		// right agent step on a malformed/missing verdict.
+		wfExec.SetVar(reviewVerdictVar, ExtractReviewVerdict(output.Output))
+		wfExec.SetVar(reviewVerdictSourceStepVar, output.StepID)
+	}
+	if currentStep.Config.Role == "plan-critic" && output.Status == "completed" {
+		wfExec.SetVar(planCritiqueVerdictVar, ExtractPlanCritiqueVerdict(output.Output))
+		wfExec.SetVar(planCritiqueVerdictSourceStepVar, output.StepID)
+	}
+
+	// Single-pass review posture (agent.review_until_clean: false) exits after a
+	// NEEDS_FIXES round's fix_review commit without a second review, leaving the
+	// review evidence stale against the post-fix HEAD. Re-stamp it here so the
+	// require_evidence gate does not block an otherwise-complete task. In the
+	// multi-pass posture the follow-up review re-records fresh evidence itself,
+	// so this refresh is scoped to the single-pass route only.
+	if e.reviewLoopDisabled.Load() && currentStep.Config.Role == "fix-review" && output.Status == "completed" {
+		e.refreshReviewEvidenceFreshness(taskID)
+	}
+}
+
 // retryFailedStepIfConfigured re-dispatches a failed step when max_retries is
 // configured and not yet exhausted. handled=true means the caller must return
 // err immediately (either a fresh dispatch or a retry-exhausted block);
 // handled=false means the step isn't retryable (or retries are exhausted
 // without blocking) and AdvanceStep should keep resolving the next edge.
+//
+// Deliberately not built on boundedRetry/rewindRetry: its attempt count
+// isn't a persisted workflow-variable counter at all — wfExec.CountStep
+// reads it off the step's own execution history — and exhaustion falls
+// through to blockRetryExhaustedTriageIfNeeded's triage instead of an
+// onExhausted callback owning the escalation outright.
 func (e *Engine) retryFailedStepIfConfigured(taskID string, def *Definition, currentStep *Step, wfExec *Execution, task TaskInfo, output StepOutput, release func()) (handled bool, err error) {
-	if output.Status != "failed" || currentStep.Config.MaxRetries == 0 || task.Status == "human-required" {
+	if output.Status != "failed" || currentStep.Config.MaxRetries == 0 || task.Status == taskstatus.HumanRequired {
+		return false, nil
+	}
+	if currentStep.ID == testVerdictSourceStep &&
+		wfExec.Variables["step."+testVerdictSourceStep+"."+testSurfaceUnavailableKey] != "" {
 		return false, nil
 	}
 	retries := wfExec.CountStep(output.StepID)
@@ -169,6 +230,9 @@ func (e *Engine) retryFailedStepIfConfigured(taskID string, def *Definition, cur
 	e.logger.Warn("workflow.retry.exhausted", "task_id", taskID, "step", output.StepID,
 		"attempts", retries)
 	if done, bErr := e.blockRetryExhaustedTriageIfNeeded(taskID, currentStep, wfExec, output.Output); done || bErr != nil {
+		return true, bErr
+	}
+	if done, bErr := e.blockRetryExhaustedPlanningIfNeeded(taskID, def, currentStep, wfExec, output.Output, retries); done || bErr != nil {
 		return true, bErr
 	}
 	return false, nil
@@ -196,7 +260,10 @@ func (e *Engine) reloadTaskAndCheckImplementRetry(taskID string, currentStep *St
 		return t, parked, nil, err
 	}
 	var recovered bool
-	comp, recovered, err = e.maybeRecoverHumanRequiredAlreadyFixedOnMain(taskID, currentStep, wfExec, t, output)
+	// t was reloaded above, so its reason is the one this run set when it
+	// self-escalated. The run's own response text is deliberately not a
+	// declaration channel — see maybeRecoverHumanRequiredAlreadyFixedOnMain.
+	comp, recovered, err = e.maybeRecoverHumanRequiredAlreadyFixedOnMain(taskID, currentStep, wfExec, t, output, t.StatusReason)
 	if recovered || err != nil {
 		return t, false, comp, err
 	}
@@ -241,14 +308,11 @@ func (e *Engine) handleFanOutCompletion(taskID string, def *Definition, ctx adva
 }
 
 func (e *Engine) finishTerminalStepOutput(taskID string, wfExec *Execution, output StepOutput, release func()) error {
-	if err := e.tasks.UpdateTaskStatus(taskID, output.TerminalStatus, output.TerminalReason); err != nil {
-		return err
-	}
 	now := time.Now()
 	wfExec.CurrentStep = ""
 	wfExec.State = ExecCompleted
 	wfExec.CompletedAt = &now
-	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+	if err := e.tasks.SetStatusAndWorkflow(taskID, string(output.TerminalStatus), output.TerminalReason, wfExec); err != nil {
 		return err
 	}
 	release()
@@ -262,6 +326,7 @@ func (e *Engine) finishTerminalStepOutput(taskID string, wfExec *Execution, outp
 
 func (e *Engine) executeNextSteps(taskID string, def *Definition, step *Step, wfExec *Execution) error {
 	comp, err := e.executeSteps(taskID, def, step, wfExec)
+	err = normalizeExecuteStepsErr(err)
 	if errors.Is(err, errBestOfNParked) {
 		err = nil
 	}
@@ -273,36 +338,13 @@ func (e *Engine) executeNextSteps(taskID string, def *Definition, step *Step, wf
 // acquireInflight serializes AdvanceStep for a task. Blocks (rather than
 // returning false) so simultaneous parallel-child completions from
 // different agent goroutines are processed sequentially instead of one
-// silently being dropped. Always returns true; the bool return is kept
-// so callers can preserve the "skip on already-advancing" log line.
+// silently being dropped. It returns the release function for that hold.
 //
 // Re-entry within the same goroutine is not supported — every AdvanceStep
-// path defers releaseInflight before any callback that could re-enter.
-func (e *Engine) acquireInflight(taskID string) bool {
-	mu := e.taskInflightMutex(taskID)
-	mu.Lock()
-	return true
-}
-
-// releaseInflight unlocks the per-task advance mutex.
-func (e *Engine) releaseInflight(taskID string) {
-	mu := e.taskInflightMutex(taskID)
-	mu.Unlock()
-}
-
-// taskInflightMutex returns the lazily-initialized per-task mutex used by
-// acquire/releaseInflight. Old taskInflightMutex entries linger for the
-// life of the process; tasks with hundreds of millions of IDs would leak
-// memory, but task IDs are bounded by the human workload so this is fine.
-func (e *Engine) taskInflightMutex(taskID string) *sync.Mutex {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	mu, ok := e.inflightMutexes[taskID]
-	if !ok {
-		mu = &sync.Mutex{}
-		e.inflightMutexes[taskID] = mu
-	}
-	return mu
+// path defers the returned release function before any callback that could
+// re-enter.
+func (e *Engine) acquireInflight(taskID string) func() {
+	return e.inflightLocks.LockLocal(taskID)
 }
 
 // advanceContext bundles everything AdvanceStep needs to act on a single
@@ -356,7 +398,7 @@ func (e *Engine) loadAdvanceContext(taskID string, output StepOutput) (advanceCo
 		return advanceContext{}, true, nil
 	}
 
-	def, err := e.store.Get(t.Workflow.WorkflowID)
+	def, err := e.resolveExecutionDefinition(taskID, t)
 	if err != nil {
 		return advanceContext{}, false, err
 	}
@@ -488,6 +530,8 @@ func (e *CycleError) Error() string {
 		e.StepID, e.At, e.FirstAt)
 }
 
+var errWorkflowYield = errors.New("workflow yielded without completion")
+
 // executeSteps iterates through synchronous steps until it hits an async step
 // (run_agent, wait_human) or the workflow ends. This avoids recursive calls
 // between executeStep/AdvanceStep that caused inflight guard deadlocks.
@@ -505,51 +549,26 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 			return nil, err
 		}
 		t = e.withManualTestConfig(t)
-
-		// Snapshot the execution for the template context so that clearing
-		// the Recovered flag below doesn't affect what the template sees.
-		execSnap := *wfExec
-		ctx := TemplateContext{
-			Task:     t,
-			Step:     *step,
-			Prev:     wfExec.LastRecord(),
-			Vars:     wfExec.Variables,
-			Project:  nil,
-			Workflow: &execSnap,
+		tmplCtx, err := e.prepareStepTemplateContext(taskID, step, wfExec, t)
+		if err != nil {
+			return nil, err
 		}
 
-		// Consume the recovery flag: it applies only to the step being
-		// dispatched here. Clear and persist before spawning the agent so
-		// subsequent HandleAgentComplete reloads don't see a stale flag.
-		if wfExec.Recovered {
-			wfExec.Recovered = false
-			if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
-				return nil, err
+		effectID, replayCompleted, claimErr := e.claimAndRevalidateStepEffect(taskID, step, &t, &wfExec)
+		if claimErr != nil {
+			if errors.Is(claimErr, errWorkflowYield) {
+				return nil, claimErr
 			}
+			return nil, claimErr
 		}
 
 		// Async steps: execute and return. Callback (HandleAgentComplete/HandleHumanAction)
 		// will call AdvanceStep later.
-		switch step.Type {
-		case StepRunAgent:
-			if comp, handled, bErr := e.preflightRunAgentBudget(taskID, def, step, wfExec); handled {
-				return comp, wrapDispatchErr(step.ID, bErr)
+		if handled, comp, asyncErr := e.executeAsyncWorkflowStep(taskID, def, step, wfExec, tmplCtx, effectID); handled {
+			if errors.Is(asyncErr, errWorkflowYield) {
+				return nil, asyncErr
 			}
-			return nil, wrapDispatchErr(step.ID, e.execRunAgent(taskID, step, wfExec, ctx))
-		case StepParallel:
-			return e.execParallel(taskID, def, step, wfExec, ctx)
-		case StepBestOfN:
-			comp, err := e.execBestOfN(taskID, def, step, wfExec, ctx)
-			if errors.Is(err, errBestOfNParked) {
-				return nil, errBestOfNParked
-			}
-			return comp, err
-		case StepWaitHuman:
-			return nil, wrapDispatchErr(step.ID, e.execWaitHuman(taskID, step, wfExec))
-		case StepClearPlanArtifacts, StepSetStatus, StepCondition, StepShell, StepEnsurePRClosesIssue, StepStampPRAttribution, StepRerequestReview, StepVerifyCommits, StepLinkPRAndReview, StepEvaluate, StepRequireSidecar, StepValidatePlan, StepValidatePlanContract, StepTriageReview, StepFlagPlanCritique, StepDetectTampering, StepVerifyChecks, StepFocusedChecks, StepRoutePRFixResult, StepRouteTestResult, StepSyncBranch, StepCodegenGate, StepResumeWorkflow, StepPromoteBestOfN, StepPushBranch, StepCreatePR, StepClassifyTask:
-			// handled below as sync steps
-		default:
-			return nil, fmt.Errorf("unknown step type %q", step.Type)
+			return comp, asyncErr
 		}
 
 		// Detect cycles: a sync step revisited without an async break means
@@ -561,41 +580,48 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 		visited[step.ID] = i
 
 		// Sync steps: execute, record result, resolve next, loop.
-		output, execErr := e.execSyncStep(taskID, step, wfExec, ctx, t)
-		if execErr != nil {
-			// The step parked the workflow in ExecWaiting (it persisted the new
-			// CurrentStep/State itself). Stop without recording/advancing/
-			// completing: completing here would fire the status-change cascade.
-			// ResumeStalled re-drives the re-armed run_agent step once idle.
-			if errors.Is(execErr, errStepParked) {
-				var parkedNoCompletion *CompletionInfo
-				return parkedNoCompletion, nil
+		var output StepOutput
+		if replayCompleted {
+			output = StepOutput{
+				StepID: step.ID,
+				Status: "completed",
+				Output: wfExec.Variables["step."+step.ID+".output"],
 			}
-			return nil, wrapDispatchErr(step.ID, execErr)
+		} else {
+			var execErr error
+			output, execErr = e.execSyncStep(taskID, step, wfExec, tmplCtx, t)
+			if execErr != nil {
+				// The step parked the workflow in ExecWaiting (it persisted the new
+				// CurrentStep/State itself). Stop without recording/advancing/
+				// completing: completing here would fire the status-change cascade.
+				// ResumeStalled re-drives the re-armed run_agent step once idle.
+				if errors.Is(execErr, errStepParked) {
+					var parkedNoCompletion *CompletionInfo
+					return parkedNoCompletion, nil
+				}
+				return nil, wrapDispatchErr(step.ID, execErr)
+			}
 		}
-
-		now := time.Now().UTC()
-		wfExec.RecordStep(StepRecord{
-			StepID:    step.ID,
-			Status:    output.Status,
-			Output:    truncate(output.Output, 4000),
-			StartedAt: now,
-			EndedAt:   now,
-		})
-		if output.Output != "" {
-			wfExec.SetVar("step."+step.ID+".output", truncate(output.Output, 2000))
-		}
-
-		// Re-read task for latest state (set_status changes task).
-		t, err = e.tasks.GetTask(taskID)
+		wfExec, t, err = e.recordSyncStepOutput(taskID, step, wfExec, output, t)
 		if err != nil {
 			return nil, err
 		}
-		t.Workflow = wfExec
 
 		nextStep, comp, nErr := e.resolveNext(taskID, def, step, wfExec, t)
 		if nErr != nil {
 			return nil, nErr
+		}
+		if !replayCompleted {
+			wfExec, err = e.completeStepEffect(taskID, step.ID, effectID, wfExec)
+			if err != nil {
+				if errors.Is(err, errWorkflowYield) {
+					return nil, err
+				}
+				return nil, err
+			}
+			if wfExec == nil {
+				return nil, fmt.Errorf("completeStepEffect returned nil execution for task %s step %s", taskID, step.ID)
+			}
 		}
 		if nextStep == nil {
 			return comp, nil // workflow completed; caller fires onComplete after marker release
@@ -607,66 +633,190 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 	return nil, fmt.Errorf("workflow exceeded max sync step depth (%d)", maxSyncSteps)
 }
 
+// recordSyncStepOutput handles post-execution bookkeeping for a sync step:
+// it reloads the workflow state for BestOfN steps, records the step result,
+// and re-reads the task to pick up any status changes made by the step.
+func (e *Engine) recordSyncStepOutput(taskID string, step *Step, wfExec *Execution, output StepOutput, t TaskInfo) (*Execution, TaskInfo, error) {
+	if step.Type == StepPromoteBestOfN {
+		// execPromoteBestOfN reloads and persists the freshest workflow state
+		// itself so it can preserve judge-step vars and the promoted canonical
+		// dir. Continue from that persisted copy rather than the stale pre-step
+		// wfExec passed into executeSteps.
+		fresh, err := e.tasks.GetTask(taskID)
+		if err != nil {
+			return nil, t, err
+		}
+		if fresh.Workflow != nil {
+			wfExec = fresh.Workflow
+		}
+	}
+
+	now := time.Now().UTC()
+	wfExec.RecordStep(StepRecord{
+		StepID:    step.ID,
+		Status:    output.Status,
+		Output:    textutil.TruncateBytes(output.Output, 4000, "\n... (truncated)"),
+		StartedAt: now,
+		EndedAt:   now,
+	})
+	if output.Output != "" {
+		wfExec.SetVar("step."+step.ID+".output", textutil.TruncateBytes(output.Output, 2000, "\n... (truncated)"))
+	}
+
+	// Re-read task for latest state (set_status changes task).
+	t, err := e.tasks.GetTask(taskID)
+	if err != nil {
+		return nil, t, err
+	}
+	t.Workflow = wfExec
+	return wfExec, t, nil
+}
+
+func (e *Engine) claimAndRevalidateStepEffect(taskID string, step *Step, t *TaskInfo, wfExec **Execution) (EffectID, bool, error) {
+	claimedExec, effectID, claimErr := e.claimStepEffect(taskID, *t, step, effectPosStepAction)
+	mergedExec, replayCompleted, err := e.handleStepClaimResult(taskID, step, *wfExec, claimedExec, effectID, claimErr)
+	if err != nil || replayCompleted {
+		*wfExec = mergedExec
+		t.Workflow = mergedExec
+		return effectID, replayCompleted, err
+	}
+	*wfExec = mergedExec
+	t.Workflow = mergedExec
+
+	claimedExec, _, claimErr = e.claimStepEffect(taskID, *t, step, effectPosStepAction)
+	mergedExec, replayCompleted, err = e.handleStepClaimResult(taskID, step, *wfExec, claimedExec, effectID, claimErr)
+	*wfExec = mergedExec
+	t.Workflow = mergedExec
+	return effectID, replayCompleted, err
+}
+
+func (e *Engine) prepareStepTemplateContext(taskID string, step *Step, wfExec *Execution, t TaskInfo) (TemplateContext, error) {
+	// Snapshot the execution for the template context so that clearing
+	// the Recovered flag below doesn't affect what the template sees.
+	execSnap := *wfExec
+	ctx := TemplateContext{
+		Task:     t,
+		Step:     *step,
+		Prev:     wfExec.LastRecord(),
+		Vars:     wfExec.Variables,
+		Project:  nil,
+		Workflow: &execSnap,
+	}
+
+	// Consume the recovery flag: it applies only to the step being
+	// dispatched here. Clear and persist before spawning the agent so
+	// subsequent HandleAgentComplete reloads don't see a stale flag.
+	if !wfExec.Recovered {
+		return ctx, nil
+	}
+	wfExec.Recovered = false
+	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+		return TemplateContext{}, err
+	}
+	return ctx, nil
+}
+
+func (e *Engine) handleStepClaimResult(taskID string, step *Step, wfExec, claimedExec *Execution, effectID EffectID, claimErr error) (*Execution, bool, error) {
+	if claimErr == nil {
+		return mergeClaimedEffectLog(wfExec, claimedExec), false, nil
+	}
+	if errors.Is(claimErr, ErrEffectAlreadyComplete) && !stepIsAsync(step.Type) {
+		return mergeClaimedEffectLog(wfExec, claimedExec), true, nil
+	}
+	if effectClaimFence(claimErr) {
+		e.logger.Info("workflow.effect.fenced", "task_id", taskID, "step", step.ID, "effect", effectID.String(), "err", claimErr)
+		return wfExec, false, errWorkflowYield
+	}
+	return wfExec, false, claimErr
+}
+
+func (e *Engine) executeAsyncWorkflowStep(taskID string, def *Definition, step *Step, wfExec *Execution, ctx TemplateContext, effectID EffectID) (bool, *CompletionInfo, error) {
+	spec, err := requireStepSpec(step.Type)
+	if err != nil {
+		return true, nil, err
+	}
+	if spec.async == nil {
+		return false, nil, nil
+	}
+	return spec.async(e, taskID, def, step, wfExec, ctx, effectID)
+}
+
+func (e *Engine) completeStepEffect(taskID, stepID string, effectID EffectID, wfExec *Execution) (*Execution, error) {
+	completedExec, err := e.completeClaimedEffect(taskID, effectID)
+	if err == nil {
+		return mergeClaimedEffectLog(wfExec, completedExec), nil
+	}
+	if effectClaimFence(err) {
+		e.logger.Info("workflow.effect.complete-fenced", "task_id", taskID, "step", stepID, "effect", effectID.String(), "err", err)
+		return wfExec, errWorkflowYield
+	}
+	return wfExec, err
+}
+
+func normalizeExecuteStepsErr(err error) error {
+	if errors.Is(err, errWorkflowYield) {
+		return nil
+	}
+	return err
+}
+
 // execSyncStep dispatches to a synchronous step handler and returns its output.
 func (e *Engine) execSyncStep(taskID string, step *Step, wfExec *Execution, ctx TemplateContext, t TaskInfo) (StepOutput, error) {
-	switch step.Type {
-	case StepSetStatus:
-		return e.execSetStatus(taskID, step)
-	case StepClearPlanArtifacts:
-		return e.execClearPlanArtifacts(taskID, step, t)
-	case StepCondition:
-		return e.execCondition(step, wfExec, t)
-	case StepShell:
-		return e.execShell(step, ctx)
-	case StepEnsurePRClosesIssue:
-		return e.execEnsurePRClosesIssue(taskID, step, t)
-	case StepStampPRAttribution:
-		return e.execStampPRAttribution(taskID, step, t)
-	case StepRerequestReview:
-		return e.execRerequestReview(taskID, step, t)
-	case StepVerifyCommits:
-		return e.execVerifyCommits(taskID, step, wfExec, t)
-	case StepLinkPRAndReview:
-		return e.execLinkPRAndReview(taskID, step, wfExec, t)
-	case StepEvaluate:
-		return e.execEvaluate(taskID, step, wfExec, t)
-	case StepRequireSidecar:
-		return e.execRequireSidecar(taskID, step, t)
-	case StepValidatePlan:
-		return e.execValidatePlan(taskID, step, t)
-	case StepValidatePlanContract:
-		return e.execValidatePlanContract(taskID, step, t)
-	case StepTriageReview:
-		return e.execTriageReview(taskID, step, t)
-	case StepFlagPlanCritique:
-		return e.execFlagPlanCritique(taskID, step, t)
-	case StepDetectTampering:
-		return e.execDetectTampering(taskID, step, t)
-	case StepVerifyChecks:
-		return e.execVerifyChecks(taskID, step, wfExec, t)
-	case StepFocusedChecks:
-		return e.execFocusedChecks(taskID, step, wfExec, t)
-	case StepRoutePRFixResult:
-		return e.execRoutePRFixResult(taskID, step, wfExec, t)
-	case StepRouteTestResult:
-		return e.execRouteTestResult(taskID, step, wfExec, t)
-	case StepSyncBranch:
-		return e.execSyncBranch(taskID, step)
-	case StepCodegenGate:
-		return e.execCodegenGate(taskID, step)
-	case StepResumeWorkflow:
-		return e.execResumeWorkflow(taskID, step, wfExec)
-	case StepPromoteBestOfN:
-		return e.execPromoteBestOfN(taskID, step)
-	case StepPushBranch:
-		return e.execPushBranch(taskID, step, wfExec, t)
-	case StepCreatePR:
-		return e.execCreatePR(taskID, step, wfExec, t)
-	case StepClassifyTask:
-		return e.execClassifyTask(taskID, step, wfExec)
-	default:
-		return StepOutput{}, fmt.Errorf("unknown step type %q", step.Type)
+	spec, err := requireStepSpec(step.Type)
+	if err != nil {
+		return StepOutput{}, err
 	}
+	if spec.sync == nil {
+		return StepOutput{}, fmt.Errorf("step type %q does not have a synchronous handler", step.Type)
+	}
+	return spec.sync(e, taskID, step, wfExec, ctx, t)
+}
+
+func execAsyncRunAgentStep(e *Engine, taskID string, def *Definition, step *Step, wfExec *Execution, ctx TemplateContext, effectID EffectID) (bool, *CompletionInfo, error) {
+	if comp, handled, bErr := e.preflightRunAgentBudget(taskID, def, step, wfExec); handled {
+		return true, comp, wrapDispatchErr(step.ID, bErr)
+	}
+	if err := e.execRunAgent(taskID, step, wfExec, ctx, effectID); err != nil {
+		return true, nil, wrapDispatchErr(step.ID, err)
+	}
+	if !e.agents.HasRunningAgent(taskID) {
+		return true, nil, errWorkflowYield
+	}
+	_, err := e.completeStepEffect(taskID, step.ID, effectID, wfExec)
+	return true, nil, err
+}
+
+func execAsyncParallelStep(e *Engine, taskID string, def *Definition, step *Step, wfExec *Execution, ctx TemplateContext, effectID EffectID) (bool, *CompletionInfo, error) {
+	comp, err := e.execParallel(taskID, def, step, wfExec, ctx)
+	if err != nil {
+		return true, comp, err
+	}
+	if comp == nil && !e.agents.HasRunningAgent(taskID) {
+		return true, comp, nil
+	}
+	_, err = e.completeStepEffect(taskID, step.ID, effectID, wfExec)
+	return true, comp, err
+}
+
+func execAsyncBestOfNStep(e *Engine, taskID string, def *Definition, step *Step, wfExec *Execution, ctx TemplateContext, effectID EffectID) (bool, *CompletionInfo, error) {
+	comp, err := e.execBestOfN(taskID, def, step, wfExec, ctx)
+	if err == nil || (errors.Is(err, errBestOfNParked) && e.agents.HasRunningAgent(taskID)) {
+		if _, cErr := e.completeStepEffect(taskID, step.ID, effectID, wfExec); cErr != nil {
+			return true, nil, cErr
+		}
+	}
+	if errors.Is(err, errBestOfNParked) {
+		return true, nil, errBestOfNParked
+	}
+	return true, comp, err
+}
+
+func execAsyncWaitHumanStep(e *Engine, taskID string, _ *Definition, step *Step, wfExec *Execution, _ TemplateContext, effectID EffectID) (bool, *CompletionInfo, error) {
+	if err := e.execWaitHuman(taskID, step, wfExec); err != nil {
+		return true, nil, wrapDispatchErr(step.ID, err)
+	}
+	_, err := e.completeStepEffect(taskID, step.ID, effectID, wfExec)
+	return true, nil, err
 }
 
 // resolveNext evaluates transitions and returns the next step, or nil if the
@@ -678,21 +828,23 @@ func (e *Engine) execSyncStep(taskID string, step *Step, wfExec *Execution, ctx 
 // be rejected as re-entrant (the bug that left synchronous mechanical workflows
 // — e.g. simple-task-handoff — never starting their successor).
 func (e *Engine) resolveNext(taskID string, def *Definition, current *Step, wfExec *Execution, t TaskInfo) (*Step, *CompletionInfo, error) {
-	fields := taskFields(t)
-	for k, v := range wfExec.Variables {
-		fields["vars."+k] = v
+	// A deterministic step may quarantine the task through the conservative
+	// typed adapter. Blocked is terminal for the active workflow: evaluating
+	// its ordinary next edge could run a set_status step that erases the
+	// quarantine before an operator or reconciler can inspect it.
+	if t.Status == taskstatus.Blocked {
+		now := time.Now().UTC()
+		wfExec.State = ExecFailed
+		wfExec.CompletedAt = &now
+		wfExec.CurrentStep = ""
+		e.logger.Info("workflow.quarantined", "task_id", taskID, "workflow", def.ID)
+		if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+			return nil, nil, err
+		}
+		return nil, nil, nil
 	}
-	if wfExec.Recovered {
-		fields["vars.recovered"] = "true"
-	}
-	// Engine-level config, not task state, so taskFields cannot supply it.
-	// Inverted on purpose: a zero-value engine field must still mean the
-	// review cycle runs, so an engine built without SetReviewUntilClean
-	// follows the documented default instead of silently shipping
-	// single-pass review.
-	fields["config.review_until_clean"] = strconv.FormatBool(!e.reviewLoopDisabled)
-	fields["task.review_round_limit_reached"] = strconv.FormatBool(e.reviewRoundLimitReached(t))
 
+	fields := e.transitionFields(t, wfExec)
 	nextID, tErr := ResolveTransition(current.Next, fields)
 	if tErr != nil {
 		e.logger.Error("workflow.transition.failed", "task_id", taskID, "step", current.ID, "err", tErr)
@@ -730,30 +882,48 @@ func (e *Engine) resolveNext(taskID string, def *Definition, current *Step, wfEx
 	return nextStep, nil, nil
 }
 
-func (e *Engine) reviewRoundLimitReached(t TaskInfo) bool {
-	if e.reviewLoopDisabled || e.allowUnboundedReviewRounds {
-		return false
+func (e *Engine) transitionFields(t TaskInfo, wfExec *Execution) map[string]string {
+	fields := taskFields(t)
+	for k, v := range wfExec.Variables {
+		fields["vars."+k] = v
 	}
-	limit := e.maxReviewRounds
-	if limit <= 0 {
-		limit = config.DefaultMaxReviewRounds
+	if wfExec.Recovered {
+		fields["vars.recovered"] = "true"
 	}
-	startedAt := time.Time{}
-	if t.Workflow != nil {
-		startedAt = t.Workflow.StartedAt
+	// Engine-level config, not task state, so taskFields cannot supply it.
+	// Inverted on purpose: a zero-value engine field must still mean the
+	// review cycle runs, so an engine built without SetReviewUntilClean
+	// follows the documented default instead of silently shipping
+	// single-pass review.
+	fields["config.review_until_clean"] = strconv.FormatBool(!e.reviewLoopDisabled.Load())
+	hourlyExceeded, lifetimeExceeded := e.reviewBudgetExhaustion(t)
+	fields["task.review_budget_exceeded"] = strconv.FormatBool(hourlyExceeded || lifetimeExceeded)
+	fields["task.review_lifetime_exceeded"] = strconv.FormatBool(lifetimeExceeded)
+	return fields
+}
+
+// reviewBudgetExhaustion preserves which limit fired so workflows can park a
+// temporary hourly throttle differently from a permanent lifetime ceiling.
+// It uses the same reviewbudget.Budget as the inbound PR-review dispatcher.
+func (e *Engine) reviewBudgetExhaustion(t TaskInfo) (hourly, lifetime bool) {
+	if e.reviewLoopDisabled.Load() {
+		return false, false
 	}
-	rounds := 0
+	limit := int(e.reviewRoundsPerHour.Load())
+	if limit == 0 {
+		limit = config.DefaultReviewRoundsPerHour
+	}
+	budget := reviewbudget.Budget{PerHour: limit, PerTask: config.DefaultReviewRoundsPerTask}
+	runs := make([]reviewbudget.Run, len(t.AgentRuns))
 	for i := range t.AgentRuns {
-		run := t.AgentRuns[i]
-		if run.Role != "review" {
-			continue
+		runs[i] = reviewbudget.Run{
+			Role: t.AgentRuns[i].Role, StartedAt: t.AgentRuns[i].StartedAt,
+			Outcome: t.AgentRuns[i].Outcome, TurnCount: t.AgentRuns[i].TurnCount,
+			Salvaged: t.AgentRuns[i].ReviewSalvaged,
 		}
-		if !startedAt.IsZero() && run.StartedAt.Before(startedAt) {
-			continue
-		}
-		rounds++
 	}
-	return rounds >= limit
+	now := e.now()
+	return budget.HourlyExceeded(runs, now), budget.LifetimeExceeded(runs)
 }
 
 // maxCascadeDepth bounds how many workflows may chain synchronously off a
@@ -804,7 +974,7 @@ func taskFields(t TaskInfo) map[string]string {
 	fields := map[string]string{
 		"task.id":                      t.ID,
 		"task.title":                   t.Title,
-		"task.status":                  t.Status,
+		"task.status":                  string(t.Status),
 		"task.status_reason":           t.StatusReason,
 		"task.role":                    t.Role,
 		"task.tags":                    strings.Join(t.Tags, ","),
@@ -815,6 +985,7 @@ func taskFields(t TaskInfo) map[string]string {
 		"task.reviewed":                strconv.FormatBool(t.Reviewed),
 		"task.plan_critique":           t.PlanCritique,
 		"task.code_review":             t.CodeReview,
+		"task.code_review_verdict":     t.CodeReviewVerdict,
 	}
 	if t.PRNumber > 0 {
 		fields["task.pr_number"] = strconv.Itoa(t.PRNumber)
@@ -856,25 +1027,32 @@ func (e *Engine) blockRetryExhaustedTriageIfNeeded(taskID string, step *Step, wf
 	if reason == "" {
 		return false, nil
 	}
-	if err := e.tasks.UpdateTaskBlocker(taskID, "blocked", reason, blocker.State{
+	now := time.Now().UTC()
+	wfExec.State = ExecFailed
+	wfExec.CompletedAt = &now
+	wfExec.CurrentStep = ""
+	return true, e.tasks.SetBlockerAndWorkflow(taskID, string(taskstatus.Blocked), reason, blocker.State{
 		Kind:       blocker.KindTriageRetryExhausted,
 		Actor:      blocker.ActorWorkflow,
 		Code:       "triage_retryable",
 		NextAction: "wait_for_operator_reclassify",
 		Exhausted:  true,
-	}); err != nil {
-		return true, err
+	}, wfExec)
+}
+
+func (e *Engine) blockRetryExhaustedPlanningIfNeeded(taskID string, def *Definition, step *Step, wfExec *Execution, output string, attempts int) (bool, error) {
+	if def.ID != "simple-task-plan" || (step.Config.Role != "plan" && step.Config.Role != "plan-critic") {
+		return false, nil
+	}
+	role := step.Config.Role
+	reason := fmt.Sprintf("planning %s retry budget exhausted after %d attempt(s)", role, attempts)
+	if trimmed := strings.TrimSpace(output); trimmed != "" {
+		reason += ": " + textutil.TruncateBytes(trimmed, 500, "\n... (truncated)")
 	}
 	now := time.Now().UTC()
 	wfExec.State = ExecFailed
 	wfExec.CompletedAt = &now
 	wfExec.CurrentStep = ""
-	return true, e.tasks.SetWorkflow(taskID, wfExec)
-}
-
-func truncate(s string, limit int) string {
-	if len(s) <= limit {
-		return s
-	}
-	return s[:limit] + "\n... (truncated)"
+	escalation := autonomy.NewEscalation("planning.retry_exhausted", autonomy.FailureOwnerSpecification, autonomy.ProvenanceControlPlane, reason)
+	return true, e.tasks.SetEscalationAndWorkflow(taskID, string(taskstatus.HumanRequired), reason, escalation, autonomy.OutcomeHumanRequired, wfExec)
 }

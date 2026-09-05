@@ -14,23 +14,36 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/notification"
+	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/workflow"
 	"gopkg.in/yaml.v3"
 )
 
 // ConfigService exposes settings read/write as Wails-bound methods.
 type ConfigService struct {
-	mu             sync.RWMutex
+	mu sync.RWMutex
+	// subscribers receive every hot apply; see configSubscriber.
+	subscribers []configSubscriber
+	// notifyMu serialises subscriber callbacks. They run outside mu, so
+	// without this two concurrent mutations could interleave and leave a sink
+	// holding an older value than the live config.
+	notifyMu       sync.Mutex
 	cfg            *config.Config
 	persisted      *config.Config
 	logLevel       *slog.LevelVar
 	notifier       *notification.Emitter
 	agents         *agent.Manager
 	limits         *limits.Store
+	providerHealth *provider.Checker
 	workflowEngine *workflow.Engine
 	logger         *slog.Logger
 	policy         func() limits.Policy
 	applyRuntime   func(config.Config) error
+	// publishConfig atomically exposes a successfully applied immutable
+	// snapshot to App runtime readers. It is set by App wiring; standalone
+	// ConfigService tests intentionally leave it nil.
+	publishConfig func(*config.Config)
 	// reapplyRouting re-merges the persisted routing overlay on top of the
 	// freshly hot-reloaded base A/B config and fans it back out to every
 	// selection site. Called after an ab_testing hot change so a base edit
@@ -67,7 +80,7 @@ func (s *ConfigService) GetSettings() AppSettings {
 			ABTestingMinSamplesPerVariant: c.ABTesting.MinSamplesPerVariant,
 			Summary:                       config.BuildRoutingSummary(c),
 		},
-		GitHub:       c.GitHub,
+		GitHub:       githubSettingsWithoutSecrets(c.GitHub),
 		Monitor:      c.Monitor,
 		SelfMonitor:  c.SelfMonitor,
 		Triage:       c.Triage,
@@ -134,11 +147,16 @@ func (s *ConfigService) SaveRawConfig(raw string) error {
 	if err != nil {
 		return validationError(err.Error())
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	_, err = s.mutateLocked(resolved.Config, func() error {
-		return config.WriteRawConfig(saveRaw)
-	})
+	pending, err := func() (pendingNotify, error) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		_, pending, err := s.mutateLocked(resolved.Config, func() error {
+			return config.WriteRawConfig(saveRaw)
+		})
+		return pending, err
+	}()
+	// Outside the lock: subscribers may read config back through this service.
+	pending.run()
 	return err
 }
 
@@ -274,11 +292,18 @@ func yamlScalar(s string) string {
 
 // UpdateSettings validates, persists, and hot-reloads the provided settings.
 func (s *ConfigService) UpdateSettings(settings AppSettings) (ConfigMutationResult, error) {
+	result, pending, err := s.updateSettingsLocked(settings)
+	// Outside the lock: subscribers may read config back through this service.
+	pending.run()
+	return result, err
+}
+
+func (s *ConfigService) updateSettingsLocked(settings AppSettings) (ConfigMutationResult, pendingNotify, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if err := s.validateSettings(settings); err != nil {
-		return ConfigMutationResult{}, err
+		return ConfigMutationResult{}, pendingNotify{}, err
 	}
 	base := s.cfg
 	if s.persisted != nil {
@@ -287,11 +312,11 @@ func (s *ConfigService) UpdateSettings(settings AppSettings) (ConfigMutationResu
 	next := settingsToConfig(base, settings)
 	raw, err := config.ReadRawConfig()
 	if err != nil {
-		return ConfigMutationResult{}, err
+		return ConfigMutationResult{}, pendingNotify{}, err
 	}
 	patched, err := patchSettingsRawConfig([]byte(raw), base, &next)
 	if err != nil {
-		return ConfigMutationResult{}, err
+		return ConfigMutationResult{}, pendingNotify{}, err
 	}
 	return s.mutateLocked(&next, func() error {
 		return config.WriteRawConfig(patched)
@@ -308,10 +333,17 @@ func (s *ConfigService) validateSettings(settings AppSettings) error {
 	if err := config.ValidateResolvedConfig(&next); err != nil {
 		return validationError(err.Error())
 	}
+	if err := config.ValidateUnattendedPosture(&next); err != nil {
+		return validationError(err.Error())
+	}
 	return nil
 }
 
-func (s *ConfigService) mutateLocked(candidate *config.Config, persist func() error) (ConfigMutationResult, error) {
+// mutateLocked returns the subscriber callbacks the caller must run once it
+// has released s.mu. They are deliberately not invoked here: a subscriber is
+// app-layer code that can read config back through this service, and calling
+// it under the write lock deadlocks.
+func (s *ConfigService) mutateLocked(candidate *config.Config, persist func() error) (ConfigMutationResult, pendingNotify, error) {
 	current := cloneConfig(s.cfg)
 	intent := cloneConfig(s.cfg)
 	if s.persisted != nil {
@@ -319,33 +351,43 @@ func (s *ConfigService) mutateLocked(candidate *config.Config, persist func() er
 	}
 	result := diffConfig(*intent, *candidate)
 	if len(result.Rejected) > 0 {
-		return result, configMutationErrorf(result, "rejected immutable config paths: %s", strings.Join(result.Rejected, ", "))
+		return result, pendingNotify{}, configMutationErrorf(result, "rejected immutable config paths: %s", strings.Join(result.Rejected, ", "))
 	}
 	nextActive := cloneConfig(current)
-	for _, path := range result.Applied {
+	// Copy the exact changed leaves, not the registry-entry paths: a hot ancestor
+	// entry (e.g. "agent") can cover a restart-policy child (e.g. "agent.evidence")
+	// whose change must stay pending until restart. appliedLeaves already excludes
+	// those child leaves.
+	for _, path := range result.appliedLeaves {
 		copyConfigPath(nextActive, candidate, path)
 	}
 	if persist != nil {
 		if err := persist(); err != nil {
-			return result, err
+			return result, pendingNotify{}, err
 		}
 	}
-	if err := s.applyHotChangesLocked(result, nextActive); err != nil {
+	pending, err := s.applyHotChangesLocked(result, nextActive)
+	if err != nil {
 		if persist != nil {
 			if restoreErr := config.RestoreLastKnownGoodConfig(); restoreErr != nil {
 				result.Recovery = &ConfigRecovery{
 					Message: fmt.Sprintf("hot apply failed and last-known-good restore failed: %v", restoreErr),
 				}
-				return result, fmt.Errorf("%w; restore last-known-good: %w", err, restoreErr)
+				return result, pendingNotify{}, fmt.Errorf("%w; restore last-known-good: %w", err, restoreErr)
 			}
 			result.Recovery = &ConfigRecovery{
 				RestoredLastKnownGood: true,
 				Message:               "restored config.yaml from last-known-good after hot apply failure",
 			}
 		}
-		return result, &configMutationError{result: result, cause: err}
+		return result, pendingNotify{}, &configMutationError{result: result, cause: err}
 	}
-	*s.cfg = *nextActive
+	// Do not overwrite the shared object: lock-free App readers retain old
+	// snapshots while a reload publishes this complete replacement.
+	s.cfg = nextActive
+	if s.publishConfig != nil {
+		s.publishConfig(nextActive)
+	}
 	s.persisted = cloneConfig(candidate)
 	if slices.Contains(result.Applied, "ab_testing") && s.applyABTestingBase != nil {
 		s.applyABTestingBase(nextActive.ABTesting)
@@ -362,7 +404,7 @@ func (s *ConfigService) mutateLocked(candidate *config.Config, persist func() er
 			s.logger.Warn("config.reload.restart_required", "field", path)
 		}
 	}
-	return result, nil
+	return result, pending, nil
 }
 
 func copyConfigPath(dst, src *config.Config, path string) {
@@ -371,14 +413,16 @@ func copyConfigPath(dst, src *config.Config, path string) {
 	dstField.Set(srcField)
 }
 
-func (s *ConfigService) applyHotChangesLocked(result ConfigMutationResult, nextActive *config.Config) error {
+// applyHotChangesLocked returns the subscriber callbacks the caller must run
+// once it has released s.mu; see collectSubscribersLocked.
+func (s *ConfigService) applyHotChangesLocked(result ConfigMutationResult, nextActive *config.Config) (pendingNotify, error) {
 	for _, group := range configApplyGroups(result.Applied) {
 		switch group {
 		case configApplyNone:
 			continue
 		case configApplyAgentRuntime:
 			if err := s.refreshAgentRuntimeConfig(*nextActive); err != nil {
-				return err
+				return pendingNotify{}, err
 			}
 		case configApplyGuardrails:
 			s.applyAgentGuardrails(*nextActive)
@@ -395,7 +439,34 @@ func (s *ConfigService) applyHotChangesLocked(result ConfigMutationResult, nextA
 	if slices.Contains(result.Applied, "agent") {
 		s.applyAgentGuardrails(*nextActive)
 	}
-	return nil
+	if providerHealthRuntimeChanged(result.Applied) {
+		s.applyProviderHealthRuntime(*nextActive)
+	}
+	// Captured under the lock, run by the caller after it unlocks: the single
+	// chokepoint every hot apply passes through. Registering there is what
+	// makes a "hot" declaration true.
+	return s.collectSubscribersLocked(result.Applied, *nextActive), nil
+}
+
+func providerHealthRuntimeChanged(paths []string) bool {
+	for _, path := range paths {
+		switch path {
+		case "providers.auto_failover", "providers.claude", "providers.codex", "providers.copilot", "providers.opencode":
+			return true
+		}
+	}
+	return false
+}
+
+func (s *ConfigService) applyProviderHealthRuntime(cfg config.Config) {
+	if s.providerHealth == nil {
+		return
+	}
+	s.providerHealth.SetAutoFailover(cfg.Providers.AutoFailover)
+	s.providerHealth.SetProviderEnabled(providerid.Claude, cfg.Providers.Claude.Enabled)
+	s.providerHealth.SetProviderEnabled(providerid.Codex, cfg.Providers.Codex.Enabled)
+	s.providerHealth.SetProviderEnabled(providerid.Copilot, cfg.Providers.Copilot.Enabled)
+	s.providerHealth.SetProviderEnabled(providerid.OpenCode, cfg.Providers.OpenCode.Enabled)
 }
 
 func (s *ConfigService) applyAgentGuardrails(cfg config.Config) {
@@ -407,6 +478,7 @@ func (s *ConfigService) applyAgentGuardrails(cfg config.Config) {
 			TurnCostFraction:        cfg.Agent.TurnCostFraction,
 			TurnMultiplier:          cfg.Agent.TurnMultiplier,
 			CheckpointOnTurnCeiling: cfg.CheckpointOnTurnCeilingEnabled(),
+			MaxSubagentEvents:       cfg.Agent.MaxSubagentEvents,
 		})
 	}
 	s.applyWorkflowGuardrails(cfg)
@@ -418,8 +490,7 @@ func (s *ConfigService) applyWorkflowGuardrails(cfg config.Config) {
 	}
 	s.workflowEngine.SetMaxCheckpoints(cfg.MaxCheckpoints())
 	s.workflowEngine.SetReviewUntilClean(cfg.ReviewUntilClean())
-	s.workflowEngine.SetMaxReviewRounds(cfg.MaxReviewRounds())
-	s.workflowEngine.SetAllowUnboundedReviewRounds(cfg.AllowUnboundedReviewRounds())
+	s.workflowEngine.SetReviewRoundsPerHour(cfg.Agent.ReviewRoundsPerHourLimit())
 }
 
 func (s *ConfigService) refreshAgentRuntimeConfig(next config.Config) error {
@@ -458,10 +529,13 @@ func (s *ConfigService) managerRuntimeConfig(cfg config.Config) agent.ManagerRun
 		DispatchJitterMs:       cfg.Agent.DispatchJitterMs,
 		HeadlessSteerable:      cfg.DefaultHeadlessSteerable(),
 		SandboxMode:            cfg.DefaultSandboxMode(),
+		SandboxReadMode:        cfg.DefaultSandboxReadMode(),
 		PlaywrightMCPEnabled:   cfg.PlaywrightMCPEnabled(),
 		PlaywrightMCPExtraArgs: cfg.PlaywrightMCPExtraArgs(),
 		K8sJobsEnabled:         cfg.Agent.K8sJobs.Enabled,
 		K8sJobs:                k8sJobRunnerConfigFromConfig(cfg.Agent.K8sJobs),
+		RoleEffort:             cfg.Agent.RoleEffort,
+		ClassReservations:      agent.ParseClassReservations(cfg.Agent.ClassReservations),
 	}
 }
 
@@ -492,6 +566,12 @@ func settingsToConfig(existing *config.Config, settings AppSettings) config.Conf
 		next.ABTesting.MinSamplesPerVariant = settings.ProviderRouting.ABTestingMinSamplesPerVariant
 	}
 	next.GitHub = settings.GitHub
+	if next.GitHub.Webhook.Secret == config.RedactedPlaceholder {
+		next.GitHub.Webhook.Secret = existing.GitHub.Webhook.Secret
+	}
+	if next.GitHub.Webhook.TaskSecret == config.RedactedPlaceholder {
+		next.GitHub.Webhook.TaskSecret = existing.GitHub.Webhook.TaskSecret
+	}
 	next.Monitor = settings.Monitor
 	next.SelfMonitor = settings.SelfMonitor
 	next.Triage = settings.Triage

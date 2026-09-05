@@ -6,6 +6,7 @@ import (
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/runoutcome"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 // SLOTargets is the rolling autonomy/reliability target set (#2441). Defined
@@ -41,10 +42,11 @@ func ComputeSLOSignals(events []audit.Event, since, until time.Time) SLOSignals 
 
 // SLOStatus is one target's compliance verdict.
 type SLOStatus struct {
-	Name   string  `json:"name"`
-	Actual float64 `json:"actual"`
-	Target float64 `json:"target"`
-	Met    bool    `json:"met"`
+	Evidence EvidenceState `json:"evidence"`
+	Name     string        `json:"name"`
+	Actual   float64       `json:"actual"`
+	Target   float64       `json:"target"`
+	Met      bool          `json:"met"`
 	// BudgetRemaining is 0 (breached) .. 1 (at least a full safety margin of
 	// headroom above/below target), normalized so five heterogeneous SLOs
 	// (rates in [0,1], integer counts, an hourly cadence) can be compared on
@@ -118,7 +120,7 @@ func EvaluateSLOs(sc Scorecard, sig SLOSignals, targets SLOTargets) SLOReport {
 // autonomy/ci_first_pass ratios.
 func minStatusOrNoEvidence(name string, hasEvidence bool, actual, target float64) SLOStatus {
 	if !hasEvidence {
-		return SLOStatus{Name: name, Actual: 0, Target: target, Met: true, BudgetRemaining: 1}
+		return SLOStatus{Evidence: EvidenceUnknown, Name: name, Actual: 0, Target: target, Met: true, BudgetRemaining: 1}
 	}
 	return minStatus(name, actual, target)
 }
@@ -136,7 +138,7 @@ func minStatus(name string, actual, target float64) SLOStatus {
 	} else if met {
 		budget = 1
 	}
-	return SLOStatus{Name: name, Actual: actual, Target: target, Met: met, BudgetRemaining: budget}
+	return SLOStatus{Evidence: EvidenceKnown, Name: name, Actual: actual, Target: target, Met: met, BudgetRemaining: budget}
 }
 
 // maxStatus grades a "must be at most target" SLO (rework rate, identical
@@ -151,7 +153,7 @@ func maxStatus(name string, actual, target float64) SLOStatus {
 	} else if met {
 		budget = 1
 	}
-	return SLOStatus{Name: name, Actual: actual, Target: target, Met: met, BudgetRemaining: budget}
+	return SLOStatus{Evidence: EvidenceKnown, Name: name, Actual: actual, Target: target, Met: met, BudgetRemaining: budget}
 }
 
 func clamp01(v float64) float64 {
@@ -240,11 +242,11 @@ func scanRestartCadence(events []audit.Event, since, until time.Time) float64 {
 		if e.Type != audit.EventTaskStatusChanged || e.Timestamp.Before(since) || e.Timestamp.After(until) {
 			continue
 		}
-		if strVal(e.Data, "from") != "human-required" {
+		if strVal(e.Data, "from") != string(taskstatus.HumanRequired) {
 			continue
 		}
 		to := strVal(e.Data, "to")
-		if to != "in-progress" && to != "in-review" {
+		if to != string(taskstatus.InProgress) && to != string(taskstatus.InReview) {
 			continue
 		}
 		if manuallyDispatchedNear(e.TaskID, e.Timestamp) {

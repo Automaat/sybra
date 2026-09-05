@@ -71,3 +71,35 @@ func TestReapProcessGroup_KillsDescendants(t *testing.T) {
 		}
 	}
 }
+
+func TestSignalPIDAndWaitConfirmsDescendantsAfterLeaderExits(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "child.pid")
+	leader := exec.Command("bash", "-c", "trap 'exit 0' INT; (trap '' INT; exec sleep 60) & echo $! > "+pidFile+"; while true; do sleep 1; done")
+	leader.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := leader.Start(); err != nil {
+		t.Fatalf("start leader: %v", err)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(-leader.Process.Pid, syscall.SIGKILL) })
+	go func() { _ = leader.Wait() }()
+
+	var childPID int
+	deadline := time.Now().Add(3 * time.Second)
+	for childPID == 0 && time.Now().Before(deadline) {
+		if data, err := os.ReadFile(pidFile); err == nil {
+			childPID, _ = strconv.Atoi(strings.TrimSpace(string(data)))
+		}
+		if childPID == 0 {
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	if childPID == 0 {
+		t.Fatal("child pid file never written")
+	}
+
+	if !signalPIDAndWait(leader.Process.Pid, 50*time.Millisecond) {
+		t.Fatal("process group termination was not confirmed")
+	}
+	if signalTargetAlive(-leader.Process.Pid, leader.Process.Pid) {
+		t.Fatal("reaper returned while detached process group was still alive")
+	}
+}

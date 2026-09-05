@@ -1,0 +1,7 @@
+./csistoragecapacity.go
+./volumeattachment.go
+./volumeattachmentsource.go
+./volumeattachmentspec.go
+./volumeattachmentstatus.go
+./volumeattributesclass.go
+./volumeerror.go

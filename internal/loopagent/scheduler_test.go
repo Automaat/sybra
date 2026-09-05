@@ -53,7 +53,7 @@ func TestSchedulerSyncStartsAndStopsFetchers(t *testing.T) {
 	sched, store, _ := newSched(t)
 	defer sched.Stop()
 
-	la, err := store.Create(LoopAgent{Name: "a", Prompt: "/a", IntervalSec: 60, Enabled: true})
+	la, err := store.Create(t.Context(), LoopAgent{Name: "a", Prompt: "/a", IntervalSec: 60, Enabled: true})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestSchedulerSyncStartsAndStopsFetchers(t *testing.T) {
 
 	// Disable → Sync should cancel.
 	la.Enabled = false
-	if _, err := store.Update(la); err != nil {
+	if _, err := store.Update(t.Context(), la); err != nil {
 		t.Fatalf("disable: %v", err)
 	}
 	sched.Sync()
@@ -78,7 +78,7 @@ func TestSchedulerSyncRestartsOnConfigChange(t *testing.T) {
 	sched, store, _ := newSched(t)
 	defer sched.Stop()
 
-	la, _ := store.Create(LoopAgent{Name: "a", Prompt: "/a", IntervalSec: 60, Enabled: true})
+	la, _ := store.Create(t.Context(), LoopAgent{Name: "a", Prompt: "/a", IntervalSec: 60, Enabled: true})
 	sched.Sync()
 
 	sched.mu.Lock()
@@ -90,7 +90,7 @@ func TestSchedulerSyncRestartsOnConfigChange(t *testing.T) {
 	}
 
 	la.IntervalSec = 120
-	if _, err := store.Update(la); err != nil {
+	if _, err := store.Update(t.Context(), la); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 	sched.Sync()
@@ -115,9 +115,9 @@ func TestSchedulerFireUpdatesLastRunFields(t *testing.T) {
 	defer sched.Stop()
 
 	runner.nextID = "ag123abc"
-	la, _ := store.Create(LoopAgent{Name: "self", Prompt: "/self-monitor", IntervalSec: 60, Model: "sonnet", Enabled: true})
+	la, _ := store.Create(t.Context(), LoopAgent{Name: "self", Prompt: "/self-monitor", IntervalSec: 60, Model: "sonnet", Enabled: true})
 
-	agentID, err := sched.fire(la)
+	agentID, err := sched.fire(t.Context(), la)
 	if err != nil {
 		t.Fatalf("fire: %v", err)
 	}
@@ -136,12 +136,8 @@ func TestSchedulerFireUpdatesLastRunFields(t *testing.T) {
 	if got.Name != "loop:self" {
 		t.Fatalf("Name should be loop:self, got %q", got.Name)
 	}
-	if !got.IgnoreConcurrencyLimit {
-		t.Fatal("loop runs must bypass the concurrency limit")
-	}
-
 	// Persisted run fields.
-	stored, err := store.Get(la.ID)
+	stored, err := store.Get(t.Context(), la.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -161,8 +157,8 @@ func TestSchedulerOnAgentCompleteUpdatesCost(t *testing.T) {
 	defer sched.Stop()
 
 	runner.nextID = "ag-cost"
-	la, _ := store.Create(LoopAgent{Name: "self", Prompt: "/p", IntervalSec: 60, Enabled: true})
-	if _, err := sched.fire(la); err != nil {
+	la, _ := store.Create(t.Context(), LoopAgent{Name: "self", Prompt: "/p", IntervalSec: 60, Enabled: true})
+	if _, err := sched.fire(t.Context(), la); err != nil {
 		t.Fatalf("fire: %v", err)
 	}
 
@@ -170,7 +166,7 @@ func TestSchedulerOnAgentCompleteUpdatesCost(t *testing.T) {
 	ag.AddResultStats("sess", 0.42, 100, 50, 0)
 	sched.OnAgentComplete(ag)
 
-	stored, _ := store.Get(la.ID)
+	stored, _ := store.Get(t.Context(), la.ID)
 	if stored.LastRunCost != 0.42 {
 		t.Fatalf("expected cost 0.42, got %v", stored.LastRunCost)
 	}
@@ -196,7 +192,7 @@ func TestSchedulerRunNowFiresOutsideSchedule(t *testing.T) {
 	defer sched.Stop()
 
 	runner.nextID = "ag-rn"
-	la, _ := store.Create(LoopAgent{Name: "self", Prompt: "/p", IntervalSec: 3600, Enabled: false})
+	la, _ := store.Create(t.Context(), LoopAgent{Name: "self", Prompt: "/p", IntervalSec: 3600, Enabled: false})
 
 	id, err := sched.RunNow(la.ID)
 	if err != nil {
@@ -212,7 +208,7 @@ func TestSchedulerRunNowFiresOutsideSchedule(t *testing.T) {
 
 func TestSchedulerStopWaitsForGoroutines(t *testing.T) {
 	sched, store, _ := newSched(t)
-	la, _ := store.Create(LoopAgent{Name: "a", Prompt: "/a", IntervalSec: 60, Enabled: true})
+	la, _ := store.Create(t.Context(), LoopAgent{Name: "a", Prompt: "/a", IntervalSec: 60, Enabled: true})
 	sched.Sync()
 	if len(sched.RunningIDs()) != 1 {
 		t.Fatal("fetcher not running")
@@ -231,5 +227,36 @@ func TestSchedulerStopWaitsForGoroutines(t *testing.T) {
 	}
 	if len(sched.RunningIDs()) != 0 {
 		t.Fatal("RunningIDs should be empty after Stop")
+	}
+}
+
+func TestSchedulerStopPreventsLaterSyncFromStartingFetchers(t *testing.T) {
+	sched, store, _ := newSched(t)
+	defer sched.Stop()
+
+	la, err := store.Create(t.Context(), LoopAgent{Name: "late", Prompt: "/late", IntervalSec: 60, Enabled: true})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	sched.Stop()
+	sched.Sync()
+	if got := sched.RunningIDs(); len(got) != 0 {
+		t.Fatalf("Sync started fetchers after Stop: %v", got)
+	}
+	_ = la
+}
+
+func TestSchedulerStopPreventsRunNow(t *testing.T) {
+	sched, store, runner := newSched(t)
+	la, err := store.Create(t.Context(), LoopAgent{Name: "late", Prompt: "/late", IntervalSec: 60, Enabled: true})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	sched.Stop()
+	if _, err := sched.RunNow(la.ID); err == nil {
+		t.Fatal("RunNow after Stop succeeded")
+	}
+	if got := runner.Calls(); len(got) != 0 {
+		t.Fatalf("RunNow after Stop started agent: %+v", got)
 	}
 }

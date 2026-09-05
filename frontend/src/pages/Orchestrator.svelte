@@ -173,7 +173,7 @@
   <section class="flex flex-col gap-3">
     <div class="flex items-center justify-between">
       <div class="flex items-center gap-3">
-        <h3 class="text-sm font-semibold text-surface-900 dark:text-surface-100">Interactive Session</h3>
+        <h3 class="text-sm font-semibold text-surface-900 dark:text-surface-100">Orchestrator Session</h3>
         <div
           class="h-2.5 w-2.5 rounded-full {running ? 'bg-success-500 animate-pulse' : 'bg-surface-500'}"
         ></div>

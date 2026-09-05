@@ -4,13 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log/slog"
 	"math"
+	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime/debug"
@@ -25,15 +26,19 @@ import (
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/codexhook"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/evaluation"
+	"github.com/Automaat/sybra/internal/fsutil"
+	"github.com/Automaat/sybra/internal/gitexec"
+	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/issueref"
 	"github.com/Automaat/sybra/internal/modeltier"
 	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/project"
-	"github.com/Automaat/sybra/internal/scrub"
+	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/skills"
 	"github.com/Automaat/sybra/internal/skillsync"
 	"github.com/Automaat/sybra/internal/sybra"
 	"github.com/Automaat/sybra/internal/task"
-	"github.com/Automaat/sybra/internal/tasksnapshot"
 	"github.com/Automaat/sybra/internal/workflow"
 	"gopkg.in/yaml.v3"
 )
@@ -43,13 +48,61 @@ import (
 // in sync without an import cycle.
 var hookTaskIDRe = regexp.MustCompile(`^[a-zA-Z0-9._/-]+$`)
 
+var incidentFingerprintRe = regexp.MustCompile(`^incident:[0-9a-f]{24}$`)
+
 var (
-	loadCLIConfig          = config.Load
-	loadCLIConfigNoPersist = config.LoadNoPersist
+	loadCLIConfig        = config.Load
+	loadCLIConfigLenient = config.LoadLenient
+	enableCLIAppAuth     = github.EnableAppAuth
+	refreshCLIAppToken   = github.RefreshAppToken
+	currentCLIAppToken   = github.CurrentAppToken
 )
 
 func main() {
 	os.Exit(run(os.Args[1:]))
+}
+
+// runCheckConfigWithHome applies --home before validating, so the preflight
+// checks the home the caller named rather than whatever SYBRA_HOME happens to
+// hold.
+func runCheckConfigWithHome(homeOverride string, homeErr, jsonOut bool) int {
+	if homeErr {
+		return fatal(jsonOut, "--home requires a value")
+	}
+	if homeOverride != "" {
+		if err := os.Setenv("SYBRA_HOME", homeOverride); err != nil {
+			return fatal(jsonOut, "set SYBRA_HOME: %v", err)
+		}
+	}
+	return runCheckConfig()
+}
+
+// runCheckConfig mirrors sybra-server's -check-config so the deploy preflight
+// can assert both binaries accept the live config, not just the server.
+//
+// They can disagree: the CLI tolerates a config it cannot parse by falling
+// back to a direct task store, so a key the server understands and the CLI
+// does not produces a warning on every invocation rather than a failure. That
+// is how a deployed CLI ended up warning "unknown config key
+// agent.sandbox_read_mode" on every call while the server ran happily — and
+// agents run sybra-cli from inside their worktrees to read and update task
+// state, so a CLI silently dropping the resolved config is a state-drift
+// hazard sitting in the middle of every workflow.
+//
+// LoadNoPersist, not Load, for the same reason the server uses it: a preflight
+// must never mutate the live config.yaml.
+func runCheckConfig() int {
+	cfg, err := config.LoadNoPersist()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "config: invalid:", err)
+		return 1
+	}
+	if err := cfg.ValidateCluster(); err != nil {
+		fmt.Fprintln(os.Stderr, "config: invalid:", err)
+		return 1
+	}
+	fmt.Println("config: ok")
+	return 0
 }
 
 type homeResolution struct {
@@ -58,34 +111,64 @@ type homeResolution struct {
 	fromSybraHome   bool
 }
 
+// globalFlags are the flags accepted before, after, or around a subcommand.
+type globalFlags struct {
+	jsonOut      bool
+	checkConfig  bool
+	homeOverride string
+	homeErr      bool
+}
+
+// parseGlobalFlags strips the global flags from args wherever they appear and
+// returns the remainder as the subcommand and its arguments.
+func parseGlobalFlags(args []string) (flags globalFlags, rest []string) {
+	var g globalFlags
+	filtered := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--json":
+			g.jsonOut = true
+		case a == "--home":
+			// Take the tail as a slice rather than indexing: slicing at i+1 is
+			// always valid here, so the emptiness check is provably sufficient
+			// and the bounds analysis stays happy.
+			rest := args[i+1:]
+			if len(rest) == 0 {
+				g.homeErr = true
+				continue
+			}
+			g.homeOverride = rest[0]
+			i++
+		case strings.HasPrefix(a, "--home="):
+			g.homeOverride = strings.TrimPrefix(a, "--home=")
+		case a == "-check-config" || a == "--check-config":
+			g.checkConfig = true
+		default:
+			filtered = append(filtered, a)
+		}
+	}
+	return g, filtered
+}
+
 func run(args []string) int {
 	if len(args) == 0 {
 		usage()
 		return 1
 	}
 
-	// Extract global --json and --home flags before subcommand.
-	jsonOut := false
-	filtered := make([]string, 0, len(args))
-	homeOverride := ""
-	homeErr := false
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		switch {
-		case a == "--json":
-			jsonOut = true
-		case a == "--home":
-			if i+1 >= len(args) {
-				homeErr = true
-				continue
-			}
-			i++
-			homeOverride = args[i]
-		case strings.HasPrefix(a, "--home="):
-			homeOverride = strings.TrimPrefix(a, "--home=")
-		default:
-			filtered = append(filtered, a)
-		}
+	globals, filtered := parseGlobalFlags(args)
+	jsonOut, checkConfig := globals.jsonOut, globals.checkConfig
+	homeOverride, homeErr := globals.homeOverride, globals.homeErr
+
+	// After the global-flag pass, so position does not matter: the preflight is
+	// invoked as `sybra-cli -check-config` today, but `--home DIR
+	// -check-config` must validate DIR rather than silently treating the flag
+	// as a subcommand. Handled before the home/config plumbing below because
+	// runCheckConfig does its own strict load and must not inherit the
+	// task-store fallback that exists for ordinary commands.
+	if checkConfig {
+		return runCheckConfigWithHome(homeOverride, homeErr, jsonOut)
 	}
 
 	// Detect the hook subcommand before config.Load can abort: codex lifecycle
@@ -131,11 +214,18 @@ func run(args []string) int {
 	}
 
 	if isReadOnlyConfigCommand(cmd) {
-		cfg, err := loadCLIConfigNoPersist()
+		cfg, schemaErr, err := loadCLIConfigLenient()
 		if err != nil {
 			return fatal(jsonOut, "load config: %v", err)
 		}
-		return cmdConfig(cfg, rest, jsonOut)
+		// Only `config doctor` survives a bad key. It is the command an
+		// operator reaches for once the config stops loading, so dying on that
+		// key leaves them with nothing; it reports the key as a finding
+		// instead, beside every other check. The rest still fail closed.
+		if schemaErr != nil && !isConfigDoctor(rest) {
+			return fatal(jsonOut, "load config: %v", schemaErr)
+		}
+		return cmdConfig(cfg, rest, jsonOut, true, schemaErr)
 	}
 
 	cfg, err := loadCLIConfig()
@@ -143,9 +233,6 @@ func run(args []string) int {
 		if isHook {
 			fmt.Fprintf(os.Stderr, "hook: load config: %v (continuing fail-open)\n", err)
 			return 0
-		}
-		if code, handled := dispatchTaskStoreFallback(cmd, rest, jsonOut, err); handled {
-			return code
 		}
 		return fatal(jsonOut, "load config: %v", err)
 	}
@@ -157,21 +244,19 @@ func run(args []string) int {
 		return cmdHook(cfg, filtered[1:])
 	}
 
-	store, projStore, err := openStores(cfg)
-	if err != nil {
-		return fatal(jsonOut, "%v", err)
+	if cmd == "github-app-token" {
+		return cmdGithubAppToken(cfg, jsonOut)
 	}
 
-	// HTTP auto-detect is only safe on the untouched default path. Any resolved
-	// home override — --home, SYBRA_CONTROL_HOME, or SYBRA_HOME — means the
-	// caller explicitly targeted an on-disk store, so reaching some unrelated
-	// reachable server would violate that contract.
-	allowHTTP := homeOverride == "" && !home.fromControlHome && !home.fromSybraHome
-	return dispatch(cmd, rest, cfg, store, projStore, allowHTTP, jsonOut)
+	return dispatch(cmd, rest, cfg, jsonOut)
 }
 
 func isReadOnlyConfigCommand(cmd string) bool {
 	return cmd == "config"
+}
+
+func isConfigDoctor(args []string) bool {
+	return len(args) > 0 && args[0] == "doctor"
 }
 
 func resolveHome(homeOverride string) homeResolution {
@@ -251,11 +336,11 @@ func currentWorktreeRevision() string {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "git", "-C", wd, "rev-parse", "HEAD").Output()
+	out, err := gitexec.Output(ctx, gitexec.Options{Dir: wd}, "rev-parse", "HEAD")
 	if err != nil {
 		return ""
 	}
-	return string(out)
+	return out
 }
 
 func shortRevision(rev string) string {
@@ -268,154 +353,267 @@ func shortRevision(rev string) string {
 
 // dispatch routes a parsed subcommand (with its own args and the global
 // --json flag already extracted) to the matching cmdXxx handler.
-func dispatch(cmd string, rest []string, cfg *config.Config, store *task.Manager, projStore *project.Store, allowHTTP, jsonOut bool) int {
-	var api *apiClient
-	switch cmd {
-	case "create", "update", "link-pr", "delete", "pr":
-		if allowHTTP {
-			if c, ok := newAPIClient(cfg); ok && c.reachable(context.Background()) {
-				api = c
-			}
-		}
+func dispatch(cmd string, rest []string, cfg *config.Config, jsonOut bool) int {
+	api, refusal, cause := resolveBoardAPI(cmd, cfg)
+	if refusal != "" {
+		return fatal(jsonOut, "%s", refusal)
 	}
+	// api is nil only for the commands that inspect this machine, and those are
+	// dispatched separately so no board command can be handed a nil board.
+	if api == nil {
+		return dispatchWithoutBoard(cmd, rest, cfg, cause, jsonOut)
+	}
+	store := newAPITaskBoard(api)
+	projStore := newAPIProjectBoard(api)
 	switch cmd {
 	case "list":
 		return cmdList(store, rest, jsonOut)
 	case "get":
 		return cmdGet(store, rest, jsonOut)
 	case "create":
-		return cmdCreate(store, api, rest, jsonOut)
+		return cmdCreate(store, rest, jsonOut)
 	case "handoff":
 		return cmdHandoff(store, projStore, rest, jsonOut)
 	case "umbrella":
-		return cmdUmbrella(cfg, store, projStore, rest, jsonOut)
+		return cmdUmbrella(cfg, api, rest, jsonOut)
 	case "update":
 		return cmdUpdate(store, api, rest, jsonOut)
 	case "link-pr":
 		return cmdLinkPR(store, api, rest, jsonOut)
 	case "pr":
-		return cmdPR(store, api, rest, jsonOut)
+		return cmdPR(store, rest, jsonOut)
 	case "delete":
-		return cmdDelete(store, api, rest, jsonOut)
+		return cmdDelete(store, rest, jsonOut)
 	case "reopen":
-		return cmdReopen(store, rest, jsonOut)
+		return cmdReopen(store, api, rest, jsonOut)
 	case "project":
 		return cmdProject(projStore, rest, jsonOut)
 	case "cluster":
-		return cmdCluster(cfg, store, projStore, rest, jsonOut)
+		return cmdCluster(cfg, api, rest, jsonOut)
 	case "audit":
-		return cmdAudit(cfg, rest, jsonOut)
+		return cmdAudit(cfg, api, rest, jsonOut)
 	case "board":
 		return cmdBoard(store, jsonOut)
 	case "health":
 		return cmdHealth(cfg, rest, jsonOut)
 	case "triage":
-		return cmdTriage(cfg, store, projStore, rest, jsonOut)
+		return cmdTriage(cfg, api, store, rest, jsonOut)
 	case "monitor":
-		return cmdMonitor(cfg, store, rest, jsonOut)
+		return cmdMonitor(cfg, api, rest, jsonOut)
 	case "selfmonitor":
-		return cmdSelfmonitor(cfg, store, rest, jsonOut)
+		return cmdSelfmonitor(cfg, api, store, rest, jsonOut)
 	case "evaluation":
-		return cmdEvaluation(cfg, store, rest, jsonOut)
+		return cmdEvaluation(cfg, api, store, rest, jsonOut)
 	case "harness-evolution":
-		return cmdHarnessEvolution(cfg, store, rest, jsonOut)
+		return cmdHarnessEvolution(cfg, api, store, rest, jsonOut)
 	case "prompt-lab":
-		return cmdPromptLab(cfg, store, projStore, rest, jsonOut)
+		return cmdPromptLab(cfg, api, store, projStore, rest, jsonOut)
 	case "stats":
-		return cmdStats(cfg, rest, jsonOut)
+		return cmdStats(cfg, api, rest, jsonOut)
 	case "install-skills":
 		return cmdInstallSkills(cfg, jsonOut)
 	case "artifact":
-		return cmdArtifact(rest, jsonOut)
+		return cmdArtifact(api, rest, jsonOut)
 	case "progress":
-		return cmdProgress(store, projStore, rest, jsonOut)
+		return cmdProgress(api, rest, jsonOut)
 	case "config":
-		return cmdConfig(cfg, rest, jsonOut)
+		return cmdConfig(cfg, rest, jsonOut, api != nil, nil)
 	case "doctor":
-		return cmdDoctor(cfg, store, rest, jsonOut)
+		// ownsThisHome, not just "a board": every path cleanup deletes is under
+		// this home, and a board on another machine holds none of these task
+		// ids — so it would report every live worktree as an orphan and offer
+		// to delete it, agents included.
+		return cmdDoctor(cfg, store, ownsThisHome(api), "", rest, jsonOut)
 	case "trash":
 		return cmdTrash(store, rest, jsonOut)
 	case "tasks-history":
-		return cmdTasksHistory(cfg, rest, jsonOut)
+		return cmdTasksHistory(cfg, api, rest, jsonOut)
 	default:
 		return fatal(jsonOut, "unknown command: %s", cmd)
 	}
 }
 
-func openStores(cfg *config.Config) (*task.Manager, *project.Store, error) {
-	rawStore, err := task.NewStore(cfg.TasksDir)
-	if err != nil {
-		return nil, nil, fmt.Errorf("open store: %w", err)
+// resolveBoardAPI picks the server a command runs against.
+//
+// Every command that touches board state needs one. There is no second way to
+// reach a board: opening its files behind the instance that owns them made the
+// CLI a silent concurrent writer, and a stale target turned an ordinary edit
+// into a change the owning instance later overwrote.
+func resolveBoardAPI(cmd string, cfg *config.Config) (api *apiClient, refusal, cause string) {
+	if raw := strings.TrimSpace(os.Getenv(serverTargetEnv)); raw != "" {
+		c, err := newAPIClient(cfg)
+		if err != nil {
+			return nil, err.Error(), err.Error()
+		}
+		// A named target is the operator's choice, including a board serving
+		// another home, so answering the probe is enough. An older server that
+		// predates the service marker still works.
+		if c.reachable(context.Background()) {
+			return c, "", ""
+		}
+		why := fmt.Sprintf("no Sybra server is reachable at %s (%s)%s; start it, or point %s elsewhere",
+			c.baseURL, serverTargetEnv, probeCause(c), serverTargetEnv)
+		if runsWithoutServer(cmd) {
+			return nil, "", why
+		}
+		return nil, why, why
 	}
-	projStore, err := project.NewStore(cfg.ProjectsDir, cfg.ClonesDir)
-	if err != nil {
-		return nil, nil, fmt.Errorf("open project store: %w", err)
-	}
-	return task.NewManager(rawStore, nil), projStore, nil
-}
 
-func dispatchTaskStoreFallback(cmd string, rest []string, jsonOut bool, loadErr error) (code int, handled bool) {
-	if !supportsTaskStoreFallback(cmd) {
-		return 0, false
+	// No target named, so every board this machine might be running is tried.
+	// The desktop app's recorded port is kept across restarts, so a stale entry
+	// must not shadow a server that is up.
+	home := config.HomeDir()
+	candidates := localBoardCandidates(cfg)
+	tried := make([]string, 0, len(candidates))
+	unusable := make([]string, 0, len(candidates))
+	foreign := make([]string, 0, len(candidates))
+	notBoard := make([]string, 0, len(candidates))
+	causes := make([]string, 0, len(candidates))
+	for _, target := range candidates {
+		c, err := newLocalAPIClient(cfg, target)
+		if err != nil {
+			// Kept rather than dropped: a bind this client cannot address is
+			// the whole reason nothing was reachable, and swallowing it left
+			// the operator with a refusal naming no cause at all.
+			unusable = append(unusable, err.Error())
+			continue
+		}
+		tried = append(tried, c.baseURL)
+		if !c.reachable(context.Background()) {
+			if cause := probeCause(c); cause != "" {
+				causes = append(causes, cause)
+			}
+			continue
+		}
+		// Nobody named this target. With no bind configured every home infers
+		// the same default port, so a board that answers there may be serving a
+		// different home entirely — the operator's real one. It has to say it
+		// serves this one before the token goes anywhere near it.
+		if !c.isBoard() {
+			notBoard = append(notBoard, c.baseURL)
+			continue
+		}
+		if !c.servesThisHome(home) {
+			foreign = append(foreign, c.baseURL)
+			continue
+		}
+		return c, "", ""
 	}
-	store, tasksDir, err := openFallbackTaskStore()
-	if err != nil {
-		return fatal(jsonOut, "load config: %v (fallback task store: %v)", loadErr, err), true
-	}
-	fmt.Fprintf(os.Stderr,
-		"warning: load config: %v; falling back to direct task store at %s for `%s`\n",
-		loadErr, tasksDir, cmd)
-	// Dispatched directly (not via dispatch()) so this path never carries a
-	// nil cfg/projStore into the shared switch — nilaway can't correlate
-	// supportsTaskStoreFallback's allowlist with dispatch()'s cases, so
-	// routing through it flags every cfg/projStore-using branch as a
-	// potential nil deref even though none of these commands touch them.
-	switch cmd {
-	case "list":
-		return cmdList(store, rest, jsonOut), true
-	case "get":
-		return cmdGet(store, rest, jsonOut), true
-	case "create":
-		return cmdCreate(store, nil, rest, jsonOut), true
-	case "update":
-		return cmdUpdate(store, nil, rest, jsonOut), true
-	case "delete":
-		return cmdDelete(store, nil, rest, jsonOut), true
-	case "reopen":
-		return cmdReopen(store, rest, jsonOut), true
-	case "link-pr":
-		return cmdLinkPR(store, nil, rest, jsonOut), true
-	case "board":
-		return cmdBoard(store, jsonOut), true
-	case "trash":
-		return cmdTrash(store, rest, jsonOut), true
+	// The cause is computed before the runs-without-server exit, so a command
+	// whose whole purpose is diagnosing an unreachable board can say why. A pin
+	// mismatch and an unreadable bind are both "a board answered, or would
+	// have" — reporting them as "nothing is listening" sends an operator to
+	// restart a server that is already running.
+	var why string
+	switch {
+	case len(foreign) > 0:
+		why = fmt.Sprintf("the server at %s does not serve %s; start one for this home, or set %s to the board you meant",
+			strings.Join(foreign, ", "), home, serverTargetEnv)
+	case len(notBoard) > 0:
+		why = fmt.Sprintf("what answered at %s is not a Sybra board; start one for this home, or set %s to the board you meant",
+			strings.Join(notBoard, ", "), serverTargetEnv)
+	case len(tried) == 0 && len(unusable) > 0:
+		why = "this home's board cannot be addressed: " + strings.Join(unusable, "; ")
+	case len(tried) == 0:
+		why = fmt.Sprintf("no Sybra server could be located for this home; start one, or set %s", serverTargetEnv)
 	default:
-		return 0, false
+		why = fmt.Sprintf("no Sybra server is reachable (tried %s)%s; start one, or set %s",
+			strings.Join(tried, ", "), strings.Join(causes, ""), serverTargetEnv)
+	}
+	// A command that never reads the board runs regardless of what answered:
+	// refusing gen-cert because some other home's server holds the port would
+	// mean needing a server before the node that serves one can exist. It still
+	// gets the cause, so doctor can name it.
+	if runsWithoutServer(cmd) {
+		return nil, "", why
+	}
+	return nil, why, why
+}
+
+// probeCause renders why a reachability probe failed, when the reason is
+// something other than nothing listening. A certificate mismatch reported as
+// "no server is reachable" sends an operator to restart a running one.
+func probeCause(c *apiClient) string {
+	if c == nil || c.probeErr == nil {
+		return ""
+	}
+	return ": " + c.probeErr.Error()
+}
+
+// ownsThisHome reports that the resolved board serves this SYBRA_HOME.
+//
+// Loopback is not the question. Two instances on one machine are both loopback
+// and own different homes, so a board that answers here may hold none of the
+// tasks describing this disk — which is how a cleanup deleted a live sandbox
+// belonging to the other one.
+func ownsThisHome(api *apiClient) bool {
+	return api.ownsHome(config.HomeDir())
+}
+
+// dispatchWithoutBoard routes the commands that reached here with no server.
+// Only runsWithoutServer names get this far, and none of them reads the board.
+func dispatchWithoutBoard(cmd string, rest []string, cfg *config.Config, cause string, jsonOut bool) int {
+	switch cmd {
+	case "config":
+		return cmdConfig(cfg, rest, jsonOut, false, nil)
+	case "doctor":
+		return cmdDoctor(cfg, nil, false, cause, rest, jsonOut)
+	case "health":
+		return cmdHealth(cfg, rest, jsonOut)
+	case "install-skills":
+		return cmdInstallSkills(cfg, jsonOut)
+	case "cluster":
+		// gen-cert writes a keypair and nodes reads config; only reassign needs
+		// a board, and it refuses for itself. gen-cert in particular is the
+		// prerequisite for standing up a TLS follower, so requiring a server
+		// would mean needing one before the node that serves it can exist.
+		return cmdCluster(cfg, nil, rest, jsonOut)
+	default:
+		return fatal(jsonOut, "%s needs a Sybra server and none is reachable", cmd)
 	}
 }
 
-func supportsTaskStoreFallback(cmd string) bool {
+// runsWithoutServer reports the commands that inspect or repair this machine alone. They stay usable when the board they would otherwise talk to is down, which is what makes them the ones an operator reaches for to find out why it is down.
+func runsWithoutServer(cmd string) bool {
 	switch cmd {
-	case "list", "get", "create", "update", "delete", "reopen", "link-pr", "board", "trash":
+	case "config", "doctor", "health", "install-skills", "cluster":
 		return true
-	default:
-		return false
 	}
+	return false
 }
 
-func openFallbackTaskStore() (manager *task.Manager, tasksDir string, err error) {
-	tasksDir = strings.TrimSpace(os.Getenv("SYBRA_TASKS_DIR"))
-	if tasksDir == "" {
-		tasksDir = filepath.Join(config.HomeDir(), "tasks")
+func cmdGithubAppToken(cfg *config.Config, jsonOut bool) int {
+	app := cfg.GitHub.App
+	if !app.Enabled {
+		return fatal(jsonOut, "github.app is not enabled")
 	}
-	rawStore, err := task.NewStore(tasksDir)
-	if err != nil {
-		return nil, "", fmt.Errorf("open store %q: %w", tasksDir, err)
+	if err := enableCLIAppAuth(github.AppCredentials{
+		AppID:          app.AppID,
+		InstallationID: app.InstallationID,
+		PrivateKeyPath: app.PrivateKeyPath,
+	}); err != nil {
+		return fatal(jsonOut, "enable github app auth: %v", err)
 	}
-	return task.NewManager(rawStore, nil), tasksDir, nil
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := refreshCLIAppToken(ctx); err != nil {
+		return fatal(jsonOut, "refresh github app token: %v", err)
+	}
+	token := currentCLIAppToken()
+	if token == "" {
+		return fatal(jsonOut, "github app token is unavailable")
+	}
+	if jsonOut {
+		if err := json.NewEncoder(os.Stdout).Encode(map[string]string{"token": token}); err != nil {
+			return fatal(jsonOut, "write github app token json: %v", err)
+		}
+		return 0
+	}
+	fmt.Fprintln(os.Stdout, token)
+	return 0
 }
 
-func cmdList(s *task.Manager, args []string, jsonOut bool) int {
+func cmdList(s taskBoard, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
 	status := fs.String("status", "", "filter by status")
 	tag := fs.String("tag", "", "filter by tag")
@@ -458,7 +656,7 @@ func cmdList(s *task.Manager, args []string, jsonOut bool) int {
 	return 0
 }
 
-func cmdGet(s *task.Manager, args []string, jsonOut bool) int {
+func cmdGet(s taskBoard, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("get", flag.ContinueOnError)
 	compact := fs.Bool("compact", false, "omit planning support sidecars for implementation agents")
 	if err := fs.Parse(args); err != nil {
@@ -468,7 +666,7 @@ func cmdGet(s *task.Manager, args []string, jsonOut bool) int {
 		return fatal(jsonOut, "usage: get [--compact] <id>")
 	}
 
-	t, err := s.Get(fs.Arg(0))
+	t, err := getTask(s, fs.Arg(0))
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
@@ -533,6 +731,15 @@ func cmdGet(s *task.Manager, args []string, jsonOut bool) int {
 	if t.CodeReview != "" {
 		fmt.Printf("\n## Code Review\n\n%s\n", t.CodeReview)
 	}
+	if t.CurrentTestFailures != "" {
+		fmt.Printf("\n%s\n", t.CurrentTestFailures)
+	}
+	if t.AcceptanceLedger != "" {
+		fmt.Printf("\n%s\n", t.AcceptanceLedger)
+	}
+	if t.SpecDecision != "" {
+		fmt.Printf("\n%s\n", t.SpecDecision)
+	}
 	return 0
 }
 
@@ -551,7 +758,7 @@ func stripPlanningSupport(t *task.Task) error {
 	return nil
 }
 
-func cmdCreate(s *task.Manager, api *apiClient, args []string, jsonOut bool) int {
+func cmdCreate(s taskBoard, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("create", flag.ContinueOnError)
 	title := fs.String("title", "", "task title (required)")
 	body := fs.String("body", "", "task body markdown")
@@ -561,18 +768,30 @@ func cmdCreate(s *task.Manager, api *apiClient, args []string, jsonOut bool) int
 	planResearch := fs.String("plan-research", "", "plan research markdown")
 	planDecisions := fs.String("plan-decisions", "", "plan decisions markdown")
 	planBrief := fs.String("plan-brief", "", "plan brief markdown")
-	mode := fs.String("mode", "headless", "agent mode: headless|interactive")
+	mode := fs.String("mode", "headless", "agent mode: headless")
 	tags := fs.String("tags", "", "comma-separated tags")
 	proj := fs.String("project", "", "project id (owner/repo)")
 	branch := fs.String("branch", "", "Git branch name")
 	pr := fs.Int("pr", 0, "GitHub PR number")
 	issue := fs.String("issue", "", "GitHub issue URL")
 	allowDup := fs.Bool("allow-dup", false, "skip duplicate-dispatch check (project+issue+title)")
+	var dependsOnCond dependsOnConditionFlag
+	fs.Var(&dependsOnCond, "depends-on-condition",
+		"repeatable ref=kind:value completion condition on a depends_on entry (kind: label|note)")
 	if err := fs.Parse(args); err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
 	if *title == "" {
 		return fatal(jsonOut, "title is required")
+	}
+	var depConds []any
+	if len(dependsOnCond) > 0 {
+		conds, err := parseDepConditions(dependsOnCond)
+		if err != nil {
+			return fatal(jsonOut, "%v", err)
+		}
+		depConds = conds
+		warnInertDepConditions(nil, conds) // depends_on isn't settable at create time
 	}
 
 	if !*allowDup {
@@ -589,15 +808,18 @@ func cmdCreate(s *task.Manager, api *apiClient, args []string, jsonOut bool) int
 		}
 	}
 
-	t, err := createTaskViaAPIOrFS(s, api, *title, *body, *mode)
+	t, err := createTask(s, *title, *body, *mode)
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
 
 	updates := buildCreateUpdateMap(*tags, *proj, *branch, *pr, *issue,
 		*plan, *planContract, *planCritique, *planResearch, *planDecisions, *planBrief)
+	if depConds != nil {
+		updates["depends_on_conditions"] = depConds
+	}
 	if len(updates) > 0 {
-		t, err = updateTaskViaAPIOrFS(s, api, t.ID, updates)
+		t, err = updateTask(s, t.ID, updates)
 		if err != nil {
 			return fatal(jsonOut, "update after create: %v", err)
 		}
@@ -653,24 +875,36 @@ func buildCreateUpdateMap(tags, proj, branch string, pr int, issue,
 	return updates
 }
 
-func createTaskViaAPIOrFS(s *task.Manager, api *apiClient, title, body, mode string) (task.Task, error) {
-	if created, handled, apiErr := viaAPI[task.Task](api, "TaskService", "CreateTask", title, body, mode); handled {
-		return created, apiErr
-	}
+// createTask goes through the board, which is already server-backed whenever
+// one answers. An extra viaAPI layer here would re-send the same request on a
+// transport error and duplicate the task.
+func createTask(s taskBoard, title, body, mode string) (task.Task, error) {
 	return s.Create(title, body, mode)
 }
 
-func updateTaskViaAPIOrFS(s *task.Manager, api *apiClient, id string, updates map[string]any) (task.Task, error) {
-	if updated, handled, apiErr := viaAPI[task.Task](api, "TaskService", "UpdateTask", id, updates); handled {
-		return updated, apiErr
-	}
+// updateTask sends the field map to the board. The board is the only writer:
+// there is no local path left, so no branch on which one is in play.
+func updateTask(s taskBoard, id string, updates map[string]any) (task.Task, error) {
 	return s.UpdateMap(id, updates)
+}
+
+// appendManualDecisionProgress records the operator's status change beside the board that took it. A reachable server owns the artifact store for the task it just updated, so writing to this machine's disk instead would file the decision where the owning instance never reads it.
+func appendManualDecisionProgress(api *apiClient, taskID, from, to, reason string) {
+	if strings.TrimSpace(taskID) == "" || strings.TrimSpace(from) == "" || strings.TrimSpace(to) == "" {
+		return
+	}
+	message := artifact.ManualDecisionMessage(from, to, reason)
+	_, err := callAPI[artifact.ProgressEntry](api, taskServiceName, "AppendTaskProgress",
+		taskID, artifact.ProgressKindDecision, "", message)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: progress decision log append failed for task %s: %v\n", taskID, err)
+	}
 }
 
 // cmdHandoff creates a task pre-tagged for a Sybra workflow entry point. It
 // bypasses triage/planning and either starts the requested agentic stage in an
 // existing worktree or places the task in a raw status without workflow dispatch.
-func cmdHandoff(s *task.Manager, ps *project.Store, args []string, jsonOut bool) int {
+func cmdHandoff(s taskBoard, ps projectBoard, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("handoff", flag.ContinueOnError)
 	title := fs.String("title", "", "task title (required)")
 	body := fs.String("body", "", "task body / research context markdown")
@@ -678,7 +912,7 @@ func cmdHandoff(s *task.Manager, ps *project.Store, args []string, jsonOut bool)
 	planFile := fs.String("plan-file", "", "path to a file holding the approved plan (wins over --plan)")
 	proj := fs.String("project", "", "project id (owner/repo); derived from the worktree origin remote when omitted")
 	wtDir := fs.String("worktree-dir", "", "git worktree Sybra should reuse (default: current directory)")
-	mode := fs.String("mode", "headless", "agent mode: headless|interactive")
+	mode := fs.String("mode", "headless", "agent mode: headless")
 	stage := fs.String("stage", "implement", "workflow entry stage: "+handoffStageCompactList())
 	rawStatus := fs.String("status", "", "raw task status to create without starting a workflow")
 	sourceProvider := fs.String("source-provider", "", "provider that produced the handed-off work: claude|codex|copilot|opencode")
@@ -729,9 +963,6 @@ func cmdHandoff(s *task.Manager, ps *project.Store, args []string, jsonOut bool)
 	if handoffSource != "" {
 		init.HandoffSourceProvider = &handoffSource
 	}
-	if rawStatusMode {
-		init.Status = &status
-	}
 	// Handoff always adopts the current worktree and routes through the internal
 	// Sybra task pipeline. It must never create the inbound PR-review lane's
 	// `review` task shape, because that represents external PRs awaiting human
@@ -746,8 +977,20 @@ func cmdHandoff(s *task.Manager, ps *project.Store, args []string, jsonOut bool)
 	if *pr > 0 {
 		init.PRNumber = task.Ptr(*pr)
 	}
+	if rawStatusMode && status == task.StatusHumanRequired {
+		init.Escalation = task.OperatorDecisionEvidence("operator.handoff_status", "operator created a human-required handoff")
+		init.AutonomyOutcome = task.HumanRequiredOutcome()
+	}
 
-	t, err := s.CreateFull(*title, *body, *mode, init)
+	var (
+		t   task.Task
+		err error
+	)
+	if rawStatusMode {
+		t, err = s.CreateWithStatus(*title, *body, *mode, status, init)
+	} else {
+		t, err = s.CreateFull(*title, *body, *mode, init)
+	}
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
@@ -763,7 +1006,7 @@ func cmdHandoff(s *task.Manager, ps *project.Store, args []string, jsonOut bool)
 	return 0
 }
 
-func resolveHandoffMode(fs *flag.FlagSet, stage, rawStatus string, pr int) (handoffStageConfig, task.Status, bool, error) {
+func resolveHandoffMode(fs *flag.FlagSet, stage, rawStatus string, pr int) (cfg handoffStageConfig, status task.Status, explicit bool, err error) {
 	stageProvided := false
 	fs.Visit(func(f *flag.Flag) {
 		if f.Name == "stage" {
@@ -788,7 +1031,7 @@ func resolveHandoffMode(fs *flag.FlagSet, stage, rawStatus string, pr int) (hand
 		}
 		return handoffStageConfig{}, "", false, handoffStageUsageError(stage)
 	}
-	if pr > 0 && stageCfg.name != "ready-pr" {
+	if pr > 0 && stageCfg.name != string(task.StatusReadyPR) {
 		return handoffStageConfig{}, "", false, fmt.Errorf("--pr is only valid with --stage ready-pr so the PR stays linked to an internal Sybra task")
 	}
 	return stageCfg, "", false, nil
@@ -805,7 +1048,7 @@ func resolveHandoffPlan(plan, planFile string) (string, error) {
 	return string(data), nil
 }
 
-func resolveHandoffProject(ps *project.Store, dir, projectID string) (string, project.Project, error) {
+func resolveHandoffProject(ps projectBoard, dir, projectID string) (string, project.Project, error) {
 	if projectID == "" {
 		derived, err := deriveProjectID(dir)
 		if err != nil {
@@ -829,10 +1072,12 @@ const handoffManualTag = "handoff-manual"
 
 // handoffStageDef is one entry in the handoff-stage registry: a canonical
 // name, its input aliases, and the tags that route a task into the matching
-// Sybra lane (simple-task-handoff-<name>.yaml) on creation. Adding a stage
-// is a data edit here — handoffStageConfigFor, its error message, and the
-// --stage usage text all derive from this slice, so nothing else needs to
-// change to keep a new stage reachable.
+// Sybra lane on creation. The builtin workflow IDs are expanded from the
+// single handoff template at internal/workflow/builtin/simple-task-handoff.yaml.
+// Adding a stage is a data edit here plus a matching template variant there —
+// handoffStageConfigFor, its error message, and the --stage usage text all
+// derive from this slice, so nothing else needs to change to keep a new stage
+// reachable.
 type handoffStageDef struct {
 	name           string
 	aliases        []string
@@ -843,16 +1088,16 @@ type handoffStageDef struct {
 
 var handoffStageRegistry = []handoffStageDef{
 	// implement: simple-task-handoff → in-progress → implement → review → testing → PR
-	{name: "implement", aliases: []string{"", "in-progress"}, tags: []string{"handoff"},
+	{name: "implement", aliases: []string{"", string(task.StatusInProgress)}, tags: []string{"handoff"},
 		usage: "have a plan -> Sybra implements, reviews, tests, opens the PR"},
 	// review: simple-task-handoff-review → ready-review → review → testing → PR
-	{name: "review", aliases: []string{"ready-review", "agentic-review"}, tags: []string{"handoff", "handoff-review"},
+	{name: "review", aliases: []string{string(task.StatusReadyReview), "agentic-review"}, tags: []string{"handoff", "handoff-review"},
 		usage: "implemented locally -> Sybra enters agentic review", requiresSource: true},
 	// testing: simple-task-handoff-testing → testing → adversarial test → PR
-	{name: "testing", aliases: []string{"test"}, tags: []string{"handoff", "handoff-testing"},
+	{name: string(task.StatusTesting), aliases: []string{"test"}, tags: []string{"handoff", "handoff-testing"},
 		usage: "reviewed locally -> Sybra tests, then opens the PR", requiresSource: true},
 	// ready-pr: simple-task-handoff-ready-pr → ready-pr → open/update PR
-	{name: "ready-pr", aliases: []string{"open-pr", "create-pr"}, tags: []string{"handoff", "handoff-ready-pr"},
+	{name: string(task.StatusReadyPR), aliases: []string{"open-pr", "create-pr"}, tags: []string{"handoff", "handoff-ready-pr"},
 		usage: "tested locally -> Sybra opens or updates the PR; pass --pr N\n" +
 			strings.Repeat(" ", 19) + "only to link an existing same-branch PR"},
 }
@@ -889,7 +1134,7 @@ func handoffStageUsageError(stage string) error {
 
 func isExternalPRHandoffStage(stage string) bool {
 	switch strings.ToLower(strings.TrimSpace(stage)) {
-	case "pr", "in-review", "pull-request", "pull_request":
+	case "pr", string(task.StatusInReview), "pull-request", "pull_request":
 		return true
 	default:
 		return false
@@ -938,15 +1183,15 @@ func handoffStageSourceRequirementList() string {
 }
 
 func normalizeHandoffSourceProvider(raw string) (string, error) {
-	provider := strings.ToLower(strings.TrimSpace(raw))
-	switch provider {
+	name := strings.ToLower(strings.TrimSpace(raw))
+	switch name {
 	case "none", "clear":
-		provider = ""
+		name = ""
 	}
-	if _, err := task.ValidateAgentProvider(provider); err != nil {
+	if _, err := task.ValidateAgentProvider(name); err != nil {
 		return "", err
 	}
-	return provider, nil
+	return name, nil
 }
 
 // resolveWorktreeDir resolves the handoff worktree (default: cwd) to an
@@ -1018,10 +1263,10 @@ func printHandoffResult(t task.Task, stage, projectID, dir string) {
 	case "review":
 		fmt.Printf("  worktree: %s\n", dir)
 		fmt.Println("  Sybra will skip to review and open the PR from this worktree.")
-	case "testing":
+	case string(task.StatusTesting):
 		fmt.Printf("  worktree: %s\n", dir)
 		fmt.Println("  Sybra will skip straight to adversarial testing of this worktree.")
-	case "ready-pr":
+	case string(task.StatusReadyPR):
 		fmt.Printf("  worktree: %s\n", dir)
 		fmt.Println("  Sybra will skip straight to opening or updating the PR from this worktree.")
 	default:
@@ -1041,11 +1286,11 @@ func printHandoffStatusResult(t task.Task, status task.Status, projectID, dir st
 // deriveProjectID reads the origin remote of a git worktree and converts it to
 // a Sybra project id (owner/repo).
 func deriveProjectID(dir string) (string, error) {
-	out, err := exec.CommandContext(context.Background(), "git", "-C", dir, "remote", "get-url", "origin").Output()
+	out, err := gitexec.Output(context.Background(), gitexec.Options{Dir: dir}, "remote", "get-url", "origin")
 	if err != nil {
 		return "", fmt.Errorf("git remote get-url origin: %w", err)
 	}
-	owner, repo, err := project.ParseGitHubURL(strings.TrimSpace(string(out)))
+	owner, repo, err := project.ParseGitHubURL(out)
 	if err != nil {
 		return "", err
 	}
@@ -1088,7 +1333,7 @@ func cmdInstallSkills(cfg *config.Config, jsonOut bool) int {
 		PrimaryDst:           cfg.SkillsDir,
 		SybraHomeDir:         config.HomeDir(),
 		UserHomeDir:          home,
-		DowngradeCommitFlags: !project.GPGSigningAvailable(context.Background()),
+		DowngradeCommitFlags: !project.NormalizeSigningPolicy(cfg.CommitSigning()).SignsCommits(context.Background()),
 	})
 
 	dsts := []string{
@@ -1127,7 +1372,7 @@ func isSybraRepo(dir string) bool {
 // Match requires all three fields to be non-empty and equal, so it cannot
 // collapse legitimate distinct subtasks of an umbrella issue (those have
 // different titles).
-func findActiveDuplicate(s *task.Manager, projectID, issue, title string) (task.Task, bool, error) {
+func findActiveDuplicate(s taskBoard, projectID, issue, title string) (task.Task, bool, error) {
 	if projectID == "" || issue == "" || title == "" {
 		return task.Task{}, false, nil
 	}
@@ -1146,7 +1391,7 @@ func findActiveDuplicate(s *task.Manager, projectID, issue, title string) (task.
 	return task.Task{}, false, nil
 }
 
-func cmdUpdate(s *task.Manager, api *apiClient, args []string, jsonOut bool) int {
+func cmdUpdate(s taskBoard, api *apiClient, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "usage: update <id> [flags]")
 	}
@@ -1167,7 +1412,15 @@ func cmdUpdate(s *task.Manager, api *apiClient, args []string, jsonOut bool) int
 		return fatal(jsonOut, "no updates specified")
 	}
 
-	t, err := updateTaskViaAPIOrFS(s, api, id, updates)
+	if conds, ok := updates["depends_on_conditions"].([]any); ok {
+		if cur, err := s.Get(id); err == nil {
+			warnInertDepConditions(cur.DependsOn, conds)
+		}
+	}
+
+	// No pre-read: the board owns the decision entry a human-required exit
+	// records, so the only thing this fetch bought was a second round trip.
+	t, err := updateTask(s, id, updates)
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
@@ -1213,10 +1466,31 @@ type updateFlags struct {
 	blockerRetryAfter *string
 	blockerExhausted  *bool
 	blockerClear      *bool
+	dependsOnCond     *dependsOnConditionFlag
+}
+
+// dependsOnConditionFlag accumulates repeated --depends-on-condition
+// "ref=kind:value" values (stdlib flag has no repeatable-string primitive).
+// Kept distinct from cluster.go's multiFlag since that type's Set hardcodes
+// a --host-specific error message.
+type dependsOnConditionFlag []string
+
+func (f *dependsOnConditionFlag) String() string { return strings.Join(*f, ",") }
+
+func (f *dependsOnConditionFlag) Set(v string) error {
+	*f = append(*f, v)
+	return nil
 }
 
 func newUpdateFlags(fs *flag.FlagSet) updateFlags {
-	return updateFlags{
+	// dependsOnCond is allocated separately (not taken from the struct
+	// literal below) so fs.Var registers a stable address: newUpdateFlags
+	// returns updateFlags by value, and a pointer into that local copy's own
+	// field would silently detach from the struct the caller actually holds
+	// once fs.Parse runs — the same reason fs.String/Int/Bool each allocate
+	// their own backing variable instead of pointing into this struct.
+	dependsOnCond := new(dependsOnConditionFlag)
+	f := updateFlags{
 		title:             fs.String("title", "", "new title"),
 		status:            fs.String("status", "", "new status"),
 		body:              fs.String("body", "", "new body"),
@@ -1244,16 +1518,20 @@ func newUpdateFlags(fs *flag.FlagSet) updateFlags {
 		statusReason:      fs.String("status-reason", "", "reason for status change"),
 		maxTurns:          fs.Int("max-turns", -1, "per-task max turns override (0 clears override, >0 sets limit)"),
 		reasoningEffort:   fs.String("reasoning-effort", "", "reasoning effort (all providers): low|medium|high|xhigh ('default' or 'none' clears the override)"),
-		blockerKind:       fs.String("blocker-kind", "", "blocker kind (e.g. operator_decision|credential_required|policy_approval|worktree_repair|review_fix_exhausted|triage_retry_exhausted)"),
+		blockerKind:       fs.String("blocker-kind", "", "blocker kind (e.g. operator_decision|credential_required|policy_approval|worktree_repair|review_fix_exhausted|triage_retry_exhausted|dependency_scope_unmet)"),
 		blockerCode:       fs.String("blocker-code", "", "blocker code (short machine-readable subtype)"),
 		blockerNextAction: fs.String("blocker-next-action", "", "next automatic action for the blocker (e.g. repair_worktree)"),
 		blockerRetryAfter: fs.String("blocker-retry-after", "", "RFC3339 timestamp before which the blocker should not be retried"),
 		blockerExhausted:  fs.Bool("blocker-exhausted", false, "mark the blocker's automated retry budget as exhausted"),
 		blockerClear:      fs.Bool("blocker-clear", false, "clear any blocker state on this task"),
+		dependsOnCond:     dependsOnCond,
 	}
+	fs.Var(dependsOnCond, "depends-on-condition",
+		"repeatable ref=kind:value completion condition on a depends_on entry (kind: label|note); replaces the full set when given")
+	return f
 }
 
-func buildUpdateMap(s *task.Manager, id string, fs *flag.FlagSet, f updateFlags) (map[string]any, error) {
+func buildUpdateMap(s taskBoard, id string, fs *flag.FlagSet, f updateFlags) (map[string]any, error) {
 	updates := map[string]any{}
 	applyBasicUpdateFlags(updates, f)
 	if err := applySidecarUpdateFlags(fs, updates, f); err != nil {
@@ -1274,7 +1552,7 @@ func buildUpdateMap(s *task.Manager, id string, fs *flag.FlagSet, f updateFlags)
 // the replacement from the task's current blocker state — an operator
 // running e.g. `--blocker-exhausted` alone must not blank out the kind/code
 // the workflow engine already recorded.
-func applyBlockerUpdateFlags(s *task.Manager, id string, fs *flag.FlagSet, updates map[string]any, f updateFlags) error {
+func applyBlockerUpdateFlags(s taskBoard, id string, fs *flag.FlagSet, updates map[string]any, f updateFlags) error {
 	if *f.blockerClear {
 		updates["blocker"] = map[string]any{}
 		return nil
@@ -1395,20 +1673,90 @@ func applyTypedUpdateFlags(fs *flag.FlagSet, updates map[string]any, f updateFla
 		}
 		updates["reasoning_effort"] = v
 	}
+	if len(*f.dependsOnCond) > 0 {
+		conds, err := parseDepConditions(*f.dependsOnCond)
+		if err != nil {
+			return err
+		}
+		updates["depends_on_conditions"] = conds
+	}
 	return nil
 }
 
-func cmdDelete(s *task.Manager, api *apiClient, args []string, jsonOut bool) int {
+// parseDepCondition parses one --depends-on-condition value of the form
+// "ref=kind:value" (kind: label|note) into the map[string]any shape
+// task.UpdateFromMap's "depends_on_conditions" case expects. value may itself
+// contain colons (e.g. a URL or a sentence), so only the first colon after
+// the ref/kind separator splits kind from value.
+func parseDepCondition(raw string) (map[string]any, error) {
+	ref, rest, hasEq := strings.Cut(raw, "=")
+	ref = strings.TrimSpace(ref)
+	if !hasEq || ref == "" {
+		return nil, fmt.Errorf("invalid --depends-on-condition %q: want ref=kind:value", raw)
+	}
+	kind, value, hasColon := strings.Cut(rest, ":")
+	kind = strings.TrimSpace(kind)
+	if !hasColon || kind == "" || value == "" {
+		return nil, fmt.Errorf("invalid --depends-on-condition %q: want ref=kind:value", raw)
+	}
+	if kind != task.DepConditionKindLabel && kind != task.DepConditionKindNote {
+		return nil, fmt.Errorf("invalid --depends-on-condition %q: unknown kind %q (valid: %s, %s)",
+			raw, kind, task.DepConditionKindLabel, task.DepConditionKindNote)
+	}
+	return map[string]any{"ref": ref, "kind": kind, "value": value}, nil
+}
+
+// parseDepConditions parses every --depends-on-condition occurrence and
+// rejects a duplicate ref within this same invocation before it ever reaches
+// task.UpdateFromMap's own duplicate check (internal/task/update.go's
+// validateDepConditions) — same rule, checked here too so the CLI's error
+// names the offending flag value instead of a generic field error.
+func parseDepConditions(raws []string) ([]any, error) {
+	out := make([]any, 0, len(raws))
+	seen := make(map[string]bool, len(raws))
+	for _, raw := range raws {
+		m, err := parseDepCondition(raw)
+		if err != nil {
+			return nil, err
+		}
+		ref, _ := m["ref"].(string)
+		key := issueref.Normalize(ref)
+		if seen[key] {
+			return nil, fmt.Errorf("invalid --depends-on-condition %q: duplicate ref %q", raw, m["ref"])
+		}
+		seen[key] = true
+		out = append(out, m)
+	}
+	return out, nil
+}
+
+// warnInertDepConditions best-effort warns (stderr only, never fails the
+// command) when a just-authored condition names a ref that isn't among
+// currentDependsOn — the condition is accepted (DependsOn is commonly set
+// afterward, e.g. by umbrella expansion) but stays inert until a matching
+// depends_on entry exists.
+func warnInertDepConditions(currentDependsOn []string, conds []any) {
+	present := make(map[string]bool, len(currentDependsOn))
+	for _, d := range currentDependsOn {
+		present[issueref.Normalize(d)] = true
+	}
+	for _, c := range conds {
+		m, _ := c.(map[string]any)
+		ref, _ := m["ref"].(string)
+		if !present[issueref.Normalize(ref)] {
+			fmt.Fprintf(os.Stderr, "warning: --depends-on-condition ref %q is not in this task's depends_on — condition will be inert until it is added\n", ref)
+		}
+	}
+}
+
+// cmdDelete dispatches once. A retry above a server-backed board would re-send a request the server had already committed, and report the 404 from the second attempt as a failure of the first.
+func cmdDelete(s taskBoard, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "usage: delete <id>")
 	}
 
-	if _, handled, apiErr := viaAPI[struct{}](api, "TaskService", "DeleteTask", args[0]); handled {
-		if apiErr != nil {
-			return fatal(jsonOut, "%v", apiErr)
-		}
-	} else if fsErr := s.Delete(args[0]); fsErr != nil {
-		return fatal(jsonOut, "%v", fsErr)
+	if err := s.Delete(args[0]); err != nil {
+		return fatal(jsonOut, "%v", err)
 	}
 
 	if jsonOut {
@@ -1418,7 +1766,7 @@ func cmdDelete(s *task.Manager, api *apiClient, args []string, jsonOut bool) int
 	return 0
 }
 
-func cmdReopen(s *task.Manager, args []string, jsonOut bool) int {
+func cmdReopen(s taskBoard, api *apiClient, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("reopen", flag.ContinueOnError)
 	force := fs.Bool("force", false, "reopen even if the task landed (outcome merged)")
 	projectID := fs.String("project", "", "restore project_id (for tasks whose project link was lost)")
@@ -1438,18 +1786,28 @@ func cmdReopen(s *task.Manager, args []string, jsonOut bool) int {
 		if !*force && (t.Outcome == "merged" || t.Outcome == "merged_with_edits") {
 			return fatal(jsonOut, "task %s landed (outcome=%s); pass --force to reopen anyway", id, t.Outcome)
 		}
-		u := task.Update{
-			Status:       task.Ptr(task.StatusTodo),
-			Workflow:     task.Ptr[*workflow.Execution](nil),
-			WorktreeDir:  task.Ptr(""),
-			StatusReason: task.Ptr(""),
-			Outcome:      task.Ptr(""),
+		extra := task.Update{
+			ClearWorkflow: task.Ptr(true),
+			WorktreeDir:   task.Ptr(""),
+			StatusReason:  task.Ptr(""),
+			Outcome:       task.Ptr(""),
 		}
 		if *projectID != "" {
-			u.ProjectID = task.Ptr(*projectID)
+			extra.ProjectID = task.Ptr(*projectID)
 		}
-		if _, err := s.Update(id, u); err != nil {
+		result, err := s.Apply(task.TransitionIntent{
+			TaskID:           id,
+			ToStatus:         task.StatusTodo,
+			Actor:            "cli.reopen",
+			Extra:            extra,
+			OperatorOverride: true,
+		})
+		if err != nil {
 			return fatal(jsonOut, "%v", err)
+		}
+		updated := result.Task
+		if t.Status == task.StatusHumanRequired && updated.Status != task.StatusHumanRequired {
+			appendManualDecisionProgress(api, updated.ID, string(t.Status), string(updated.Status), updated.StatusReason)
 		}
 		reopened = append(reopened, id)
 	}
@@ -1464,7 +1822,7 @@ func cmdReopen(s *task.Manager, args []string, jsonOut bool) int {
 // to in-review so the PR monitor loop can take over (auto-merge / done on
 // merge). Use when a PR was opened outside of Sybra (manually or by an external
 // tool) and the task's pr_number is still 0.
-func cmdLinkPR(s *task.Manager, api *apiClient, args []string, jsonOut bool) int {
+func cmdLinkPR(s taskBoard, api *apiClient, args []string, jsonOut bool) int {
 	if len(args) < 2 {
 		return fatal(jsonOut, "usage: link-pr <task-id> <pr-number>")
 	}
@@ -1474,7 +1832,7 @@ func cmdLinkPR(s *task.Manager, api *apiClient, args []string, jsonOut bool) int
 		return fatal(jsonOut, "pr-number must be a positive integer, got %q", args[1])
 	}
 
-	t, err := s.Get(id)
+	t, err := getTask(s, id)
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
@@ -1486,7 +1844,7 @@ func cmdLinkPR(s *task.Manager, api *apiClient, args []string, jsonOut bool) int
 		updates["status_reason"] = ""
 	}
 
-	t, err = updateTaskViaAPIOrFS(s, api, id, updates)
+	t, err = updateTask(s, id, updates)
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
@@ -1576,7 +1934,7 @@ func printJSON(v any) int {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(v); err != nil {
-		fmt.Fprintf(os.Stderr, `{"error":"%v"}`+"\n", err)
+		writeJSONError(err.Error())
 		return 1
 	}
 	return 0
@@ -1585,11 +1943,53 @@ func printJSON(v any) int {
 func fatal(jsonOut bool, format string, args ...any) int {
 	msg := fmt.Sprintf(format, args...)
 	if jsonOut {
-		fmt.Fprintf(os.Stderr, `{"error":"%s"}`+"\n", msg)
+		writeJSONError(msg)
 	} else {
 		fmt.Fprintf(os.Stderr, "error: %s\n", msg)
 	}
+	if len(args) == 1 {
+		if err, ok := args[0].(error); ok && isRetryableCLIError(err) {
+			return 75
+		}
+	}
 	return 1
+}
+
+func isRetryableCLIError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, fsutil.ErrLockTimeout) {
+		return true
+	}
+	// A board too contended to answer inside the call deadline is the same
+	// condition as the 503 below — the record is busy, not broken — but it
+	// surfaces as the client's own deadline instead of a status code. Exiting
+	// 1 for it told every agent to abandon work it only had to repeat, and
+	// under real contention the request often committed server-side anyway,
+	// so the plain failure was not even accurate.
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded) {
+		return true
+	}
+	var ae *apiError
+	if errors.As(err, &ae) {
+		return ae.Status == http.StatusServiceUnavailable
+	}
+	type statusErr interface{ HTTPStatus() int }
+	var se statusErr
+	return errors.As(err, &se) && se.HTTPStatus() == http.StatusServiceUnavailable
+}
+
+// writeJSONError marshals rather than interpolating: several messages quote a
+// config key or a path, and a raw double quote inside the string literal makes
+// the object unparseable for the agents that run this with --json.
+func writeJSONError(msg string) {
+	encoded, err := json.Marshal(map[string]string{"error": msg})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %s\n", msg)
+		return
+	}
+	fmt.Fprintln(os.Stderr, string(encoded))
 }
 
 func filterProject(tasks []task.Task, projectID string) []task.Task {
@@ -1602,9 +2002,9 @@ func filterProject(tasks []task.Task, projectID string) []task.Task {
 	return out
 }
 
-func cmdProject(ps *project.Store, args []string, jsonOut bool) int {
+func cmdProject(ps projectBoard, args []string, jsonOut bool) int {
 	if len(args) == 0 {
-		return fatal(jsonOut, "usage: project <list|get|create|update|delete> [flags]")
+		return fatal(jsonOut, "usage: project <list|get|create|adopt|update|delete> [flags]")
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
@@ -1614,6 +2014,8 @@ func cmdProject(ps *project.Store, args []string, jsonOut bool) int {
 		return cmdProjectGet(ps, rest, jsonOut)
 	case "create":
 		return cmdProjectCreate(ps, rest, jsonOut)
+	case "adopt":
+		return cmdProjectAdopt(ps, rest, jsonOut)
 	case "update":
 		return cmdProjectUpdate(ps, rest, jsonOut)
 	case "delete":
@@ -1623,7 +2025,7 @@ func cmdProject(ps *project.Store, args []string, jsonOut bool) int {
 	}
 }
 
-func cmdProjectList(ps *project.Store, jsonOut bool) int {
+func cmdProjectList(ps projectBoard, jsonOut bool) int {
 	projects, err := ps.List()
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
@@ -1643,7 +2045,7 @@ func cmdProjectList(ps *project.Store, jsonOut bool) int {
 	return 0
 }
 
-func cmdProjectGet(ps *project.Store, args []string, jsonOut bool) int {
+func cmdProjectGet(ps projectBoard, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "usage: project get <id>")
 	}
@@ -1659,7 +2061,7 @@ func cmdProjectGet(ps *project.Store, args []string, jsonOut bool) int {
 	return 0
 }
 
-func cmdProjectCreate(ps *project.Store, args []string, jsonOut bool) int {
+func cmdProjectCreate(ps projectBoard, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("project create", flag.ContinueOnError)
 	url := fs.String("url", "", "GitHub repository URL (required)")
 	ptype := fs.String("type", "pet", "project type: pet|work")
@@ -1680,7 +2082,37 @@ func cmdProjectCreate(ps *project.Store, args []string, jsonOut bool) int {
 	return 0
 }
 
-func cmdProjectUpdate(ps *project.Store, args []string, jsonOut bool) int {
+// cmdProjectAdopt registers a project pointing at a clone that already
+// exists on disk, without cloning or contacting a remote — for a fixture or
+// an air-gapped install describing a repo it already has locally. --url is
+// still required: it is the only source of the owner/repo ID, but it is
+// never dereferenced as a reachable remote.
+func cmdProjectAdopt(ps projectBoard, args []string, jsonOut bool) int {
+	fs := flag.NewFlagSet("project adopt", flag.ContinueOnError)
+	url := fs.String("url", "", "GitHub-shaped repository URL, used only to derive the owner/repo ID (required)")
+	clonePath := fs.String("clone-path", "", "path to an existing local git clone (required)")
+	ptype := fs.String("type", "pet", "project type: pet|work")
+	if err := fs.Parse(args); err != nil {
+		return fatal(jsonOut, "%v", err)
+	}
+	if *url == "" {
+		return fatal(jsonOut, "url is required")
+	}
+	if *clonePath == "" {
+		return fatal(jsonOut, "clone-path is required")
+	}
+	p, err := ps.Adopt(*url, project.ProjectType(*ptype), *clonePath)
+	if err != nil {
+		return fatal(jsonOut, "%v", err)
+	}
+	if jsonOut {
+		return printJSON(p)
+	}
+	fmt.Printf("Adopted project %s\n", p.ID)
+	return 0
+}
+
+func cmdProjectUpdate(ps projectBoard, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "usage: project update <id> [--type work|pet] [--setup-commands cmd1,cmd2]")
 	}
@@ -1719,7 +2151,7 @@ func cmdProjectUpdate(ps *project.Store, args []string, jsonOut bool) int {
 	return 0
 }
 
-func cmdProjectDelete(ps *project.Store, args []string, jsonOut bool) int {
+func cmdProjectDelete(ps projectBoard, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "usage: project delete <id>")
 	}
@@ -1752,7 +2184,7 @@ type boardSummary struct {
 	Blocked       []boardTask    `json:"blocked"`
 }
 
-func cmdBoard(s *task.Manager, jsonOut bool) int {
+func cmdBoard(s taskBoard, jsonOut bool) int {
 	tasks, err := s.List()
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
@@ -2072,36 +2504,87 @@ func formatHealthNumber(v float64, digits int) string {
 	return fmt.Sprintf("%.*f", digits, v)
 }
 
-func cmdMonitor(cfg *config.Config, store *task.Manager, args []string, jsonOut bool) int {
+func cmdMonitor(cfg *config.Config, api *apiClient, args []string, jsonOut bool) int {
 	if len(args) == 0 {
-		return fatal(jsonOut, "usage: monitor <scan> [--json]")
+		return fatal(jsonOut, "usage: monitor <scan|map-duplicates> [--json]")
 	}
 	switch args[0] {
 	case "scan":
-		return cmdMonitorScan(cfg, store, jsonOut)
+		return cmdMonitorScan(api, jsonOut)
+	case "map-duplicates":
+		return cmdMonitorMapDuplicates(cfg, api, args[1:], jsonOut)
 	default:
 		return fatal(jsonOut, "unknown monitor subcommand: %s", args[0])
 	}
 }
 
-func cmdMonitorScan(cfg *config.Config, store *task.Manager, jsonOut bool) int {
-	svc := monitor.NewService(monitor.Deps{
-		Cfg:        cfg.Monitor,
-		Tasks:      store,
-		Audit:      monitor.AuditDirReader(cfg.AuditDir()),
-		Agents:     nil,
-		Dispatcher: monitor.NoopDispatcher(),
-		Sink:       monitor.NoopSink(),
-	})
-	report, err := svc.Scan(context.Background())
+func cmdMonitorMapDuplicates(cfg *config.Config, api *apiClient, args []string, jsonOut bool) int {
+	flags := flag.NewFlagSet("monitor map-duplicates", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	fingerprint := flags.String("fingerprint", "", "incident fingerprint")
+	issuesCSV := flags.String("issues", "", "comma-separated duplicate issue numbers")
+	coverage := flags.String("coverage", "", "reproduction coverage summary")
+	if err := flags.Parse(args); err != nil {
+		return fatal(jsonOut, "monitor map-duplicates: %v", err)
+	}
+	if *fingerprint == "" || *issuesCSV == "" || strings.TrimSpace(*coverage) == "" {
+		return fatal(jsonOut, "usage: monitor map-duplicates --fingerprint ID --issues N[,N] --coverage TEXT")
+	}
+	if !incidentFingerprintRe.MatchString(*fingerprint) {
+		return fatal(jsonOut, "monitor map-duplicates: invalid incident fingerprint")
+	}
+	var duplicates []int
+	for raw := range strings.SplitSeq(*issuesCSV, ",") {
+		n, err := strconv.Atoi(strings.TrimSpace(raw))
+		if err != nil || n <= 0 {
+			return fatal(jsonOut, "monitor map-duplicates: invalid issue number %q", raw)
+		}
+		duplicates = append(duplicates, n)
+	}
+	slices.Sort(duplicates)
+	duplicates = slices.Compact(duplicates)
+	// The ledger and the issue repo are both the owning instance's, so the
+	// server runs the whole mapping rather than this process reading one
+	// machine's incident and editing another's issues.
+	res, err := callAPI[monitorMapDuplicatesDTO](api, taskServiceName, "MapDuplicateIncidents", *fingerprint, duplicates, *coverage)
+	if err != nil {
+		return fatal(jsonOut, "monitor map-duplicates: %v", err)
+	}
+	return reportMapDuplicates(jsonOut, res.Fingerprint, res.Canonical, res.Duplicates)
+}
+
+// monitorMapDuplicatesDTO mirrors the server's wire shape for a duplicate mapping.
+type monitorMapDuplicatesDTO struct {
+	Fingerprint string `json:"fingerprint"`
+	Canonical   string `json:"canonical"`
+	Duplicates  []int  `json:"duplicates"`
+}
+
+func reportMapDuplicates(jsonOut bool, fingerprint, canonical string, duplicates []int) int {
+	if jsonOut {
+		return printJSON(map[string]any{"fingerprint": fingerprint, "canonical": canonical, "duplicates": duplicates})
+	}
+	fmt.Printf("monitor: mapped %d duplicate issue(s) to %s\n", len(duplicates), canonical)
+	return 0
+}
+
+// cmdMonitorScan asks the server to scan. A scan run here would report what a
+// second reader of the same files sees, not what the running instance sees.
+func cmdMonitorScan(api *apiClient, jsonOut bool) int {
+	report, err := callAPIWithin[monitor.Report](api, apiSlowCallTimeout, taskServiceName, "ScanMonitor")
 	if err != nil {
 		return fatal(jsonOut, "scan: %v", err)
 	}
+	return reportMonitorScan(jsonOut, report)
+}
+
+func reportMonitorScan(jsonOut bool, report monitor.Report) int {
 	if jsonOut {
 		return printJSON(report)
 	}
 	kinds := ""
-	for _, a := range report.Anomalies {
+	for i := range report.Anomalies {
+		a := &report.Anomalies[i]
 		if kinds != "" {
 			kinds += " "
 		}
@@ -2128,7 +2611,7 @@ func cmdMonitorScan(cfg *config.Config, store *task.Manager, jsonOut bool) int {
 	return 0
 }
 
-func cmdAudit(cfg *config.Config, args []string, jsonOut bool) int {
+func cmdAudit(cfg *config.Config, api *apiClient, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("audit", flag.ContinueOnError)
 	since := fs.String("since", "24h", "start of time window (duration like 24h/7d or date YYYY-MM-DD)")
 	until := fs.String("until", "", "end of time window (date YYYY-MM-DD, default: now)")
@@ -2155,7 +2638,7 @@ func cmdAudit(cfg *config.Config, args []string, jsonOut bool) int {
 		TaskID: *taskID,
 	}
 
-	events, err := audit.Read(cfg.AuditDir(), q)
+	events, err := readAuditEvents(api, q)
 	if err != nil {
 		return fatal(jsonOut, "read audit: %v", err)
 	}
@@ -2354,6 +2837,9 @@ Commands:
            Open a PR for an already-pushed branch and link it, in one step. Runs
            gh in --dir (default cwd), so it must sit inside the repo clone. Lets
            a Kubernetes agent Job open its own PR instead of the server doing it.
+  github-app-token
+           Print a freshly minted GitHub App installation token for Sybra's
+           configured github.app block. Intended for Sybra's agent gh shim.
   delete   <id>
            Soft-deletes: moves the task file and its sidecars into the trash
            dir instead of unlinking them. See trash list / trash restore.
@@ -2384,6 +2870,9 @@ func usageProjectAndOps() {
 	fmt.Fprintf(os.Stderr, `  project list
   project get <id>
   project create --url <github-url> [--type pet|work]
+  project adopt --url <github-url> --clone-path <path> [--type pet|work]
+           registers a project pointing at a clone that already exists on
+           disk; url only names the owner/repo, no remote is contacted
   project update <id> --type pet|work
   project delete <id>
 
@@ -2395,6 +2884,8 @@ func usageProjectAndOps() {
   audit    [--since DURATION|DATE] [--until DATE] [--type TYPE] [--task ID] [--summary]
   board    (status counts + in-progress/plan-review/human-required task lists)
   monitor  scan [--json]    one-shot read-only detector pass (no remediation)
+           map-duplicates --fingerprint ID --issues N[,N] --coverage TEXT
+                              close covered duplicate issues against a canonical incident
   evaluation scan [--json]  fleet scorecard (autonomy, throughput, efficiency)
   harness-evolution run [--lookback 168h] [--min-cluster-size 2] [--file] [--json]
            Cluster selfmonitor failures into governed harness-change proposals.
@@ -2452,30 +2943,29 @@ func doctorUsageBlock() string {
            0 ok, 1 a delete failed, 2 bad flags/arguments.`
 }
 
-func cmdArtifact(args []string, jsonOut bool) int {
+func cmdArtifact(api *apiClient, args []string, jsonOut bool) int {
 	if len(args) == 0 {
 		return fatal(jsonOut, "artifact: subcommand required (list|get|reindex)")
 	}
 	sub, rest := args[0], args[1:]
-	store := artifact.New(config.ArtifactsDir())
 	switch sub {
 	case "list":
-		return cmdArtifactList(store, rest, jsonOut)
+		return cmdArtifactList(api, rest, jsonOut)
 	case "get":
-		return cmdArtifactGet(store, rest)
+		return cmdArtifactGet(api, rest)
 	case "reindex":
-		return cmdArtifactReindex(store, rest, jsonOut)
+		return cmdArtifactReindex(api, rest, jsonOut)
 	default:
 		return fatal(jsonOut, "artifact: unknown subcommand %q", sub)
 	}
 }
 
-func cmdArtifactList(store *artifact.Store, args []string, jsonOut bool) int {
+func cmdArtifactList(api *apiClient, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "artifact list: task-id required")
 	}
 	taskID := args[0]
-	metas, err := store.List(taskID)
+	metas, err := listArtifacts(api, taskID)
 	if err != nil {
 		return fatal(jsonOut, "artifact list: %v", err)
 	}
@@ -2496,13 +2986,13 @@ func cmdArtifactList(store *artifact.Store, args []string, jsonOut bool) int {
 	return 0
 }
 
-func cmdArtifactGet(store *artifact.Store, args []string) int {
+func cmdArtifactGet(api *apiClient, args []string) int {
 	if len(args) < 2 {
 		fmt.Fprintln(os.Stderr, "artifact get: task-id and name required")
 		return 1
 	}
 	taskID, name := args[0], args[1]
-	data, _, err := store.Read(taskID, name)
+	data, err := readArtifact(api, taskID, name)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -2511,12 +3001,12 @@ func cmdArtifactGet(store *artifact.Store, args []string) int {
 	return 0
 }
 
-func cmdArtifactReindex(store *artifact.Store, args []string, jsonOut bool) int {
+func cmdArtifactReindex(api *apiClient, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "artifact reindex: task-id required")
 	}
 	taskID := args[0]
-	if err := store.Reindex(taskID); err != nil {
+	if err := reindexArtifacts(api, taskID); err != nil {
 		return fatal(jsonOut, "artifact reindex: %v", err)
 	}
 	if jsonOut {
@@ -2526,23 +3016,23 @@ func cmdArtifactReindex(store *artifact.Store, args []string, jsonOut bool) int 
 	return 0
 }
 
-func cmdProgress(s *task.Manager, projStore *project.Store, args []string, jsonOut bool) int {
+// cmdProgress reads and writes the progress log through a reachable server. The artifact store sits beside the board it belongs to, so a client appending to its own disk while touching another machine's task would write the entry where the owning instance never reads it.
+func cmdProgress(api *apiClient, args []string, jsonOut bool) int {
 	if len(args) == 0 {
 		return fatal(jsonOut, "progress: subcommand required (add|list)")
 	}
 	sub, rest := args[0], args[1:]
-	store := artifact.New(config.ArtifactsDir())
 	switch sub {
 	case "add":
-		return cmdProgressAdd(s, projStore, store, rest, jsonOut)
+		return cmdProgressAdd(api, rest, jsonOut)
 	case "list":
-		return cmdProgressList(store, rest, jsonOut)
+		return cmdProgressList(api, rest, jsonOut)
 	default:
 		return fatal(jsonOut, "progress: unknown subcommand %q", sub)
 	}
 }
 
-func cmdProgressAdd(s *task.Manager, projStore *project.Store, store *artifact.Store, args []string, jsonOut bool) int {
+func cmdProgressAdd(api *apiClient, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "progress add: task-id required")
 	}
@@ -2561,41 +3051,27 @@ func cmdProgressAdd(s *task.Manager, projStore *project.Store, store *artifact.S
 		return fatal(jsonOut, "progress add: invalid --kind %q (want %s)", *kind, strings.Join(artifact.ProgressKinds(), "|"))
 	}
 
-	t, err := s.Get(taskID)
+	entry, err := callAPI[artifact.ProgressEntry](api, taskServiceName, "AppendTaskProgress", taskID, *kind, *role, *message)
 	if err != nil {
 		return fatal(jsonOut, "progress add: %v", err)
 	}
+	return reportProgressAdd(jsonOut, taskID, entry)
+}
 
-	msg := *message
-	if t.ProjectID != "" && projStore != nil {
-		if p, pErr := projStore.Get(t.ProjectID); pErr == nil {
-			if bl := p.WorkBlocklist(); bl != nil {
-				msg, _ = scrub.Scrub(msg, bl)
-			}
-		}
-	}
-
-	entry := artifact.ProgressEntry{Ts: time.Now().UTC(), Kind: *kind, Role: *role, Message: msg}
-	if err := store.AppendProgress(taskID, entry); err != nil {
-		return fatal(jsonOut, "progress add: %v", err)
-	}
-	if _, tErr := s.Touch(taskID); tErr != nil {
-		slog.Warn("progress.add.touch", "task_id", taskID, "err", tErr)
-	}
-
+func reportProgressAdd(jsonOut bool, taskID string, entry artifact.ProgressEntry) int {
 	if jsonOut {
 		return printJSON(entry)
 	}
-	fmt.Printf("Recorded %s on task %s\n", *kind, taskID)
+	fmt.Printf("Recorded %s on task %s\n", entry.Kind, taskID)
 	return 0
 }
 
-func cmdProgressList(store *artifact.Store, args []string, jsonOut bool) int {
+func cmdProgressList(api *apiClient, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "progress list: task-id required")
 	}
 	taskID := args[0]
-	entries, err := store.ReadProgress(taskID)
+	entries, err := readProgress(api, taskID)
 	if err != nil {
 		return fatal(jsonOut, "progress list: %v", err)
 	}
@@ -2616,11 +3092,26 @@ func cmdProgressList(store *artifact.Store, args []string, jsonOut bool) int {
 	return 0
 }
 
+func readProgress(api *apiClient, taskID string) ([]artifact.ProgressEntry, error) {
+	entries, err := callAPI[[]artifact.ProgressEntry](api, taskServiceName, "ListTaskProgress", taskID)
+	return nilIfEmpty(entries), err
+}
+
+// nilIfEmpty keeps the JSON shape scripts already parse: ListTaskProgress
+// normalises to an empty slice because the GUI wants an array, and a task with
+// no progress would otherwise change type from null to [] under `--json`.
+func nilIfEmpty[T any](values []T) []T {
+	if len(values) == 0 {
+		return nil
+	}
+	return values
+}
+
 // cmdTrash handles `sybra-cli trash list|restore <id>|delete <id>|empty` —
 // recovery and permanent-purge for tasks soft-deleted by Store.Delete (see
 // internal/task.Store's ListTrash/RestoreFromTrash/DeleteTrashedGeneration/
 // PruneAllTrash).
-func cmdTrash(s *task.Manager, args []string, jsonOut bool) int {
+func cmdTrash(s taskBoard, args []string, jsonOut bool) int {
 	if len(args) == 0 {
 		return fatal(jsonOut, "usage: trash <list|restore|delete|empty>")
 	}
@@ -2638,7 +3129,7 @@ func cmdTrash(s *task.Manager, args []string, jsonOut bool) int {
 	}
 }
 
-func cmdTrashList(s *task.Manager, jsonOut bool) int {
+func cmdTrashList(s taskBoard, jsonOut bool) int {
 	entries, err := s.ListTrash()
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
@@ -2658,7 +3149,7 @@ func cmdTrashList(s *task.Manager, jsonOut bool) int {
 	return 0
 }
 
-func cmdTrashRestore(s *task.Manager, args []string, jsonOut bool) int {
+func cmdTrashRestore(s taskBoard, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "usage: trash restore <id>")
 	}
@@ -2706,7 +3197,7 @@ func trashDeleteMessage(id string, removed bool) string {
 // away, bypassing the retention window — for a compliance request or a
 // leaked credential that needs the content gone now, not after
 // RetentionDays.
-func cmdTrashDelete(s *task.Manager, args []string, jsonOut bool) int {
+func cmdTrashDelete(s taskBoard, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "usage: trash delete <id>")
 	}
@@ -2723,7 +3214,7 @@ func cmdTrashDelete(s *task.Manager, args []string, jsonOut bool) int {
 
 // cmdTrashEmpty permanently purges every trashed generation, regardless of
 // age.
-func cmdTrashEmpty(s *task.Manager, jsonOut bool) int {
+func cmdTrashEmpty(s taskBoard, jsonOut bool) int {
 	rep, err := s.PruneAllTrash()
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
@@ -2747,7 +3238,7 @@ type taskHistoryEntry struct {
 // read-only convenience wrapper around `git log` against
 // config.TaskSnapshotGitDir(); plain git against that path suffices for
 // actual recovery (see docs/tasks-snapshots.md).
-func cmdTasksHistory(cfg *config.Config, args []string, jsonOut bool) int {
+func cmdTasksHistory(cfg *config.Config, api *apiClient, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("tasks-history", flag.ContinueOnError)
 	limit := fs.Int("limit", 20, "max number of commits to show")
 	fs.SetOutput(io.Discard)
@@ -2758,49 +3249,14 @@ func cmdTasksHistory(cfg *config.Config, args []string, jsonOut bool) int {
 		*limit = 20
 	}
 
-	ctx := context.Background()
-	gitDir := config.TaskSnapshotGitDir()
-	// Reuse the snapshotter's env builder so an inherited GIT_WORK_TREE can't
-	// leak in and break git commands; the work-tree value itself is unused by
-	// the read-only commands below but must be set consistently.
-	env := tasksnapshot.BuildEnv(gitDir, cfg.TasksDir)
-
-	verify := exec.CommandContext(ctx, "git", "rev-parse", "--git-dir")
-	verify.Env = env
-	if err := verify.Run(); err != nil {
-		return fatal(jsonOut, "tasks snapshot history unavailable — snapshotting is disabled or has not run yet (%v)", err)
+	entries, err := callAPI[[]taskHistoryEntry](api, taskServiceName, "ListTaskSnapshotHistory", *limit)
+	if err != nil {
+		return fatal(jsonOut, "%v", err)
 	}
+	return reportTaskHistory(jsonOut, entries)
+}
 
-	// Detect an empty repo by HEAD resolvability, not a locale-dependent
-	// stderr string: `rev-parse --verify --quiet HEAD` exits non-zero with no
-	// output when no commits exist yet, which is a valid empty history.
-	head := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "--quiet", "HEAD")
-	head.Env = env
-	hasCommits := head.Run() == nil
-
-	var entries []taskHistoryEntry
-	if hasCommits {
-		const sep = "\x1f"
-		logCmd := exec.CommandContext(ctx, "git", "log", "--date=iso-strict", "--pretty=format:%h"+sep+"%ad"+sep+"%s", fmt.Sprintf("-n%d", *limit))
-		logCmd.Env = env
-		var stdout, stderr bytes.Buffer
-		logCmd.Stdout = &stdout
-		logCmd.Stderr = &stderr
-		if err := logCmd.Run(); err != nil {
-			return fatal(jsonOut, "tasks snapshot history unavailable: %v: %s", err, strings.TrimSpace(stderr.String()))
-		}
-		for line := range strings.SplitSeq(strings.TrimRight(stdout.String(), "\n"), "\n") {
-			if line == "" {
-				continue
-			}
-			parts := strings.SplitN(line, sep, 3)
-			if len(parts) != 3 {
-				continue
-			}
-			entries = append(entries, taskHistoryEntry{SHA: parts[0], Date: parts[1], Subject: parts[2]})
-		}
-	}
-
+func reportTaskHistory(jsonOut bool, entries []taskHistoryEntry) int {
 	if jsonOut {
 		if entries == nil {
 			entries = []taskHistoryEntry{}
@@ -2817,7 +3273,7 @@ func cmdTasksHistory(cfg *config.Config, args []string, jsonOut bool) int {
 	return 0
 }
 
-func cmdConfig(cfg *config.Config, args []string, jsonOut bool) int {
+func cmdConfig(cfg *config.Config, args []string, jsonOut, allowHTTP bool, schemaErr error) int {
 	if len(args) == 0 {
 		return fatal(jsonOut, "usage: config <dump|explain|doctor|migrate>")
 	}
@@ -2827,7 +3283,7 @@ func cmdConfig(cfg *config.Config, args []string, jsonOut bool) int {
 	case "explain":
 		return cmdConfigExplain(cfg, args[1:], jsonOut)
 	case "doctor":
-		return cmdConfigDoctor(cfg, jsonOut)
+		return cmdConfigDoctor(cfg, jsonOut, allowHTTP, schemaErr)
 	case "migrate":
 		return cmdConfigMigrate(args[1:], jsonOut)
 	default:
@@ -2912,6 +3368,34 @@ type configDoctorFinding struct {
 type configDoctorReport struct {
 	Findings []configDoctorFinding `json:"findings"`
 	Routing  config.RoutingSummary `json:"routing"`
+	Capacity *doctorCapacityReport `json:"capacity,omitempty"`
+}
+
+// doctorCapacityReport answers "can this instance dispatch to anything right
+// now, and if not, when?" without an SSH session and a grep for
+// provider.health.flip — which is the whole reason #3045 exists.
+//
+// Live health lives in the running server's provider.Checker, and the CLI is a
+// separate process, so this is only populated when the server is reachable.
+// Unavailable is the honest answer otherwise: reporting "0 healthy" from a
+// process that cannot see the checker would read as an outage.
+type doctorCapacityReport struct {
+	Available   bool                   `json:"available"`
+	Unavailable string                 `json:"unavailable,omitempty"`
+	Enabled     []string               `json:"enabled"`
+	Providers   []doctorCapacityStatus `json:"providers,omitempty"`
+	HealthyLegs int                    `json:"healthyLegs"`
+}
+
+type doctorCapacityStatus struct {
+	Provider   string     `json:"provider"`
+	Healthy    bool       `json:"healthy"`
+	Reason     string     `json:"reason,omitempty"`
+	Detail     string     `json:"detail,omitempty"`
+	ResetsAt   *time.Time `json:"resetsAt,omitempty"`
+	ResetsIn   string     `json:"resetsIn,omitempty"`
+	LastCheck  time.Time  `json:"lastCheck,omitzero"`
+	Configured bool       `json:"configured"`
 }
 
 type configMigrateReport struct {
@@ -3001,12 +3485,105 @@ func cmdConfigMigrate(args []string, jsonOut bool) int {
 	return 0
 }
 
-func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
+// buildCapacityReport asks the running server what it can actually dispatch to.
+// Live health lives in the server's provider.Checker; the CLI is a separate
+// process, so an unreachable server yields Available=false rather than a
+// fabricated zero-capacity reading.
+func buildCapacityReport(cfg *config.Config, api *apiClient, now time.Time) *doctorCapacityReport {
+	report := &doctorCapacityReport{Enabled: cfg.Providers.EnabledNames()}
+	if api == nil {
+		report.Unavailable = "no reachable sybra server; live provider health is only known inside the server process"
+		return report
+	}
+	statuses, handled, err := viaAPI[[]provider.Status](api, "IntegrationService", "GetProviderHealth")
+	if !handled || err != nil {
+		report.Unavailable = "sybra server did not return provider health"
+		if err != nil {
+			report.Unavailable = fmt.Sprintf("sybra server did not return provider health: %v", err)
+		}
+		return report
+	}
+	if len(statuses) == 0 {
+		// GetProviderHealth returns an empty slice when the health-check loop
+		// is disabled. Reading that as "nothing is healthy" reports an outage
+		// that is not happening.
+		report.Unavailable = "provider health checking is disabled on the sybra server (providers.health_check.enabled)"
+		return report
+	}
+	report.Available = true
+	byName := make(map[string]provider.Status, len(statuses))
+	for _, st := range statuses {
+		byName[st.Provider] = st
+	}
+	for _, name := range report.Enabled {
+		st, probed := byName[name]
+		entry := doctorCapacityStatus{
+			Provider:   name,
+			Healthy:    probed && st.Healthy,
+			Reason:     st.Reason,
+			Detail:     st.Detail,
+			LastCheck:  st.LastCheck,
+			Configured: true,
+		}
+		if !probed {
+			entry.Reason = "not probed"
+		}
+		if !st.RateLimitedUntil.IsZero() {
+			resets := st.RateLimitedUntil
+			entry.ResetsAt = &resets
+			entry.ResetsIn = resets.Sub(now).Round(time.Second).String()
+		}
+		if entry.Healthy {
+			report.HealthyLegs++
+		}
+		report.Providers = append(report.Providers, entry)
+	}
+	return report
+}
+
+// addCapacityFindings raises the two states an operator needs to act on: no
+// usable provider at all, and a failover chain with only one leg. One weekly
+// limit plus one usage limit is how a single-leg chain became a dead board.
+func addCapacityFindings(report *doctorCapacityReport, add func(severity, format string, a ...any)) {
+	if len(report.Enabled) < 2 {
+		add("warning", "provider capacity: %d provider(s) enabled (%s) — no failover chain",
+			len(report.Enabled), strings.Join(report.Enabled, ", "))
+	}
+	if !report.Available {
+		return
+	}
+	switch {
+	case report.HealthyLegs == 0:
+		add("error", "provider capacity: no enabled provider is healthy — nothing can dispatch")
+	case report.HealthyLegs < 2:
+		add("warning", "provider capacity: only %d healthy provider — a single limit stalls the board", report.HealthyLegs)
+	}
+}
+
+// resolveCapacity reaches the running server for live provider health, if the
+// caller is on the default path where auto-detect is safe at all.
+func resolveCapacity(cfg *config.Config, allowHTTP bool) *doctorCapacityReport {
+	var api *apiClient
+	if allowHTTP {
+		if c, err := newAPIClient(cfg); err == nil && c.reachable(context.Background()) {
+			api = c
+		}
+	}
+	return buildCapacityReport(cfg, api, time.Now())
+}
+
+func cmdConfigDoctor(cfg *config.Config, jsonOut, allowHTTP bool, schemaErr error) int {
 	var findings []configDoctorFinding
 	add := func(severity, format string, a ...any) {
 		findings = append(findings, configDoctorFinding{Severity: severity, Message: fmt.Sprintf(format, a...)})
 	}
 	routing := config.BuildRoutingSummary(cfg)
+
+	// Reported first: it is the reason every other command is failing, and the
+	// values below were resolved without it.
+	if schemaErr != nil {
+		add("error", "config schema: %v (this key is ignored; remove it from config.yaml)", schemaErr)
+	}
 
 	addConfigPermFindings(add)
 
@@ -3041,8 +3618,14 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 	}
 	addGitHubPollingFindings(cfg, add)
 	addProviderModelCompatibilityFindings(cfg, add)
+	addExperimentEvaluationFindings(cfg, add)
+	addAutonomyPipelineFindings(cfg, add)
 
 	addK8sFailedTTLFindings(cfg, add)
+
+	capacity := resolveCapacity(cfg, allowHTTP)
+	addCapacityFindings(capacity, add)
+
 	for _, warning := range routing.Warnings {
 		add("warning", "routing: %s", warning)
 	}
@@ -3058,7 +3641,7 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 		}
 	}
 
-	report := configDoctorReport{Findings: findings, Routing: routing}
+	report := configDoctorReport{Findings: findings, Routing: routing, Capacity: capacity}
 	if jsonOut {
 		if code := printJSON(report); code != 0 {
 			return code
@@ -3085,6 +3668,7 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 			fmt.Printf("  - %s/%s %s %s (%s)\n", variant.ExperimentID, variant.VariantID, variant.Provider, variant.Model, variant.Reason)
 		}
 	}
+	renderCapacityReport(report.Capacity)
 	for _, f := range findings {
 		fmt.Printf("[%s] %s\n", f.Severity, f.Message)
 	}
@@ -3092,6 +3676,36 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 		return 1
 	}
 	return 0
+}
+
+func renderCapacityReport(report *doctorCapacityReport) {
+	if report == nil {
+		return
+	}
+	enabled := "none"
+	if len(report.Enabled) > 0 {
+		enabled = strings.Join(report.Enabled, " -> ")
+	}
+	fmt.Printf("provider capacity enabled: %s\n", enabled)
+	if !report.Available {
+		fmt.Printf("provider capacity: unknown (%s)\n", report.Unavailable)
+		return
+	}
+	fmt.Printf("provider capacity healthy: %d/%d\n", report.HealthyLegs, len(report.Enabled))
+	for _, p := range report.Providers {
+		state := "healthy"
+		if !p.Healthy {
+			state = "UNHEALTHY"
+		}
+		line := fmt.Sprintf("  - %s: %s", p.Provider, state)
+		if p.Reason != "" {
+			line += " (" + p.Reason + ")"
+		}
+		if p.ResetsAt != nil {
+			line += fmt.Sprintf(" resets %s (in %s)", p.ResetsAt.Format(time.RFC3339), p.ResetsIn)
+		}
+		fmt.Println(line)
+	}
 }
 
 func addGitHubPollingFindings(cfg *config.Config, add func(severity, format string, a ...any)) {
@@ -3155,6 +3769,97 @@ func addProviderModelCompatibilityFindings(cfg *config.Config, add func(severity
 	check("human_review.model", cfg.Agent.Provider, cfg.HumanReviewModel())
 }
 
+// addExperimentEvaluationFindings warns when experiment traffic (ab_testing
+// split, or routing's adaptive weight promotion/expansion of it) is enabled
+// without a trustworthy evaluation signal backing it. Both findings are
+// warnings, not errors: ab_testing alone still functions (a plain, unmeasured
+// split) and routing degrades safely to a no-op/baseline-only overlay (see
+// routing.Service.tick and evaluation.Trustworthy) rather than breaking
+// dispatch — so this is a configuration smell to flag, not a hard failure to
+// block on.
+//
+// evaluation.Enabled=false is one way to have no signal; evaluation.Enabled=
+// true with a missing, unparsable, stale, or schema-mismatched persisted
+// report (internal/evaluation.Trustworthy — the same check routing.Service
+// gates a live tick on) is another. Both are surfaced here so `config doctor`
+// mirrors what a routing tick would actually do with the on-disk report.
+func addExperimentEvaluationFindings(cfg *config.Config, add func(severity, format string, a ...any)) {
+	if cfg == nil {
+		return
+	}
+	abEnabled := cfg.ABTesting.EnabledValue()
+	routingEnabled := cfg.Routing.Enabled
+	if !abEnabled && !routingEnabled {
+		return
+	}
+	if !cfg.Evaluation.Enabled {
+		if abEnabled {
+			add("warning", "ab_testing.enabled is true but evaluation.enabled is false — experiment traffic is being split with no evaluation signal to know whether any variant is winning")
+		}
+		if routingEnabled {
+			add("warning", "routing.enabled is true but evaluation.enabled is false — adaptive weight promotion has no trustworthy evaluation signal and will stay in shadow/baseline-only mode")
+		}
+		return
+	}
+
+	reason, trustworthy := evaluationReportTrustReason(cfg)
+	if trustworthy {
+		return
+	}
+	if abEnabled {
+		add("warning", "ab_testing.enabled is true and evaluation.enabled is true, but %s — experiment traffic is being split with no valid evaluation signal to know whether any variant is winning", reason)
+	}
+	if routingEnabled {
+		add("warning", "routing.enabled is true and evaluation.enabled is true, but %s — adaptive weight promotion has no trustworthy evaluation signal and will stay in shadow/baseline-only mode", reason)
+	}
+}
+
+// evaluationReportTrustReason loads the persisted evaluation report (the
+// same file internal/sybra/lifecycle.go wires the live evaluation.Service to
+// read/write via config.EvaluationReportPath) and runs it through
+// evaluation.Trustworthy with routing's configured freshness bound — the
+// same gate routing.Service.tick applies before promoting/expanding
+// experiment traffic. Returns a log-safe reason and false when the report is
+// missing, unreadable, or untrustworthy; ("", true) when it's fine.
+func evaluationReportTrustReason(cfg *config.Config) (reason string, trustworthy bool) {
+	path := config.EvaluationReportPath()
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return fmt.Sprintf("no evaluation report has been generated yet (%s does not exist)", path), false
+	}
+	if err != nil {
+		return fmt.Sprintf("the persisted evaluation report at %s could not be read: %v", path, err), false
+	}
+	var rep evaluation.Report
+	if err := json.Unmarshal(data, &rep); err != nil {
+		return fmt.Sprintf("the persisted evaluation report at %s could not be parsed: %v", path, err), false
+	}
+	tw := evaluation.Trustworthy(rep, time.Now(), cfg.Routing.EvaluationMaxAge())
+	if !tw.Trustworthy {
+		return fmt.Sprintf("the persisted evaluation report at %s is not trustworthy: %s", path, tw.Reason), false
+	}
+	return "", true
+}
+
+// addAutonomyPipelineFindings warns when harness_evolution.enabled=true
+// while self_monitor.enabled=false. Harness-evolution's only input is the
+// report self-monitor writes each tick (internal/harnessevolution.Run reads
+// config.SelfMonitorLastReportPath()), so with self-monitor disabled that
+// report is never produced or refreshed — harness-evolution runs will
+// always resolve to an explicit degraded (missing/stale-report) outcome
+// rather than proposing anything. This is a warning, not an error: it's
+// also the shipped default (harness-evolution defaults to enabled as a
+// read-only proposal loop; self-monitor defaults to disabled pending
+// operator opt-in), so treating it as a hard validation failure would break
+// every fresh install's `config doctor` exit code.
+func addAutonomyPipelineFindings(cfg *config.Config, add func(severity, format string, a ...any)) {
+	if cfg.HarnessEvolve.Enabled && !cfg.SelfMonitor.Enabled {
+		add("warning", "harness_evolution.enabled=true but self_monitor.enabled=false: "+
+			"harness-evolution reads the self-monitor report, which self-monitor will never produce or refresh "+
+			"until self_monitor.enabled=true — runs will report a disabled/stale degraded outcome instead of proposals")
+	}
+}
+
 func addConfigPermFindings(add func(severity, format string, a ...any)) {
 	home := config.HomeDir()
 	addPathPermFinding(add, "config home", home, 0o700)
@@ -3177,4 +3882,25 @@ func addPathPermFinding(add func(severity, format string, a ...any), label, path
 	if perm := info.Mode().Perm(); perm&^target != 0 {
 		add("warning", "%s permissions are %04o, want no broader than %04o: %s", label, perm, target, path)
 	}
+}
+
+// readAuditEvents reads the audit log of whichever instance owns the board. The log is a directory of daily files under that instance's home, so reading this machine's copy would answer the question about the wrong machine.
+func readAuditEvents(api *apiClient, q audit.Query) ([]audit.Event, error) {
+	return callAPI[[]audit.Event](api, auditServiceName, "QueryAuditEvents", q)
+}
+
+// The artifact store sits beside the board it belongs to, so these read the
+// instance that owns the task rather than this machine's copy.
+
+func listArtifacts(api *apiClient, taskID string) ([]artifact.Meta, error) {
+	return callAPI[[]artifact.Meta](api, taskServiceName, "ListTaskArtifactMetas", taskID)
+}
+
+func readArtifact(api *apiClient, taskID, name string) ([]byte, error) {
+	return callAPI[[]byte](api, taskServiceName, "ReadTaskArtifact", taskID, name)
+}
+
+func reindexArtifacts(api *apiClient, taskID string) error {
+	_, err := callAPI[struct{}](api, taskServiceName, "ReindexTaskArtifacts", taskID)
+	return err
 }

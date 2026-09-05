@@ -3,6 +3,7 @@ package monitor
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -19,11 +20,15 @@ type fakeTasks struct {
 	tasks      []task.Task
 	updates    []taskUpdate
 	runUpdates []runUpdate
+	// updateErr, when non-nil, is returned by Update for this id instead of
+	// applying the update — simulates a task-store write conflict.
+	updateErr map[string]error
 }
 
 type taskUpdate struct {
-	id string
-	u  task.Update
+	id    string
+	actor string
+	u     task.Update
 }
 
 type runUpdate struct {
@@ -40,6 +45,10 @@ func (f *fakeTasks) List() ([]task.Task, error) {
 	return out, nil
 }
 
+func (f *fakeTasks) ListActive() ([]task.Task, error) {
+	return f.List()
+}
+
 func (f *fakeTasks) Get(id string) (task.Task, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -51,10 +60,13 @@ func (f *fakeTasks) Get(id string) (task.Task, error) {
 	return task.Task{}, errNotFound
 }
 
-func (f *fakeTasks) Update(id string, u task.Update) (task.Task, error) {
+func (f *fakeTasks) UpdateBy(id, actor string, u task.Update) (task.Task, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.updates = append(f.updates, taskUpdate{id: id, u: u})
+	if err := f.updateErr[id]; err != nil {
+		return task.Task{}, err
+	}
+	f.updates = append(f.updates, taskUpdate{id: id, actor: actor, u: u})
 	for i := range f.tasks {
 		if f.tasks[i].ID != id {
 			continue
@@ -68,6 +80,15 @@ func (f *fakeTasks) Update(id string, u task.Update) (task.Task, error) {
 		if u.Outcome != nil {
 			f.tasks[i].Outcome = *u.Outcome
 		}
+		if u.PRNumber != nil {
+			f.tasks[i].PRNumber = *u.PRNumber
+		}
+		if u.Tags != nil {
+			f.tasks[i].Tags = append([]string(nil), (*u.Tags)...)
+		}
+		if u.EffectLog != nil {
+			f.tasks[i].EffectLog = append([]workflow.EffectRecord(nil), (*u.EffectLog)...)
+		}
 		if u.Workflow != nil {
 			f.tasks[i].Workflow = *u.Workflow
 		}
@@ -76,7 +97,13 @@ func (f *fakeTasks) Update(id string, u task.Update) (task.Task, error) {
 	return task.Task{}, errNotFound
 }
 
-func (f *fakeTasks) UpdateRun(taskID, agentID string, patch task.RunPatch) error {
+func (f *fakeTasks) ApplyStatusEffect(id string, eff task.StatusEffect) (task.Task, error) {
+	u := eff.Extra
+	u.Status = &eff.ToStatus
+	return f.UpdateBy(id, "effect:"+eff.Source, u)
+}
+
+func (f *fakeTasks) UpdateRunBy(taskID, actor, agentID string, patch task.RunPatch) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.runUpdates = append(f.runUpdates, runUpdate{taskID: taskID, agentID: agentID, patch: patch})
@@ -150,14 +177,58 @@ func (f *fakeDispatcher) Dispatch(_ context.Context, a Anomaly) (string, error) 
 type fakeSink struct {
 	mu          sync.Mutex
 	submissions []Anomaly
+	bodies      []string
 	createNext  bool
+	closed      []Anomaly
+	closeNext   bool
+	closeErr    error
 }
 
-func (f *fakeSink) Submit(_ context.Context, a Anomaly, _ string) (bool, error) {
+func (f *fakeSink) Submit(_ context.Context, a Anomaly, body string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.submissions = append(f.submissions, a)
+	f.bodies = append(f.bodies, body)
 	return f.createNext, nil
+}
+
+// CloseIfOpen implements IssueCloser so tests can exercise the auto-close
+// path without a real gh binary.
+func (f *fakeSink) CloseIfOpen(_ context.Context, a Anomaly, _ string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closed = append(f.closed, a)
+	if f.closeErr != nil {
+		return false, f.closeErr
+	}
+	return f.closeNext, nil
+}
+
+// toggleAgentLister is a mutable agentLister: tests flip which task ids are
+// "live" between tick() calls to simulate an agent recovering mid-run,
+// something a fixed liveAgentLister can't express since it's wired once at
+// NewService time.
+type toggleAgentLister struct {
+	mu      sync.Mutex
+	taskIDs []string
+}
+
+func (l *toggleAgentLister) Set(taskIDs []string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.taskIDs = taskIDs
+}
+
+func (l *toggleAgentLister) ListAgents() []*agent.Agent {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]*agent.Agent, 0, len(l.taskIDs))
+	for _, id := range l.taskIDs {
+		a := &agent.Agent{TaskID: id}
+		a.SetState(agent.StateRunning)
+		out = append(out, a)
+	}
+	return out
 }
 
 var errNotFound = strError("not found")
@@ -336,6 +407,336 @@ func TestServiceTick_LostAgentRecoverySuppressesIssue(t *testing.T) {
 	}
 	if report.IssuesOpened != 0 || report.IssuesUpdated != 0 {
 		t.Fatalf("want issuesOpened=0 issuesUpdated=0, got %d/%d", report.IssuesOpened, report.IssuesUpdated)
+	}
+}
+
+// TestServiceTick_LostAgentDedupeThenAutoClose is the scenario from #2497's
+// test approach: repeated lost-agent detection on one task must reuse a
+// single open issue (comment with an occurrence count, not a fresh filing
+// every tick), and once the task's agent recovers and stays clear for
+// LostAgentAutoCloseAfterClears consecutive ticks, the issue auto-closes.
+func TestServiceTick_LostAgentDedupeThenAutoClose(t *testing.T) {
+	base := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
+	cfg := defaultCfg()
+	cfg.IssueCooldownMinutes = 0 // isolate the occurrence gate from the cooldown gate
+	cfg.LostAgentIssueAfterOccurrences = 2
+	cfg.LostAgentAutoCloseAfterClears = 2
+
+	tasks := &fakeTasks{tasks: []task.Task{mkTask("flaky", task.StatusInProgress)}}
+	sink := &fakeSink{createNext: true}
+	agents := &toggleAgentLister{}
+	now := base
+	svc := NewService(Deps{
+		Cfg:    cfg,
+		Tasks:  tasks,
+		Audit:  fakeAudit{},
+		Agents: agents,
+		Sink:   sink,
+		Logger: slog.Default(),
+		Now:    func() time.Time { return now },
+	})
+
+	tick := func(step time.Duration) Report {
+		now = now.Add(step)
+		r, err := svc.tick(context.Background())
+		if err != nil {
+			t.Fatalf("tick: %v", err)
+		}
+		return r
+	}
+
+	// Occurrence 1: first detection, remediation hasn't had a chance yet —
+	// no issue filed.
+	r := tick(0)
+	if len(sink.submissions) != 0 {
+		t.Fatalf("occurrence 1: want 0 submissions, got %d", len(sink.submissions))
+	}
+	if r.IssuesOpened != 0 || r.IssuesUpdated != 0 {
+		t.Fatalf("occurrence 1: want 0 opened/updated, got %d/%d", r.IssuesOpened, r.IssuesUpdated)
+	}
+
+	// Occurrence 2: recurred despite remediation — files the one issue.
+	r = tick(15 * time.Minute)
+	if len(sink.submissions) != 1 {
+		t.Fatalf("occurrence 2: want 1 submission, got %d", len(sink.submissions))
+	}
+	if r.IssuesOpened != 1 || r.IssuesUpdated != 0 {
+		t.Fatalf("occurrence 2: want 1 opened, 0 updated, got %d/%d", r.IssuesOpened, r.IssuesUpdated)
+	}
+	sink.createNext = false // simulate: the issue now exists, further hits are comments
+
+	// Occurrence 3: still stuck — reuses the same issue via an occurrence
+	// comment, not a fresh filing.
+	r = tick(15 * time.Minute)
+	if len(sink.submissions) != 2 {
+		t.Fatalf("occurrence 3: want 2 submissions total, got %d", len(sink.submissions))
+	}
+	if r.IssuesOpened != 0 || r.IssuesUpdated != 1 {
+		t.Fatalf("occurrence 3: want 0 opened, 1 updated, got %d/%d", r.IssuesOpened, r.IssuesUpdated)
+	}
+	lastBody := sink.bodies[len(sink.bodies)-1]
+	if !strings.Contains(lastBody, "occurrence #3") {
+		t.Fatalf("occurrence 3: want comment body to reference occurrence #3, got %q", lastBody)
+	}
+	if strings.Contains(lastBody, "## Suggested investigation") {
+		t.Fatalf("occurrence 3: want a terse recurrence comment, not the full deterministic body: %q", lastBody)
+	}
+
+	// Recovery: the agent is now live, so lost_agent stops being detected.
+	agents.Set([]string{"flaky"})
+
+	// Clear 1 of 2 — not enough to auto-close yet.
+	r = tick(15 * time.Minute)
+	if len(sink.closed) != 0 {
+		t.Fatalf("clear 1: want 0 close attempts, got %d", len(sink.closed))
+	}
+	if r.IssuesClosed != 0 {
+		t.Fatalf("clear 1: want 0 issues closed, got %d", r.IssuesClosed)
+	}
+
+	// Clear 2 of 2 — condition has stayed clear long enough, auto-close.
+	sink.closeNext = true
+	r = tick(15 * time.Minute)
+	if len(sink.closed) != 1 {
+		t.Fatalf("clear 2: want 1 close attempt, got %d", len(sink.closed))
+	}
+	if r.IssuesClosed != 1 {
+		t.Fatalf("clear 2: want 1 issue closed, got %d", r.IssuesClosed)
+	}
+
+	// A later, brand-new occurrence must start a clean streak rather than
+	// instantly refiling against the now-closed issue.
+	sink.submissions = nil
+	agents.Set(nil)
+	r = tick(15 * time.Minute)
+	if len(sink.submissions) != 0 {
+		t.Fatalf("post-close occurrence 1: want 0 submissions, got %d", len(sink.submissions))
+	}
+	if r.IssuesOpened != 0 {
+		t.Fatalf("post-close occurrence 1: want 0 opened, got %d", r.IssuesOpened)
+	}
+}
+
+// TestServiceTick_LostAgentAutoCloseRetriesAfterTransientFailure guards the
+// #2497 fix: a transient CloseIfOpen error on the exact tick that crosses
+// LostAgentAutoCloseAfterClears must NOT orphan the open issue. The tracking
+// entry has to survive so a subsequent tick retries the close, since a
+// stayed-clear condition never re-triggers a fresh detection.
+func TestServiceTick_LostAgentAutoCloseRetriesAfterTransientFailure(t *testing.T) {
+	base := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
+	cfg := defaultCfg()
+	cfg.IssueCooldownMinutes = 0
+	cfg.LostAgentIssueAfterOccurrences = 1
+	cfg.LostAgentAutoCloseAfterClears = 1
+
+	tasks := &fakeTasks{tasks: []task.Task{mkTask("flaky", task.StatusInProgress)}}
+	sink := &fakeSink{createNext: true}
+	agents := &toggleAgentLister{}
+	now := base
+	svc := NewService(Deps{
+		Cfg:    cfg,
+		Tasks:  tasks,
+		Audit:  fakeAudit{},
+		Agents: agents,
+		Sink:   sink,
+		Logger: slog.New(slog.DiscardHandler),
+		Now:    func() time.Time { return now },
+	})
+
+	tick := func(step time.Duration) Report {
+		now = now.Add(step)
+		r, err := svc.tick(context.Background())
+		if err != nil {
+			t.Fatalf("tick: %v", err)
+		}
+		return r
+	}
+
+	// File the issue for the stuck task.
+	tick(0)
+	if len(sink.submissions) != 1 {
+		t.Fatalf("want 1 submission after file, got %d", len(sink.submissions))
+	}
+	sink.createNext = false
+
+	// Agent recovers; the first clear tick crosses the auto-close threshold
+	// but CloseIfOpen fails transiently.
+	agents.Set([]string{"flaky"})
+	sink.closeErr = errNotFound
+	r := tick(15 * time.Minute)
+	if len(sink.closed) != 1 {
+		t.Fatalf("transient tick: want 1 close attempt, got %d", len(sink.closed))
+	}
+	if r.IssuesClosed != 0 {
+		t.Fatalf("transient tick: want 0 issues closed, got %d", r.IssuesClosed)
+	}
+
+	// The transient error cleared; the very next tick (still clear) must retry
+	// the close instead of leaving the issue orphaned.
+	sink.closeErr = nil
+	sink.closeNext = true
+	r = tick(15 * time.Minute)
+	if len(sink.closed) != 2 {
+		t.Fatalf("retry tick: want 2 close attempts total, got %d", len(sink.closed))
+	}
+	if r.IssuesClosed != 1 {
+		t.Fatalf("retry tick: want 1 issue closed on retry, got %d", r.IssuesClosed)
+	}
+
+	// Once closed, the entry is forgotten: further clear ticks don't re-attempt.
+	r = tick(15 * time.Minute)
+	if len(sink.closed) != 2 {
+		t.Fatalf("post-close tick: want no further close attempts, got %d", len(sink.closed))
+	}
+	if r.IssuesClosed != 0 {
+		t.Fatalf("post-close tick: want 0 issues closed, got %d", r.IssuesClosed)
+	}
+}
+
+func TestServiceTick_UntriagedAutoClosesAfterTriage(t *testing.T) {
+	now := time.Date(2026, 7, 27, 18, 0, 0, 0, time.UTC)
+	cfg := defaultCfg()
+	source := mkTaskAt(now, "source", task.StatusTodo, func(t *task.Task) {
+		t.Tags = []string{"small"}
+	})
+	investigation := mkTaskAt(now, "investigation", task.StatusTodo, func(t *task.Task) {
+		t.Tags = []string{string(task.FlagSybraBug), string(task.FlagScrubbed), untriagedInvestigationTag}
+		t.Body = DeterministicIssueBody(Anomaly{
+			Kind:        KindUntriaged,
+			TaskID:      source.ID,
+			Severity:    SeverityInfo,
+			Fingerprint: Fingerprint(KindUntriaged, source.ID, nil),
+			DetectedAt:  now.Add(-time.Hour),
+		})
+	})
+	tasks := &fakeTasks{tasks: []task.Task{source, investigation}}
+	sink := &fakeSink{closeNext: true}
+	svc := NewService(Deps{
+		Cfg:    cfg,
+		Tasks:  tasks,
+		Audit:  fakeAudit{},
+		Agents: nilAgentLister{},
+		Sink:   sink,
+		Logger: slog.New(slog.DiscardHandler),
+		Now:    func() time.Time { return now },
+	})
+
+	report, err := svc.tick(context.Background())
+	if err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	if len(sink.closed) != 1 {
+		t.Fatalf("want 1 close attempt, got %d", len(sink.closed))
+	}
+	if sink.closed[0].Kind != KindUntriaged || sink.closed[0].TaskID != source.ID {
+		t.Fatalf("closed = %+v, want untriaged for %q", sink.closed[0], source.ID)
+	}
+	if report.IssuesClosed != 1 {
+		t.Fatalf("issuesClosed = %d, want 1", report.IssuesClosed)
+	}
+	if report.IssuesOpened != 0 || report.IssuesUpdated != 0 {
+		t.Fatalf("want no issue submissions, got opened=%d updated=%d", report.IssuesOpened, report.IssuesUpdated)
+	}
+}
+
+func TestServiceTick_UntriagedAutoClosesWhenSourceTaskDeleted(t *testing.T) {
+	now := time.Date(2026, 7, 27, 18, 0, 0, 0, time.UTC)
+	cfg := defaultCfg()
+	investigation := mkTaskAt(now, "investigation", task.StatusTodo, func(t *task.Task) {
+		t.Tags = []string{string(task.FlagSybraBug), string(task.FlagScrubbed), untriagedInvestigationTag}
+		t.Body = DeterministicIssueBody(Anomaly{
+			Kind:        KindUntriaged,
+			TaskID:      "missing-source",
+			Severity:    SeverityInfo,
+			Fingerprint: Fingerprint(KindUntriaged, "missing-source", nil),
+			DetectedAt:  now.Add(-time.Hour),
+		})
+	})
+	tasks := &fakeTasks{tasks: []task.Task{investigation}}
+	sink := &fakeSink{closeNext: true}
+	svc := NewService(Deps{
+		Cfg:    cfg,
+		Tasks:  tasks,
+		Audit:  fakeAudit{},
+		Agents: nilAgentLister{},
+		Sink:   sink,
+		Logger: slog.New(slog.DiscardHandler),
+		Now:    func() time.Time { return now },
+	})
+
+	report, err := svc.tick(context.Background())
+	if err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	if len(sink.closed) != 1 {
+		t.Fatalf("want 1 close attempt, got %d", len(sink.closed))
+	}
+	if sink.closed[0].TaskID != "missing-source" {
+		t.Fatalf("closed task id = %q, want missing-source", sink.closed[0].TaskID)
+	}
+	if report.IssuesClosed != 1 {
+		t.Fatalf("issuesClosed = %d, want 1", report.IssuesClosed)
+	}
+}
+
+// TestServiceTick_LostAgentRemediationFailureFilesImmediately covers the
+// other half of "file only after remediation has failed at least once": an
+// outright remediation error (e.g. a task-store write conflict) must file on
+// the very first tick, not wait for the occurrence-streak gate. It also
+// checks that once the underlying resetLostAgent update starts succeeding
+// again on a later tick (the write conflict clears) but the task is still
+// stuck, the SAME already-open issue keeps getting a recurrence comment
+// rather than a second, differently-fingerprinted one.
+func TestServiceTick_LostAgentRemediationFailureFilesImmediately(t *testing.T) {
+	base := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
+	cfg := defaultCfg()
+	cfg.IssueCooldownMinutes = 0
+
+	tasks := &fakeTasks{
+		tasks:     []task.Task{mkTask("conflict", task.StatusInProgress)},
+		updateErr: map[string]error{"conflict": errNotFound},
+	}
+	sink := &fakeSink{createNext: true}
+	now := base
+	svc := NewService(Deps{
+		Cfg:    cfg,
+		Tasks:  tasks,
+		Audit:  fakeAudit{},
+		Agents: nilAgentLister{},
+		Sink:   sink,
+		Logger: slog.Default(),
+		Now:    func() time.Time { return now },
+	})
+
+	report, err := svc.tick(context.Background())
+	if err != nil {
+		t.Fatalf("tick1: %v", err)
+	}
+	if len(sink.submissions) != 1 {
+		t.Fatalf("tick1: want 1 submission on the very first tick, got %d", len(sink.submissions))
+	}
+	if report.IssuesOpened != 1 {
+		t.Fatalf("tick1: want 1 issue opened, got %d", report.IssuesOpened)
+	}
+	filedFP := sink.submissions[0].Fingerprint
+	if filedFP == Fingerprint(KindLostAgent, "conflict", nil) {
+		t.Fatalf("tick1: want a cause-qualified fingerprint, got the bare base one %q", filedFP)
+	}
+
+	// The write conflict clears, but the task is still stuck — resetLostAgent
+	// now "succeeds" every tick without actually fixing anything.
+	tasks.updateErr = nil
+	sink.createNext = false
+
+	now = now.Add(15 * time.Minute)
+	if _, err := svc.tick(context.Background()); err != nil {
+		t.Fatalf("tick2: %v", err)
+	}
+	if len(sink.submissions) != 2 {
+		t.Fatalf("tick2: want 2 submissions total, got %d", len(sink.submissions))
+	}
+	if got := sink.submissions[1].Fingerprint; got != filedFP {
+		t.Fatalf("tick2: want the already-filed fingerprint %q reused, got %q", filedFP, got)
 	}
 }
 
@@ -570,6 +971,105 @@ func TestServiceTick_HumanRequiredStuck_RemediatesDirectly(t *testing.T) {
 
 	if len(report.Remediated) != 1 {
 		t.Fatalf("want 1 remediated, got %d", len(report.Remediated))
+	}
+}
+
+func TestServiceTick_HumanRequiredStuck_IncidentLedgerDoesNotPublishArtifact(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
+	tasks := &fakeTasks{tasks: []task.Task{
+		mkTask("hr-stuck", task.StatusHumanRequired, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
+			t.AgentRuns = []task.AgentRun{{Role: "human-review", State: "stopped", Verdict: "human"}}
+		}),
+	}}
+	sink := &fakeSink{createNext: true}
+	incidents, err := NewIncidentStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(Deps{
+		Cfg:        defaultCfg(),
+		Tasks:      tasks,
+		Audit:      fakeAudit{},
+		Agents:     nilAgentLister{},
+		Dispatcher: &fakeDispatcher{},
+		Sink:       sink,
+		Incidents:  incidents,
+		Logger:     slog.Default(),
+		Now:        func() time.Time { return now },
+	})
+
+	report, err := svc.tick(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.submissions) != 0 || report.IssuesOpened != 0 || report.IssuesUpdated != 0 {
+		t.Fatalf("human-required dwell published an artifact: submissions=%d opened=%d updated=%d", len(sink.submissions), report.IssuesOpened, report.IssuesUpdated)
+	}
+	if len(report.Incidents) != 1 {
+		t.Fatalf("incident ledger lost the in-process observation: %+v", report.Incidents)
+	}
+}
+
+// TestServiceTick_ReconciliationRepairAttempt_RecordsAndDedupsRemediation
+// covers the completion.Handler -> monitor hookup this task added: an
+// ActionRepair decision (EventReconciliationDecided) opens a
+// reconciliation.repair incident, and the conflict-recovery outcome that
+// follows it (EventReconciliationRepairAttempted) must land as that
+// incident's remediation attempt — not stay permanently empty, which is
+// what happened before recordControlPlaneRepairAttempts existed. A second
+// tick reading the same audit event (the 1h read window legitimately
+// overlaps between ticks) must not double-record it.
+func TestServiceTick_ReconciliationRepairAttempt_RecordsAndDedupsRemediation(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
+	attemptedAt := now.Add(-time.Minute)
+	events := []audit.Event{
+		{Timestamp: attemptedAt, Type: audit.EventReconciliationDecided, TaskID: "t1",
+			Data: map[string]any{"action": "repair", "project_scope": "fleet"}},
+		{Timestamp: attemptedAt, Type: audit.EventReconciliationRepairAttempted, TaskID: "t1",
+			Data: map[string]any{"result": "started"}},
+	}
+	incidents, err := NewIncidentStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	newSvc := func() *Service {
+		return NewService(Deps{
+			Cfg:        defaultCfg(),
+			Tasks:      &fakeTasks{},
+			Audit:      fakeAudit{events: events},
+			Agents:     nilAgentLister{},
+			Dispatcher: &fakeDispatcher{},
+			Sink:       &fakeSink{createNext: true},
+			Incidents:  incidents,
+			Logger:     slog.Default(),
+			Now:        func() time.Time { return now },
+		})
+	}
+
+	report, err := newSvc().tick(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Incidents) != 1 {
+		t.Fatalf("want 1 incident, got %+v", report.Incidents)
+	}
+	in := report.Incidents[0]
+	if len(in.RemediationAttempts) != 1 || in.RemediationAttempts[0].Result != "started" {
+		t.Fatalf("want 1 recorded 'started' remediation attempt, got %+v", in.RemediationAttempts)
+	}
+
+	// Re-tick with the identical (still-in-window) events — a fresh Service
+	// instance stands in for the next scheduled tick, since nothing here
+	// depends on in-memory state carried between ticks.
+	report2, err := newSvc().tick(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report2.Incidents) != 1 || len(report2.Incidents[0].RemediationAttempts) != 1 {
+		t.Fatalf("overlapping read window double-recorded the remediation attempt: %+v", report2.Incidents)
 	}
 }
 

@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"regexp"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -110,6 +113,55 @@ func TestReleaseStaleStoppedAgentsForTask_KeepsFreshStopRace(t *testing.T) {
 	}
 }
 
+func TestReleaseDeadAgentsForTask_ReleasesDeadRunningGate(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.deadAgentRetention = 0
+	dead := &Agent{
+		ID:       "dead-running",
+		TaskID:   "task-1",
+		Provider: "claude",
+		State:    StateRunning,
+		PID:      9999999,
+		done:     make(chan struct{}),
+	}
+	if err := m.registerRunningAgent(dead, RunConfig{}, func() {}); err != nil {
+		t.Fatalf("registerRunningAgent: %v", err)
+	}
+	if !m.HasRunningAgentForTask("task-1") {
+		t.Fatal("precondition: dead running agent should still gate before release")
+	}
+
+	if got := m.ReleaseDeadAgentsForTask(context.Background(), "task-1"); got != 1 {
+		t.Fatalf("released = %d, want 1", got)
+	}
+	if m.HasRunningAgentForTask("task-1") {
+		t.Fatal("dead running agent should no longer gate dispatch")
+	}
+}
+
+func TestReleaseDeadAgentsForTask_KeepsLiveProcess(t *testing.T) {
+	m, _ := newTestManager(t)
+	alive := &Agent{
+		ID:       "alive-running",
+		TaskID:   "task-1",
+		Provider: "claude",
+		State:    StateRunning,
+		PID:      os.Getpid(),
+		done:     make(chan struct{}),
+	}
+	if err := m.registerRunningAgent(alive, RunConfig{}, func() {}); err != nil {
+		t.Fatalf("registerRunningAgent: %v", err)
+	}
+	t.Cleanup(func() { m.markAgentDone(context.Background(), alive) })
+
+	if got := m.ReleaseDeadAgentsForTask(context.Background(), "task-1"); got != 0 {
+		t.Fatalf("released = %d, want 0", got)
+	}
+	if !m.HasRunningAgentForTask("task-1") {
+		t.Fatal("live process must keep gating liveness")
+	}
+}
+
 func TestClaimTaskDispatch_ExpiresLeakedClaim(t *testing.T) {
 	m, _ := newTestManager(t)
 	if !m.ClaimTaskDispatch("task-1") {
@@ -120,7 +172,7 @@ func TestClaimTaskDispatch_ExpiresLeakedClaim(t *testing.T) {
 	}
 
 	m.mu.Lock()
-	m.dispatchClaims["task-1"] = time.Now().Add(-staleDispatchClaimAge - time.Minute)
+	m.dispatchClaims["task-1"] = time.Now().Add(-StaleDispatchClaimAge - time.Minute)
 	m.mu.Unlock()
 
 	if !m.ClaimTaskDispatch("task-1") {
@@ -282,6 +334,20 @@ func TestJitterDispatch_DisabledIsNoop(t *testing.T) {
 	}
 }
 
+func TestJitterRunDispatch_ManualHeadlessSkipsDelay(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.dispatchJitterMs = 10_000
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := m.jitterRunDispatchContext(ctx, RunConfig{Mode: "headless", SkipDispatchJitter: true}); err != nil {
+		t.Fatalf("manual dispatch should skip jitter, got %v", err)
+	}
+	if err := m.jitterRunDispatchContext(ctx, RunConfig{Mode: "headless"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("automated dispatch should retain jitter, got %v", err)
+	}
+}
+
 // TestJitterDispatch_SleepsWithinBound verifies the sleep is uniformly bounded
 // by [0, dispatchJitterMs] rather than always waiting the full window.
 func TestJitterDispatch_SleepsWithinBound(t *testing.T) {
@@ -302,6 +368,14 @@ func TestJitterDispatch_SleepsWithinBound(t *testing.T) {
 // TestJitterDispatch_AbortsOnContextCancel verifies a manager shutdown mid-
 // jitter aborts the dispatch promptly instead of blocking for the full window.
 func TestJitterDispatch_AbortsOnContextCancel(t *testing.T) {
+	// cancelAfter is the only timing this test may reason about. The window
+	// itself is drawn from [0, ms), so a draw shorter than it finishes on its
+	// own and returns nil with nothing to interrupt — legitimately. slack
+	// covers the scheduler gap between the window elapsing and the cancel
+	// goroutine actually running, inside which either outcome is correct.
+	const cancelAfter = 20 * time.Millisecond
+	const slack = 100 * time.Millisecond
+
 	ctx, cancel := context.WithCancel(context.Background())
 	m := mustNewManager(t, ctx, func(string, any) {}, discardLogger(), t.TempDir())
 	m.mu.Lock()
@@ -309,17 +383,44 @@ func TestJitterDispatch_AbortsOnContextCancel(t *testing.T) {
 	m.mu.Unlock()
 
 	go func() {
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(cancelAfter)
 		cancel()
 	}()
 
 	start := time.Now()
 	err := m.jitterDispatch()
-	if err == nil {
-		t.Fatal("expected context error when the manager shuts down mid-jitter")
-	}
-	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+	elapsed := time.Since(start)
+	if elapsed > 500*time.Millisecond {
 		t.Fatalf("jitterDispatch did not abort promptly on ctx cancel: %s", elapsed)
+	}
+	if err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	// Only a call that outlived the cancel by a clear margin and still
+	// reported success is a defect. Thresholding on anything shorter than the
+	// cancel delay fails whenever the draw legitimately beat it.
+	if err == nil && elapsed > cancelAfter+slack {
+		t.Fatalf("jitter ran %s, outlasting the cancel, and still returned nil", elapsed)
+	}
+}
+
+// TestJitterDispatch_RefusesADeadContext pins the half of the contract that
+// holds for every draw: a manager already shut down does not dispatch, whether
+// or not it drew a window to sleep through.
+func TestJitterDispatch_RefusesADeadContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	m := mustNewManager(t, ctx, func(string, any) {}, discardLogger(), t.TempDir())
+	// A jitter of 1 makes the window rand.N(1), which is always zero, so this
+	// takes the zero-draw early return every time — the one path that skipped
+	// the select and so ignored a cancelled context. A larger window would
+	// hide the defect behind the select in all but one run per ms.
+	m.mu.Lock()
+	m.dispatchJitterMs = 1
+	m.mu.Unlock()
+	cancel()
+
+	if err := m.jitterDispatch(); err == nil {
+		t.Fatal("jitterDispatch proceeded on a cancelled context")
 	}
 }
 
@@ -428,7 +529,7 @@ func providerLimitTestPolicy(preferUnderused bool) limits.Policy {
 	return policy
 }
 
-func TestRegisterRunningAgent_IgnoreConcurrencyLimitBypassesCap(t *testing.T) {
+func TestRegisterRunningAgent_IgnoreConcurrencyLimitCannotBypassCap(t *testing.T) {
 	m, _ := newTestManager(t)
 	m.maxConcurrent = 2
 
@@ -445,11 +546,65 @@ func TestRegisterRunningAgent_IgnoreConcurrencyLimitBypassesCap(t *testing.T) {
 	}
 
 	control := &Agent{ID: "control-plane", Provider: "claude", done: make(chan struct{})}
-	if err := m.registerRunningAgent(control, RunConfig{IgnoreConcurrencyLimit: true}, func() {}); err != nil {
-		t.Fatalf("IgnoreConcurrencyLimit spawn at cap must succeed, got err = %v", err)
+	if err := m.registerRunningAgent(control, RunConfig{IgnoreConcurrencyLimit: true}, func() {}); !errors.Is(err, ErrMaxConcurrentReached) {
+		t.Fatalf("IgnoreConcurrencyLimit spawn at cap: err = %v, want ErrMaxConcurrentReached", err)
 	}
-	if _, err := m.GetAgent(control.ID); err != nil {
-		t.Fatalf("control-plane agent should be registered: %v", err)
+}
+
+// TestRegisterRunningAgent_ClassGate proves the per-workload-class admission
+// gate holds a reserved class's guarantee even while the pool is otherwise
+// saturated by another class, and rejects a further dispatch of a class with
+// no remaining guarantee or borrowable capacity — the acceptance criterion
+// for reserve-with-borrowing.
+func TestRegisterRunningAgent_ClassGate(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.mu.Lock()
+	m.maxConcurrent = 3
+	m.classFloors = map[WorkloadClass]int{ClassCompletion: 1}
+	m.mu.Unlock()
+
+	// Saturate the pool with system-class work (no floor of its own).
+	sys1 := &Agent{ID: "sys1", Provider: "claude", Role: RoleMonitor, done: make(chan struct{})}
+	if err := m.registerRunningAgent(sys1, RunConfig{Role: RoleMonitor}, func() {}); err != nil {
+		t.Fatalf("registerRunningAgent(sys1): %v", err)
+	}
+	sys2 := &Agent{ID: "sys2", Provider: "claude", Role: RoleMonitor, done: make(chan struct{})}
+	if err := m.registerRunningAgent(sys2, RunConfig{Role: RoleMonitor}, func() {}); err != nil {
+		t.Fatalf("registerRunningAgent(sys2): %v", err)
+	}
+
+	// A completion-class dispatch must still be admitted: it hasn't consumed
+	// its reserved floor of 1 yet, and reserved classes cannot be starved.
+	fix := &Agent{ID: "fix1", Provider: "claude", Role: RolePRFix, done: make(chan struct{})}
+	if err := m.registerRunningAgent(fix, RunConfig{Role: RolePRFix}, func() {}); err != nil {
+		t.Fatalf("registerRunningAgent(fix, protected by floor): %v", err)
+	}
+
+	// A further system-class dispatch must now be rejected: the pool is at
+	// its cap (3 live against maxConcurrent effectively bounded by the floor
+	// math) and completion's floor must not be stranded.
+	sys3 := &Agent{ID: "sys3", Provider: "claude", Role: RoleMonitor, done: make(chan struct{})}
+	if err := m.registerRunningAgent(sys3, RunConfig{Role: RoleMonitor}, func() {}); !errors.Is(err, ErrMaxConcurrentReached) {
+		t.Fatalf("registerRunningAgent(sys3) err = %v, want ErrMaxConcurrentReached", err)
+	}
+
+	m.mu.RLock()
+	gotLive := m.liveByClass[ClassSystem]
+	gotCompletion := m.liveByClass[ClassCompletion]
+	m.mu.RUnlock()
+	if gotLive != 2 {
+		t.Fatalf("liveByClass[system] = %d, want 2", gotLive)
+	}
+	if gotCompletion != 1 {
+		t.Fatalf("liveByClass[completion] = %d, want 1", gotCompletion)
+	}
+
+	m.markAgentDone(context.Background(), fix)
+	m.mu.RLock()
+	gotCompletion = m.liveByClass[ClassCompletion]
+	m.mu.RUnlock()
+	if gotCompletion != 0 {
+		t.Fatalf("liveByClass[completion] after markAgentDone = %d, want 0", gotCompletion)
 	}
 }
 
@@ -579,6 +734,35 @@ func TestAvailableQueueDrainSlots(t *testing.T) {
 	m.mu.Unlock()
 	if got := m.AvailableQueueDrainSlots(3); got != 3 {
 		t.Fatalf("cap disabled AvailableQueueDrainSlots(3) = %d, want 3", got)
+	}
+}
+
+// TestAvailableQueueDrainSlots_ClassAware proves the manual-drain batch size
+// (always implementation-class items, see enqueueManualStart) reflects a
+// floor reserved for a different class: capacity that class_reservations
+// protects for completion must not be reported as drainable to
+// implementation, even though the raw free-slot count would suggest it is.
+func TestAvailableQueueDrainSlots_ClassAware(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.mu.Lock()
+	m.maxConcurrent = 3
+	m.classFloors = map[WorkloadClass]int{ClassCompletion: 1}
+	m.mu.Unlock()
+
+	// Raw free slots = 3, but 1 must stay protected for completion's floor,
+	// so only 2 are drainable to implementation.
+	if got := m.AvailableQueueDrainSlots(5); got != 2 {
+		t.Fatalf("AvailableQueueDrainSlots(5) with completion floor reserved = %d, want 2", got)
+	}
+
+	// A live completion agent already satisfies its own floor, so nothing is
+	// protected from implementation anymore: all 2 remaining raw slots drain.
+	fix := &Agent{ID: "fix1", Provider: "claude", Role: RolePRFix, done: make(chan struct{})}
+	if err := m.registerRunningAgent(fix, RunConfig{Role: RolePRFix}, func() {}); err != nil {
+		t.Fatalf("registerRunningAgent(fix): %v", err)
+	}
+	if got := m.AvailableQueueDrainSlots(5); got != 2 {
+		t.Fatalf("AvailableQueueDrainSlots(5) with completion floor already met = %d, want 2", got)
 	}
 }
 
@@ -760,5 +944,126 @@ func TestFirstHealthyProvider_ExcludesAndFiltersUnhealthy(t *testing.T) {
 	}
 	if got := firstHealthyProvider("codex", candidates, healthy); got != "" {
 		t.Errorf("got %q, want none (only healthy candidate is excluded)", got)
+	}
+}
+
+// A branch name with multiple path segments (e.g. "fix/issue/2967/slug")
+// nests several directories deep under refs/heads/ — only the file's own
+// basename must be joined onto branchRefDir/branchLogDir, not the full
+// branch name, or the computed grant would double up the nested segments.
+func TestGitBranchSingleFiles_MultiSegmentBranchName(t *testing.T) {
+	roots := gitSandboxRoots{
+		branchRef:    "refs/heads/fix/issue/2967/darwin-git-admin-dir",
+		branchRefDir: "/data/clones/repo.git/refs/heads/fix/issue/2967",
+		branchLogDir: "/data/clones/repo.git/logs/refs/heads/fix/issue/2967",
+	}
+
+	refFile, refLockFile, logFile, logLockFile := gitBranchSingleFiles(roots)
+
+	wantRef := "/data/clones/repo.git/refs/heads/fix/issue/2967/darwin-git-admin-dir"
+	wantLog := "/data/clones/repo.git/logs/refs/heads/fix/issue/2967/darwin-git-admin-dir"
+	if refFile != wantRef {
+		t.Errorf("refFile = %q, want %q", refFile, wantRef)
+	}
+	if refLockFile != wantRef+".lock" {
+		t.Errorf("refLockFile = %q, want %q", refLockFile, wantRef+".lock")
+	}
+	if logFile != wantLog {
+		t.Errorf("logFile = %q, want %q", logFile, wantLog)
+	}
+	if logLockFile != wantLog+".lock" {
+		t.Errorf("logLockFile = %q, want %q", logLockFile, wantLog+".lock")
+	}
+}
+
+// Two sibling tasks with branches nesting under the same parent segment
+// (both under refs/heads/fix/) resolve to distinct single-file grants — the
+// isolation property the whole literal-not-subpath design depends on.
+func TestGitBranchSingleFiles_SiblingBranchesUnderSameParentDiffer(t *testing.T) {
+	a := gitSandboxRoots{
+		branchRef:    "refs/heads/fix/task-a",
+		branchRefDir: "/data/clones/repo.git/refs/heads/fix",
+		branchLogDir: "/data/clones/repo.git/logs/refs/heads/fix",
+	}
+	b := gitSandboxRoots{
+		branchRef:    "refs/heads/fix/task-b",
+		branchRefDir: "/data/clones/repo.git/refs/heads/fix",
+		branchLogDir: "/data/clones/repo.git/logs/refs/heads/fix",
+	}
+
+	aRef, aRefLock, aLog, aLogLock := gitBranchSingleFiles(a)
+	bRef, bRefLock, bLog, bLogLock := gitBranchSingleFiles(b)
+
+	if aRef == bRef || aRefLock == bRefLock || aLog == bLog || aLogLock == bLogLock {
+		t.Fatalf("sibling branches under the same parent dir must resolve to distinct files: a=%v b=%v",
+			[]string{aRef, aRefLock, aLog, aLogLock}, []string{bRef, bRefLock, bLog, bLogLock})
+	}
+	if aRefLock == bRef || aRef == bRefLock {
+		t.Fatalf("a branch's ref/lock must not collide with the sibling's own files")
+	}
+}
+
+func TestGitBranchSingleFiles_EmptyOnDetachedHead(t *testing.T) {
+	refFile, refLockFile, logFile, logLockFile := gitBranchSingleFiles(gitSandboxRoots{})
+	if refFile != "" || refLockFile != "" || logFile != "" || logLockFile != "" {
+		t.Fatalf("detached HEAD must produce no branch-file grants, got %q %q %q %q",
+			refFile, refLockFile, logFile, logLockFile)
+	}
+}
+
+func TestGitCommonDirSingleFiles_DerivesOrdinaryWorkflowPaths(t *testing.T) {
+	files := gitCommonDirSingleFiles(gitSandboxRoots{commonDir: "/data/clones/repo.git"})
+
+	want := gitCommonDirFiles{
+		packedRefsLock: "/data/clones/repo.git/packed-refs.lock",
+		shallow:        "/data/clones/repo.git/shallow",
+		shallowLock:    "/data/clones/repo.git/shallow.lock",
+		stashRef:       "/data/clones/repo.git/refs/stash",
+		stashRefLock:   "/data/clones/repo.git/refs/stash.lock",
+		stashLog:       "/data/clones/repo.git/logs/refs/stash",
+		stashLogLock:   "/data/clones/repo.git/logs/refs/stash.lock",
+	}
+	if files != want {
+		t.Fatalf("gitCommonDirSingleFiles() = %+v, want %+v", files, want)
+	}
+}
+
+func TestGitCommonDirSingleFiles_EmptyWithoutCommonDir(t *testing.T) {
+	if got := (gitCommonDirSingleFiles(gitSandboxRoots{})); got != (gitCommonDirFiles{}) {
+		t.Fatalf("gitCommonDirSingleFiles() = %+v, want zero value", got)
+	}
+}
+
+func TestGitLooseObjectPattern(t *testing.T) {
+	if got := gitLooseObjectPattern(""); got != "" {
+		t.Fatalf("empty object dir must produce no sandbox pattern, got %q", got)
+	}
+	got := gitLooseObjectPattern("/data/repo+.git/objects")
+	writePattern := regexp.MustCompile(got)
+	for _, path := range []string{
+		"/data/repo+.git/objects/tmp_obj_publish",
+		"/data/repo+.git/objects/ab/tmp_obj_publish",
+		"/data/repo+.git/objects/ab/" + strings.Repeat("c", 38),
+		"/data/repo+.git/objects/ab/" + strings.Repeat("d", 62),
+	} {
+		if !writePattern.MatchString(path) {
+			t.Errorf("write pattern rejected valid object path %q", path)
+		}
+	}
+	for _, path := range []string{
+		"/data/repo+.git/objects/ab/not-an-object",
+		"/data/repo+.git/objects/ab/" + strings.Repeat("c", 37),
+		"/data/repo+.git/objects/abc/" + strings.Repeat("c", 38),
+	} {
+		if writePattern.MatchString(path) {
+			t.Errorf("write pattern accepted noncanonical object path %q", path)
+		}
+	}
+	fanoutPattern := regexp.MustCompile(gitLooseObjectFanoutPattern("/data/repo+.git/objects"))
+	if !fanoutPattern.MatchString("/data/repo+.git/objects/ab/" + strings.Repeat("c", 38)) {
+		t.Error("fanout pattern rejected canonical SHA-1 object")
+	}
+	if fanoutPattern.MatchString("/data/repo+.git/objects/ab/tmp_obj_publish") {
+		t.Error("fanout unlink pattern accepted a publication temp file")
 	}
 }

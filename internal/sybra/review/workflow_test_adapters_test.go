@@ -1,16 +1,25 @@
 package review
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/taskstatus"
 	"github.com/Automaat/sybra/internal/workflow"
+)
+
+var (
+	errWorkflowEffectNoPersist             = errors.New("workflow effect claim requires no persistence")
+	errWorkflowStatusReasonNoLongerMatches = errors.New("workflow status reason no longer matches")
+	errWorkflowWriteFenceMismatch          = errors.New("workflow write fence mismatch")
 )
 
 // taskAdapter and agentAdapter are minimal test-only stand-ins for the real
@@ -51,27 +60,77 @@ func (a *taskAdapter) ListTasks() ([]workflow.TaskInfo, error) {
 	return infos, nil
 }
 
-func (a *taskAdapter) UpdateTaskStatus(id, status, reason string) error {
-	st, err := task.ValidateStatus(status)
+func (a *taskAdapter) UpdateTaskStatus(id string, status taskstatus.Status, reason string) error {
+	st, err := task.ValidateStatus(string(status))
 	if err != nil {
 		return err
 	}
-	u := task.Update{Status: &st}
-	if reason != "" {
-		u.StatusReason = &reason
-	}
-	_, err = a.tasks.Update(id, u)
+	_, err = a.tasks.ApplyFn(id, func(cur task.Task) (task.TransitionIntent, error) {
+		target := st
+		u := task.Update{}
+		if reason != "" {
+			u.StatusReason = &reason
+		} else if cur.Status != st && (st != task.StatusHumanRequired || cur.Status != task.StatusBlocked) {
+			u.ClearStatusReason = task.Ptr(true)
+		}
+		if st == task.StatusHumanRequired {
+			target = task.StatusBlocked
+			u.Escalation = task.MachineFailure("workflow.untyped_escalation", reason)
+			u.AutonomyOutcome = task.QuarantinedOutcome()
+		}
+		return task.TransitionIntent{
+			ToStatus: target,
+			Actor:    "workflow.engine.update_status",
+			Extra:    u,
+		}, nil
+	})
 	return err
 }
 
-func (a *taskAdapter) UpdateTaskBlocker(id, status, reason string, state blocker.State) error {
-	st, err := task.ValidateStatus(status)
+func (a *taskAdapter) ClearTaskStatusReasonIf(id string, expectedStatus taskstatus.Status, expectedReason string) (bool, error) {
+	cleared := false
+	_, err := a.tasks.UpdateFn(id, func(cur task.Task) (task.Update, error) {
+		if cur.Status != expectedStatus || cur.StatusReason != expectedReason {
+			return task.Update{}, errWorkflowStatusReasonNoLongerMatches
+		}
+		empty := ""
+		cleared = true
+		return task.Update{StatusReason: &empty}, nil
+	})
+	if errors.Is(err, errWorkflowStatusReasonNoLongerMatches) {
+		return false, nil
+	}
+	return cleared, err
+}
+
+func (a *taskAdapter) ClearTaskStatusReasonAndSetWorkflowIf(id, expectedStatus, expectedReason string, wf *workflow.Execution) (bool, error) {
+	cleared := false
+	_, err := a.tasks.UpdateFn(id, func(cur task.Task) (task.Update, error) {
+		if string(cur.Status) != expectedStatus || cur.StatusReason != expectedReason {
+			return task.Update{}, errWorkflowStatusReasonNoLongerMatches
+		}
+		empty := ""
+		cleared = true
+		return task.Update{StatusReason: &empty, Workflow: &wf}, nil
+	})
+	if errors.Is(err, errWorkflowStatusReasonNoLongerMatches) {
+		return false, nil
+	}
+	return cleared, err
+}
+func (a *taskAdapter) UpdateTaskBlocker(id string, status taskstatus.Status, reason string, state blocker.State) error {
+	st, err := task.ValidateStatus(string(status))
 	if err != nil {
 		return err
 	}
 	u := task.Update{Status: &st, Blocker: &state}
 	if reason != "" {
 		u.StatusReason = &reason
+	}
+	u.Escalation, u.AutonomyOutcome = testTypedBlockerEscalation(st, state, reason)
+	if st == task.StatusHumanRequired && !blocker.AllowsHumanRequired(state.Kind) {
+		st = task.StatusBlocked
+		u.Status = &st
 	}
 	_, err = a.tasks.Update(id, u)
 	return err
@@ -88,6 +147,11 @@ func (a *taskAdapter) MarkTaskReviewed(id string) error {
 	return err
 }
 
+func (a *taskAdapter) SetCodeReviewVerdict(id, verdict string) error {
+	_, err := a.tasks.Update(id, task.Update{CodeReviewVerdict: &verdict})
+	return err
+}
+
 func (a *taskAdapter) MarkAgentRunProtocolViolation(taskID, agentID, violation string) error {
 	return a.tasks.UpdateRun(taskID, agentID, task.RunPatch{ProtocolViolation: task.Ptr(violation)})
 }
@@ -98,6 +162,10 @@ func (a *taskAdapter) MarkAgentRunTestOutcome(taskID, agentID, outcome, fingerpr
 		patch.TestFailureFingerprint = task.Ptr(fingerprint)
 	}
 	return a.tasks.UpdateRun(taskID, agentID, patch)
+}
+
+func (a *taskAdapter) MarkAgentRunIncomplete(taskID, agentID string) error {
+	return a.tasks.UpdateRun(taskID, agentID, task.RunPatch{Outcome: task.Ptr(task.RunOutcomeIncomplete)})
 }
 
 func (a *taskAdapter) RecordAgentRunFinalCommit(taskID, agentID, headSHA, source string) error {
@@ -122,8 +190,238 @@ func (a *taskAdapter) ReplaceTaskBody(id, body string) error {
 }
 
 func (a *taskAdapter) SetWorkflow(id string, wf *workflow.Execution) error {
-	_, err := a.tasks.Update(id, task.Update{Workflow: &wf})
+	_, err := a.tasks.ApplyFn(id, func(cur task.Task) (task.TransitionIntent, error) {
+		return task.TransitionIntent{
+			ToStatus: cur.Status,
+			Actor:    "workflow.engine.set_workflow",
+			Extra:    task.Update{Workflow: &wf},
+		}, nil
+	})
 	return err
+}
+
+func (a *taskAdapter) SetStatusAndWorkflow(id, status, reason string, wf *workflow.Execution) error {
+	st, err := task.ValidateStatus(status)
+	if err != nil {
+		return err
+	}
+	extra := task.Update{Workflow: &wf}
+	if reason != "" {
+		extra.StatusReason = &reason
+	}
+	if st == task.StatusHumanRequired {
+		st = task.StatusBlocked
+		extra.Escalation = task.MachineFailure("workflow.untyped_escalation", reason)
+		extra.AutonomyOutcome = task.QuarantinedOutcome()
+	}
+	_, err = a.tasks.Apply(task.TransitionIntent{
+		TaskID:   id,
+		ToStatus: st,
+		Actor:    "workflow.engine.set_status_and_workflow",
+		Extra:    extra,
+	})
+	return err
+}
+
+func (a *taskAdapter) SetEscalationAndWorkflow(id, status, reason string, escalation autonomy.EscalationReason, outcome autonomy.Outcome, wf *workflow.Execution) error {
+	st, err := task.ValidateStatus(status)
+	if err != nil {
+		return err
+	}
+	extra := task.Update{Workflow: &wf, Escalation: &escalation, AutonomyOutcome: &outcome}
+	if reason != "" {
+		extra.StatusReason = &reason
+	}
+	_, err = a.tasks.Apply(task.TransitionIntent{
+		TaskID:   id,
+		ToStatus: st,
+		Actor:    "workflow.engine.set_escalation_and_workflow",
+		Extra:    extra,
+	})
+	return err
+}
+
+func (a *taskAdapter) SetBlockerAndWorkflow(id, status, reason string, state blocker.State, wf *workflow.Execution) error {
+	st, err := task.ValidateStatus(status)
+	if err != nil {
+		return err
+	}
+	u := task.Update{Status: &st, Blocker: &state, Workflow: &wf}
+	if reason != "" {
+		u.StatusReason = &reason
+	}
+	u.Escalation, u.AutonomyOutcome = testTypedBlockerEscalation(st, state, reason)
+	if st == task.StatusHumanRequired && !blocker.AllowsHumanRequired(state.Kind) {
+		st = task.StatusBlocked
+		u.Status = &st
+	}
+	_, err = a.tasks.Update(id, u)
+	return err
+}
+
+func testTypedBlockerEscalation(status task.Status, state blocker.State, reason string) (*autonomy.EscalationReason, *autonomy.Outcome) {
+	if status != task.StatusHumanRequired {
+		return nil, nil
+	}
+	owner := blocker.FailureOwner(state.Kind)
+	if owner == autonomy.FailureOwnerUnknown {
+		owner = autonomy.FailureOwnerMachine
+	}
+	code := "workflow.blocker." + string(state.Kind)
+	if state.Kind == "" {
+		code = "workflow.blocker.unknown"
+	}
+	if owner.AllowsHumanRequired() {
+		return task.ControlPlaneFailure(code, owner, reason), task.HumanRequiredOutcome()
+	}
+	return task.ControlPlaneFailure(code, owner, reason), task.QuarantinedOutcome()
+}
+func (a *taskAdapter) SetWorkflowIf(id string, fence workflow.WorkflowWriteFence, wf *workflow.Execution) (bool, error) {
+	_, err := a.tasks.ApplyFn(id, func(cur task.Task) (task.TransitionIntent, error) {
+		if cur.Generation != fence.Generation || cur.Status != fence.Status ||
+			cur.StatusReason != fence.StatusReason || cur.Workflow == nil ||
+			cur.Workflow.WorkflowID != fence.WorkflowID || cur.Workflow.CurrentStep != fence.CurrentStep ||
+			cur.Workflow.State != fence.State {
+			return task.TransitionIntent{}, errWorkflowWriteFenceMismatch
+		}
+		expectedStatus := cur.Status
+		return task.TransitionIntent{
+			TaskID: id, ToStatus: cur.Status, Actor: "workflow.engine.set_workflow_if",
+			ExpectedGeneration: &fence.Generation, ExpectedStatus: &expectedStatus,
+			Extra: task.Update{Workflow: &wf},
+		}, nil
+	})
+	if errors.Is(err, errWorkflowWriteFenceMismatch) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (a *taskAdapter) SetStatusAndWorkflowIf(id string, fence workflow.WorkflowWriteFence, status taskstatus.Status, reason string, wf *workflow.Execution) (bool, error) {
+	st, err := task.ValidateStatus(string(status))
+	if err != nil {
+		return false, err
+	}
+	_, err = a.tasks.ApplyFn(id, func(cur task.Task) (task.TransitionIntent, error) {
+		if cur.Generation != fence.Generation || cur.Status != fence.Status ||
+			cur.StatusReason != fence.StatusReason || cur.Workflow == nil ||
+			cur.Workflow.WorkflowID != fence.WorkflowID || cur.Workflow.CurrentStep != fence.CurrentStep ||
+			cur.Workflow.State != fence.State {
+			return task.TransitionIntent{}, errWorkflowWriteFenceMismatch
+		}
+		expectedStatus := cur.Status
+		return task.TransitionIntent{
+			TaskID: id, ToStatus: st, Actor: "workflow.engine.set_status_and_workflow_if",
+			ExpectedGeneration: &fence.Generation, ExpectedStatus: &expectedStatus,
+			Extra: task.Update{StatusReason: task.Ptr(reason), Workflow: &wf},
+		}, nil
+	})
+	if errors.Is(err, errWorkflowWriteFenceMismatch) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (a *taskAdapter) ClaimWorkflowEffect(id string, claim workflow.EffectClaim) (workflow.EffectClaimResult, error) {
+	var result workflow.EffectClaimResult
+	var fenceErr error
+	_, err := a.tasks.ApplyFn(id, func(cur task.Task) (task.TransitionIntent, error) {
+		if cur.Workflow == nil {
+			return task.TransitionIntent{}, fmt.Errorf("task %s has no workflow", id)
+		}
+		wf := cur.Workflow.Clone()
+		result.Workflow = wf
+		claimResult, claimErr := wf.ClaimEffect(claim)
+		claimResult.Workflow = wf
+		result = claimResult
+		if claimErr != nil {
+			if errors.Is(claimErr, workflow.ErrEffectClaimConflict) || errors.Is(claimErr, workflow.ErrEffectAlreadyComplete) {
+				fenceErr = claimErr
+				return task.TransitionIntent{}, errWorkflowEffectNoPersist
+			}
+			return task.TransitionIntent{}, claimErr
+		}
+		return task.TransitionIntent{
+			ToStatus: cur.Status,
+			Actor:    "workflow.engine.claim_effect",
+			Extra:    task.Update{Workflow: &wf},
+		}, nil
+	})
+	if err != nil {
+		if errors.Is(err, errWorkflowEffectNoPersist) {
+			return result, fenceErr
+		}
+		return workflow.EffectClaimResult{}, err
+	}
+	return result, nil
+}
+
+func (a *taskAdapter) CompleteWorkflowEffect(id string, claim workflow.EffectClaim) (workflow.EffectClaimResult, error) {
+	var result workflow.EffectClaimResult
+	var fenceErr error
+	_, err := a.tasks.ApplyFn(id, func(cur task.Task) (task.TransitionIntent, error) {
+		if cur.Workflow == nil {
+			return task.TransitionIntent{}, fmt.Errorf("task %s has no workflow", id)
+		}
+		wf := cur.Workflow.Clone()
+		result.Workflow = wf
+		claimResult, claimErr := wf.CompleteEffect(claim)
+		claimResult.Workflow = wf
+		result = claimResult
+		if claimErr != nil {
+			if errors.Is(claimErr, workflow.ErrEffectClaimLost) || errors.Is(claimErr, workflow.ErrEffectAlreadyComplete) {
+				fenceErr = claimErr
+				return task.TransitionIntent{}, errWorkflowEffectNoPersist
+			}
+			return task.TransitionIntent{}, claimErr
+		}
+		return task.TransitionIntent{
+			ToStatus: cur.Status,
+			Actor:    "workflow.engine.complete_effect",
+			Extra:    task.Update{Workflow: &wf},
+		}, nil
+	})
+	if err != nil {
+		if errors.Is(err, errWorkflowEffectNoPersist) {
+			return result, fenceErr
+		}
+		return workflow.EffectClaimResult{}, err
+	}
+	return result, nil
+}
+
+func (a *taskAdapter) ReleaseWorkflowEffect(id string, claim workflow.EffectClaim) (workflow.EffectClaimResult, error) {
+	var result workflow.EffectClaimResult
+	var fenceErr error
+	_, err := a.tasks.ApplyFn(id, func(cur task.Task) (task.TransitionIntent, error) {
+		if cur.Workflow == nil {
+			return task.TransitionIntent{}, fmt.Errorf("task %s has no workflow", id)
+		}
+		wf := cur.Workflow.Clone()
+		result.Workflow = wf
+		claimResult, claimErr := wf.ReleaseEffect(claim)
+		claimResult.Workflow = wf
+		result = claimResult
+		if claimErr != nil {
+			if errors.Is(claimErr, workflow.ErrEffectClaimLost) || errors.Is(claimErr, workflow.ErrEffectAlreadyComplete) {
+				fenceErr = claimErr
+				return task.TransitionIntent{}, errWorkflowEffectNoPersist
+			}
+			return task.TransitionIntent{}, claimErr
+		}
+		return task.TransitionIntent{
+			ToStatus: cur.Status,
+			Actor:    "workflow.engine.release_effect",
+			Extra:    task.Update{Workflow: &wf},
+		}, nil
+	})
+	if err != nil {
+		if errors.Is(err, errWorkflowEffectNoPersist) {
+			return result, fenceErr
+		}
+		return workflow.EffectClaimResult{}, err
+	}
+	return result, nil
 }
 
 func (a *taskAdapter) ConsumeSupervisorSteer(taskID, prompt string) (string, error) {
@@ -131,10 +429,12 @@ func (a *taskAdapter) ConsumeSupervisorSteer(taskID, prompt string) (string, err
 }
 
 func (a *taskAdapter) WriteSidecar(id, kind, content string) error {
-	if name, ok := strings.CutPrefix(kind, "plan_draft."); ok {
-		return a.tasks.PlanDrafts().Write(id, name, content)
-	}
 	var u task.Update
+	if name, ok := strings.CutPrefix(kind, "plan_draft."); ok {
+		u.PlanDraftWrite = &task.PlanDraftEntry{Name: name, Content: content}
+		_, err := a.tasks.UpdateBy(id, "workflow.engine.write_sidecar", u)
+		return err
+	}
 	switch kind {
 	case "plan":
 		u.Plan = &content
@@ -150,8 +450,14 @@ func (a *taskAdapter) WriteSidecar(id, kind, content string) error {
 		u.PlanDecisions = &content
 	case "plan_brief":
 		u.PlanBrief = &content
+	case "current_test_failures":
+		u.CurrentTestFailures = &content
+	case "acceptance_ledger":
+		u.AcceptanceLedger = &content
+	case "spec_decision":
+		u.SpecDecision = &content
 	default:
-		return fmt.Errorf("unknown sidecar kind %q (want plan|plan_contract|code_review|plan_critique|plan_research|plan_decisions|plan_brief|plan_draft.<name>)", kind)
+		return fmt.Errorf("unknown sidecar kind %q (want plan|plan_contract|code_review|plan_critique|plan_research|plan_decisions|plan_brief|current_test_failures|acceptance_ledger|spec_decision|plan_draft.<name>)", kind)
 	}
 	_, err := a.tasks.Update(id, u)
 	return err
@@ -161,7 +467,8 @@ func taskToInfo(t task.Task) workflow.TaskInfo {
 	return workflow.TaskInfo{
 		ID:                    t.ID,
 		Title:                 t.Title,
-		Status:                string(t.Status),
+		Generation:            t.Generation,
+		Status:                t.Status,
 		StatusReason:          t.StatusReason,
 		Role:                  t.RunRole,
 		Tags:                  t.Tags,
@@ -178,6 +485,10 @@ func taskToInfo(t task.Task) workflow.TaskInfo {
 		PlanDecisions:         t.PlanDecisions,
 		PlanBrief:             t.PlanBrief,
 		CodeReview:            t.CodeReview,
+		CurrentTestFailures:   t.CurrentTestFailures,
+		AcceptanceLedger:      t.AcceptanceLedger,
+		SpecDecision:          t.SpecDecision,
+		CodeReviewVerdict:     t.CodeReviewVerdict,
 		PlanDrafts:            t.PlanDrafts,
 		Issue:                 t.Issue,
 		Reviewed:              t.Reviewed,
@@ -204,6 +515,8 @@ func toRunInfos(runs []task.AgentRun) []workflow.AgentRunInfo {
 			AgentID:                runs[i].AgentID,
 			Role:                   runs[i].Role,
 			Provider:               runs[i].Provider,
+			Mode:                   runs[i].Mode,
+			State:                  runs[i].State,
 			RequestedSkill:         runs[i].RequestedSkill,
 			SkillExecutionMode:     runs[i].SkillExecutionMode,
 			SkillConformance:       runs[i].SkillConformance,

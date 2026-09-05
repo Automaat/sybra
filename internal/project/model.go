@@ -211,11 +211,12 @@ type Project struct {
 	Type      ProjectType `yaml:"type" json:"type"`
 	// Status reflects the clone lifecycle. Empty value is treated as ready
 	// so existing projects without this field continue to work.
-	Status        ProjectStatus     `yaml:"status,omitempty" json:"status"`
-	SetupCommands []string          `yaml:"setup_commands,omitempty" json:"setupCommands,omitempty"`
-	Sandbox       *SandboxConfig    `yaml:"sandbox,omitempty" json:"sandbox,omitempty"`
-	Checks        *ChecksConfig     `yaml:"checks,omitempty"  json:"checks,omitempty"`
-	ManualTest    *ManualTestConfig `yaml:"manual_test,omitempty" json:"manualTest,omitempty"`
+	Status          ProjectStatus     `yaml:"status,omitempty" json:"status"`
+	CloneGeneration string            `yaml:"clone_generation,omitempty" json:"-"`
+	SetupCommands   []string          `yaml:"setup_commands,omitempty" json:"setupCommands,omitempty"`
+	Sandbox         *SandboxConfig    `yaml:"sandbox,omitempty" json:"sandbox,omitempty"`
+	Checks          *ChecksConfig     `yaml:"checks,omitempty"  json:"checks,omitempty"`
+	ManualTest      *ManualTestConfig `yaml:"manual_test,omitempty" json:"manualTest,omitempty"`
 	// WorktreeBaseRef controls the starting point for new worktree branches.
 	// "fresh" (default) branches off origin/<default>; "head" branches off the
 	// local HEAD so unpushed commits are included. Empty value treated as "fresh".

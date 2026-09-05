@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/Automaat/sybra/internal/enrichment"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/promptlab"
 	"github.com/Automaat/sybra/internal/task"
@@ -15,13 +16,16 @@ import (
 // must survive a wholesale tag-replacement in Apply because dropping them
 // would silently break routing the task depends on: escape-hatch opt-outs
 // (see escapeHatchTags), the umbrella dependency gate marker, and local
-// Sybra-bug tracker routing markers.
+// Sybra-bug tracker routing markers. Pending enrichment must survive too:
+// dropping it strands URL stubs outside ReconcilePendingEnrichment and can
+// let umbrella issues be implemented as flat tasks.
 var preservedTags = append(append([]string{}, escapeHatchTags...),
+	enrichment.PendingTag,
 	umbrella.GatedTag,
-	"sybra-bug",
-	"scrubbed",
-	"local",
-	"issue-filing-failed",
+	string(task.FlagSybraBug),
+	string(task.FlagScrubbed),
+	string(task.FlagLocal),
+	string(task.FlagIssueFilingFailed),
 )
 
 const defaultSybraBugProjectID = "Automaat/sybra"
@@ -56,13 +60,15 @@ const umbrellaGuardOptOutTag = "notumbrella"
 // atomic per task (Manager holds a per-task mutex).
 //
 // projects is used to look up the project type after ProjectID is matched,
-// which feeds into routing rules (work projects force interactive mode).
+// which feeds into routing rules (work projects force the planning status).
 func Apply(mgr *task.Manager, t task.Task, v Verdict, projects []project.Project) (task.Task, error) {
 	return ApplyWithOptions(mgr, t, v, projects, ApplyOptions{})
 }
 
 // ApplyWithOptions writes the classifier verdict to the task with explicit
 // deterministic routing options supplied by the caller.
+//
+//nolint:funlen // Triage classification and its single atomic transition are reviewed as one policy unit.
 func ApplyWithOptions(mgr *task.Manager, t task.Task, v Verdict, projects []project.Project, opts ApplyOptions) (task.Task, error) {
 	updates := make(map[string]any, 8)
 
@@ -79,7 +85,7 @@ func ApplyWithOptions(mgr *task.Manager, t task.Task, v Verdict, projects []proj
 	// is only authoritative while it still resolves to a registered project —
 	// a renamed/deleted project leaves a stale ID that would otherwise lock
 	// the task to an empty project type, silently skipping the work-typed
-	// forced-interactive/forced-planning routing. So keep it only when it
+	// forced-planning routing. So keep it only when it
 	// resolves; otherwise re-resolve, preferring the task's own Issue URL —
 	// the authoritative source-of-truth link — over the classifier's guess
 	// and generic title/body scanning.
@@ -177,11 +183,33 @@ func ApplyWithOptions(mgr *task.Manager, t task.Task, v Verdict, projects []proj
 		updates["status_reason"] = umbrellaNormalTypeStatusReason
 	}
 
-	updated, err := mgr.UpdateMap(t.ID, updates)
+	statusValue, ok := updates["status"].(string)
+	if !ok {
+		return task.Task{}, fmt.Errorf("update task: triage status is missing or invalid")
+	}
+	delete(updates, "status")
+	extra, err := task.UpdateFromMap(updates)
 	if err != nil {
 		return task.Task{}, fmt.Errorf("update task: %w", err)
 	}
-	return updated, nil
+	validatedStatus, err := task.ValidateStatus(statusValue)
+	if err != nil {
+		return task.Task{}, fmt.Errorf("update task: %w", err)
+	}
+	if validatedStatus == task.StatusHumanRequired {
+		extra.Escalation = task.OperatorDecisionRequired("triage.umbrella_expansion_decision", umbrellaNormalTypeStatusReason)
+		extra.AutonomyOutcome = task.HumanRequiredOutcome()
+	}
+	result, err := mgr.Apply(task.TransitionIntent{
+		TaskID:   t.ID,
+		ToStatus: validatedStatus,
+		Actor:    "triage.apply",
+		Extra:    extra,
+	})
+	if err != nil {
+		return task.Task{}, fmt.Errorf("update task: %w", err)
+	}
+	return result.Task, nil
 }
 
 func isPRFixTask(t task.Task) bool {
@@ -189,7 +217,7 @@ func isPRFixTask(t task.Task) bool {
 }
 
 func isSybraBugTask(t task.Task, v Verdict) bool {
-	return slices.Contains(t.Tags, "sybra-bug") || slices.Contains(v.Tags, "sybra-bug")
+	return task.HasFlag(t.Tags, task.FlagSybraBug) || task.HasFlag(v.Tags, task.FlagSybraBug)
 }
 
 // projectTypeFor returns the registered project type for id and whether id

@@ -9,6 +9,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/Automaat/sybra/internal/taskstatus"
+	"github.com/Automaat/sybra/internal/worktreeerr"
 )
 
 // --- fakes for CostBudgetChecker / AttemptWorktreeManager ---
@@ -166,7 +169,7 @@ func newBestOfNTestEngine(t *testing.T, attempts int) (*Engine, *memTasks, *mock
 	}
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	attemptWorktrees := newFakeAttemptWorktrees()
 	costBudget := &fakeCostBudget{}
 	engine.SetAttemptWorktreeManager(attemptWorktrees)
@@ -630,6 +633,31 @@ func TestBestOfN_PromotionRefused_FailsClosedWithDistinctReason(t *testing.T) {
 	assertHumanRequiredReason(t, tasks, reason)
 }
 
+// TestBestOfN_PromotionBusyPathDefersInsteadOfEscalating separates the two
+// kinds of promotion failure. The fail-closed reasons above are judgements a
+// human must make; a canonical path another mutating operation currently owns
+// is not one, and parking a human on it hands them a condition that is gone
+// before they read it.
+func TestBestOfN_PromotionBusyPathDefersInsteadOfEscalating(t *testing.T) {
+	engine, tasks, agents, attemptWt, _ := newBestOfNTestEngine(t, 2)
+	attemptWt.promoteErr = fmt.Errorf("promote: %w", worktreeerr.ErrPreparationInFlight)
+	setupTwoSuccessfulAttempts(t, engine, tasks)
+
+	judgeAgentID := agents.LastID()
+	out := `{"winner_attempt_id": "attempt_1", "rationale": "x"}`
+	if err := engine.AdvanceStep("t1", StepOutput{StepID: "judge", Status: "completed", AgentID: judgeAgentID, Output: out}); !errors.Is(err, worktreeerr.ErrPreparationInFlight) {
+		t.Fatalf("AdvanceStep err = %v, want ErrPreparationInFlight surfaced to the caller", err)
+	}
+
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti.Status == taskstatus.HumanRequired {
+		t.Errorf("task escalated to human-required on a self-clearing refusal (reason %q)", ti.StatusReason)
+	}
+}
+
 // --- resume-without-double-dispatch ---
 
 func TestBestOfN_ResumeDoesNotDoubleDispatchTerminalAttempts(t *testing.T) {
@@ -691,6 +719,73 @@ func TestBestOfN_ResumeDoesNotDoubleDispatchTerminalAttempts(t *testing.T) {
 	}
 	if n1 != 1 {
 		t.Errorf("PrepareAttempt(attempt_1) called %d times, want 1 (no re-dispatch of a completed attempt)", n1)
+	}
+}
+
+func TestBestOfN_CompletionRoutesViaPendingAttemptAfterPersistFailure(t *testing.T) {
+	engine, tasks, _, _, _ := newBestOfNTestEngine(t, 2)
+
+	wfExec := &Execution{
+		WorkflowID:  "bestofn-test",
+		CurrentStep: "attempts",
+		State:       ExecWaiting,
+		Variables:   map[string]string{},
+		BestOfNInflight: map[string]*BestOfNInflight{
+			"attempts": {
+				ParentStepID: "attempts",
+				Attempts: map[string]*AttemptStatus{
+					bestOfNAttemptID(1): {AttemptID: bestOfNAttemptID(1), Status: "pending"},
+					bestOfNAttemptID(2): {AttemptID: bestOfNAttemptID(2), Status: "pending"},
+				},
+			},
+		},
+	}
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo", Workflow: wfExec})
+
+	def, err := engine.store.Get("bestofn-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := def.StepByID("attempts")
+	if parent == nil {
+		t.Fatal("bestofn-test definition missing attempts step")
+	}
+	rec := wfExec.BestOfNInflight["attempts"]
+	if rec == nil {
+		t.Fatal("best-of-n inflight record missing")
+	}
+	status := rec.Attempts[bestOfNAttemptID(1)]
+	if status == nil {
+		t.Fatal("best-of-n attempt status missing")
+	}
+	ctx := TemplateContext{Task: TaskInfo{ID: "t1", Status: "todo", Workflow: wfExec}, Step: *parent, Vars: wfExec.Variables, Workflow: wfExec}
+
+	tasks.failSetWorkflowN = 1
+	err = engine.spawnBestOfNAttempt("t1", parent, wfExec, ctx, bestOfNAttemptID(1), status)
+	if !errors.Is(err, errWorkflowYield) {
+		t.Fatalf("spawnBestOfNAttempt err = %v, want errWorkflowYield", err)
+	}
+	stepKey := bestOfNAttemptStepKey("attempts", bestOfNAttemptID(1))
+	if got, tracked := lookupWorkflowAgentRoute(t, engine, "t1", "agent-1"); !tracked || got != stepKey {
+		t.Fatalf("pending route = (%q,%v), want %q,true", got, tracked, stepKey)
+	}
+
+	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "agent-1", Success: true, Result: "winner", Provider: "claude"})
+
+	got := mustWorkflow(t, tasks, "t1")
+	rec = got.BestOfNInflight["attempts"]
+	if rec == nil || rec.Attempts[bestOfNAttemptID(1)] == nil {
+		t.Fatal("best-of-n inflight attempt missing after completion")
+	}
+	attempt := rec.Attempts[bestOfNAttemptID(1)]
+	if attempt == nil {
+		t.Fatal("best-of-n attempt missing after completion")
+	}
+	if attempt.Status != "completed" {
+		t.Fatalf("attempt_1 status = %q, want completed", attempt.Status)
+	}
+	if _, tracked := lookupWorkflowAgentRoute(t, engine, "t1", "agent-1"); tracked {
+		t.Fatal("pending route still tracked after attempt completion")
 	}
 }
 

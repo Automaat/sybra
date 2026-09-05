@@ -76,6 +76,13 @@ func orchestratorReplaceable(a *agent.Agent) bool {
 	}
 }
 
+// selectOrchestratorSingleton picks the one orchestrator agent to keep and
+// reports every other orchestrator (or currentID) entry that should be
+// stopped. Callers must pass a live-only agent list (agent.Manager's
+// ListLiveAgents, not ListAgents) — an already-terminal entry retained for
+// historical reporting has nothing left to stop, and re-including it here
+// would re-select and re-stop the same dead agent on every reconciliation
+// tick for as long as it sits in the manager's retention window.
 func selectOrchestratorSingleton(currentID string, agents []*agent.Agent) (keepID string, stopIDs []string) {
 	var keep *agent.Agent
 	stopSeen := map[string]struct{}{}
@@ -132,7 +139,7 @@ func selectOrchestratorSingleton(currentID string, agents []*agent.Agent) (keepI
 // OrchestratorService exposes orchestrator session operations as Wails-bound methods.
 type OrchestratorService struct {
 	agents    *agent.Manager
-	audit     *audit.Logger
+	audit     audit.Store
 	logger    *slog.Logger
 	emit      func(string, any)
 	abTesting abtest.Config
@@ -159,7 +166,7 @@ func (s *OrchestratorService) reconcileOrchestratorsLocked() string {
 		s.agentID = ""
 		return ""
 	}
-	keepID, stopIDs := selectOrchestratorSingleton(s.agentID, s.agents.ListAgents())
+	keepID, stopIDs := selectOrchestratorSingleton(s.agentID, s.agents.ListLiveAgents())
 	s.agentID = keepID
 	for _, id := range stopIDs {
 		if id == keepID {
@@ -200,12 +207,13 @@ func (s *OrchestratorService) StartOrchestratorContext(ctx context.Context) erro
 	}
 
 	a, err := s.agents.RunContext(ctx, s.agents.ApplyABVariant(agent.RunConfig{
-		Name:                   orchestratorAgentName,
-		Role:                   agent.RoleOrchestrator,
-		Mode:                   "headless",
-		Dir:                    config.HomeDir(),
-		Prompt:                 orchestratorKickoffPrompt,
-		IgnoreConcurrencyLimit: true,
+		Name:        orchestratorAgentName,
+		Role:        agent.RoleOrchestrator,
+		Mode:        "headless",
+		Dir:         config.HomeDir(),
+		ReadOnlyDir: true,
+		Prompt:      orchestratorKickoffPrompt,
+		IsolateHome: true,
 	}, s.abTesting, orchestratorABKey(), orchestratorRole))
 	if err != nil {
 		return fmt.Errorf("start orchestrator agent: %w", err)

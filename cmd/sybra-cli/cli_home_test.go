@@ -1,21 +1,27 @@
 package main
 
 import (
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/httpserve"
 )
 
 // TestHomeFlag_OverridesEverything pins --home as the top of the precedence
 // order: it wins even when SYBRA_CONTROL_HOME and SYBRA_HOME both point
-// elsewhere. Deliberately leaves SYBRA_TASKS_DIR unset (unlike setupStore) so
-// TasksDir is derived from the resolved home — the thing under test here.
+// elsewhere. A home now names which board the CLI reaches, so each one here
+// runs its own.
 func TestHomeFlag_OverridesEverything(t *testing.T) {
 	realHome := t.TempDir()
 	sandboxHome := t.TempDir()
+	startTestBoard(t, realHome)
+	startTestBoard(t, sandboxHome)
 	t.Setenv("SYBRA_HOME", sandboxHome)
 	t.Setenv("SYBRA_CONTROL_HOME", filepath.Join(t.TempDir(), "unused"))
 
@@ -46,7 +52,10 @@ func TestHomeFlag_OverridesEverything(t *testing.T) {
 // TestHomeFlag_EqualsForm pins the --home=DIR form alongside --home DIR.
 func TestHomeFlag_EqualsForm(t *testing.T) {
 	realHome := t.TempDir()
-	t.Setenv("SYBRA_HOME", t.TempDir())
+	sandboxHome := t.TempDir()
+	startTestBoard(t, realHome)
+	startTestBoard(t, sandboxHome)
+	t.Setenv("SYBRA_HOME", sandboxHome)
 
 	code, out := runCLI(t, "--json", "--home="+realHome, "create", "--title", "equals form")
 	if code != 0 {
@@ -68,6 +77,8 @@ func TestHomeFlag_EqualsForm(t *testing.T) {
 func TestControlHomeEnv_WinsOverSybraHome(t *testing.T) {
 	realHome := t.TempDir()
 	sandboxHome := t.TempDir()
+	startTestBoard(t, realHome)
+	startTestBoard(t, sandboxHome)
 	t.Setenv("SYBRA_HOME", sandboxHome)
 	t.Setenv("SYBRA_CONTROL_HOME", realHome)
 
@@ -93,13 +104,15 @@ func TestControlHomeEnv_WinsOverSybraHome(t *testing.T) {
 	}
 }
 
-func TestControlHomeEnv_ForcesFilesystemModeEvenWithServerRunning(t *testing.T) {
+// TestControlHomeEnv_ReachesTheBoardItNames replaces a test that asserted
+// SYBRA_CONTROL_HOME forced filesystem mode. Editing files behind the instance
+// that owns them is the failure this whole surface removed, so the guarantee is
+// now about which board is reached, not about bypassing every board.
+func TestControlHomeEnv_ReachesTheBoardItNames(t *testing.T) {
 	realHome := t.TempDir()
 	sandboxHome := t.TempDir()
-	tasksDir := filepath.Join(realHome, "tasks")
-	if err := os.MkdirAll(tasksDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	startTestBoard(t, realHome)
+	startTestBoard(t, sandboxHome)
 	t.Setenv("SYBRA_HOME", sandboxHome)
 	t.Setenv("SYBRA_CONTROL_HOME", realHome)
 
@@ -108,24 +121,43 @@ func TestControlHomeEnv_ForcesFilesystemModeEvenWithServerRunning(t *testing.T) 
 		t.Fatalf("create exit %d: %s", code, out)
 	}
 
-	tasks, err := task.NewStore(tasksDir)
-	if err != nil {
-		t.Fatal(err)
+	// The board named by SYBRA_CONTROL_HOME holds it; the sandbox board does not.
+	code, out = runCLI(t, "--json", "--home", realHome, "list")
+	if code != 0 || !strings.Contains(out, "control home target") {
+		t.Fatalf("control-home board list = %q (exit %d), want the created task", out, code)
 	}
-	list, err := tasks.List()
-	if err != nil || len(list) != 1 {
-		t.Fatalf("expected exactly one seeded task, got %v (err=%v)", list, err)
+	code, out = runCLI(t, "--json", "--home", sandboxHome, "list")
+	if code != 0 {
+		t.Fatalf("sandbox list exit %d: %s", code, out)
 	}
-	id := list[0].ID
+	if strings.Contains(out, "control home target") {
+		t.Fatalf("sandbox board leaked the control-home task: %s", out)
+	}
+}
 
-	port := startFakeAPIServer(t, tasksDir)
-	t.Setenv("SYBRA_PORT", port)
+// TestBoardCommandRefusesWithNoServer is the contract this issue exists for: a
+// command that needs board state and finds no server says so and exits
+// non-zero, rather than opening the files behind whichever instance owns them.
+func TestBoardCommandRefusesWithNoServer(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SYBRA_HOME", home)
+	t.Setenv("SYBRA_CONTROL_HOME", "")
+	t.Setenv(serverTargetEnv, "")
+	// A port proven closed, rather than the default: this repo's own dev:mock
+	// listens on 8080, so relying on the default made the test depend on what
+	// else the machine happens to be running.
+	writeClosedPortFile(t, home)
 
-	lockdownDir(t, tasksDir)
-
-	code, _ = runCLI(t, "--json", "update", id, "--status", "todo")
+	code, _, stderr := runCLIWithStderr(t, "--json", "list")
 	if code == 0 {
-		t.Fatal("SYBRA_CONTROL_HOME must force filesystem mode even when a server is reachable; update against a read-only dir should fail")
+		t.Fatal("list exit 0 with no server reachable")
+	}
+	if !refusedToUseATarget(stderr) {
+		t.Errorf("stderr = %q, want it to refuse the target it resolved", stderr)
+	}
+	// Nothing may have been written where the board's files would live.
+	if _, err := os.Stat(filepath.Join(home, "tasks")); err == nil {
+		t.Error("the refused command created the board's task directory")
 	}
 }
 
@@ -147,5 +179,98 @@ func TestHomeFlag_MalformedMissingValue_HookFailsOpen(t *testing.T) {
 	code, _ := runCLI(t, "hook", "--home")
 	if code != 0 {
 		t.Fatalf("hook exit = %d, want 0 (fail-open)", code)
+	}
+}
+
+// TestInferredTargetAcceptsAnUnidentifiedPeer pins a deliberate trade.
+//
+// A server older than the home field answers /health with exactly
+// {"status":"ok"} — byte-identical to a process that is not Sybra at all, so
+// the two cannot be told apart. Refusing it would break every deployment
+// between this CLI landing and the server restarting, which auto-update
+// coalesces by up to an hour, and every agent's task CRUD runs through this
+// path. So silence is accepted and the bearer token remains the real gate.
+//
+// A peer that positively claims a different home is still refused, and nothing
+// that deletes local files accepts silence — see ownsHome.
+func TestInferredTargetAcceptsAnUnidentifiedPeer(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SYBRA_HOME", home)
+	t.Setenv("SYBRA_CONTROL_HOME", "")
+	t.Setenv(serverTargetEnv, "")
+
+	var gotAuth string
+	impostor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if v := r.Header.Get("Authorization"); v != "" {
+			gotAuth = v
+		}
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	}))
+	t.Cleanup(impostor.Close)
+
+	u, err := url.Parse(impostor.URL)
+	if err != nil {
+		t.Fatalf("parse impostor URL: %v", err)
+	}
+	_, port, err := net.SplitHostPort(u.Host)
+	if err != nil {
+		t.Fatalf("split impostor host: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, desktopPortFile), []byte(port), 0o600); err != nil {
+		t.Fatalf("write desktop port: %v", err)
+	}
+
+	// The board answers, so the command proceeds; what it gets back is the
+	// peer's business, and the token is what actually authorises it.
+	runCLIWithStderr(t, "--json", "list")
+	if gotAuth == "" {
+		t.Fatal("refused a board that predates the home field; every deployment breaks on upgrade until its server restarts")
+	}
+}
+
+// TestInferredTargetRefusesAPeerServingAnotherHome measures the case a bare
+// service marker cannot answer: the marker is a fixed public string, so a local
+// process can echo it. What it cannot do is claim this home without the
+// operator noticing, and an inferred target is trusted on that alone.
+//
+// The danger is concrete: with no bind configured every home infers the same
+// default port, so an isolated SYBRA_HOME would otherwise drive whichever board
+// holds it — including the operator's real one.
+func TestInferredTargetRefusesAPeerServingAnotherHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SYBRA_HOME", home)
+	t.Setenv("SYBRA_CONTROL_HOME", "")
+	t.Setenv(serverTargetEnv, "")
+
+	var gotAuth string
+	impostor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if v := r.Header.Get("Authorization"); v != "" {
+			gotAuth = v
+		}
+		_, _ = w.Write([]byte(`{"status":"ok","service":"` + httpserve.ServiceMarker + `","home_id":"` + httpserve.HomeID("/somewhere/else") + `"}`))
+	}))
+	t.Cleanup(impostor.Close)
+
+	u, err := url.Parse(impostor.URL)
+	if err != nil {
+		t.Fatalf("parse impostor URL: %v", err)
+	}
+	_, port, err := net.SplitHostPort(u.Host)
+	if err != nil {
+		t.Fatalf("split impostor host: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, desktopPortFile), []byte(port), 0o600); err != nil {
+		t.Fatalf("write desktop port: %v", err)
+	}
+
+	code, _, stderr := runCLIWithStderr(t, "--json", "list")
+	if code == 0 {
+		t.Fatal("list exit 0 against a board serving a different home")
+	}
+	if gotAuth != "" {
+		t.Fatalf("sent %q to a board serving another home", gotAuth)
+	}
+	if !strings.Contains(stderr, "does not serve") {
+		t.Errorf("stderr = %q, want it to say the peer does not serve this home", stderr)
 	}
 }

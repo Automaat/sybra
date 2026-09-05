@@ -1,0 +1,9 @@
+./decode.go
+./encode.go
+./fold.go
+./indent.go
+./kubernetes_patch.go
+./scanner.go
+./stream.go
+./tables.go
+./tags.go

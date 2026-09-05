@@ -60,6 +60,11 @@ type RetentionOptions struct {
 	// never deleted or compressed by any pass: the owning agent process may
 	// still be appending to it. Nil-safe (treated as an empty set).
 	ActiveLogPaths map[string]bool
+	// ProtectedLogPaths extends the always-keep set with durable evidence the
+	// operator still needs, such as logs tied to unresolved cleanup findings.
+	// Uses the same base-path matching as ActiveLogPaths so .gz/.stderr
+	// siblings stay protected too.
+	ProtectedLogPaths map[string]bool
 }
 
 // EnforceAgentLogRetention prunes, compresses, and caps per-agent output
@@ -149,7 +154,7 @@ func scanAgentLogDir(dir string, opts RetentionOptions, r *AgentLogPruneReport) 
 			path:      path,
 			size:      info.Size(),
 			modTime:   info.ModTime(),
-			protected: opts.ActiveLogPaths[baseAgentLogPath(path)],
+			protected: opts.ActiveLogPaths[baseAgentLogPath(path)] || opts.ProtectedLogPaths[baseAgentLogPath(path)] || opts.ProtectedLogPaths[path],
 		})
 	}
 	return recs, nil

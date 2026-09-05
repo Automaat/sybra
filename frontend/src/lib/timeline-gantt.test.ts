@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { Task, Status } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
+import { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
+import { Status } from '../../bindings/github.com/Automaat/sybra/internal/taskstatus/models.js'
 import {
   getTaskRange,
   computeTimelineDomain,
@@ -12,7 +13,7 @@ function makeTask(overrides: Partial<Task> = {}): Task {
   return Task.createFrom({
     id: 'task-1',
     title: 'Test task',
-    status: Status.StatusTodo,
+    status: Status.Todo,
     taskType: '',
     agentMode: 'headless',
     allowedTools: [],
@@ -52,14 +53,14 @@ describe('getTaskRange', () => {
   })
 
   it('uses updatedAt as end for done tasks', () => {
-    const t = makeTask({ status: Status.StatusDone, updatedAt: '2026-03-15T00:00:00Z' })
+    const t = makeTask({ status: Status.Done, updatedAt: '2026-03-15T00:00:00Z' })
     const { end } = getTaskRange(t, NOW)
     expect(end.getMonth()).toBe(2) // March
     expect(end.getDate()).toBe(15)
   })
 
   it('uses now as end for non-done tasks without dueDate', () => {
-    const t = makeTask({ status: Status.StatusInProgress })
+    const t = makeTask({ status: Status.InProgress })
     const { end } = getTaskRange(t, NOW)
     expect(end.getTime()).toBe(NOW.getTime())
   })
@@ -67,7 +68,7 @@ describe('getTaskRange', () => {
   it('ensures end is at least 1 day after start when end <= start', () => {
     const t = makeTask({
       createdAt: '2026-01-15T00:00:00Z',
-      status: Status.StatusDone,
+      status: Status.Done,
       updatedAt: '2026-01-15T00:00:00Z',
     })
     const { start, end } = getTaskRange(t, NOW)
@@ -84,8 +85,8 @@ describe('computeTimelineDomain', () => {
 
   it('includes all task ranges in domain', () => {
     const tasks = [
-      makeTask({ createdAt: '2026-04-20T00:00:00Z', status: Status.StatusDone, updatedAt: '2026-04-25T00:00:00Z' }),
-      makeTask({ createdAt: '2026-04-28T00:00:00Z', status: Status.StatusDone, updatedAt: '2026-05-05T00:00:00Z' }),
+      makeTask({ createdAt: '2026-04-20T00:00:00Z', status: Status.Done, updatedAt: '2026-04-25T00:00:00Z' }),
+      makeTask({ createdAt: '2026-04-28T00:00:00Z', status: Status.Done, updatedAt: '2026-05-05T00:00:00Z' }),
     ]
     const domain = computeTimelineDomain(tasks, NOW)
     expect(domain.min.getTime()).toBeLessThanOrEqual(new Date('2026-04-20T00:00:00Z').getTime())
@@ -93,7 +94,7 @@ describe('computeTimelineDomain', () => {
   })
 
   it('domain max is at least now+7d', () => {
-    const tasks = [makeTask({ status: Status.StatusDone, updatedAt: '2026-01-02T00:00:00Z' })]
+    const tasks = [makeTask({ status: Status.Done, updatedAt: '2026-01-02T00:00:00Z' })]
     const domain = computeTimelineDomain(tasks, NOW)
     const expectedMin = new Date(NOW.getTime() + 7 * 86_400_000)
     expect(domain.max.getTime()).toBeGreaterThanOrEqual(expectedMin.getTime())
@@ -160,7 +161,7 @@ describe('taskBarPosition', () => {
   it('returns non-zero width for task within domain', () => {
     const t = makeTask({
       createdAt: '2026-01-05T00:00:00Z',
-      status: Status.StatusDone,
+      status: Status.Done,
       updatedAt: '2026-01-20T00:00:00Z',
     })
     const pos = taskBarPosition(t, domain, NOW)
@@ -171,7 +172,7 @@ describe('taskBarPosition', () => {
   it('clamps leftPct to minimum 0', () => {
     const t = makeTask({
       createdAt: '2025-12-01T00:00:00Z',
-      status: Status.StatusDone,
+      status: Status.Done,
       updatedAt: '2026-01-05T00:00:00Z',
     })
     const pos = taskBarPosition(t, domain, NOW)
@@ -181,7 +182,7 @@ describe('taskBarPosition', () => {
   it('minimum widthPct is 0.5', () => {
     const t = makeTask({
       createdAt: '2026-01-15T00:00:00Z',
-      status: Status.StatusDone,
+      status: Status.Done,
       updatedAt: '2026-01-15T00:00:00Z',
     })
     const pos = taskBarPosition(t, domain, NOW)

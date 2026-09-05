@@ -5,6 +5,12 @@ metadata:
   namespace: sybra-poc
 data:
   config.yaml: |
+    # Exercises the Kubernetes job runner against the same backend a real
+    # deployment runs: the fixture project is registered through
+    # `sybra-cli project adopt` (see scripts/smoke-k3d.sh), not by writing a
+    # file into the projects directory, so it works on any backend.
+    database:
+      backend: sqlite
     agent:
       provider: claude
       model: sonnet

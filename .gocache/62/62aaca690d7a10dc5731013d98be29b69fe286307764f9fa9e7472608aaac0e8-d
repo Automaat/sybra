@@ -1,0 +1,5 @@
+./doc.go
+./fake_csistoragecapacity.go
+./fake_storage_client.go
+./fake_volumeattachment.go
+./fake_volumeattributesclass.go

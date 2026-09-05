@@ -2,6 +2,8 @@ package workflow
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,10 +13,14 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Automaat/sybra/internal/evidence"
+	"github.com/Automaat/sybra/internal/taskstatus"
+	"github.com/Automaat/sybra/internal/textutil"
+	"github.com/Automaat/sybra/internal/workflow/failureclassify"
 )
 
 // verifyChecksDefaultTimeout bounds the whole verify run (every command). A test
@@ -24,11 +30,9 @@ const verifyChecksDefaultTimeout = 10 * time.Minute
 
 // verifyChecksMaxOutput bounds how much command output is retained in memory.
 // A noisy or malicious verify command must not be able to OOM the engine, so
-// output streams into a fixed-size tail buffer rather than a growing slice.
+// output streams into a fixed-size head+tail buffer (see boundedTail) rather
+// than a growing slice.
 const verifyChecksMaxOutput = 64 * 1024
-
-// verifyChecksOutputTail caps how much of that buffer is stored in the artifact.
-const verifyChecksOutputTail = 8000
 
 // verifyBlessedTag lets a human accept a verify failure (e.g. a known-flaky
 // suite) and let the task proceed instead of re-blocking on every re-dispatch.
@@ -37,6 +41,8 @@ const verifyBlessedTag = "verify-blessed"
 const (
 	verifyChecksImplStepID = "implement"
 	verifyReaskNoteVar     = "verify_reask_note"
+	verifyRetryModelVar    = "verify_retry_model"
+	verifyAutoFixRunIDVar  = "verify_auto_fix.rewound_run_agent_id"
 	// verifyChecksAutoFixBackoff is the base re-dispatch delay before the next
 	// auto-fix attempt; autoFixBackoff grows it with the attempt count up to
 	// autoFixBackoffMax.
@@ -44,12 +50,15 @@ const (
 	autoFixBackoffMax          = 15 * time.Minute
 	// verifyChecksAutoFixCeiling bounds auto-fix re-asks so a deterministic
 	// failure no agent can fix reaches a human instead of looping forever.
-	verifyChecksAutoFixCeiling = 20
+	verifyChecksAutoFixCeiling = 3
 	// Full verify suites are CPU-heavy and already serialized by workflow
-	// retries; a single local slot prevents one saturated host from piling
-	// multiple suites on top of each other and timing them all out.
-	verifyChecksBackoff       = 1 * time.Minute
-	verifyChecksMaxConcurrent = 1
+	// retries; local slots prevent one saturated host from piling multiple
+	// suites on top of each other and timing them all out. The fallback slot
+	// count when the engine has no configured/derived value is deliberately
+	// conservative (a single slot) — see verifyChecksSlot and
+	// config.Config.VerifyChecksMaxConcurrent for the CPU-derived default.
+	verifyChecksBackoff              = 1 * time.Minute
+	verifyChecksDefaultMaxConcurrent = 1
 )
 
 const verifyChecksBusyReason = "verify suite deferred: another local verify run is already in flight"
@@ -90,18 +99,6 @@ var cdDirPattern = regexp.MustCompile(`(?:^|[\s(])cd\s+("[^"]*"|'[^']*'|[^\s&|;)
 // (docs/CONFIG.md's `setup:` commands get 5 minutes).
 const verifyChecksNodeModulesRepairTimeout = 5 * time.Minute
 
-// verifyMissingToolchainRe recognizes a verify command failing because a
-// toolchain executable is missing from PATH, as opposed to a genuine
-// implementation defect. A match after a run triggers healToolchainAndRetry
-// (re-running the project's setup commands) instead of blocking outright.
-var verifyMissingToolchainRe = regexp.MustCompile(
-	`(?i)command not found|executable file not found|not found in \$?PATH|[\w./-]+: not found`)
-
-var verifyGoInfraFailureRes = []*regexp.Regexp{
-	regexp.MustCompile(`(?m)\blink: signal: terminated\b`),
-	regexp.MustCompile(`(?mi)(?:can't open import:.*go-build|go-build[\\/].*no such file or directory)`),
-}
-
 var verifyGolangCILintFindingRe = regexp.MustCompile(`^([^\s:][^:\n]*\.go):\d+:\d+:\s.+$`)
 
 var verifyFrontendPathMentionRe = regexp.MustCompile(`(?:^|[\s("'` + "`" + `])((?:frontend/|(?:\./)?src/)[A-Za-z0-9._/\-]+\.(?:[cm]?[jt]sx?|svelte))(?:[:(]\d+(?::\d+)?)?`)
@@ -126,7 +123,7 @@ type verifyChecksReport struct {
 }
 
 type verifyFailureClassification struct {
-	Kind           string
+	Kind           failureclassify.Kind
 	Reason         string
 	FailedPackages []string
 	ChangedFiles   []string
@@ -141,9 +138,9 @@ type verifyFailureClassification struct {
 // there; this catches incomplete/broken work the agent committed without the
 // suite passing.
 //
-// The commands run in the agent's already-set-up worktree with no git mutation,
-// reusing the same `sh -c` + inherited-env mechanism as worktree setup so the
-// toolchain (mise) resolves identically.
+// The commands run in a disposable clone. Project setup is rerun there first
+// because ignored setup outputs are intentionally absent from a Git clone;
+// setup and checks share the same contained `sh -c` execution path.
 //
 // Short-circuits (no block): the verify-blessed tag, no CheckConfigGetter, no
 // verify commands configured, or no worktree. A genuine command failure, an
@@ -154,12 +151,15 @@ type verifyFailureClassification struct {
 func (e *Engine) execVerifyChecks(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error) {
 	if slices.Contains(t.Tags, verifyBlessedTag) {
 		e.logger.Info("workflow.verify-checks.blessed", "task_id", taskID)
+		e.recordEvidence(taskID, step.ID, evidenceCriterionVerifyChecks, evidence.ProofManual,
+			0, "human bless ("+verifyBlessedTag+" tag)", "blessed")
 		return stepDone(step, "blessed")
 	}
 	cmds, wtPath, timeout, skip := e.loadVerifyChecksInputs(taskID)
 	if skip != "" {
 		return stepDone(step, skip)
 	}
+
 	slot := e.verifyChecksSlot()
 	releaseVerifySlot, ok := e.acquireVerifyChecksSlot(slot)
 	if !ok {
@@ -177,93 +177,319 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, wfExec *Execution, 
 	}
 	defer releaseVerifySlot()
 
-	if e.repairCorruptedNodeModules(e.ctx, taskID, wtPath) {
-		// Corruption was detected but the repair itself failed (e.g. `npm ci`
-		// killed again, or no network). Do not continue into verify with a
-		// known-corrupt install, and do not mark the gate skipped: an agent
-		// could otherwise leave node_modules broken to bypass the suite.
+	disposable, verifyPath, err := e.prepareVerificationWorkspace(taskID, step.ID, wtPath)
+	if err != nil {
+		return StepOutput{}, err
+	}
+	if disposable.ID != "" {
+		defer e.execution.Verification.ReleaseVerification(disposable)
+		wtPath = verifyPath
+	}
+	setupCommands, failedCmd, setupOutput, runErr := e.runDisposableVerificationSetup(e.ctx, taskID, wtPath, disposable, timeout)
+	setupFailed := failedCmd != "" || runErr != nil
+	evidenceCommands := append(append([]string(nil), setupCommands...), cmds...)
+	treeSHA, checksHash := e.verifyChecksCacheKey(e.ctx, wtPath, evidenceCommands)
+	sourceRev := revParseCommit(e.ctx, wtPath, "HEAD")
+	if disposable.ID != "" {
+		sourceRev = disposable.SourceSHA
+	}
+	if !setupFailed && treeSHA != "" {
+		if out, hit, err := e.validVerificationCacheHit(taskID, step, disposable, sourceRev, treeSHA, checksHash, evidenceCommands); err != nil {
+			return StepOutput{}, err
+		} else if hit {
+			return out, nil
+		}
+	}
+
+	failedCmd, output, runErr, unrepaired := e.runChecksAfterDisposableSetup(taskID, step.ID, wtPath, cmds, timeout, failedCmd, setupOutput, runErr)
+	if unrepaired {
 		e.logger.Warn("workflow.verify-checks.node-modules-repair-unresolved", "task_id", taskID)
+		return e.flagUnrepairedNodeModules(taskID, step, disposable, evidenceCommands)
+	}
+	if errors.Is(runErr, context.Canceled) && e.ctx.Err() != nil {
+		e.logger.Warn("workflow.verify-checks.canceled", "task_id", taskID, "err", runErr)
+		return stepDone(step, "skipped: context canceled")
+	}
+	if err := e.finalizeVerificationWorkspace(disposable, evidenceCommands, output); err != nil {
+		return StepOutput{}, err
+	}
+	report, classification := e.recordVerifyChecksReport(taskID, step.ID, wtPath, evidenceCommands, failedCmd, output)
+	v := verifyChecksVerdict{
+		report: report, classification: classification, runErr: runErr, timeout: timeout,
+		sourceRev: sourceRev, treeSHA: treeSHA, checksHash: checksHash,
+	}
+	return e.applyVerifyChecksVerdict(taskID, step, wfExec, t, v)
+}
+
+// verifyChecksVerdict is the pure result of running the verify suite: it
+// touches nothing but the (thread-safe) artifact store — no task status
+// write, no wfExec mutation — so it is safe to compute concurrently with the
+// other post-implement gates from execParallelGates. Caller must have
+// already resolved cmds/wtPath/timeout, acquired the verify slot, and run
+// toolchain repair.
+type verifyChecksVerdict struct {
+	report         verifyChecksReport
+	classification *verifyFailureClassification
+	fatalErr       error
+	unrepaired     bool
+	runErr         error
+	timeout        time.Duration
+	sourceRev      string
+	treeSHA        string
+	checksHash     string
+}
+
+func (e *Engine) computeVerifyChecksVerdict(taskID string, step *Step, pre verifyChecksPreflight) verifyChecksVerdict {
+	failedCmd, output, runErr, unrepaired := e.runChecksAfterDisposableSetup(
+		taskID, step.ID, pre.wtPath, pre.cmds, pre.timeout,
+		pre.setupFailedCmd, pre.setupOutput, pre.setupErr,
+	)
+	v := verifyChecksVerdict{
+		runErr: runErr, timeout: pre.timeout, sourceRev: pre.sourceRev,
+		treeSHA: pre.treeSHA, checksHash: pre.checksHash,
+	}
+	if unrepaired {
+		v.unrepaired = true
+	}
+	if err := e.finalizeVerificationWorkspace(pre.workspace, pre.evidenceCommands, output); err != nil {
+		v.fatalErr = err
+		return v
+	}
+	v.report, v.classification = e.recordVerifyChecksReport(
+		taskID, step.ID, pre.wtPath, pre.evidenceCommands, failedCmd, output,
+	)
+	return v
+}
+
+// applyVerifyChecksVerdict persists a computeVerifyChecksVerdict result: task
+// status, evidence, and — on an auto-fixable failure — the rewind to
+// implement. Must run on the same goroutine that owns wfExec.
+func (e *Engine) applyVerifyChecksVerdict(taskID string, step *Step, wfExec *Execution, t TaskInfo, v verifyChecksVerdict) (StepOutput, error) {
+	if v.fatalErr != nil {
+		return StepOutput{}, v.fatalErr
+	}
+	if v.unrepaired {
 		return e.flagVerifyChecks(taskID, step,
 			"verify suite could not repair corrupted node_modules before running checks — rerun setup or fix the toolchain state",
 			"node_modules-repair")
 	}
+	// Engine-shutdown cancellation is the only fail-open: there is no point
+	// blocking work the engine is tearing down. Our own deadline fails CLOSED —
+	// otherwise an agent could hang a test past the budget to dodge the gate.
+	if v.runErr != nil {
+		if errors.Is(v.runErr, context.DeadlineExceeded) {
+			// The budget was fixed before the run; ask what it would have been
+			// now. A host that filled up mid-run starves the suite of CPU it
+			// was promised, and calling that "slow or hanging tests" sends an
+			// operator hunting a defect in code that was merely descheduled.
+			if scaled, starved := deadlineBeatLoad(e.verifyTimeout, v.timeout); starved {
+				reason := fmt.Sprintf(
+					"verify suite ran out of its %s budget while the host was oversubscribed"+
+						" — the same run would be allowed %s at the load measured now, so this is"+
+						" contention rather than a slow or hanging test; retry when the host is quieter",
+					v.timeout, scaled)
+				return e.flagVerifyChecks(taskID, step, reason, "timeout-load-starved")
+			}
+			reason := fmt.Sprintf(
+				"verify suite exceeded the time budget (%s) on all %d attempts"+
+					" — fix slow or hanging tests, raise testing.verify_timeout_minutes,"+
+					" or add the `verify-blessed` tag to override",
+				v.timeout, verifyChecksTimeoutRetries+1)
+			return e.flagVerifyChecks(taskID, step, reason, "timeout")
+		}
+		if errors.Is(v.runErr, context.Canceled) && e.ctx.Err() != nil {
+			e.logger.Warn("workflow.verify-checks.canceled", "task_id", taskID, "err", v.runErr)
+			return stepDone(step, "skipped: context canceled")
+		}
+		reason := "verify suite could not prepare its isolated cache or run cleanly: " + trimDiffLine(v.runErr.Error())
+		return e.flagVerifyChecks(taskID, step, reason, "setup")
+	}
+
+	if v.report.FailedCmd != "" {
+		if v.classification != nil {
+			if v.classification.AutoFixable {
+				return e.autoFixOrFlagVerifyChecks(
+					taskID, step, wfExec, t, v.classification.Reason, v.report.FailedCmd, v.report.OutputTail)
+			}
+			if v.classification.Kind == failureclassify.UnrelatedFailure {
+				return e.routeUnrelatedVerifyFailure(taskID, step, v.classification)
+			}
+			return e.blockVerifyChecks(taskID, step, v.classification.Reason, v.classification.Kind.String())
+		}
+		reason := "implementation does not pass the project verify suite: " + trimDiffLine(v.report.FailedCmd) +
+			" — fix the code, or add the `verify-blessed` tag to override (e.g. a known-flaky suite)"
+		return e.autoFixOrFlagVerifyChecks(taskID, step, wfExec, t, reason, v.report.FailedCmd, v.report.OutputTail)
+	}
+
+	e.logger.Info("workflow.verify-checks.clean", "task_id", taskID, "commands", len(v.report.Commands))
+	e.recordVerifyChecksEvidence(taskID, step.ID, strings.Join(v.report.Commands, " && "), v.report.OutputTail, v.sourceRev, v.treeSHA, v.checksHash)
+	return stepDone(step, "clean")
+}
+
+func (e *Engine) runChecksAfterDisposableSetup(taskID, stepID, wtPath string, commands []string, timeout time.Duration, failedCommand, setupOutput string, setupErr error) (failed, output string, runErr error, unrepaired bool) {
+	if failedCommand != "" || setupErr != nil {
+		return failedCommand, setupOutput, setupErr, false
+	}
+	if e.repairCorruptedNodeModules(e.ctx, taskID, wtPath) {
+		return "", setupOutput, nil, true
+	}
 	e.repairTornNodeModules(e.ctx, taskID, wtPath)
-
-	failedCmd, output, runErr := e.runVerifySuiteWithRetry(e.ctx, taskID, wtPath, cmds, timeout, step.ID)
-
-	if failedCmd != "" && verifyMissingToolchainRe.MatchString(output) {
-		if healed, fc, out, rErr := e.healToolchainAndRetry(taskID, wtPath, cmds, timeout, step.ID); healed {
-			failedCmd, output, runErr = fc, out, rErr
+	failed, verifyOutput, runErr := e.runVerifySuiteWithRetry(e.ctx, taskID, wtPath, commands, timeout, stepID)
+	output = setupOutput + verifyOutput
+	if failed != "" && failureclassify.IsMissingToolchain(output) {
+		if healed, nextFailed, nextOutput, nextErr := e.healToolchainAndRetry(taskID, wtPath, commands, timeout, stepID); healed {
+			return nextFailed, setupOutput + nextOutput, nextErr, false
 		}
 	}
+	return failed, output, runErr, false
+}
 
-	report := verifyChecksReport{
-		Commands: cmds, FailedCmd: failedCmd, OutputTail: tailString(output, verifyChecksOutputTail),
+func (e *Engine) validVerificationCacheHit(taskID string, step *Step, workspace VerificationWorkspace, sourceRev, treeSHA, checksHash string, commands []string) (StepOutput, bool, error) {
+	entry, hit := e.verifyChecksCacheCandidate(taskID, sourceRev, treeSHA, checksHash)
+	if !hit {
+		return StepOutput{}, false, nil
 	}
+	if err := e.finalizeVerificationWorkspace(workspace, commands, "cache hit"); err != nil {
+		return StepOutput{}, false, err
+	}
+	entry.FinalRev = sourceRev
+	entry.StepID = step.ID
+	entry.Timestamp = time.Now().UTC()
+	if err := e.evidenceRecorder.AppendCriterion(taskID, entry); err != nil {
+		e.logger.Warn("workflow.evidence.refresh-failed",
+			"task_id", taskID, "criterion", evidenceCriterionVerifyChecks, "err", err)
+		return StepOutput{}, false, nil
+	}
+
+	e.logger.Info("workflow.verify-checks.cached", "task_id", taskID, "tree_sha", treeSHA)
+	out, _ := stepDone(step, "clean (cached: "+treeSHA+")")
+	return out, true, nil
+}
+
+func (e *Engine) flagUnrepairedNodeModules(taskID string, step *Step, workspace VerificationWorkspace, commands []string) (StepOutput, error) {
+	if err := e.finalizeVerificationWorkspace(workspace, commands, "node_modules repair failed"); err != nil {
+		return StepOutput{}, err
+	}
+	return e.flagVerifyChecks(taskID, step,
+		"verify suite could not repair corrupted node_modules before running checks — rerun setup or fix the toolchain state",
+		"node_modules-repair")
+}
+
+func (e *Engine) recordVerifyChecksReport(taskID, stepID, wtPath string, commands []string, failedCmd, output string) (verifyChecksReport, *verifyFailureClassification) {
+	report := verifyChecksReport{Commands: commands, FailedCmd: failedCmd, OutputTail: output}
 	classification := e.classifyVerifyFailure(taskID, wtPath, failedCmd, output)
 	if classification != nil {
-		report.Classification = classification.Kind
+		report.Classification = classification.Kind.String()
 		report.FailedPackages = classification.FailedPackages
 		report.ChangedFiles = classification.ChangedFiles
 	}
 	if e.recorder != nil {
-		if data, mErr := json.MarshalIndent(report, "", "  "); mErr == nil {
-			if recErr := e.recorder.PutGeneric(taskID, "verify-checks.json", step.ID, string(data)); recErr != nil {
-				e.logger.Warn("workflow.verify-checks.artifact", "task_id", taskID, "err", recErr)
+		if data, err := json.MarshalIndent(report, "", "  "); err == nil {
+			if err := e.recorder.PutGeneric(taskID, "verify-checks.json", stepID, string(data)); err != nil {
+				e.logger.Warn("workflow.verify-checks.artifact", "task_id", taskID, "err", err)
 			}
 		}
 	}
+	return report, classification
+}
 
-	// Engine-shutdown cancellation is the only fail-open: there is no point
-	// blocking work the engine is tearing down. Our own deadline fails CLOSED —
-	// otherwise an agent could hang a test past the budget to dodge the gate.
-	if runErr != nil {
-		if errors.Is(runErr, context.DeadlineExceeded) {
-			reason := fmt.Sprintf(
-				"verify suite exceeded the time budget (%s) on all %d attempts"+
-					" — fix slow or hanging tests, or add the `verify-blessed` tag to override",
-				timeout, verifyChecksTimeoutRetries+1)
-			return e.flagVerifyChecks(taskID, step, reason, "timeout")
-		}
-		if errors.Is(runErr, context.Canceled) && e.ctx.Err() != nil {
-			e.logger.Warn("workflow.verify-checks.canceled", "task_id", taskID, "err", runErr)
-			return stepDone(step, "skipped: context canceled")
-		}
-		reason := "verify suite could not prepare its isolated cache or run cleanly: " + trimDiffLine(runErr.Error())
-		return e.flagVerifyChecks(taskID, step, reason, "setup")
+func (e *Engine) prepareVerificationWorkspace(taskID, purpose, canonicalDir string) (VerificationWorkspace, string, error) {
+	if e.execution.Verification == nil {
+		return VerificationWorkspace{}, canonicalDir, nil
 	}
-
-	if failedCmd != "" {
-		if classification != nil {
-			if classification.AutoFixable {
-				return e.autoFixOrFlagVerifyChecks(
-					taskID, step, wfExec, t, classification.Reason, failedCmd, output)
-			}
-			return e.blockVerifyChecks(taskID, step, classification.Reason, classification.Kind)
-		}
-		reason := "implementation does not pass the project verify suite: " + trimDiffLine(failedCmd) +
-			" — fix the code, or add the `verify-blessed` tag to override (e.g. a known-flaky suite)"
-		return e.autoFixOrFlagVerifyChecks(taskID, step, wfExec, t, reason, failedCmd, output)
+	workspace, err := e.execution.Verification.PrepareVerification(e.ctx, taskID, purpose, canonicalDir)
+	if err != nil {
+		return VerificationWorkspace{}, "", fmt.Errorf("prepare disposable verify workspace: %w", err)
 	}
+	return workspace, workspace.Dir, nil
+}
 
-	e.logger.Info("workflow.verify-checks.clean", "task_id", taskID, "commands", len(cmds))
-	return stepDone(step, "clean")
+func (e *Engine) runDisposableVerificationSetup(ctx context.Context, taskID, workspaceDir string, workspace VerificationWorkspace, timeout time.Duration) (commands []string, failed, output string, err error) {
+	if workspace.ID == "" {
+		return nil, "", "", nil
+	}
+	commands = e.execution.Checks.SetupCommands(ctx, taskID)
+	if len(commands) == 0 {
+		return commands, "", "", nil
+	}
+	setupCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	e.maybeMiseTrustContained(setupCtx, taskID, workspaceDir, workspaceDir)
+	failed, output, err = e.runVerifyCommands(setupCtx, taskID, workspaceDir, commands)
+	return commands, failed, output, err
+}
+
+func (e *Engine) finalizeVerificationWorkspace(workspace VerificationWorkspace, commands []string, output string) error {
+	if workspace.ID == "" {
+		return nil
+	}
+	if err := e.execution.Verification.FinalizeVerification(e.ctx, workspace, commands, output); err != nil {
+		return fmt.Errorf("finalize disposable verify workspace: %w", err)
+	}
+	return nil
+}
+
+func (e *Engine) validateVerificationWorkspace(workspace VerificationWorkspace) error {
+	if workspace.ID == "" {
+		return nil
+	}
+	if err := e.execution.Verification.ValidateVerification(e.ctx, workspace); err != nil {
+		return fmt.Errorf("revalidate disposable verify workspace: %w", err)
+	}
+	return nil
+}
+
+// verifyChecksCacheKey computes the (tree SHA, verify-commands hash) memo key
+// for a verify_checks run. treeSHA is "" on any error resolving the worktree
+// tree (dirty index race, git failure, etc.) — the caller treats that as a
+// definite cache miss rather than risk matching an empty/incomplete key.
+// checksHash never fails (a pure digest of the resolved command strings), so
+// it is always populated once cmds is non-empty.
+func (e *Engine) verifyChecksCacheKey(ctx context.Context, wtPath string, cmds []string) (treeSHA, checksHash string) {
+	checksHash = evidence.Digest(strings.Join(cmds, "\x00"))
+	sha, err := currentWorktreeTree(ctx, wtPath)
+	if err != nil {
+		return "", checksHash
+	}
+	return sha, checksHash
+}
+
+// verifyChecksCacheCandidate reports a candidate when the durable evidence
+// store already holds a passing entry for this exact (tree SHA, commands hash) — letting an
+// unchanged tree skip the suite entirely, before it ever contends for a
+// concurrency slot. Only ever a cache HIT for a PASSING prior run (an
+// entry.Passed() check gates it); a failing run is never memoized in the
+// first place (see the exit-0-only recordVerifyChecksEvidence call site), so
+// there is nothing here to re-run a known-bad state against a fresh key.
+// The caller must finalize the disposable workspace before refreshing this
+// entry. This ordering prevents an A-B-A movement or dirty canonical checkout
+// from stamping fresh passing evidence before provenance validation fails.
+func (e *Engine) verifyChecksCacheCandidate(taskID, sourceRev, treeSHA, checksHash string) (evidence.CriterionEvidence, bool) {
+	if e.evidenceRecorder == nil {
+		return evidence.CriterionEvidence{}, false
+	}
+	ce, err := e.evidenceRecorder.Evidence(taskID)
+	if err != nil {
+		return evidence.CriterionEvidence{}, false
+	}
+	entry, ok := ce.ByCriterion(evidenceCriterionVerifyChecks)
+	if !ok || !entry.Passed() || entry.FinalRev != sourceRev || entry.TreeSHA == "" || entry.TreeSHA != treeSHA || entry.ChecksHash != checksHash {
+		return evidence.CriterionEvidence{}, false
+	}
+	return entry, true
 }
 
 func (e *Engine) loadVerifyChecksInputs(taskID string) (cmds []string, wtPath string, timeout time.Duration, skip string) {
-	if e.checks == nil {
-		return nil, "", 0, "skipped: no check config getter"
-	}
 	timeout = resolveWorkflowCheckTimeout(e.verifyTimeout)
-	cmds = e.checks.VerifyCommands(e.ctx, taskID)
+	cmds = e.execution.Checks.VerifyCommands(e.ctx, taskID)
 	if len(cmds) == 0 {
 		return nil, "", 0, "skipped: no verify commands configured"
 	}
-	if e.worktrees == nil {
+	if e.execution.Worktrees == nil {
 		return nil, "", 0, "skipped: no worktree getter configured"
 	}
 	var ok bool
-	wtPath, ok = e.worktrees.GetWorktreePath(taskID)
+	wtPath, ok = e.execution.Worktrees.GetWorktreePath(taskID)
 	if !ok {
 		return nil, "", 0, "skipped: no worktree for task"
 	}
@@ -287,7 +513,11 @@ func (e *Engine) verifyChecksSlot() chan struct{} {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.verifyChecksSlots == nil {
-		e.verifyChecksSlots = make(chan struct{}, verifyChecksMaxConcurrent)
+		n := e.verifyChecksMaxConcurrent
+		if n <= 0 {
+			n = verifyChecksDefaultMaxConcurrent
+		}
+		e.verifyChecksSlots = make(chan struct{}, n)
 	}
 	return e.verifyChecksSlots
 }
@@ -304,11 +534,8 @@ func (e *Engine) acquireVerifyChecksSlot(slot chan struct{}) (release func(), ok
 func (e *Engine) parkVerifyChecksForBackpressure(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error) {
 	wfExec.CurrentStep = step.ID
 	wfExec.State = ExecWaiting
-	wfExec.SetVar(workflowRetryAfterVar, time.Now().UTC().Add(verifyChecksBackoff).Format(time.RFC3339))
-	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
-		return StepOutput{}, err
-	}
-	if err := e.tasks.UpdateTaskStatus(taskID, t.Status, verifyChecksBusyReason); err != nil {
+	wfExec.SetVar(workflowRetryAfterVar, e.now().Add(verifyChecksBackoff).Format(time.RFC3339))
+	if err := e.tasks.SetStatusAndWorkflow(taskID, string(t.Status), verifyChecksBusyReason, wfExec); err != nil {
 		return StepOutput{}, err
 	}
 	e.logger.Warn("workflow.verify-checks.backpressure", "task_id", taskID, "step", step.ID)
@@ -325,23 +552,43 @@ func (e *Engine) parkVerifyChecksForBackpressure(taskID string, step *Step, wfEx
 // must treat that the same as "could not verify" and fall back to their own
 // default behavior rather than treat it as a pass.
 func (e *Engine) VerifyTaskNow(ctx context.Context, taskID string) (verified, passed bool, failedCmd, output string, err error) {
-	if e.checks == nil || e.worktrees == nil {
+	if e.execution.Worktrees == nil {
 		return false, false, "", "", nil
 	}
-	cmds := e.checks.VerifyCommands(ctx, taskID)
+	cmds := e.execution.Checks.VerifyCommands(ctx, taskID)
 	if len(cmds) == 0 {
 		return false, false, "", "", nil
 	}
-	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	wtPath, ok := e.execution.Worktrees.GetWorktreePath(taskID)
 	if !ok {
 		return false, false, "", "", nil
 	}
+	disposable, verifyPath, prepErr := e.prepareVerificationWorkspace(taskID, "verify_now", wtPath)
+	if prepErr != nil {
+		return true, false, "", "", prepErr
+	}
+	if disposable.ID != "" {
+		defer e.execution.Verification.ReleaseVerification(disposable)
+		wtPath = verifyPath
+	}
+	timeout := resolveWorkflowCheckTimeout(e.verifyTimeout)
+	setupCommands, setupFailed, setupOutput, setupErr := e.runDisposableVerificationSetup(ctx, taskID, wtPath, disposable, timeout)
+	evidenceCommands := append(append([]string(nil), setupCommands...), cmds...)
+	if setupFailed != "" || setupErr != nil {
+		if finalizeErr := e.finalizeVerificationWorkspace(disposable, evidenceCommands, setupOutput); finalizeErr != nil {
+			return true, false, setupFailed, setupOutput, finalizeErr
+		}
+		return true, false, setupFailed, setupOutput, setupErr
+	}
 	if e.repairCorruptedNodeModules(ctx, taskID, wtPath) {
-		return false, false, "", "node_modules repair failed", errors.New("verify: node_modules repair failed")
+		output = "node_modules repair failed"
+		if finalizeErr := e.finalizeVerificationWorkspace(disposable, evidenceCommands, output); finalizeErr != nil {
+			return true, false, "", output, finalizeErr
+		}
+		return false, false, "", output, errors.New("verify: node_modules repair failed")
 	}
 	e.repairTornNodeModules(ctx, taskID, wtPath)
 
-	timeout := resolveWorkflowCheckTimeout(e.verifyTimeout)
 	if timeout != e.verifyTimeout && e.verifyTimeout > 0 {
 		e.logger.Info("workflow.verify-now.timeout-scaled",
 			"task_id", taskID, "base", e.verifyTimeout.String(), "effective", timeout.String())
@@ -351,7 +598,12 @@ func (e *Engine) VerifyTaskNow(ctx context.Context, taskID string) (verified, pa
 			"task_id", taskID, "base", verifyChecksDefaultTimeout.String(), "effective", timeout.String())
 	}
 
-	failedCmd, output, err = e.runVerifySuiteWithRetry(ctx, taskID, wtPath, cmds, timeout, "verify_now")
+	var verifyOutput string
+	failedCmd, verifyOutput, err = e.runVerifySuiteWithRetry(ctx, taskID, wtPath, cmds, timeout, "verify_now")
+	output = setupOutput + verifyOutput
+	if finalizeErr := e.finalizeVerificationWorkspace(disposable, evidenceCommands, output); finalizeErr != nil {
+		return true, false, failedCmd, output, finalizeErr
+	}
 	if err != nil {
 		return true, false, failedCmd, output, err
 	}
@@ -365,7 +617,7 @@ func (e *Engine) VerifyTaskNow(ctx context.Context, taskID string) (verified, pa
 func (e *Engine) runVerifySuiteWithRetry(parent context.Context, taskID, wtPath string, cmds []string, timeout time.Duration, stepID string) (failedCmd, output string, runErr error) {
 	for attempt := 0; attempt <= verifyChecksTimeoutRetries; attempt++ {
 		ctx, cancel := context.WithTimeout(parent, timeout)
-		maybeMiseTrust(ctx, wtPath)
+		e.maybeMiseTrustContained(ctx, taskID, wtPath, wtPath)
 		failedCmd, output, runErr = e.runVerifyCommands(ctx, taskID, wtPath, cmds)
 		cancel()
 		if !errors.Is(runErr, context.DeadlineExceeded) || parent.Err() != nil {
@@ -381,14 +633,14 @@ func (e *Engine) runVerifySuiteWithRetry(parent context.Context, taskID, wtPath 
 
 func (e *Engine) healToolchainAndRetry(taskID, wtPath string, cmds []string, timeout time.Duration, stepID string) (attempted bool, failedCmd, output string, runErr error) {
 	setupCtx, cancel := context.WithTimeout(e.ctx, timeout)
-	setup := e.checks.SetupCommands(setupCtx, taskID)
+	setup := e.execution.Checks.SetupCommands(setupCtx, taskID)
 	if len(setup) == 0 {
 		cancel()
 		return false, "", "", nil
 	}
 	e.logger.Warn("workflow.verify-checks.toolchain-heal",
 		"task_id", taskID, "step", stepID, "setup_commands", len(setup))
-	maybeMiseTrust(setupCtx, wtPath)
+	e.maybeMiseTrustContained(setupCtx, taskID, wtPath, wtPath)
 	sFailed, sOut, sErr := e.runVerifyCommands(setupCtx, taskID, wtPath, setup)
 	cancel()
 	if sFailed != "" || sErr != nil {
@@ -403,17 +655,52 @@ func (e *Engine) healToolchainAndRetry(taskID, wtPath string, cmds []string, tim
 }
 
 func (e *Engine) flagVerifyChecks(taskID string, step *Step, reason, detail string) (StepOutput, error) {
-	if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
+	if statusErr := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); statusErr != nil {
 		return StepOutput{}, fmt.Errorf("verify-checks: set human-required: %w", statusErr)
 	}
+	e.recordEvidence(taskID, step.ID, evidenceCriterionVerifyChecks, evidence.ProofDeterministicCheck, 1, "", reason)
 	e.logger.Warn("workflow.verify-checks.flagged", "task_id", taskID, "detail", detail)
 	return stepDone(step, "flagged")
 }
 
+// routeUnrelatedVerifyFailure handles a verify run that failed only in Go
+// packages this task never touched.
+//
+// The gate has already done the work that settles the question: it read the
+// diff, read the failing packages, and confirmed they do not intersect. The
+// reason it writes ends "not this diff". Blocking on that told an operator to
+// unstick a task whose change the evidence had just cleared, and left the
+// pre-existing breakage to stop the next task the same way — three separate
+// tasks were blocked this way in one day by three unrelated broken packages.
+//
+// So route it the way the testing gate already routes an unrunnable manual
+// gate (#1928): open the PR and let CI and a human reviewer see the real
+// diff, rather than dead-ending with no PR for anyone to act on. The failing
+// packages are named in the status reason and logged, because a break nothing
+// blocks on is a break nothing notices.
+func (e *Engine) routeUnrelatedVerifyFailure(
+	taskID string, step *Step, c *verifyFailureClassification,
+) (StepOutput, error) {
+	e.logger.Warn("workflow.verify-checks.unrelated-breakage",
+		"task_id", taskID, "packages", strings.Join(c.FailedPackages, ","))
+	if !e.openPROnUnrunnableGate.Load() {
+		return e.flagVerifyChecks(taskID, step, c.Reason, c.Kind.String())
+	}
+	reason := c.Reason + " — opening the PR so CI and a human reviewer see this diff;" +
+		" the failing package(s) need fixing on their own"
+	if statusErr := e.tasks.UpdateTaskStatus(taskID, taskstatus.ReadyPR, reason); statusErr != nil {
+		return StepOutput{}, fmt.Errorf("verify-checks: set ready-pr: %w", statusErr)
+	}
+	e.recordEvidence(taskID, step.ID, evidenceCriterionVerifyChecks, evidence.ProofDeterministicCheck, 1, "", reason)
+	e.logger.Warn("workflow.verify-checks.unrelated.open-pr", "task_id", taskID)
+	return stepDone(step, "unrelated failure — opened pr")
+}
+
 func (e *Engine) blockVerifyChecks(taskID string, step *Step, reason, detail string) (StepOutput, error) {
-	if statusErr := e.tasks.UpdateTaskStatus(taskID, "blocked", reason); statusErr != nil {
+	if statusErr := e.tasks.UpdateTaskStatus(taskID, taskstatus.Blocked, reason); statusErr != nil {
 		return StepOutput{}, fmt.Errorf("verify-checks: set blocked: %w", statusErr)
 	}
+	e.recordEvidence(taskID, step.ID, evidenceCriterionVerifyChecks, evidence.ProofDeterministicCheck, 1, "", reason)
 	e.logger.Warn("workflow.verify-checks.blocked", "task_id", taskID, "detail", detail)
 	return stepDone(step, "blocked")
 }
@@ -422,9 +709,9 @@ func (e *Engine) classifyVerifyFailure(taskID, wtPath, failedCmd, output string)
 	if failedCmd == "" {
 		return nil
 	}
-	if verifyGoInfraFailure(output) {
+	if failureclassify.IsGoInfraFailure(output) {
 		return &verifyFailureClassification{
-			Kind:   "infra_failure",
+			Kind:   failureclassify.InfraFailure,
 			Reason: "verify suite hit Go toolchain/build-cache instability (linker terminated or cache artifacts vanished) — blocked as verifier infrastructure, not an implementation failure",
 		}
 	}
@@ -436,7 +723,7 @@ func (e *Engine) classifyVerifyFailure(taskID, wtPath, failedCmd, output string)
 			target = "changed Go files `" + strings.Join(lintFiles, "`, `") + "`"
 		}
 		return &verifyFailureClassification{
-			Kind:         "code_fixable_lint",
+			Kind:         failureclassify.CodeFixableLint,
 			Reason:       "verify suite failed on " + target + " in " + trimDiffLine(failedCmd) + " — deterministic lint finding; re-ask implementation to fix the code without weakening the check",
 			ChangedFiles: changedFiles,
 			AutoFixable:  true,
@@ -450,7 +737,7 @@ func (e *Engine) classifyVerifyFailure(taskID, wtPath, failedCmd, output string)
 			reason += " (latest failure: " + trimDiffLine(excerpt) + ")"
 		}
 		return &verifyFailureClassification{
-			Kind:         "frontend_deterministic_failure",
+			Kind:         failureclassify.FrontendDeterministicFailure,
 			Reason:       reason,
 			ChangedFiles: changedFiles,
 			AutoFixable:  true,
@@ -461,7 +748,7 @@ func (e *Engine) classifyVerifyFailure(taskID, wtPath, failedCmd, output string)
 		return nil
 	}
 	return &verifyFailureClassification{
-		Kind:           "unrelated_failure",
+		Kind:           failureclassify.UnrelatedFailure,
 		Reason:         "verify suite failed only in untouched Go package(s): " + strings.Join(pkgs, ", ") + " — blocked as a pre-existing/unrelated verifier failure, not this diff",
 		FailedPackages: pkgs,
 		ChangedFiles:   changedFiles,
@@ -497,15 +784,6 @@ func classifyDeterministicFrontendVerifyFailure(
 		}
 	}
 	return "", changedFiles, false
-}
-
-func verifyGoInfraFailure(output string) bool {
-	for _, re := range verifyGoInfraFailureRes {
-		if re.MatchString(output) {
-			return true
-		}
-	}
-	return false
 }
 
 func classifyCodeFixableLintFailure(
@@ -841,6 +1119,62 @@ func autoFixBackoff(attempts int) time.Duration {
 	return backoff
 }
 
+// verifyDiagnosticName is the sidecar a verify escalation leaves behind.
+const verifyDiagnosticName = ".sybra-verify-%s.md"
+
+// writeVerifyDiagnostic persists the failing command and the highest-signal
+// excerpt, returning the path it wrote or "".
+//
+// status_reason records the command trimmed to a single line and drops the
+// diagnostic entirely, so whoever picks the task up next — a human, or the
+// human-review autonomy agent whose mandate tells it to "re-run the exact
+// failing command" — gets a command but not the finding, and has to re-run a
+// multi-minute suite to learn what it already said. The re-ask path has built
+// this excerpt all along; only the escalation threw it away.
+//
+// Best-effort: a task that cannot be escalated because a sidecar would not
+// write is strictly worse than one escalated without it.
+func (e *Engine) writeVerifyDiagnostic(taskID, failedCmd, output string) string {
+	dir := e.resolveSidecarDir(taskID)
+	if dir == "" || taskID == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("# Verify failure — task ")
+	b.WriteString(taskID)
+	b.WriteString("\n\n## Failing command\n\n```\n")
+	b.WriteString(failedCmd)
+	b.WriteString("\n```\n")
+	if excerpt := highestSignalVerifyFailureExcerpt(failedCmd, output); excerpt != "" {
+		b.WriteString("\n## Highest-signal failure excerpt\n\n```\n")
+		b.WriteString(excerpt)
+		b.WriteString("\n```\n")
+	}
+	// The structured excerpt only covers frontend commands, so a Go lint or
+	// test failure — the majority of what escalates — would otherwise record
+	// nothing but the command. Mirror buildVerifyReaskNote and keep the tail.
+	if tail := tailString(strings.TrimSpace(output), 3000); tail != "" {
+		b.WriteString("\n## Output tail\n\n```\n")
+		b.WriteString(tail)
+		b.WriteString("\n```\n")
+	}
+	path := filepath.Join(dir, fmt.Sprintf(verifyDiagnosticName, taskID))
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		e.logger.Warn("workflow.verify-checks.diagnostic", "task_id", taskID, "err", err)
+		return ""
+	}
+	return path
+}
+
+// withDiagnostic appends a pointer to the sidecar so status_reason stays short
+// while still leading somewhere with the actual finding.
+func withDiagnostic(reason, path string) string {
+	if path == "" {
+		return reason
+	}
+	return reason + " — diagnostic: " + path
+}
+
 // autoFixOrFlagVerifyChecks rewinds the workflow to the implementation step and
 // re-asks the agent to fix a code-fixable verify failure at its root cause,
 // looping instead of escalating an ordinary lint/test failure the agent can fix
@@ -850,33 +1184,55 @@ func autoFixBackoff(attempts int) time.Duration {
 // ran), escalates to human-required.
 func (e *Engine) autoFixOrFlagVerifyChecks(taskID string, step *Step, wfExec *Execution, t TaskInfo, reason, failedCmd, output string) (StepOutput, error) {
 	if wfExec == nil || wfExec.CountStep(verifyChecksImplStepID) == 0 {
-		return e.flagVerifyChecks(taskID, step, reason, failedCmd)
+		diag := e.writeVerifyDiagnostic(taskID, failedCmd, output)
+		return e.flagVerifyChecks(taskID, step, withDiagnostic(reason, diag), failedCmd)
 	}
-	key := "step." + step.ID + ".auto_fix"
-	attempts := parseWorkflowInt(wfExec.Variables[key])
-	if attempts >= verifyChecksAutoFixCeiling {
-		exhausted := fmt.Sprintf("%s — escalating after %d auto-fix attempts without passing",
-			reason, verifyChecksAutoFixCeiling)
-		return e.flagVerifyChecks(taskID, step, exhausted, "auto-fix-exhausted: "+trimDiffLine(failedCmd))
-	}
-
-	wfExec.SetVar(key, strconv.Itoa(attempts+1))
-	wfExec.SetVar(workflowRetryAfterVar, time.Now().UTC().Add(autoFixBackoff(attempts)).Format(time.RFC3339))
-	wfExec.SetVar(verifyReaskNoteVar, buildVerifyReaskNote(failedCmd, output))
-	wfExec.ClearStepRecords(verifyChecksImplStepID)
-	wfExec.CurrentStep = verifyChecksImplStepID
-	wfExec.State = ExecWaiting
-	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+	rewoundRunAgentID := verifyAutoFixRewoundRunAgentID(wfExec, t)
+	fingerprint := autoFixFailureFingerprint(failedCmd, output)
+	armed, attempt, err := e.rewindRetry(taskID, wfExec, t, rewindRetryPolicy{
+		counterKey:  "step." + step.ID + ".auto_fix",
+		max:         verifyChecksAutoFixCeiling,
+		rewindStep:  verifyChecksImplStepID,
+		backoff:     autoFixBackoff,
+		fingerprint: fingerprint,
+		// The first occurrence earns one autonomous repair attempt. If the
+		// exact command and failure evidence survive that code-author run, the
+		// second occurrence proves the repair made no progress and must stop
+		// the loop immediately.
+		maxSameFingerprintRuns: 1,
+		attemptProducedWork:    lastAuthorRunProducedWork,
+		onArm: func(wfExec *Execution, attempt int) {
+			wfExec.SetVar(verifyReaskNoteVar, buildVerifyReaskNote(failedCmd, output))
+			wfExec.SetVar(verifyRetryModelVar, "expensive")
+			if rewoundRunAgentID != "" {
+				wfExec.SetVar(verifyAutoFixRunIDVar, rewoundRunAgentID)
+			}
+		},
+		reason: func(attempt int) string {
+			return fmt.Sprintf("auto-fixing failed verify check (attempt %d): %s", attempt, trimDiffLine(failedCmd))
+		},
+	})
+	if err != nil {
 		return StepOutput{}, fmt.Errorf("verify-checks: rewind to implement: %w", err)
 	}
-	retryReason := fmt.Sprintf("auto-fixing failed verify check (attempt %d): %s",
-		attempts+1, trimDiffLine(failedCmd))
-	if err := e.tasks.UpdateTaskStatus(taskID, t.Status, retryReason); err != nil {
-		return StepOutput{}, err
+	if !armed {
+		exhausted := fmt.Sprintf("%s — escalating after repeated identical auto-fix failures or %d attempts without passing",
+			reason, verifyChecksAutoFixCeiling)
+		diag := e.writeVerifyDiagnostic(taskID, failedCmd, output)
+		return e.flagVerifyChecks(taskID, step, withDiagnostic(exhausted, diag), "auto-fix-exhausted: "+trimDiffLine(failedCmd))
 	}
 	e.logger.Info("workflow.verify-checks.auto-fix",
-		"task_id", taskID, "attempt", attempts+1, "cmd", trimDiffLine(failedCmd))
+		"task_id", taskID, "attempt", attempt, "cmd", trimDiffLine(failedCmd))
 	return StepOutput{}, errStepParked
+}
+
+func autoFixFailureFingerprint(failedCmd, output string) string {
+	excerpt := highestSignalVerifyFailureExcerpt(failedCmd, output)
+	if excerpt == "" {
+		excerpt = tailString(strings.TrimSpace(output), 1200)
+	}
+	h := sha256.Sum256([]byte(strings.TrimSpace(failedCmd) + "\n" + excerpt))
+	return hex.EncodeToString(h[:])
 }
 
 func buildVerifyReaskNote(failedCmd, output string) string {
@@ -902,6 +1258,23 @@ func buildVerifyReaskNote(failedCmd, output string) string {
 	return b.String()
 }
 
+func verifyAutoFixRewoundRunAgentID(wfExec *Execution, t TaskInfo) string {
+	if wfExec != nil {
+		if rec := wfExec.RecordForStep(verifyChecksImplStepID); rec != nil && strings.TrimSpace(rec.AgentID) != "" {
+			return rec.AgentID
+		}
+	}
+	for i := range slices.Backward(t.AgentRuns) {
+		role := strings.TrimSpace(t.AgentRuns[i].Role)
+		if role == "" || role == "implementation" {
+			if id := strings.TrimSpace(t.AgentRuns[i].AgentID); id != "" {
+				return id
+			}
+		}
+	}
+	return ""
+}
+
 // miseConfigNames are the mise config filenames that gate `mise exec` behind
 // "config not trusted", checked wherever this code needs to know whether a
 // directory carries mise config — kept as one list so npmReinstallCommand and
@@ -920,6 +1293,15 @@ func maybeMiseTrust(ctx context.Context, dir string) {
 			cmd := exec.CommandContext(ctx, "sh", "-c", "mise trust --yes")
 			cmd.Dir = dir
 			_ = cmd.Run()
+			return
+		}
+	}
+}
+
+func (e *Engine) maybeMiseTrustContained(ctx context.Context, taskID, wtPath, dir string) {
+	for _, name := range miseConfigNames {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			_ = e.runVerificationShell(ctx, taskID, wtPath, dir, "mise trust --yes", io.Discard)
 			return
 		}
 	}
@@ -954,7 +1336,7 @@ const repairTornNodeModulesTimeout = 3 * time.Minute
 // node_modules/.package-lock.json stamp missing/older than package-lock.json
 // (an install that was interrupted before npm finished writing its stamp).
 func (e *Engine) repairTornNodeModules(ctx context.Context, taskID, wtPath string) {
-	e.repairTornNodeModulesInDir(ctx, taskID, wtPath, ".")
+	e.repairTornNodeModulesInDir(ctx, taskID, wtPath, wtPath, ".")
 	entries, err := os.ReadDir(wtPath)
 	if err != nil {
 		return
@@ -964,11 +1346,11 @@ func (e *Engine) repairTornNodeModules(ctx context.Context, taskID, wtPath strin
 			continue
 		}
 		dir := filepath.Join(wtPath, entry.Name())
-		e.repairTornNodeModulesInDir(ctx, taskID, dir, entry.Name())
+		e.repairTornNodeModulesInDir(ctx, taskID, wtPath, dir, entry.Name())
 	}
 }
 
-func (e *Engine) repairTornNodeModulesInDir(ctx context.Context, taskID, dir, label string) {
+func (e *Engine) repairTornNodeModulesInDir(ctx context.Context, taskID, wtPath, dir, label string) {
 	if _, err := os.Stat(filepath.Join(dir, "package.json")); err != nil {
 		return
 	}
@@ -985,12 +1367,20 @@ func (e *Engine) repairTornNodeModulesInDir(ctx context.Context, taskID, dir, la
 	}
 
 	e.logger.Warn("workflow.verify-checks.npm-repair", "task_id", taskID, "dir", label)
+	unlock := lockNodeToolchainDir(dir)
+	defer unlock()
 	rctx, cancel := context.WithTimeout(ctx, repairTornNodeModulesTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(rctx, "npm", "ci", "--ignore-scripts")
-	cmd.Dir = dir
-	if err := cmd.Run(); err != nil {
-		e.logger.Warn("workflow.verify-checks.npm-repair-failed", "task_id", taskID, "dir", label, "err", err)
+	var repairErr error
+	if e.execution.VerificationCommands != nil {
+		repairErr = e.runVerificationShell(rctx, taskID, wtPath, dir, "npm ci --ignore-scripts", io.Discard)
+	} else {
+		cmd := exec.CommandContext(rctx, "npm", "ci", "--ignore-scripts")
+		cmd.Dir = dir
+		repairErr = cmd.Run()
+	}
+	if repairErr != nil {
+		e.logger.Warn("workflow.verify-checks.npm-repair-failed", "task_id", taskID, "dir", label, "err", repairErr)
 	}
 }
 
@@ -1077,9 +1467,17 @@ func (e *Engine) repairCorruptToolchain(ctx context.Context, taskID, wtPath, dir
 		return // not a Node project — nothing to check
 	}
 	binDir := filepath.Join(dir, "node_modules", ".bin")
-	entries, err := os.ReadDir(binDir)
-	if err == nil && nodeModulesBinNonEmpty(binDir, entries) {
+	if nodeToolchainIntact(binDir) {
 		return // toolchain looks intact
+	}
+
+	unlock := lockNodeToolchainDir(dir)
+	defer unlock()
+	// Re-check under the lock: another gate running concurrently in this same
+	// worktree may have just repaired this directory, and a second `npm ci`
+	// would delete and rewrite the install it is about to be used from.
+	if nodeToolchainIntact(binDir) {
+		return
 	}
 
 	reinstall := npmReinstallCommand(dir, wtPath)
@@ -1089,21 +1487,39 @@ func (e *Engine) repairCorruptToolchain(ctx context.Context, taskID, wtPath, dir
 
 	repairCtx, cancel := context.WithTimeout(ctx, npmReinstallTimeout)
 	defer cancel()
-	maybeMiseTrust(repairCtx, wtPath)
+	e.maybeMiseTrustContained(repairCtx, taskID, wtPath, wtPath)
 	if dir != wtPath {
-		maybeMiseTrust(repairCtx, dir)
+		e.maybeMiseTrustContained(repairCtx, taskID, wtPath, dir)
 	}
-	cmd := exec.CommandContext(repairCtx, "sh", "-c", reinstall)
-	cmd.Dir = dir
-	cmd.Stdout = tail
-	cmd.Stderr = tail
-	if repairErr := cmd.Run(); repairErr != nil {
+	if repairErr := e.runVerificationShell(repairCtx, taskID, wtPath, dir, reinstall, tail); repairErr != nil {
 		e.logger.Warn("workflow.verify-checks.toolchain-repair-failed", "task_id", taskID, "dir", dir, "err", repairErr)
 		_, _ = fmt.Fprintf(tail, "[verify] %s repair failed: %v\n", reinstall, repairErr)
 		return
 	}
 	e.logger.Info("workflow.verify-checks.toolchain-repaired", "task_id", taskID, "dir", dir)
 	_, _ = io.WriteString(tail, "[verify] npm ci repair completed\n")
+}
+
+// runVerificationShell routes every project-controlled preparation command
+// through the same containment path as the verify suite. The direct fallback
+// is retained for standalone Engine tests and consumers without app wiring.
+func (e *Engine) runVerificationShell(ctx context.Context, taskID, wtPath, dir, command string, output io.Writer) error {
+	if e.execution.VerificationCommands != nil {
+		if dir != wtPath {
+			rel, err := filepath.Rel(wtPath, dir)
+			if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				return fmt.Errorf("verification command directory escapes workspace: %q", dir)
+			}
+			command = "cd " + shellQuote(rel) + " && " + command
+		}
+		return e.execution.VerificationCommands.RunVerificationCommand(ctx, taskID, wtPath, command, os.Environ(), output)
+	}
+	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	cmd.Dir = dir
+	cmd.Env = os.Environ()
+	cmd.Stdout = output
+	cmd.Stderr = output
+	return cmd.Run()
 }
 
 // npmReinstallCommand routes the repair through `mise exec --` when either the
@@ -1119,6 +1535,34 @@ func npmReinstallCommand(paths ...string) string {
 		}
 	}
 	return "npm ci"
+}
+
+// nodeToolchainRepairLocks serializes toolchain repairs per directory.
+// execParallelGates runs focused_checks and verify_checks concurrently against
+// the SAME worktree, and a `node_modules` that was never installed is left
+// alone by the pre-fan-out repair (it is not corruption, see
+// isCorruptedNodeModules) — so both gates can reach repairCorruptToolchain for
+// one directory and race two `npm ci` runs that each delete and rewrite it,
+// producing a torn install and intermittent unrelated check failures. The lock
+// is process-wide rather than per-Engine because the contended resource is the
+// directory on disk, not engine state.
+var nodeToolchainRepairLocks sync.Map // cleaned dir -> *sync.Mutex
+
+func lockNodeToolchainDir(dir string) (unlock func()) {
+	v, _ := nodeToolchainRepairLocks.LoadOrStore(filepath.Clean(dir), &sync.Mutex{})
+	mu, ok := v.(*sync.Mutex)
+	if !ok {
+		return func() {}
+	}
+	mu.Lock()
+	return mu.Unlock
+}
+
+// nodeToolchainIntact reports whether binDir (a node_modules/.bin) holds at
+// least one non-empty entry, i.e. the toolchain needs no repair.
+func nodeToolchainIntact(binDir string) bool {
+	entries, err := os.ReadDir(binDir)
+	return err == nil && nodeModulesBinNonEmpty(binDir, entries)
 }
 
 // nodeModulesBinNonEmpty reports whether at least one entry under
@@ -1167,16 +1611,16 @@ func (e *Engine) repairCorruptedNodeModules(ctx context.Context, taskID, wtPath 
 			continue
 		}
 		e.logger.Warn("workflow.verify-checks.node-modules-repair", "task_id", taskID, "dir", dir)
+		unlock := lockNodeToolchainDir(dir)
 		repairCtx, cancel := context.WithTimeout(ctx, verifyChecksNodeModulesRepairTimeout)
-		maybeMiseTrust(repairCtx, wtPath)
+		e.maybeMiseTrustContained(repairCtx, taskID, wtPath, wtPath)
 		if dir != wtPath {
-			maybeMiseTrust(repairCtx, dir)
+			e.maybeMiseTrustContained(repairCtx, taskID, wtPath, dir)
 		}
 		reinstall := npmReinstallCommand(dir, wtPath)
-		cmd := exec.CommandContext(repairCtx, "sh", "-c", reinstall)
-		cmd.Dir = dir
-		repairErr := cmd.Run()
+		repairErr := e.runVerificationShell(repairCtx, taskID, wtPath, dir, reinstall, io.Discard)
 		cancel()
+		unlock()
 		if repairErr != nil {
 			e.logger.Warn("workflow.verify-checks.node-modules-repair-failed",
 				"task_id", taskID, "dir", dir, "cmd", reinstall, "err", repairErr)
@@ -1252,8 +1696,8 @@ func ownedByNpm(dir string) bool {
 // that passes on any attempt moves on. A non-nil err means the suite could not
 // even be prepared/run cleanly (ctx timeout/cancel or isolated-cache prep
 // failure) and is never retried — the budget is already spent; the caller
-// decides the policy. Output streams into a fixed-size tail buffer so a flood
-// of stdout/stderr cannot exhaust memory.
+// decides the policy. Output streams into a fixed-size head+tail buffer (see
+// boundedTail) so a flood of stdout/stderr cannot exhaust memory.
 func (e *Engine) runVerifyCommands(ctx context.Context, taskID, wtPath string, cmds []string) (failedCmd, output string, err error) {
 	tail := &boundedTail{max: verifyChecksMaxOutput}
 	cmdEnv, err := verifyCommandEnv(ctx, taskID, wtPath, cmds...)
@@ -1274,12 +1718,17 @@ func (e *Engine) runVerifyCommands(ctx context.Context, taskID, wtPath string, c
 					"task_id", taskID, "attempt", attempt, "cmd", trimDiffLine(raw))
 			}
 			_, _ = io.WriteString(tail, "$ "+raw+"\n")
-			cmd := exec.CommandContext(ctx, "sh", "-c", raw)
-			cmd.Dir = wtPath
-			cmd.Env = cmdEnv
-			cmd.Stdout = tail
-			cmd.Stderr = tail
-			runErr := cmd.Run()
+			var runErr error
+			if e.execution.VerificationCommands != nil {
+				runErr = e.execution.VerificationCommands.RunVerificationCommand(ctx, taskID, wtPath, raw, cmdEnv, tail)
+			} else {
+				cmd := exec.CommandContext(ctx, "sh", "-c", raw)
+				cmd.Dir = wtPath
+				cmd.Env = cmdEnv
+				cmd.Stdout = tail
+				cmd.Stderr = tail
+				runErr = cmd.Run()
+			}
 			_, _ = io.WriteString(tail, "\n")
 			if runErr == nil {
 				passed = true
@@ -1296,21 +1745,51 @@ func (e *Engine) runVerifyCommands(ctx context.Context, taskID, wtPath string, c
 	return "", tail.String(), nil
 }
 
-// boundedTail is a concurrency-safe io.Writer that retains only the last `max`
-// bytes written. os/exec writes stdout and stderr from separate goroutines when
-// they share a non-*os.File writer, so Write must be guarded.
+// boundedTail is a concurrency-safe io.Writer that retains only `max` bytes
+// total, so a flood of stdout/stderr cannot exhaust memory. os/exec writes
+// stdout and stderr from separate goroutines when they share a non-*os.File
+// writer, so Write must be guarded.
+//
+// It keeps the first half and the last half of the stream rather than a plain
+// tail: `go test ./internal/...` across ~80 packages reports the failing
+// package near where it fails, then keeps emitting `ok` lines for every
+// package that finishes afterward — a tail-only buffer reliably evicts the
+// one line (`--- FAIL: TestXxx`) a human needs to diagnose the run.
 type boundedTail struct {
-	mu  sync.Mutex
-	max int
-	buf []byte
+	mu         sync.Mutex
+	max        int
+	buf        []byte // accumulates here until total exceeds max
+	head       []byte // frozen first-half once truncation begins
+	tail       []byte // rolling last-half once truncation begins
+	total      int
+	truncating bool
 }
 
 func (b *boundedTail) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.buf = append(b.buf, p...)
-	if len(b.buf) > b.max {
-		b.buf = b.buf[len(b.buf)-b.max:]
+	b.total += len(p)
+	if !b.truncating {
+		b.buf = append(b.buf, p...)
+		if len(b.buf) <= b.max {
+			return len(p), nil
+		}
+		b.truncating = true
+		half := min(b.max/2, len(b.buf))
+		b.head = append([]byte(nil), b.buf[:half]...)
+		rest := b.buf[half:]
+		tailCap := b.max - len(b.head)
+		if len(rest) > tailCap {
+			rest = rest[len(rest)-tailCap:]
+		}
+		b.tail = append([]byte(nil), rest...)
+		b.buf = nil
+		return len(p), nil
+	}
+	tailCap := b.max - len(b.head)
+	b.tail = append(b.tail, p...)
+	if len(b.tail) > tailCap {
+		b.tail = b.tail[len(b.tail)-tailCap:]
 	}
 	return len(p), nil
 }
@@ -1318,14 +1797,18 @@ func (b *boundedTail) Write(p []byte) (int, error) {
 func (b *boundedTail) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return string(b.buf)
+	if !b.truncating {
+		return string(b.buf)
+	}
+	elided := b.total - len(b.head) - len(b.tail)
+	return string(b.head) + fmt.Sprintf("\n...(%d bytes elided)...\n", elided) + string(b.tail)
 }
 
 // tailString returns the last n bytes of s, prefixed with an elision marker
-// when truncated. Debug output — not rune-aligned at the cut.
+// when truncated. The shared helper keeps the cut rune-aligned.
 func tailString(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return "…(truncated)…\n" + s[len(s)-n:]
+	return "…(truncated)…\n" + textutil.TailBytes(s, n)
 }

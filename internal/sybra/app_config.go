@@ -45,3 +45,13 @@ type AppSettings struct {
 	ProjectTypes    []string                  `json:"projectTypes"`
 	Directories     map[string]string         `json:"directories"`
 }
+
+func githubSettingsWithoutSecrets(github config.GitHubConfig) config.GitHubConfig {
+	if github.Webhook.Secret != "" {
+		github.Webhook.Secret = config.RedactedPlaceholder
+	}
+	if github.Webhook.TaskSecret != "" {
+		github.Webhook.TaskSecret = config.RedactedPlaceholder
+	}
+	return github
+}

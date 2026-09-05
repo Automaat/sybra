@@ -10,13 +10,20 @@ import (
 
 	"github.com/Automaat/sybra/internal/cleanup"
 	"github.com/Automaat/sybra/internal/config"
-	"github.com/Automaat/sybra/internal/task"
 )
 
-// cmdDoctor dispatches `sybra-cli doctor <sub>`. Currently only `cleanup`.
-func cmdDoctor(cfg *config.Config, store *task.Manager, args []string, jsonOut bool) int {
+// cmdDoctor inspects and repairs this machine's own disk.
+//
+// It runs with no server so an operator can reach for it when the server is
+// what broke, but every path it would delete belongs to a live task, and only
+// the board knows which those are. Without one it reports and refuses to
+// delete, rather than treating every worktree as an orphan.
+func cmdDoctor(cfg *config.Config, store taskBoard, ownsHome bool, cause string, args []string, jsonOut bool) int {
 	if len(args) == 0 {
 		return fatal(jsonOut, "usage: doctor <cleanup>")
+	}
+	if store == nil || !ownsHome {
+		return cmdDoctorWithoutBoard(cfg, store, ownsHome, cause, args, jsonOut)
 	}
 	switch sub, rest := args[0], args[1:]; sub {
 	case "cleanup":
@@ -27,12 +34,16 @@ func cmdDoctor(cfg *config.Config, store *task.Manager, args []string, jsonOut b
 }
 
 type doctorCleanupBucketJSON struct {
-	Name        string   `json:"name"`
-	Risk        string   `json:"risk"`
-	Description string   `json:"description"`
-	Items       int      `json:"items"`
-	Bytes       int64    `json:"bytes"`
-	Paths       []string `json:"paths,omitempty"`
+	Name        string `json:"name"`
+	Risk        string `json:"risk"`
+	Description string `json:"description"`
+	Items       int    `json:"items"`
+	Bytes       int64  `json:"bytes"`
+	// Retained* report what the bucket holds but may not delete yet, so a
+	// full disk is not diagnosed against a table of zeroes.
+	RetainedItems int      `json:"retainedItems"`
+	RetainedBytes int64    `json:"retainedBytes"`
+	Paths         []string `json:"paths,omitempty"`
 }
 
 type doctorCleanupSkipJSON struct {
@@ -62,11 +73,32 @@ type doctorCleanupReport struct {
 	Results []doctorCleanupBucketResultJSON `json:"results,omitempty"`
 }
 
+type doctorCleanupFindingJSON struct {
+	ID            string             `json:"id"`
+	Kind          string             `json:"kind"`
+	State         string             `json:"state"`
+	TaskID        string             `json:"taskId,omitempty"`
+	LinkedTaskID  string             `json:"linkedTaskId,omitempty"`
+	Path          string             `json:"path"`
+	Reason        string             `json:"reason"`
+	ObservedHead  string             `json:"observedHead,omitempty"`
+	ObservedState string             `json:"observedState,omitempty"`
+	BytesRetained int64              `json:"bytesRetained"`
+	FirstSeenAt   time.Time          `json:"firstSeenAt"`
+	LastSeenAt    time.Time          `json:"lastSeenAt"`
+	LastChangedAt time.Time          `json:"lastChangedAt"`
+	ResolvedAt    time.Time          `json:"resolvedAt,omitzero"`
+	Rescue        cleanup.RescueInfo `json:"rescue,omitzero"`
+}
+
 // cmdDoctorCleanup implements `sybra-cli doctor cleanup`. Exit codes: 0 = ok
 // (dry run printed, or apply finished with no delete errors); 1 = apply
 // finished but at least one path failed to delete; 2 = bad usage (unknown
 // flag value, invalid --older-than, unknown --only bucket).
-func cmdDoctorCleanup(cfg *config.Config, store *task.Manager, args []string, jsonOut bool) int {
+func cmdDoctorCleanup(cfg *config.Config, store taskBoard, args []string, jsonOut bool) int {
+	if len(args) > 0 && args[0] == "findings" {
+		return cmdDoctorCleanupFindings(store, args[1:], jsonOut)
+	}
 	fs := flag.NewFlagSet("doctor cleanup", flag.ContinueOnError)
 	apply := fs.Bool("apply", false, "delete eligible resources instead of only reporting them (default: dry-run)")
 	only := fs.String("only", "", "comma-separated bucket names to limit to ("+strings.Join(cleanup.AllBucketNames(), ", ")+")")
@@ -118,12 +150,14 @@ func cmdDoctorCleanup(cfg *config.Config, store *task.Manager, args []string, js
 	report := doctorCleanupReport{Applied: *apply}
 	for _, b := range scanResult.Buckets {
 		report.Buckets = append(report.Buckets, doctorCleanupBucketJSON{
-			Name:        b.Name,
-			Risk:        string(b.Risk),
-			Description: b.Description,
-			Items:       b.Items,
-			Bytes:       b.Bytes,
-			Paths:       b.Paths,
+			Name:          b.Name,
+			Risk:          string(b.Risk),
+			Description:   b.Description,
+			Items:         b.Items,
+			Bytes:         b.Bytes,
+			RetainedItems: b.RetainedItems,
+			RetainedBytes: b.RetainedBytes,
+			Paths:         b.Paths,
 		})
 	}
 
@@ -157,13 +191,150 @@ func cmdDoctorCleanup(cfg *config.Config, store *task.Manager, args []string, js
 	return exitCode
 }
 
-func renderDoctorCleanupHuman(report doctorCleanupReport) {
+func cmdDoctorCleanupFindings(store taskBoard, args []string, jsonOut bool) int {
+	protected := cleanup.DefaultProtectedStore()
+	sub := "list"
+	if len(args) > 0 {
+		sub = args[0]
+		args = args[1:]
+	}
+	switch sub {
+	case "list":
+		findings, err := protected.List()
+		if err != nil {
+			return fatal(jsonOut, "list findings: %v", err)
+		}
+		return renderDoctorCleanupFindings(findings, jsonOut)
+	case "inspect":
+		if len(args) != 1 {
+			return fatalUsage(jsonOut, "usage: doctor cleanup findings inspect <id>")
+		}
+		finding, ok, err := protected.Get(args[0])
+		if err != nil {
+			return fatal(jsonOut, "inspect finding: %v", err)
+		}
+		if !ok {
+			return fatal(jsonOut, "cleanup finding %q not found", args[0])
+		}
+		return renderDoctorCleanupFindings([]cleanup.Finding{finding}, jsonOut)
+	case "discard":
+		if len(args) != 1 {
+			return fatalUsage(jsonOut, "usage: doctor cleanup findings discard <id>")
+		}
+		finding, err := protected.Discard(args[0])
+		if err != nil {
+			return fatal(jsonOut, "discard finding: %v", err)
+		}
+		return renderDoctorCleanupFindings([]cleanup.Finding{finding}, jsonOut)
+	case "rescue":
+		if len(args) != 1 {
+			return fatalUsage(jsonOut, "usage: doctor cleanup findings rescue <id>")
+		}
+		finding, err := protected.Rescue(args[0])
+		if err != nil {
+			return fatal(jsonOut, "rescue finding: %v", err)
+		}
+		return renderDoctorCleanupFindings([]cleanup.Finding{finding}, jsonOut)
+	case "reattach":
+		fs := flag.NewFlagSet("doctor cleanup findings reattach", flag.ContinueOnError)
+		taskID := fs.String("task", "", "task id to attach the protected resource finding to")
+		if err := fs.Parse(args); err != nil {
+			return fatalUsage(jsonOut, "%v", err)
+		}
+		rest := fs.Args()
+		if len(rest) != 1 {
+			return fatalUsage(jsonOut, "usage: doctor cleanup findings reattach --task <task-id> <id>")
+		}
+		if strings.TrimSpace(*taskID) == "" {
+			return fatalUsage(jsonOut, "--task is required")
+		}
+		// The only findings subcommand that reads a task, so it is the only one
+		// that needs a board. The rest answer from this machine's own file.
+		if store == nil {
+			return fatal(jsonOut, "reattach needs the board to confirm task %q exists, and no Sybra server is reachable", *taskID)
+		}
+		if _, err := store.Get(*taskID); err != nil {
+			return fatal(jsonOut, "reattach target task %q: %v", *taskID, err)
+		}
+		finding, err := protected.Reattach(rest[0], *taskID)
+		if err != nil {
+			return fatal(jsonOut, "reattach finding: %v", err)
+		}
+		return renderDoctorCleanupFindings([]cleanup.Finding{finding}, jsonOut)
+	default:
+		return fatalUsage(jsonOut, "unknown doctor cleanup findings command %q", sub)
+	}
+}
+
+func renderDoctorCleanupFindings(findings []cleanup.Finding, jsonOut bool) int {
+	if jsonOut {
+		out := make([]doctorCleanupFindingJSON, 0, len(findings))
+		for i := range findings {
+			out = append(out, doctorCleanupFindingJSON{
+				ID:            findings[i].ID,
+				Kind:          string(findings[i].Kind),
+				State:         string(findings[i].State),
+				TaskID:        findings[i].TaskID,
+				LinkedTaskID:  findings[i].LinkedTaskID,
+				Path:          findings[i].Path,
+				Reason:        findings[i].Reason,
+				ObservedHead:  findings[i].ObservedHead,
+				ObservedState: findings[i].ObservedState,
+				BytesRetained: findings[i].BytesRetained,
+				FirstSeenAt:   findings[i].FirstSeenAt,
+				LastSeenAt:    findings[i].LastSeenAt,
+				LastChangedAt: findings[i].LastChangedAt,
+				ResolvedAt:    findings[i].ResolvedAt,
+				Rescue:        findings[i].Rescue,
+			})
+		}
+		return printJSON(out)
+	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(w, "BUCKET\tRISK\tITEMS\tSIZE")
-	for _, b := range report.Buckets {
-		_, _ = fmt.Fprintf(w, "%s\t%s\t%d\t%s\n", b.Name, b.Risk, b.Items, humanBytes(b.Bytes))
+	_, _ = fmt.Fprintln(w, "ID\tKIND\tSTATE\tTASK\tSIZE\tPATH")
+	for i := range findings {
+		taskID := findings[i].TaskID
+		if findings[i].LinkedTaskID != "" {
+			taskID = findings[i].LinkedTaskID
+		}
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			findings[i].ID,
+			findings[i].Kind,
+			findings[i].State,
+			taskID,
+			humanBytes(findings[i].BytesRetained),
+			findings[i].Path,
+		)
 	}
 	_ = w.Flush()
+	return 0
+}
+
+func renderDoctorCleanupHuman(report doctorCleanupReport) {
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintln(w, "BUCKET\tRISK\tITEMS\tSIZE\tRETAINED")
+	var retained int64
+	for _, b := range report.Buckets {
+		retained += b.RetainedBytes
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\n",
+			b.Name, b.Risk, b.Items, humanBytes(b.Bytes), humanBytes(b.RetainedBytes))
+	}
+	_ = w.Flush()
+
+	// An operator reaches for this during a full disk. Eligible bytes alone
+	// answered "nothing to clean" while the retained column's worth of space
+	// was sitting in these same directories.
+	//
+	// The reasons are listed rather than summarised: naming only the common
+	// two sent someone hunting a retention window during an outage whose real
+	// cause was retention switched off, or an owning task that no longer
+	// resolves.
+	if retained > 0 {
+		fmt.Printf("\nRETAINED holds %s these buckets may not delete. An entry is held when its\n", humanBytes(retained))
+		fmt.Println("owning task is still active, when a terminal task is inside the retention")
+		fmt.Println("window (sandbox.retention_hours), when age-based retention is switched off")
+		fmt.Println("(a negative retention_hours), or when the owning task cannot be resolved.")
+	}
 
 	if !report.Applied {
 		fmt.Println("\nDry run — nothing was deleted. Pass --apply to delete eligible resources;")
@@ -207,4 +378,44 @@ func fatalUsage(jsonOut bool, format string, args ...any) int {
 		fmt.Fprintf(os.Stderr, "error: %s\n", msg)
 	}
 	return 2
+}
+
+// cmdDoctorWithoutBoard answers the doctor subcommands that need no board, and
+// refuses the scan by name rather than running it against a task list that does
+// not describe this disk — which classifies every live worktree as an orphan
+// and offers to delete it.
+func cmdDoctorWithoutBoard(cfg *config.Config, store taskBoard, ownsHome bool, cause string, args []string, jsonOut bool) int {
+	if args[0] != "cleanup" {
+		return fatal(jsonOut, "unknown doctor command: %s", args[0])
+	}
+	// The protected-findings record is this machine's own file, so reading it
+	// needs no board at all — and it is exactly what an operator asks for when
+	// the server is what broke and the disk is filling up.
+	if len(args) > 1 && args[1] == "findings" && !needsBoard(args, 2) {
+		return cmdDoctorCleanupFindings(store, args[2:], jsonOut)
+	}
+	// Order matters: with no board at all, ownsHome is false too, and reporting
+	// a mismatched target would tell an operator to unset something they never
+	// set.
+	if store == nil {
+		// cause names what actually stopped the board being usable — a
+		// certificate that does not match, a bind with no route — which is the
+		// whole reason an operator ran doctor.
+		if strings.TrimSpace(cause) != "" {
+			return fatal(jsonOut, "doctor cleanup needs the board to tell a live worktree from an orphan: %s", cause)
+		}
+		return fatal(jsonOut,
+			"doctor cleanup needs the board to tell a live worktree from an orphan, and no Sybra server is reachable; start one, or set %s",
+			serverTargetEnv)
+	}
+	return fatal(jsonOut,
+		"doctor cleanup deletes paths under %s, and the board that answered serves a different home, whose tasks do not describe them; point the CLI at this home's own board",
+		config.HomeDir())
+}
+
+// needsBoard reports the findings subcommands that read a task, which is the
+// only part of that subtree a board is required for. from is where the findings
+// subcommand starts in args.
+func needsBoard(args []string, from int) bool {
+	return len(args) > from && args[from] == "reattach"
 }

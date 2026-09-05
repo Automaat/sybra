@@ -1,67 +1,19 @@
 package main
 
 import (
-	"context"
-	"errors"
 	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
-	"time"
 
 	"github.com/Automaat/sybra/internal/config"
-	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/promptlab"
 	"github.com/Automaat/sybra/internal/task"
-	"github.com/Automaat/sybra/internal/triage"
 )
 
-type failingTriageClassifier struct{}
-
-func (failingTriageClassifier) Classify(context.Context, task.Task, []project.Project) (triage.Verdict, error) {
-	return triage.Verdict{}, errors.New("provider subprocess exited while reading stdin")
-}
-
-func TestClassifyOneFailureMarksRetryableAndPreservesTaskFields(t *testing.T) {
-	store, err := task.NewStore(t.TempDir())
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	mgr := task.NewManager(store, nil)
-	created, err := mgr.Create("keep original title", "keep body", task.AgentModeHeadless)
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	created, err = mgr.Update(created.ID, task.Update{Tags: task.Ptr([]string{"backend", "bug"})})
-	if err != nil {
-		t.Fatalf("Update tags: %v", err)
-	}
-
-	_, err = classifyOne(failingTriageClassifier{}, mgr, nil, created, nil, time.Second)
-	if err == nil {
-		t.Fatal("classifyOne succeeded; want classifier error")
-	}
-
-	got, err := mgr.Get(created.ID)
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if got.Title != created.Title {
-		t.Errorf("title = %q, want preserved %q", got.Title, created.Title)
-	}
-	if !slices.Equal(got.Tags, created.Tags) {
-		t.Errorf("tags = %v, want preserved %v", got.Tags, created.Tags)
-	}
-	if got.Status == task.StatusHumanRequired {
-		t.Fatalf("status = human-required; classifier failures must stay non-human")
-	}
-	if !strings.HasPrefix(got.StatusReason, triageRetryableStatusReasonPrefix) {
-		t.Fatalf("status_reason = %q, want retryable prefix %q", got.StatusReason, triageRetryableStatusReasonPrefix)
-	}
-	if !strings.Contains(got.StatusReason, "provider subprocess exited") {
-		t.Errorf("status_reason = %q, want classifier detail", got.StatusReason)
-	}
-}
+// The CLI no longer classifies: it calls the server, which owns the classifier
+// and the retryable stamp a failure leaves behind. That guarantee is pinned in
+// internal/sybra's TestClassifyTask_StampsARetryableReasonOnFailure, which
+// replaced the local reimplementation this file used to cover.
 
 // TestCmdTriageClassifyRefusesNonNewTask locks in the single-id `triage
 // classify <id>` entry point matching the status=new filter the --all path
@@ -82,20 +34,24 @@ func TestCmdTriageClassifyRefusesNonNewTask(t *testing.T) {
 	}
 	humanRequired := task.StatusHumanRequired
 	tags := []string{promptlab.ProposalTag, "requires-human"}
-	created, err = mgr.Update(created.ID, task.Update{Status: &humanRequired, Tags: &tags})
+	created, err = mgr.Update(created.ID, task.Update{
+		Status:          &humanRequired,
+		Tags:            &tags,
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+	})
 	if err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 
-	ps, err := project.NewStore(filepath.Join(dir, "projects"), filepath.Join(dir, "clones"))
-	if err != nil {
-		t.Fatalf("project.NewStore: %v", err)
-	}
 	t.Setenv("SYBRA_HOME", dir)
 	cfg := config.DefaultConfig()
 
+	// The board the CLI reads its status from, so the guard sees what the
+	// owning instance holds rather than a second reader's copy.
+	board := newAPITaskBoard(newTestBoardClient(t, dir))
 	code, _ := captureStdout(t, func() int {
-		return cmdTriageClassify(cfg, mgr, ps, []string{created.ID}, true)
+		return cmdTriageClassify(cfg, nil, board, []string{created.ID}, true)
 	})
 	if code == 0 {
 		t.Fatalf("expected non-zero exit classifying a non-new task")

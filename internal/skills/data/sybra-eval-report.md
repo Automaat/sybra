@@ -35,12 +35,28 @@ Returns an `evaluation.Report`:
   - autonomy: `autonomyRate`, `autonomousLandings`, `humanTouchedLandings`
   - reliability: `failureRate`, `agentRuns`, `agentFailures`, `ciFirstPassRate`
   - efficiency: `costPerLanded`, `totalCostUsd`, `turnsPerLanded`,
-    `toolsPerLanded`, `reworkTasks`
+    `toolsPerLanded`, `reworkTasks`, `totalTokens`
+  - **`costPerMergedUsd` / `tokensPerMergedPr` — the fleet's cost-efficiency
+    north star.** Unlike `costPerLanded` (denominator includes closed-without-
+    merging landings), these divide window spend/tokens by `merged +
+    mergedWithEdits` — a run that never merges is 100% waste. This is the
+    metric a tier-cascade rollout or a guardrail/parallelism change should be
+    judged against.
   - `windowDays`
 - `byProvider[]` / `byRole[]` — `Breakdown` per group: `key`, `runs`,
   `failures`, `failureRate`, `totalCostUsd`, `turns`, `tools`
+- `byCostTier[]` — `ComparisonBreakdown` grouped by `provider:role:tier`
+  (`tier` from `modeltier.InferTier`), each row carrying its own
+  `costPerMergedUsd`/`tokensPerMergedPr`. This is the segmentation to check
+  when judging whether a cheaper model tier is actually cheaper per merged PR,
+  not just per run.
+- `costPerMergedBaseline` — the prior equal-length window's
+  `costPerMergedUsd`/`tokensPerMergedPr`/`mergedPrs`, or absent if that window
+  landed too few merges to trust. Compare against `overall.costPerMergedUsd` to
+  see the trend before reading the `cost_per_merge` weakness (below).
 - `weaknesses[]` — ranked (warn before info): `metric`, `severity`, `detail`,
-  `suggestion`
+  `suggestion`. Includes `cost_per_merge` when `$/merged-PR` has risen >20%
+  vs. `costPerMergedBaseline` (both windows need >=5 merges to fire).
 - `notes[]` — metrics deliberately deferred (don't treat their absence as a
   measured zero)
 
@@ -65,6 +81,9 @@ For a mid-level autonomous team, the bar is roughly:
 - **ciFirstPassRate** high (agents push code that passes CI first try).
 - **failureRate** low; **reworkTasks** low (tasks converge, don't bounce).
 - **costPerLanded / turnsPerLanded / toolsPerLanded** stable or trending down.
+- **costPerMergedUsd** — the umbrella's success metric — flat or trending down
+  vs. `costPerMergedBaseline`; check `byCostTier` to see whether a tier
+  rollout is actually moving it, not just shifting spend to more retries.
 - **leadTime / cycleTime** percentiles not dominated by a long tail (p90).
 
 Call out the 2–3 metrics furthest from that bar. Frame each as "what a

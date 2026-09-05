@@ -15,11 +15,40 @@ import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Cr
 import * as project$0 from "../project/models.js";
 
 /**
+ * AdoptProject registers a project pointing at an already-existing local
+ * clone, without cloning or contacting any remote. url is used only to
+ * derive the ID/owner/repo and for display; a placeholder value works for a
+ * fixture or an air-gapped install describing a repo it already has on
+ * disk. Synchronous like CreateProjectAndClone: there is no background step
+ * for a caller to watch, so the project is ready or the call fails.
+ */
+export function AdoptProject(url: string, ptype: string, clonePath: string): $CancellablePromise<project$0.Project> {
+    return $Call.ByID(2453476777, url, ptype, clonePath).then(($result: any) => {
+        return $$createType0($result);
+    });
+}
+
+/**
  * CreateProject registers a GitHub repo and starts a bare clone in the
  * background. It returns immediately with the project in cloning status.
  */
 export function CreateProject(url: string, ptype: string): $CancellablePromise<project$0.Project> {
     return $Call.ByID(2936951975, url, ptype).then(($result: any) => {
+        return $$createType0($result);
+    });
+}
+
+/**
+ * CreateProjectAndClone registers a repo and finishes its clone before
+ * returning, reporting a clone failure to the caller.
+ * 
+ * CreateProject's background clone suits the GUI, which watches the record
+ * flip out of `cloning`. A CLI caller has nothing to watch: it exits, so an
+ * async create would print success on a repo that never cloned and hand back
+ * a record in `cloning` where the filesystem-backed command returned `ready`.
+ */
+export function CreateProjectAndClone(url: string, ptype: string): $CancellablePromise<project$0.Project> {
+    return $Call.ByID(3920748429, url, ptype).then(($result: any) => {
         return $$createType0($result);
     });
 }
@@ -38,6 +67,19 @@ export function GetProject(id: string): $CancellablePromise<project$0.Project> {
     return $Call.ByID(2035355087, id).then(($result: any) => {
         return $$createType0($result);
     });
+}
+
+/**
+ * GetProjectRawType returns a project's type exactly as recorded, without
+ * GetProject's missing-type→pet coercion.
+ * 
+ * A client cannot derive this from GetProject: the confidentiality guard needs
+ * "unset" to stay distinguishable from "pet" so a work project with an absent
+ * type field is never routed to an untrusted follower, and GetProject has
+ * already collapsed the two by the time the record reaches the wire.
+ */
+export function GetProjectRawType(id: string): $CancellablePromise<string> {
+    return $Call.ByID(3061473543, id);
 }
 
 /**

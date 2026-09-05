@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -18,6 +19,7 @@ import (
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/skillattr"
 )
 
@@ -450,7 +452,8 @@ func TestClassifyProviderError_CodexConnectivityRoutesToRateLimit(t *testing.T) 
 	sample := provider.ErrorSample{
 		Stderr: "websocket connection refused: wss://chatgpt.com/backend-api/codex/responses",
 	}
-	sig, reason, _ := classifyProviderError("codex", sample)
+	c := classifyProviderError("codex", sample)
+	sig, reason, _, _ := c.Signal, c.Reason, c.RetryAfter, c.Source
 	if sig != provider.SignalRateLimit {
 		t.Fatalf("signal = %v, want SignalRateLimit", sig)
 	}
@@ -488,6 +491,40 @@ func TestResultStreamError(t *testing.T) {
 	err = resultStreamError([]StreamEvent{{Type: "result", Subtype: "error_during_execution", Content: "No conversation found"}})
 	if err == nil {
 		t.Fatal("resultStreamError(error_during_execution) = nil, want error")
+	}
+}
+
+func TestParseClaudeLine_ResultTerminalReason(t *testing.T) {
+	t.Parallel()
+
+	line := []byte(`{"type":"result","subtype":"error_during_execution","terminal_reason":"aborted_tools","is_error":true,"result":"interrupted"}`)
+	ev, err := ParseClaudeLine(line)
+	if err != nil {
+		t.Fatalf("ParseClaudeLine: %v", err)
+	}
+	if ev.Result == nil {
+		t.Fatal("Result = nil")
+	}
+	if ev.Result.TerminalReason != "aborted_tools" {
+		t.Fatalf("TerminalReason = %q, want aborted_tools", ev.Result.TerminalReason)
+	}
+	stream := claudeEventToStreamEvent(ev)
+	if stream.TerminalReason != "aborted_tools" {
+		t.Fatalf("StreamEvent.TerminalReason = %q, want aborted_tools", stream.TerminalReason)
+	}
+}
+
+func TestUserInterruptedStream(t *testing.T) {
+	t.Parallel()
+
+	if !userInterruptedStream([]StreamEvent{{Type: "result", TerminalReason: "aborted_streaming"}}) {
+		t.Fatal("userInterruptedStream(aborted_streaming) = false, want true")
+	}
+	if !userInterruptedStream([]StreamEvent{{Type: "result", Content: "[Request interrupted by user]"}}) {
+		t.Fatal("userInterruptedStream(marker) = false, want true")
+	}
+	if userInterruptedStream([]StreamEvent{{Type: "result", TerminalReason: "aborted_tools"}}) {
+		t.Fatal("userInterruptedStream(aborted_tools) = true, want false")
 	}
 }
 
@@ -685,6 +722,73 @@ func TestLastHeadlessResultIgnoresPriorRetryResult(t *testing.T) {
 	found, isError := a.lastHeadlessResult()
 	if found || isError {
 		t.Fatalf("lastHeadlessResult = (%v, %v), want no terminal result", found, isError)
+	}
+}
+
+// TestLastHeadlessResultSkipsPostResultBookkeeping covers the reattach
+// recovery hazard: a forked-subagent run (CLAUDE_CODE_FORK_SUBAGENT) or one
+// with CLI background bash tasks keeps emitting child turns and
+// background_tasks_changed snapshots after its top-level terminal result. If
+// the literal last event decided completion, finalizeIfCompleted would refuse
+// to finalize and reattachHeadless would stamp errReattachedGone — requeueing
+// a run that in fact finished cleanly. Only that bookkeeping is skipped: a new
+// top-level event still supersedes the result.
+func TestLastHeadlessResultSkipsPostResultBookkeeping(t *testing.T) {
+	result := StreamEvent{Type: "result", Content: "done"}
+	cases := []struct {
+		name      string
+		trailing  []StreamEvent
+		wantFound bool
+	}{
+		{
+			name:      "no trailing events",
+			wantFound: true,
+		},
+		{
+			name: "forked subagent child turns",
+			trailing: []StreamEvent{
+				{Type: "assistant", Content: "child working", parentToolUseID: "toolu_1"},
+				{Type: "result", Content: "child done", parentToolUseID: "toolu_1"},
+			},
+			wantFound: true,
+		},
+		{
+			name: "background task snapshots draining",
+			trailing: []StreamEvent{
+				{Type: "system", Subtype: "background_tasks_changed", BackgroundTaskIDs: []string{"bg-1"}},
+				{Type: "system", Subtype: "background_tasks_changed", BackgroundTaskIDs: []string{}},
+			},
+			wantFound: true,
+		},
+		{
+			name:     "new top-level turn after result",
+			trailing: []StreamEvent{{Type: "assistant", Content: "steered again"}},
+		},
+		{
+			name: "new top-level turn after subagent chatter",
+			trailing: []StreamEvent{
+				{Type: "assistant", Content: "child working", parentToolUseID: "toolu_1"},
+				{Type: "assistant", Content: "steered again"},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &Agent{}
+			a.AppendOutput(result)
+			for _, ev := range tc.trailing {
+				a.AppendOutput(ev)
+			}
+
+			found, isError := a.lastHeadlessResult()
+			if found != tc.wantFound {
+				t.Fatalf("lastHeadlessResult found = %v, want %v", found, tc.wantFound)
+			}
+			if isError {
+				t.Fatal("lastHeadlessResult isError = true, want false (clean result)")
+			}
+		})
 	}
 }
 
@@ -1450,7 +1554,7 @@ func TestGuardrails_CostKillRaceSetsExitErr(t *testing.T) {
 	// finalizeRun (and the close of ag.done) must not block on the slow
 	// subprocess reap — it happens on the shrunk drainTimeout, well before
 	// the real SIGKILL escalation (stopSIGINTGrace) would land.
-	waitForAgentDone(t, ag, 3*time.Second)
+	waitForAgentDone(t, ag, scaledDeadline(3*time.Second))
 
 	if !ag.WasStopped() {
 		t.Fatal("expected WasStopped=true after guardrail kill")
@@ -1504,7 +1608,7 @@ func TestGuardrails_CostHardStop_CompletedTurnIsNotAFailure(t *testing.T) {
 		}
 	})
 
-	waitForAgentDone(t, ag, 3*time.Second)
+	waitForAgentDone(t, ag, scaledDeadline(3*time.Second))
 
 	if !ag.WasStopped() {
 		t.Fatal("expected WasStopped=true after guardrail kill")
@@ -1514,6 +1618,212 @@ func TestGuardrails_CostHardStop_CompletedTurnIsNotAFailure(t *testing.T) {
 	}
 	if got := ag.GetExitErr(); got != nil {
 		t.Fatalf("ExitErr = %v, want nil — the turn completed cleanly before the cost ceiling stopped the now-idle subprocess", got)
+	}
+}
+
+// TestMaybeEnforceLiveCostCeiling_PreemptsMidStream verifies a mid-stream
+// assistant event whose own usage block alone breaches MaxCostUSD stops the
+// stream immediately — before the terminal result event would have reported
+// a cost that is already fully incurred (see LiveCostEstimateUSD's doc for
+// why the reactive per-result check alone can't pre-empt this).
+func TestMaybeEnforceLiveCostCeiling_PreemptsMidStream(t *testing.T) {
+	// claude-opus-4-8: $5/M input. 250k input tokens alone prices to $1.25,
+	// already over the $1.00 ceiling on the very first assistant event.
+	breachLine := `{"type":"assistant","message":{"content":[{"type":"text","text":"working"}],"usage":{"input_tokens":250000,"output_tokens":0}}}`
+	trailingLine := `{"type":"assistant","message":{"content":[{"type":"text","text":"should never be processed"}]}}`
+	input := breachLine + "\n" + trailingLine + "\n"
+
+	var (
+		last   EscalationEvent
+		fired  int
+		mu     sync.Mutex
+		logger = slog.New(slog.DiscardHandler)
+	)
+	emit := func(event string, data any) {
+		if !strings.Contains(event, "agent:escalation:") {
+			return
+		}
+		if e, ok := data.(EscalationEvent); ok && e.Reason == "cost" {
+			mu.Lock()
+			fired++
+			last = e
+			mu.Unlock()
+		}
+	}
+	m := mustNewManager(t, context.Background(), emit, logger, t.TempDir())
+	m.SetGuardrails(Guardrails{MaxCostUSD: 1.0})
+
+	a := &Agent{ID: "t", Provider: "claude", Model: "claude-opus-4-8"}
+	m.streamHeadlessOutput(t.Context(), a, bytes.NewReader([]byte(input)), nil)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if fired != 1 {
+		t.Fatalf("got %d cost escalations, want 1", fired)
+	}
+	if last.Measurement != "live_estimate_usd" || last.CostSource != "estimated" {
+		t.Fatalf("escalation metadata = %+v, want live-estimate mid-stream metadata", last)
+	}
+	if got := len(a.Output()); got != 1 {
+		t.Errorf("got %d events, want 1 — stream kept processing after a mid-stream cost pre-emption", got)
+	}
+	if !a.WasStopped() {
+		t.Error("WasStopped() = false, want true")
+	}
+	if a.WasCompletedByResult() {
+		t.Error("WasCompletedByResult() = true, want false — no result event ever landed for this breach")
+	}
+}
+
+// TestMaybeEnforceLiveCostCeiling_SendsConvergeSteerBeforeHardStop verifies
+// the graceful path: once live spend crosses TurnCostFraction of the ceiling,
+// a one-shot steer message is queued (observable as a "user_input" stream
+// event) asking the run to wrap up, landing before the eventual hard stop —
+// giving a run a chance to converge instead of being cut off with no warning.
+func TestMaybeEnforceLiveCostCeiling_SendsConvergeSteerBeforeHardStop(t *testing.T) {
+	// claude-opus-4-8: $5/M input.
+	// line1: 90k tokens -> $0.45, below the $0.50 steer threshold (fraction 0.5 of $1.00).
+	// line2: +10k tokens -> cumulative 100k -> $0.50, at the threshold: triggers the steer.
+	// line3: +150k tokens -> cumulative 250k -> $1.25, breaches the $1.00 ceiling: hard stop.
+	lines := []string{
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"tick1"}],"usage":{"input_tokens":90000,"output_tokens":0}}}`,
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"tick2"}],"usage":{"input_tokens":10000,"output_tokens":0}}}`,
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"tick3"}],"usage":{"input_tokens":150000,"output_tokens":0}}}`,
+	}
+	input := strings.Join(lines, "\n") + "\n"
+
+	var (
+		fired  int
+		mu     sync.Mutex
+		logger = slog.New(slog.DiscardHandler)
+	)
+	emit := func(event string, data any) {
+		if !strings.Contains(event, "agent:escalation:") {
+			return
+		}
+		if e, ok := data.(EscalationEvent); ok && e.Reason == "cost" {
+			mu.Lock()
+			fired++
+			mu.Unlock()
+		}
+	}
+	m := mustNewManager(t, context.Background(), emit, logger, t.TempDir())
+	m.SetGuardrails(Guardrails{MaxCostUSD: 1.0, TurnCostFraction: 0.5})
+
+	stdinR, stdinW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = stdinR.Close()
+		_ = stdinW.Close()
+	})
+
+	a := &Agent{ID: "t", Mode: "headless", Provider: "claude", Model: "claude-opus-4-8"}
+	a.convo.replaceStdinPipe(stdinW)
+
+	m.streamHeadlessOutput(t.Context(), a, bytes.NewReader([]byte(input)), nil)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if fired != 1 {
+		t.Fatalf("got %d cost escalations, want 1", fired)
+	}
+
+	streamEvents := a.Output()
+	// Expect: tick1, tick2, steer (user_input), tick3 — the breach line is
+	// still appended before the guardrail stops the stream.
+	if len(streamEvents) != 4 {
+		t.Fatalf("got %d events, want 4 (tick1, tick2, steer, tick3); events=%+v", len(streamEvents), streamEvents)
+	}
+	if streamEvents[2].Type != "user_input" {
+		t.Fatalf("events[2].Type = %q, want user_input (converge steer must land before the breaching line)", streamEvents[2].Type)
+	}
+	if !strings.Contains(strings.ToLower(streamEvents[2].Content), "converge") && !strings.Contains(strings.ToLower(streamEvents[2].Content), "wrap up") {
+		t.Errorf("steer content = %q, want a converge/wrap-up nudge", streamEvents[2].Content)
+	}
+	if streamEvents[3].Content != "tick3" {
+		t.Fatalf("events[3] = %+v, want the breaching tick3 line", streamEvents[3])
+	}
+}
+
+// TestCheckSubagentTurnsGuardrail_HardStops verifies the separate
+// forked-subagent turn ceiling hard-stops the run outright once breached —
+// unlike checkTurnsGuardrail there is no auto-continue or human-escalation
+// path for a runaway subagent fan-out.
+func TestCheckSubagentTurnsGuardrail_HardStops(t *testing.T) {
+	var (
+		last   EscalationEvent
+		fired  int
+		mu     sync.Mutex
+		logger = slog.New(slog.DiscardHandler)
+	)
+	emit := func(event string, data any) {
+		if !strings.Contains(event, "agent:escalation:") {
+			return
+		}
+		if e, ok := data.(EscalationEvent); ok && e.Reason == "subagent_turns" {
+			mu.Lock()
+			fired++
+			last = e
+			mu.Unlock()
+		}
+	}
+	m := mustNewManager(t, context.Background(), emit, logger, t.TempDir())
+	m.SetGuardrails(Guardrails{MaxSubagentEvents: 3})
+
+	a := &Agent{ID: "t"}
+	for i := 1; i <= 2; i++ {
+		if keepGoing := m.checkSubagentTurnsGuardrail(a); !keepGoing {
+			t.Fatalf("checkSubagentTurnsGuardrail call %d = false, want true (below ceiling)", i)
+		}
+	}
+	if keepGoing := m.checkSubagentTurnsGuardrail(a); keepGoing {
+		t.Fatal("checkSubagentTurnsGuardrail = true, want false at the ceiling")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if fired != 1 {
+		t.Fatalf("got %d subagent_turns escalations, want 1", fired)
+	}
+	if last.Guardrail != "execution.agent.max_subagent_events" || last.Limit != 3 || last.MeasuredValue != 3 {
+		t.Fatalf("escalation metadata = %+v, want max_subagent_events guardrail at limit=3", last)
+	}
+	if !a.WasStopped() {
+		t.Error("WasStopped() = false, want true")
+	}
+	if got := a.GetEscalationReason(); got != EscalationReasonSubagentTurns {
+		t.Errorf("EscalationReason = %q, want %q", got, EscalationReasonSubagentTurns)
+	}
+}
+
+// TestCanAutoContinueTurns_UsesLiveEstimate verifies canAutoContinueTurns
+// reads LiveCostEstimateUSD rather than the banked CostUSD — a run with $0
+// banked cost (no result event has landed yet) but heavy live token usage
+// must still be blocked from auto-continuing once its live estimate crosses
+// the cost-fraction threshold.
+func TestCanAutoContinueTurns_UsesLiveEstimate(t *testing.T) {
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
+	m.SetGuardrails(Guardrails{MaxCostUSD: 1.0, TurnCostFraction: 0.5})
+
+	a := &Agent{ID: "t", Provider: "claude", Model: "claude-opus-4-8", Role: RoleImplementation}
+	// 120k input tokens @ $5/M = $0.60, over the $0.50 (0.5 * $1.00) threshold,
+	// while CostUSD (the banked, post-result figure) stays at its zero default.
+	a.AddLiveUsage(120000, 0, 0, 0)
+
+	if a.GetCostUSD() != 0 {
+		t.Fatalf("GetCostUSD() = %v, want 0 (no result event has landed)", a.GetCostUSD())
+	}
+	if m.canAutoContinueTurns(a) {
+		t.Error("canAutoContinueTurns() = true, want false — live estimate crosses the fraction threshold even with banked cost at 0")
+	}
+
+	// A lighter live estimate below the threshold must still allow auto-continue.
+	b := &Agent{ID: "t2", Provider: "claude", Model: "claude-opus-4-8", Role: RoleImplementation}
+	b.AddLiveUsage(10000, 0, 0, 0) // $0.05, well under threshold
+	if !m.canAutoContinueTurns(b) {
+		t.Error("canAutoContinueTurns() = false, want true — live estimate is well under the fraction threshold")
 	}
 }
 
@@ -2279,14 +2589,32 @@ func TestBuildHeadlessInvocation_PlaywrightMCP(t *testing.T) {
 		}
 	})
 
-	t.Run("claude_empty_mcp_config_is_noop", func(t *testing.T) {
+	// A run that attaches no server of its own is exactly the run that must
+	// still be pinned: without --strict-mcp-config, Claude loads whatever the
+	// host account has connected, which is how an operator's Gmail/Drive
+	// connectors reached headless agents (#2790). "No config" has to mean
+	// "no servers", not "inherit the host's".
+	t.Run("claude_pins_empty_surface_when_no_config", func(t *testing.T) {
 		a := &Agent{ID: "a", Provider: "claude"}
 		_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "test"})
 		if err != nil {
 			t.Fatalf("buildHeadlessInvocation: %v", err)
 		}
-		if slices.Contains(args, "--mcp-config") || slices.Contains(args, "--strict-mcp-config") {
-			t.Fatalf("mcp flags must be absent when MCPConfigJSON empty; got %v", args)
+		if !slices.Contains(args, "--strict-mcp-config") {
+			t.Fatalf("--strict-mcp-config must be present even with no per-run config; got %v", args)
+		}
+		i := slices.Index(args, "--mcp-config")
+		if i < 0 || i+1 >= len(args) {
+			t.Fatalf("--mcp-config must accompany --strict-mcp-config; got %v", args)
+		}
+		var doc struct {
+			MCPServers map[string]json.RawMessage `json:"mcpServers"`
+		}
+		if err := json.Unmarshal([]byte(args[i+1]), &doc); err != nil {
+			t.Fatalf("mcp config is not valid JSON (%v): %s", err, args[i+1])
+		}
+		if len(doc.MCPServers) != 0 {
+			t.Fatalf("declared %d servers, want none: %s", len(doc.MCPServers), args[i+1])
 		}
 	})
 
@@ -2644,17 +2972,17 @@ func TestHeadlessSteerableInvocation(t *testing.T) {
 		}
 	})
 
-	t.Run("claude_unsteerable_keeps_legacy_shape", func(t *testing.T) {
+	t.Run("claude_unsteerable_also_drops_positional_prompt", func(t *testing.T) {
 		a := &Agent{ID: "a", Provider: "claude"}
 		_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "do stuff", HeadlessSteerable: false})
 		if err != nil {
 			t.Fatalf("buildHeadlessInvocation: %v", err)
 		}
-		if !slices.Contains(args, "do stuff") {
-			t.Errorf("unsteerable invocation must still pass the prompt positionally; got %v", args)
+		if slices.Contains(args, "do stuff") {
+			t.Errorf("unsteerable invocation must not pass the prompt positionally either (#2575); got %v", args)
 		}
 		if slices.Contains(args, "--input-format") {
-			t.Errorf("unsteerable invocation must not add --input-format; got %v", args)
+			t.Errorf("unsteerable invocation must not add --input-format (plain text, not the steer protocol); got %v", args)
 		}
 	})
 
@@ -2703,6 +3031,67 @@ func TestHeadlessInitialPromptOverStdin(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("no data written to stdin within 2s")
+	}
+}
+
+// TestStdinPromptHeadlessInvocation pins which headless invocations need the
+// caller to write a prompt to stdin itself: a non-steerable claude run only
+// — a steerable claude run already gets its prompt over stdin through the
+// separate writeUserMessage/convo path, and codex/copilot still receive the
+// prompt positionally.
+func TestStdinPromptHeadlessInvocation(t *testing.T) {
+	cases := []struct {
+		name       string
+		steerable  bool
+		providerID string
+		want       bool
+	}{
+		{"claude_steerable", true, "claude", false},
+		{"claude_unsteerable", false, "claude", true},
+		{"codex", false, "codex", false},
+		{"copilot", false, "copilot", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := stdinPromptHeadlessInvocation(c.steerable, c.providerID); got != c.want {
+				t.Errorf("stdinPromptHeadlessInvocation(%v, %q) = %v, want %v", c.steerable, c.providerID, got, c.want)
+			}
+		})
+	}
+}
+
+// TestWriteAndCloseHeadlessPrompt verifies the one-shot stdin write: the raw
+// prompt text lands on the pipe with no stream-json envelope, and the pipe
+// closes so the reader observes EOF right after — the plain-text-mode
+// contract claude's default --input-format expects, distinct from the
+// steerable NDJSON path.
+func TestWriteAndCloseHeadlessPrompt(t *testing.T) {
+	m, _ := newTestManager(t)
+	a := &Agent{ID: "a1", TaskID: "task-1", Mode: "headless", Provider: "claude"}
+
+	r, w := io.Pipe()
+	done := make(chan struct{})
+	var got []byte
+	var readErr error
+	go func() {
+		got, readErr = io.ReadAll(r)
+		close(done)
+	}()
+
+	if err := m.writeAndCloseHeadlessPrompt(a, w, "do the thing"); err != nil {
+		t.Fatalf("writeAndCloseHeadlessPrompt: %v", err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reader did not observe EOF within 2s")
+	}
+	if readErr != nil {
+		t.Fatalf("ReadAll: %v", readErr)
+	}
+	if string(got) != "do the thing" {
+		t.Errorf("stdin payload = %q, want raw prompt with no envelope", got)
 	}
 }
 
@@ -2792,6 +3181,137 @@ func TestHeadlessUnsteeredClosesAndCompletes(t *testing.T) {
 	}
 	if reason, _, ok := a.PostResultWait(); !ok || reason != postResultWaitFastClose {
 		t.Fatalf("PostResultWait = (%q, %v, %v), want fast_close", reason, time.Time{}, ok)
+	}
+}
+
+func TestBackendOwnedCompletionDoesNotArmLocalResultClose(t *testing.T) {
+	m := newParseTestManager(t)
+	canceled := make(chan struct{}, 1)
+	a := &Agent{
+		ID: "portable-result", TaskID: "task-1", Mode: "headless", Provider: providerid.Claude, StartedAt: time.Now().UTC(),
+		cancel: func() { canceled <- struct{}{} },
+	}
+	a.setBackendOwnsCompletion(true)
+	resultLine := []byte(`{"type":"result","subtype":"success","session_id":"s-1","total_cost_usd":0.1,"usage":{"input_tokens":10,"output_tokens":5}}`)
+	var lastEmit time.Time
+	if stop := m.processHeadlessLine(t.Context(), a, resultLine, &lastEmit, providerByName(providerid.Claude)); stop {
+		t.Fatal("portable result output stopped before the backend Completed event")
+	}
+	if _, _, ok := a.PostResultWait(); ok {
+		t.Fatal("portable result output armed local post-result teardown")
+	}
+	time.Sleep(2 * postResultFastCloseDelay)
+	select {
+	case <-canceled:
+		t.Fatal("portable result output canceled backend terminal observation")
+	default:
+	}
+}
+
+// TestHeadlessErrorResultPreservesQueuedSteer verifies that a provider error
+// never flushes an operator's follow-up into the failed terminal turn. The
+// queued prompt survives for a retry while the old stdin closes.
+func TestHeadlessErrorResultPreservesQueuedSteer(t *testing.T) {
+	m, _ := newTestManager(t)
+	a := &Agent{ID: "error-steer", TaskID: "task-1", Mode: "headless", Provider: "claude"}
+	r, w := io.Pipe()
+	if err := a.convo.installStdinPipe(w); err != nil {
+		t.Fatalf("installStdinPipe: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+	a.EnqueuePrompt("retry this instruction")
+
+	resultLine := []byte(`{"type":"result","subtype":"error","error_type":"overloaded_error"}`)
+	var lastEmit time.Time
+	if stop := m.processHeadlessLine(context.Background(), a, resultLine, &lastEmit, providerByName("claude")); stop {
+		t.Fatal("error result must not request an unrelated guardrail stop")
+	}
+	if got := a.PendingPromptCount(); got != 1 {
+		t.Fatalf("PendingPromptCount = %d, want preserved queued steer", got)
+	}
+	if !a.isFinalizing() {
+		t.Fatal("agent must reject new messages after terminal error")
+	}
+	if a.convo.hasStdinPipe() {
+		t.Fatal("failed turn stdin must be closed")
+	}
+}
+
+// TestHeadlessSteerTerminalBoundarySerializes races the two operations that
+// formerly had an acknowledgement-loss window: a terminal empty-queue check
+// and a concurrent steer enqueue. Every accepted enqueue must be reserved by
+// the boundary; otherwise the boundary must finalize first and reject it.
+func TestHeadlessSteerTerminalBoundarySerializes(t *testing.T) {
+	for range 1000 {
+		a := &Agent{ID: "terminal-race", Mode: "headless", Provider: "claude"}
+		a.mu.Lock()
+		type enqueueResult struct {
+			enqueued   bool
+			finalizing bool
+		}
+		dequeued := make(chan bool, 1)
+		enqueued := make(chan enqueueResult, 1)
+		go func() {
+			_, ok := a.PopPendingPromptOrBeginFinalizing()
+			dequeued <- ok
+		}()
+		go func() {
+			_, ok, finalizing := a.TryEnqueuePrompt("operator instruction", MaxPendingHeadlessSteerPrompts)
+			enqueued <- enqueueResult{enqueued: ok, finalizing: finalizing}
+		}()
+		a.mu.Unlock()
+
+		gotDequeue := <-dequeued
+		gotEnqueue := <-enqueued
+		if gotEnqueue.enqueued != gotDequeue {
+			t.Fatalf("enqueue accepted=%v, boundary dequeued=%v: accepted steer was lost", gotEnqueue.enqueued, gotDequeue)
+		}
+		if !gotEnqueue.enqueued && !gotEnqueue.finalizing {
+			t.Fatal("enqueue rejected without queue limit or finalization")
+		}
+	}
+}
+
+func TestSurviveFIFOChildO_RDWRDoesNotSeeParentCloseAsEOF(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "survive.stdin")
+	if err := makeFIFO(path); err != nil {
+		t.Fatalf("makeFIFO: %v", err)
+	}
+	parent, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatalf("open parent FIFO: %v", err)
+	}
+	child, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		_ = parent.Close()
+		t.Fatalf("open child FIFO: %v", err)
+	}
+	t.Cleanup(func() { _ = child.Close() })
+	if err := parent.Close(); err != nil {
+		t.Fatalf("close parent FIFO: %v", err)
+	}
+
+	read := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 1)
+		_, err := child.Read(buf)
+		read <- err
+	}()
+	select {
+	case err := <-read:
+		t.Fatalf("child read returned after parent close: %v, want it to remain open", err)
+	case <-time.After(30 * time.Millisecond):
+	}
+	if _, err := child.WriteString("x"); err != nil {
+		t.Fatalf("write through surviving child FIFO: %v", err)
+	}
+	select {
+	case err := <-read:
+		if err != nil {
+			t.Fatalf("child read after write: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("child FIFO read did not receive data")
 	}
 }
 
@@ -2918,7 +3438,7 @@ func TestHeadlessSteerProducesFurtherTurn(t *testing.T) {
 	// like the real claude CLI is resolved in production.
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	m, _ := newTestManager(t)
-	a := &Agent{ID: "a1", TaskID: "task-1", Mode: "headless", Provider: "claude", State: StateRunning}
+	a := &Agent{ID: "a1", TaskID: "task-1", Mode: "headless", Provider: providerid.Claude, State: StateRunning}
 
 	inv := headlessInvocation{
 		name:    "claude",
@@ -2976,6 +3496,176 @@ done
 	return dir
 }
 
+// makeFakeEchoPlainStdinClaude writes a fake "claude" binary that reads its
+// entire stdin as a single plain-text blob (no stream-json envelope — the
+// non-steerable delivery contract) and echoes it back as a result event.
+// Returns the directory containing the binary so the caller can prepend it
+// to PATH while keeping headlessInvocation.name as "claude".
+func makeFakeEchoPlainStdinClaude(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	script := `#!/bin/bash
+prompt=$(cat)
+echo "{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"s-1\",\"total_cost_usd\":0.01,\"result\":\"$prompt\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}"
+`
+	path := filepath.Join(dir, "claude")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake claude binary: %v", err)
+	}
+	return dir
+}
+
+// TestHeadlessNonSteerablePipeWritesPromptOverStdin drives
+// runHeadlessAttemptPipe end to end against a fake provider that reads its
+// whole stdin as a plain-text blob, proving the non-steerable stdin-prompt
+// path (stdinPromptHeadlessInvocation, writeAndCloseHeadlessPrompt) actually
+// delivers the prompt to a real subprocess rather than merely wiring a pipe
+// no one reads.
+func TestHeadlessNonSteerablePipeWritesPromptOverStdin(t *testing.T) {
+	binDir := makeFakeEchoPlainStdinClaude(t)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	m, _ := newTestManager(t)
+	a := &Agent{ID: "a1", TaskID: "task-1", Mode: "headless", Provider: "claude", State: StateRunning}
+
+	inv := headlessInvocation{
+		name:    "claude",
+		args:    []string{"-p", "--output-format", "stream-json", "--verbose"},
+		command: "claude",
+	}
+	cfg := RunConfig{Prompt: "prompt delivered over stdin, not argv"}
+
+	var outFile *os.File
+	t.Cleanup(func() {
+		if outFile != nil {
+			_ = outFile.Close()
+		}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := m.runHeadlessAttemptPipe(ctx, a, cfg, &outFile, inv); err != nil {
+		t.Fatalf("runHeadlessAttemptPipe: %v", err)
+	}
+
+	var sawPrompt bool
+	for _, ev := range a.Output() {
+		if ev.Type == "result" && strings.Contains(ev.Content, cfg.Prompt) {
+			sawPrompt = true
+		}
+	}
+	if !sawPrompt {
+		t.Fatalf("expected a result event echoing the stdin-delivered prompt; got %+v", a.Output())
+	}
+}
+
+func TestHeadlessPromptUndeliveredFallsBackToOneShotStdin(t *testing.T) {
+	dir := t.TempDir()
+	script := `#!/bin/bash
+case " $* " in
+  *" --input-format stream-json "*) sleep 1 ;;
+  *) prompt=$(cat); echo "{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"s-1\",\"total_cost_usd\":0.01,\"result\":\"$prompt\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}" ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(dir, providerid.Claude), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	m, _ := newTestManager(t)
+	a := &Agent{ID: "a1", TaskID: "task-1", Mode: "headless", Provider: "claude", State: StateRunning}
+	a.convo.writeTimeout = 10 * time.Millisecond
+	prompt := strings.Repeat("x", 1<<20)
+	var outFile *os.File
+	if _, err := m.runHeadlessAttempt(context.Background(), a, RunConfig{Prompt: prompt, HeadlessSteerable: true}, &outFile, new(int64)); err != nil {
+		t.Fatalf("runHeadlessAttempt: %v", err)
+	}
+	if a.GetExitErr() != nil {
+		t.Fatalf("fallback exit error: %v", a.GetExitErr())
+	}
+}
+
+// blockingSurvivalRegistry makes the launch-time persistence path wait until
+// the test releases it. It models a slow durable store without making the
+// provider itself slow.
+type blockingSurvivalRegistry struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (r *blockingSurvivalRegistry) Save(Record) error {
+	r.once.Do(func() { close(r.entered) })
+	<-r.release
+	return nil
+}
+
+func (*blockingSurvivalRegistry) List() ([]Record, error) { return nil, nil }
+func (*blockingSurvivalRegistry) Delete(string) error     { return nil }
+
+// TestStartHeadlessSurviveProcess_DeliversPromptBeforeRegistrySave pins the
+// launch ordering. Claude exits quickly when stdin remains empty; persisting
+// the detached process before the first write therefore made a slow registry
+// turn a healthy launch into a prompt_undelivered failure.
+func TestStartHeadlessSurviveProcess_DeliversPromptBeforeRegistrySave(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "prompt-received")
+	script := `#!/bin/bash
+cat >/dev/null
+: > "$SYBRA_TEST_PROMPT_MARKER"
+echo '{"type":"result","subtype":"success","session_id":"s-1","total_cost_usd":0.01,"usage":{"input_tokens":1,"output_tokens":1}}'
+`
+	if err := os.WriteFile(filepath.Join(dir, providerid.Claude), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	m, _ := newTestManager(t)
+	registry := &blockingSurvivalRegistry{entered: make(chan struct{}), release: make(chan struct{})}
+	m.surviveRestart = true
+	m.reg = registry
+	a := &Agent{ID: "a1", TaskID: "task-1", Mode: "headless", Provider: providerid.Claude, State: StateRunning}
+	out, err := os.CreateTemp(t.TempDir(), "agent-output-*.ndjson")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = out.Close() }()
+
+	type started struct {
+		cmd *exec.Cmd
+		err error
+	}
+	startedCh := make(chan started, 1)
+	go func() {
+		cmd, startErr := m.startHeadlessSurviveProcess(context.Background(), a,
+			RunConfig{Prompt: "deliver before persistence", ExtraEnv: []string{"SYBRA_TEST_PROMPT_MARKER=" + marker}},
+			out, providerid.Claude, []string{"-p"}, nil, "claude -p")
+		startedCh <- started{cmd: cmd, err: startErr}
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			close(registry.release)
+			t.Fatal("provider did not receive prompt before registry save unblocked")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	close(registry.release)
+	got := <-startedCh
+	if got.err != nil {
+		t.Fatalf("startHeadlessSurviveProcess: %v", got.err)
+	}
+	if err := got.cmd.Wait(); err != nil {
+		t.Fatalf("provider exit: %v", err)
+	}
+	select {
+	case <-registry.entered:
+	default:
+		t.Fatal("registry save was not attempted")
+	}
+}
+
 // A checkpoint handoff commits the run's work and sets escalation reason
 // "checkpoint"; internal/sybra/completion routes RescheduleCheckpointedAgent
 // off that exact value. The terminal result event lands after the checkpoint
@@ -2994,7 +3684,7 @@ func TestCheckCostGuardrail_PreservesCheckpointEscalationReason(t *testing.T) {
 	ag := &Agent{ID: "a1", TaskID: "t1", done: make(chan struct{})}
 	ag.SetEscalationReason(EscalationReasonCheckpoint)
 
-	if keepGoing := m.checkCostGuardrail(ag, 8.19, 5.0, "estimated"); keepGoing {
+	if keepGoing := m.checkCostGuardrail(ag, 8.19, 5.0, "estimated", true, "post_result_usd"); keepGoing {
 		t.Fatal("checkCostGuardrail = true, want false (a cost breach always stops the run)")
 	}
 	if got := ag.GetEscalationReason(); got != EscalationReasonCheckpoint {
@@ -3019,7 +3709,7 @@ func TestCheckCostGuardrail_PreservesCheckpointFailedEscalationReason(t *testing
 	ag := &Agent{ID: "a3", TaskID: "t3", done: make(chan struct{})}
 	ag.SetEscalationReason(EscalationReasonCheckpointFailed)
 
-	if keepGoing := m.checkCostGuardrail(ag, 8.19, 5.0, "estimated"); keepGoing {
+	if keepGoing := m.checkCostGuardrail(ag, 8.19, 5.0, "estimated", true, "post_result_usd"); keepGoing {
 		t.Fatal("checkCostGuardrail = true, want false")
 	}
 	if got := ag.GetEscalationReason(); got != EscalationReasonCheckpointFailed {
@@ -3038,7 +3728,7 @@ func TestCheckCostGuardrail_StampsCostWhenNoCheckpoint(t *testing.T) {
 
 	ag := &Agent{ID: "a2", TaskID: "t2", done: make(chan struct{})}
 
-	if keepGoing := m.checkCostGuardrail(ag, 8.19, 5.0, "estimated"); keepGoing {
+	if keepGoing := m.checkCostGuardrail(ag, 8.19, 5.0, "estimated", true, "post_result_usd"); keepGoing {
 		t.Fatal("checkCostGuardrail = true, want false")
 	}
 	if got := ag.GetEscalationReason(); got != EscalationReasonCost {
@@ -3070,6 +3760,37 @@ func TestProcessHeadlessLine_CostGuardrailFiresOnCodexRun(t *testing.T) {
 	}
 	if got := a.GetCostUSD(); got < 0.5 || got > 0.6 {
 		t.Fatalf("banked cost = %.4f, want ~0.5153 derived from the run's tokens", got)
+	}
+	if got := a.GetEscalationReason(); got != EscalationReasonCost {
+		t.Fatalf("escalation reason = %q, want %q", got, EscalationReasonCost)
+	}
+}
+
+// Claude's result event can omit total_cost_usd (crashed/killed runs are
+// exactly the overspend-prone case), and EstimateAgentCost used to hard-code
+// $0 for any provider other than codex/copilot. Drive the real parser and
+// assert the guardrail now stops the stream on a claude run that blows the
+// ceiling instead of reading it as free.
+func TestProcessHeadlessLine_CostGuardrailFiresOnClaudeRun(t *testing.T) {
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
+	m.SetGuardrails(Guardrails{MaxCostUSD: 0.10})
+
+	a := &Agent{
+		ID: "claude-cost", TaskID: "t", Mode: "headless",
+		Provider: "claude", Model: "claude-sonnet-5",
+		StartedAt: time.Date(2026, 7, 16, 0, 0, 0, 0, time.UTC),
+		done:      make(chan struct{}),
+	}
+	lastEmit := time.Now().Add(-time.Minute)
+	line := []byte(`{"type":"result","session_id":"sess-1","usage":{"input_tokens":1000000,"output_tokens":0}}`)
+
+	stop := m.processHeadlessLine(context.Background(), a, line, &lastEmit, providerByName("claude"))
+
+	if !stop {
+		t.Fatal("stream not stopped: a claude run past the cost ceiling must trip the guardrail, not read as free")
+	}
+	if got := a.GetCostUSD(); got < 1.9 || got > 2.1 {
+		t.Fatalf("banked cost = %.4f, want ~2.00 derived from the run's tokens", got)
 	}
 	if got := a.GetEscalationReason(); got != EscalationReasonCost {
 		t.Fatalf("escalation reason = %q, want %q", got, EscalationReasonCost)
@@ -3154,5 +3875,40 @@ func TestBankEstimatedCost_ConcurrentCallsAreSafe(t *testing.T) {
 
 	if got := a.GetCostUSD(); got <= 0 {
 		t.Fatalf("CostUSD = %.4f after concurrent banking, want the stable estimate", got)
+	}
+}
+
+// The provider classifier narrows its auth needles for content the agent
+// wrote, so this is the one place that distinction is established. Without the
+// flag every terminal result is treated as a CLI surface and an agent's report
+// about a login path parks its provider again.
+func TestBuildErrorSample_MarksTheAgentAuthoredContent(t *testing.T) {
+	t.Parallel()
+	stream := []StreamEvent{
+		{Type: "assistant", Content: "working on the login path"},
+		{Type: "result", Content: "the handler now returns \"not logged in\" for an expired token"},
+	}
+	sample := buildErrorSample("", stream)
+	if !sample.ContentIsAgentMessage {
+		t.Fatal("a terminal result was not marked as agent-authored, so its prose is matched as a CLI refusal")
+	}
+	if sample.Content != stream[1].Content {
+		t.Fatalf("content = %q, want the terminal result", sample.Content)
+	}
+	if empty := buildErrorSample("boom", []StreamEvent{}); empty.ContentIsAgentMessage {
+		t.Fatal("a sample with no terminal result claimed agent-authored content")
+	}
+
+	// A provider adapter folds a CLI error envelope into a result event, so an
+	// error-shaped result is the CLI speaking, not the agent.
+	for _, cliError := range []StreamEvent{
+		{Type: "result", Content: "not logged in", ErrorType: "error"},
+		{Type: "result", Content: "not logged in", ErrorStatus: 401},
+		{Type: "result", Content: "not logged in", Subtype: "error_during_execution"},
+	} {
+		got := buildErrorSample("", []StreamEvent{cliError})
+		if got.ContentIsAgentMessage {
+			t.Fatalf("a CLI error envelope was read as agent prose, so a bare refusal is dropped: %+v", cliError)
+		}
 	}
 }

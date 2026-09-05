@@ -1,0 +1,9 @@
+./doc.go
+./element.go
+./fromvalue.go
+./managers.go
+./path.go
+./pathelementmap.go
+./serialize-pe.go
+./serialize.go
+./set.go

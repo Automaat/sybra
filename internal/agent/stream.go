@@ -16,6 +16,16 @@ type ClaudeMessage struct {
 	Text        string            // joined text blocks only
 	ToolUses    []ToolUseBlock    // tool_use blocks (structured)
 	ToolResults []ToolResultBlock // tool_result blocks (structured, untruncated)
+	// InputTokens/OutputTokens/CacheCreationInputTokens/CacheReadInputTokens
+	// carry an assistant message's own `usage` block, when the CLI reports one
+	// (real Claude Code assistant events do). Zero for a "user" message and for
+	// any assistant event that predates/omits usage. Lets a mid-stream cost
+	// ceiling bank spend at assistant-event granularity instead of only at the
+	// terminal result event.
+	InputTokens              int
+	OutputTokens             int
+	CacheCreationInputTokens int
+	CacheReadInputTokens     int
 }
 
 // ClaudeResult holds fields from "result" events.
@@ -28,6 +38,7 @@ type ClaudeResult struct {
 	Subtype                  string
 	Text                     string
 	SessionID                string
+	TerminalReason           string
 	CostUSD                  float64
 	InputTokens              int
 	OutputTokens             int
@@ -113,6 +124,7 @@ type claudeEnvelope struct {
 	ParentToolUseID string                `json:"parent_tool_use_id,omitempty"`
 	Message         *claudeMessagePayload `json:"message"`
 	Result          string                `json:"result"`
+	TerminalReason  string                `json:"terminal_reason"`
 	TotalCostUSD    float64               `json:"total_cost_usd"`
 	IsError         bool                  `json:"is_error"`
 	APIStatus       int                   `json:"api_error_status"`
@@ -148,6 +160,10 @@ type claudeUsage struct {
 
 type claudeMessagePayload struct {
 	Content []claudeContentBlock `json:"content"`
+	// Usage carries an assistant message's own token usage, when the CLI
+	// reports one — nil for a "user" message and for older/fixture events
+	// that omit it.
+	Usage *claudeUsage `json:"usage"`
 }
 
 type claudeContentBlock struct {
@@ -1025,11 +1041,18 @@ func extractAssistantContentTyped(msg *claudeMessagePayload) ClaudeMessage {
 			tools = append(tools, tb)
 		}
 	}
-	return ClaudeMessage{
+	out := ClaudeMessage{
 		Role:     "assistant",
 		Text:     strings.Join(textParts, "\n"),
 		ToolUses: tools,
 	}
+	if msg.Usage != nil {
+		out.InputTokens = msg.Usage.InputTokens
+		out.OutputTokens = msg.Usage.OutputTokens
+		out.CacheCreationInputTokens = msg.Usage.CacheCreationInputTokens
+		out.CacheReadInputTokens = msg.Usage.CacheReadInputTokens
+	}
+	return out
 }
 
 // extractToolResults parses tool_result blocks from a "user" message.
@@ -1111,12 +1134,13 @@ func extractToolResultsTyped(msg *claudeMessagePayload) []ToolResultBlock {
 
 func extractResultFieldsTyped(raw claudeEnvelope) ClaudeResult {
 	r := ClaudeResult{
-		Subtype:      raw.Subtype,
-		Text:         raw.Result,
-		SessionID:    raw.SessionID,
-		CostUSD:      sanitizeCostUSD(raw.TotalCostUSD),
-		InputTokens:  raw.TotalInputTokens,
-		OutputTokens: raw.TotalOutputTokens,
+		Subtype:        raw.Subtype,
+		Text:           raw.Result,
+		SessionID:      raw.SessionID,
+		TerminalReason: raw.TerminalReason,
+		CostUSD:        sanitizeCostUSD(raw.TotalCostUSD),
+		InputTokens:    raw.TotalInputTokens,
+		OutputTokens:   raw.TotalOutputTokens,
 	}
 	if raw.Usage != nil {
 		// usage.input_tokens / usage.output_tokens are the canonical Claude

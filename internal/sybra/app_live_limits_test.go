@@ -45,8 +45,8 @@ func TestLiveLimitPollState_ClaudeAuthBackoffAndRecovery(t *testing.T) {
 	if !state.claudeAuthOpen || state.claudeAuthFailures != 1 {
 		t.Fatalf("auth state after first failure = open:%v failures:%d", state.claudeAuthOpen, state.claudeAuthFailures)
 	}
-	if got := state.next[limits.ProviderClaude]; !got.Equal(now.Add(liveLimitPollInterval)) {
-		t.Fatalf("first backoff next poll = %v, want %v", got, now.Add(liveLimitPollInterval))
+	if got := state.next[limits.ProviderClaude]; got.Before(now.Add(liveLimitPollInterval/2)) || got.After(now.Add(liveLimitPollInterval)) {
+		t.Fatalf("first backoff next poll = %v, want jittered window [%v, %v]", got, now.Add(liveLimitPollInterval/2), now.Add(liveLimitPollInterval))
 	}
 	snap, ok := limitStore.Snapshot(limits.ProviderClaude)
 	if !ok || snap.Confidence != limits.ConfidenceEstimated {
@@ -63,8 +63,8 @@ func TestLiveLimitPollState_ClaudeAuthBackoffAndRecovery(t *testing.T) {
 	if state.claudeAuthFailures != 2 {
 		t.Fatalf("auth failures after second failure = %d, want 2", state.claudeAuthFailures)
 	}
-	if got := state.next[limits.ProviderClaude]; !got.Equal(secondNow.Add(2 * liveLimitPollInterval)) {
-		t.Fatalf("second backoff next poll = %v, want %v", got, secondNow.Add(2*liveLimitPollInterval))
+	if got := state.next[limits.ProviderClaude]; got.Before(secondNow.Add(liveLimitPollInterval)) || got.After(secondNow.Add(2*liveLimitPollInterval)) {
+		t.Fatalf("second backoff next poll = %v, want jittered window [%v, %v]", got, secondNow.Add(liveLimitPollInterval), secondNow.Add(2*liveLimitPollInterval))
 	}
 	if got := countLogMessage(records, "limits.live_poll.claude_auth"); got != 1 {
 		t.Fatalf("auth warning count = %d, want 1 deduped log", got)
@@ -89,14 +89,14 @@ func TestLiveLimitPollState_ClaudeAuthBackoffAndRecovery(t *testing.T) {
 }
 
 func TestLiveLimitAuthBackoff_Bounded(t *testing.T) {
-	if got := liveLimitAuthBackoff(1); got != liveLimitPollInterval {
-		t.Fatalf("backoff(1) = %v, want %v", got, liveLimitPollInterval)
+	if got := liveLimitAuthBackoff(1); got < liveLimitPollInterval/2 || got > liveLimitPollInterval {
+		t.Fatalf("backoff(1) = %v, want [%v, %v]", got, liveLimitPollInterval/2, liveLimitPollInterval)
 	}
-	if got := liveLimitAuthBackoff(2); got != 2*liveLimitPollInterval {
-		t.Fatalf("backoff(2) = %v, want %v", got, 2*liveLimitPollInterval)
+	if got := liveLimitAuthBackoff(2); got < liveLimitPollInterval || got > 2*liveLimitPollInterval {
+		t.Fatalf("backoff(2) = %v, want [%v, %v]", got, liveLimitPollInterval, 2*liveLimitPollInterval)
 	}
-	if got := liveLimitAuthBackoff(6); got != liveLimitPollAuthBackoffMax {
-		t.Fatalf("backoff(6) = %v, want max %v", got, liveLimitPollAuthBackoffMax)
+	if got := liveLimitAuthBackoff(6); got < liveLimitPollAuthBackoffMax/2 || got > liveLimitPollAuthBackoffMax {
+		t.Fatalf("backoff(6) = %v, want capped jitter window [%v, %v]", got, liveLimitPollAuthBackoffMax/2, liveLimitPollAuthBackoffMax)
 	}
 }
 

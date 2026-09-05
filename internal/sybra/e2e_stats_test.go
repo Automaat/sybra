@@ -46,9 +46,9 @@ func TestE2E_Stats_RecordedOnAgentComplete(t *testing.T) {
 			provider: "codex",
 			scenario: "success",
 			// Codex emits no cost — agent_completion estimates it via
-			// stats.EstimateCostDetailed("gpt-5.4", 100 in, 20 out, 0, 0, 0, time.Now())
-			// = 100*1.25/1M + 20*10/1M = 0.000325.
-			wantCost:     0.000325,
+			// stats.EstimateCostDetailed("gpt-5.6-terra", 100 in, 20 out, 0, 0, 0, time.Now())
+			// = 100*2.50/1M + 20*15/1M = 0.00055.
+			wantCost:     0.00055,
 			wantIn:       100,
 			wantOut:      20,
 			wantOutcome:  "completed",
@@ -262,18 +262,21 @@ func TestE2E_RoutingDecisionVersion_RecordedOnTaskAndStats(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	waitFor(t, 30*time.Second, "workflow and stats complete", func() bool {
+	waitFor(t, 30*time.Second, "workflow and stats reach terminal quarantine", func() bool {
 		tk, gErr := env.tasks.Get(created.ID)
 		if gErr != nil || tk.Workflow == nil {
 			return false
 		}
-		return tk.Workflow.State == workflow.ExecCompleted && statsStore.Query().AllTime.TotalRuns >= 2
+		return tk.Workflow.State == workflow.ExecFailed &&
+			tk.Status == task.StatusBlocked &&
+			statsStore.Query().AllTime.TotalRuns >= 2
 	})
 
 	tk, err := env.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
+	assertMachineQuarantine(t, tk, "workflow.evaluate_no_pr")
 	var gotImpl *task.AgentRun
 	for i := range tk.AgentRuns {
 		if tk.AgentRuns[i].Role == "implementation" {

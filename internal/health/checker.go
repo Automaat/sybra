@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"log/slog"
 	"math"
-	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/procstat"
 	"github.com/Automaat/sybra/internal/runacct"
 	"github.com/Automaat/sybra/internal/sandbox"
@@ -25,13 +25,13 @@ const (
 
 // Checker runs periodic health checks on audit data and task state.
 type Checker struct {
-	auditDir string
-	tasks    *task.Manager
-	homeDir  string
-	logger   *slog.Logger
-	emit     func(string, any)
-	owned    func() OwnedProcesses
-	docker   dockerRunner
+	trail   auditReader
+	tasks   *task.Manager
+	homeDir string
+	logger  *slog.Logger
+	emit    func(string, any)
+	owned   func() OwnedProcesses
+	docker  dockerRunner
 
 	// sandboxQuarantine returns the currently quarantined sandbox cleanup
 	// failures (see sandbox.Manager.QuarantinedEntries). nil disables the
@@ -55,7 +55,7 @@ type Checker struct {
 
 // New creates a Checker. Call Run to start the ticker loop.
 func New(
-	auditDir string,
+	trail auditReader,
 	tasks *task.Manager,
 	homeDir string,
 	logger *slog.Logger,
@@ -63,12 +63,12 @@ func New(
 	owned func() OwnedProcesses,
 ) *Checker {
 	return &Checker{
-		auditDir: auditDir,
-		tasks:    tasks,
-		homeDir:  homeDir,
-		logger:   logger,
-		emit:     emit,
-		owned:    owned,
+		trail:   trail,
+		tasks:   tasks,
+		homeDir: homeDir,
+		logger:  logger,
+		emit:    emit,
+		owned:   owned,
 	}
 }
 
@@ -138,20 +138,22 @@ func (c *Checker) check(ctx context.Context) {
 	now := time.Now().UTC()
 	since := now.Add(-lookback)
 
-	dayEvents, err := audit.Read(c.auditDir, audit.Query{Since: since, Until: now})
+	dayEvents, err := c.readTrail(audit.Query{Since: since, Until: now})
 	if err != nil {
 		c.logger.Warn("health.check.audit_read", "err", err)
 		dayEvents = nil
 	}
 
 	weekSince := now.Add(-weekLookback)
-	weekEvents, err := audit.Read(c.auditDir, audit.Query{Since: weekSince, Until: now})
+	weekEvents, err := c.readTrail(audit.Query{Since: weekSince, Until: now})
 	if err != nil {
 		c.logger.Warn("health.check.audit_read_week", "err", err)
 		weekEvents = nil
 	}
 
-	tasks, err := c.tasks.List()
+	// Health checks need board fields and degraded file entries, but never the
+	// lifetime prompt/result transcripts carried by full task documents.
+	tasks, err := c.tasks.ListBoard()
 	if err != nil {
 		c.logger.Warn("health.check.task_list", "err", err)
 		tasks = nil
@@ -161,6 +163,7 @@ func (c *Checker) check(ctx context.Context) {
 	findings = append(findings, checkFailureRate(dayEvents, now)...)
 	findings = append(findings, checkCostOutliers(dayEvents, now)...)
 	findings = append(findings, checkStuckTasks(dayEvents, tasks, now)...)
+	findings = append(findings, checkUnreadableTasks(tasks, now)...)
 	findings = append(findings, checkWorkflowLoops(dayEvents, now)...)
 	findings = append(findings, checkStatusBounce(dayEvents, now)...)
 	findings = append(findings, checkCostDrift(dayEvents, weekEvents, now)...)
@@ -289,6 +292,11 @@ func buildStats(events []audit.Event) Stats {
 	return s
 }
 
+// persist atomically writes r to disk. Using a temp-file+rename (via
+// fsutil.AtomicWrite) instead of a plain os.WriteFile means a crash or
+// disk-full mid-write can never leave behind a truncated report — readers
+// (selfmonitor, `sybra-cli` inspection commands) always see either the
+// previous good report or the new one, never a half-written file.
 func (c *Checker) persist(r *Report) {
 	path := filepath.Join(c.homeDir, "health-report.json")
 	data, err := json.MarshalIndent(r, "", "  ")
@@ -296,7 +304,21 @@ func (c *Checker) persist(r *Report) {
 		c.logger.Warn("health.persist.marshal", "err", err)
 		return
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := fsutil.AtomicWrite(path, data); err != nil {
 		c.logger.Warn("health.persist.write", "err", err)
 	}
+}
+
+// auditReader is the trail this checker reads. It is an interface rather than a
+// directory because under a database backend the day-files stop growing, and a
+// checker left on the directory reports every check all-clear for ever.
+type auditReader interface {
+	Read(audit.Query) ([]audit.Event, error)
+}
+
+func (c *Checker) readTrail(q audit.Query) ([]audit.Event, error) {
+	if c.trail == nil {
+		return nil, nil
+	}
+	return c.trail.Read(q)
 }

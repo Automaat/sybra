@@ -70,6 +70,62 @@ func TestStorePutVerbatimAndUpsert(t *testing.T) {
 	}
 }
 
+func TestStorePutRejectsInvalidSlug(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.Put(Task{ID: "mirror-1", Title: "pushed", Status: StatusTodo, Slug: "../../etc/passwd"}); err == nil {
+		t.Fatal("Put with traversal slug: got nil error, want validation error")
+	}
+	if _, err := os.Stat(filepath.Join(store.dir, "mirror-1.md")); !os.IsNotExist(err) {
+		t.Fatalf("invalid Put wrote task file: %v", err)
+	}
+}
+
+func TestStorePutRejectsInvalidAgentMode(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.Put(Task{ID: "mirror-1", Title: "pushed", Status: StatusTodo, AgentMode: "telepathy"}); err == nil {
+		t.Fatal("Put with invalid agent mode: got nil error, want validation error")
+	}
+	if _, err := os.Stat(filepath.Join(store.dir, "mirror-1.md")); !os.IsNotExist(err) {
+		t.Fatalf("invalid Put wrote task file: %v", err)
+	}
+}
+
+func TestStorePutFnRejectsInvalidAgentMode(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.Create("valid", "", AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := store.PutFn(created.ID, func(t Task) (Task, error) {
+		t.AgentMode = "telepathy"
+		return t, nil
+	}); err == nil {
+		t.Fatal("PutFn with invalid agent mode: got nil error, want validation error")
+	}
+	got, err := store.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AgentMode != AgentModeHeadless {
+		t.Fatalf("PutFn persisted invalid mode: %q", got.AgentMode)
+	}
+}
+
 // TestStorePutRejectsStatusChangeWithoutAdvancingUpdatedAt covers #2203: a
 // Put that changes Status but carries forward a stale/unchanged UpdatedAt
 // (e.g. a push built from a snapshot captured before the change, such as a
@@ -109,6 +165,76 @@ func TestStorePutRejectsStatusChangeWithoutAdvancingUpdatedAt(t *testing.T) {
 	}
 	if !got.UpdatedAt.Equal(stale) {
 		t.Fatalf("UpdatedAt = %v, want it left unchanged at %v — no fabricated timestamp", got.UpdatedAt, stale)
+	}
+}
+
+func TestStorePutStaleStatusRestorePreservesTypedEvidence(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stamp := time.Date(2026, 7, 14, 19, 3, 4, 0, time.UTC)
+	reason := *OperatorDecisionRequired("operator.choose", "choose")
+	if _, err := store.Put(Task{
+		ID: "task-evidence", Title: "t", Status: StatusHumanRequired,
+		Escalation: reason, AutonomyOutcome: *HumanRequiredOutcome(),
+		CreatedAt: stamp, UpdatedAt: stamp,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Put(Task{
+		ID: "task-evidence", Title: "stale", Status: StatusTodo,
+		CreatedAt: stamp, UpdatedAt: stamp,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Get("task-evidence")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != StatusHumanRequired || got.Escalation.Code != reason.Code || got.AutonomyOutcome != *HumanRequiredOutcome() {
+		t.Fatalf("stale Put restored status without evidence: %#v", got)
+	}
+}
+
+func TestStorePutAllowsLegacyHumanRequiredRecordEdit(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stamp := time.Date(2026, 7, 14, 19, 3, 4, 0, time.UTC)
+	legacy := Task{
+		ID: "legacy-human", Title: "legacy", Status: StatusHumanRequired,
+		StatusReason: "old readable reason", CreatedAt: stamp, UpdatedAt: stamp,
+	}
+	data, err := Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(store.dir, legacy.ID+".md"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := store.Get(legacy.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Escalation.Provenance != "legacy" || loaded.Escalation.Message != legacy.StatusReason {
+		t.Fatalf("legacy adapter = %#v", loaded.Escalation)
+	}
+	loaded.Tags = []string{"edited"}
+	loaded.UpdatedAt = stamp.Add(time.Minute)
+	if _, err := store.Put(loaded); err != nil {
+		t.Fatalf("Put legacy edit: %v", err)
+	}
+	got, err := store.Get(legacy.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Tags) != 1 || got.Tags[0] != "edited" || got.Escalation.Provenance != "legacy" {
+		t.Fatalf("legacy edit = %#v", got)
 	}
 }
 

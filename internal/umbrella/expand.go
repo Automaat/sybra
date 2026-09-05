@@ -12,12 +12,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/reject"
+
 	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/llmexec"
 	"github.com/Automaat/sybra/internal/llmjob"
 	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 // expandIssueLocker serializes one umbrella's critical section across both
@@ -172,7 +176,7 @@ type fetchedExpandState struct {
 func Expand(ctx context.Context, tasks *task.Manager, run Runner, issueURL string, opts ...ExpandOption) (Result, error) {
 	repo, number, ok := ParseRef(issueURL)
 	if !ok {
-		return Result{}, fmt.Errorf("not a GitHub issue URL: %s", issueURL)
+		return Result{}, reject.New("not a GitHub issue URL: %s", issueURL)
 	}
 	cfg := expandOptions(opts)
 	unlock, err := lockExpandIssue(tasks, issueURL)
@@ -445,7 +449,7 @@ type existingTracker struct {
 // is propagated so the caller aborts rather than treating an unreadable store
 // as empty and creating a duplicate DAG.
 func scanExisting(tasks *task.Manager, umbrellaURL string) (refs map[string]bool, tracker existingTracker, err error) {
-	all, err := tasks.List()
+	all, err := tasks.ListBoard()
 	if err != nil {
 		return nil, existingTracker{}, err
 	}
@@ -618,11 +622,10 @@ func checkpointPlannedState(cp trackerExpandCheckpoint, subs []SubIssue) (Plan, 
 func upsertExpandTracker(tasks *task.Manager, tracker existingTracker, umb github.Issue, phase ExpandPhase, cp trackerExpandCheckpoint) (existingTracker, error) {
 	if !tracker.exists {
 		body := upsertExpandCheckpointBody(umb.Body, cp)
-		created, err := tasks.CreateFull(umb.Title, body, task.AgentModeHeadless, task.Update{
+		created, err := tasks.CreateWithStatus(umb.Title, body, task.AgentModeHeadless, task.StatusInProgress, task.Update{
 			Issue:     task.Ptr(umb.URL),
 			TaskType:  task.Ptr(task.TaskTypeUmbrella),
 			ProjectID: task.Ptr(umb.Repository),
-			Status:    task.Ptr(task.StatusInProgress),
 			Tags:      task.Ptr([]string{"umbrella", ExpandPhaseTag(phase)}),
 		})
 		if err != nil {
@@ -630,7 +633,7 @@ func upsertExpandTracker(tasks *task.Manager, tracker existingTracker, umb githu
 		}
 		return existingTrackerFromTask(created), nil
 	}
-	updated, err := tasks.UpdateFn(tracker.id, func(cur task.Task) (task.Update, error) {
+	updated, err := tasks.UpdateFnBy(tracker.id, "umbrella.expand.upsert_tracker", func(cur task.Task) (task.Update, error) {
 		baseBody := cur.Body
 		if strings.TrimSpace(baseBody) == "" {
 			baseBody = umb.Body
@@ -682,7 +685,7 @@ func upsertExpandTracker(tasks *task.Manager, tracker existingTracker, umb githu
 }
 
 func setExpandTrackerPhase(tasks *task.Manager, trackerID string, phase ExpandPhase) error {
-	_, err := tasks.UpdateFn(trackerID, func(cur task.Task) (task.Update, error) {
+	_, err := tasks.UpdateFnBy(trackerID, "umbrella.expand.set_phase", func(cur task.Task) (task.Update, error) {
 		nextTags := ReplaceTagPrefix(cur.Tags, ExpandPhaseTagPrefix, ExpandPhaseTag(phase))
 		if slices.Equal(cur.Tags, nextTags) {
 			return task.Update{}, errSkipUpdate
@@ -719,11 +722,10 @@ func materialize(tasks *task.Manager, umb github.Issue, specs []ChildSpec, byRef
 		if degraded {
 			tags = append(tags, FallbackTag)
 		}
-		tracker, err := tasks.CreateFull(umb.Title, umb.Body, task.AgentModeHeadless, task.Update{
+		tracker, err := tasks.CreateWithStatus(umb.Title, umb.Body, task.AgentModeHeadless, task.StatusInProgress, task.Update{
 			Issue:     task.Ptr(umb.URL),
 			TaskType:  task.Ptr(task.TaskTypeUmbrella),
 			ProjectID: task.Ptr(umb.Repository),
-			Status:    task.Ptr(task.StatusInProgress),
 			Tags:      task.Ptr(tags),
 		})
 		if err != nil {
@@ -766,12 +768,11 @@ func materialize(tasks *task.Manager, umb github.Issue, specs []ChildSpec, byRef
 func createChildren(tasks *task.Manager, umb github.Issue, specs []ChildSpec, byRef map[string]github.Issue) (int, error) {
 	created := 0
 	for _, spec := range specs {
-		if _, err := tasks.CreateFull(spec.Title, spec.Body, task.AgentModeHeadless, task.Update{
+		if _, err := tasks.CreateWithStatus(spec.Title, spec.Body, task.AgentModeHeadless, task.StatusTodo, task.Update{
 			Issue:         task.Ptr(spec.Issue),
 			UmbrellaIssue: task.Ptr(umb.URL),
 			DependsOn:     task.Ptr(canonicalizeDeps(spec.DependsOn, byRef)),
 			ProjectID:     task.Ptr(childProjectID(spec.Issue, byRef, umb.Repository)),
-			Status:        task.Ptr(task.StatusTodo),
 			Tags:          task.Ptr(childTags(spec.Issue, byRef)),
 		}); err != nil {
 			return created, fmt.Errorf("create child for %s: %w", spec.Issue, err)
@@ -786,7 +787,7 @@ func createChildren(tasks *task.Manager, umb github.Issue, specs []ChildSpec, by
 // already present, so a repeated degraded re-expansion against the same
 // tracker doesn't emit a spurious task:updated event.
 func tagTrackerDegraded(tasks *task.Manager, trackerID string) error {
-	_, err := tasks.UpdateFn(trackerID, func(cur task.Task) (task.Update, error) {
+	_, err := tasks.UpdateFnBy(trackerID, "umbrella.expand.tag_degraded", func(cur task.Task) (task.Update, error) {
 		if slices.Contains(cur.Tags, FallbackTag) {
 			return task.Update{}, errSkipUpdate
 		}
@@ -804,7 +805,7 @@ func tagTrackerDegraded(tasks *task.Manager, trackerID string) error {
 }
 
 func markTrackerExpanding(tasks *task.Manager, trackerID string) error {
-	_, err := tasks.UpdateFn(trackerID, func(cur task.Task) (task.Update, error) {
+	_, err := tasks.UpdateFnBy(trackerID, "umbrella.expand.mark_expanding", func(cur task.Task) (task.Update, error) {
 		if slices.Contains(cur.Tags, ExpandingTag) {
 			return task.Update{}, errSkipUpdate
 		}
@@ -820,7 +821,7 @@ func markTrackerExpanding(tasks *task.Manager, trackerID string) error {
 }
 
 func clearTrackerExpanding(tasks *task.Manager, trackerID string) error {
-	_, err := tasks.UpdateFn(trackerID, func(cur task.Task) (task.Update, error) {
+	_, err := tasks.UpdateFnBy(trackerID, "umbrella.expand.clear_expanding", func(cur task.Task) (task.Update, error) {
 		if !slices.Contains(cur.Tags, ExpandingTag) {
 			return task.Update{}, errSkipUpdate
 		}
@@ -843,7 +844,7 @@ func clearTrackerExpanding(tasks *task.Manager, trackerID string) error {
 // life as a recordExpandFailure placeholder. Read-then-write, so a tracker
 // that already carries the tag (the common case) is left untouched.
 func ensureMaxParallelTag(tasks *task.Manager, trackerID string, n int) error {
-	_, err := tasks.UpdateFn(trackerID, func(cur task.Task) (task.Update, error) {
+	_, err := tasks.UpdateFnBy(trackerID, "umbrella.expand.ensure_max_parallel_tag", func(cur task.Task) (task.Update, error) {
 		if HasMaxParallelTag(cur.Tags) {
 			return task.Update{}, errSkipUpdate
 		}
@@ -879,11 +880,10 @@ func recordExpandFailure(tasks *task.Manager, umb github.Issue, tracker existing
 	}
 	if !tracker.exists {
 		count := 1
-		_, err := tasks.CreateFull(umb.Title, umb.Body, task.AgentModeHeadless, task.Update{
+		_, err := tasks.CreateWithStatus(umb.Title, umb.Body, task.AgentModeHeadless, task.StatusInProgress, task.Update{
 			Issue:        task.Ptr(umb.URL),
 			TaskType:     task.Ptr(task.TaskTypeUmbrella),
 			ProjectID:    task.Ptr(umb.Repository),
-			Status:       task.Ptr(task.StatusInProgress),
 			StatusReason: task.Ptr(formatExpandFailureReason(count, cause)),
 			Tags:         task.Ptr([]string{"umbrella", ExpandFailTag(count)}),
 		})
@@ -893,20 +893,28 @@ func recordExpandFailure(tasks *task.Manager, umb github.Issue, tracker existing
 		return nil
 	}
 
-	_, err := tasks.UpdateFn(tracker.id, func(cur task.Task) (task.Update, error) {
+	_, err := tasks.ApplyFn(tracker.id, func(cur task.Task) (task.TransitionIntent, error) {
 		count := ParseExpandFailCount(cur.Tags) + 1
 		newTags := slices.DeleteFunc(slices.Clone(cur.Tags), func(t string) bool {
 			return strings.HasPrefix(t, ExpandFailTagPrefix)
 		})
 		newTags = append(newTags, ExpandFailTag(count))
-		upd := task.Update{
+		toStatus := cur.Status
+		extra := task.Update{
 			Tags:         task.Ptr(newTags),
 			StatusReason: task.Ptr(formatExpandFailureReason(count, cause)),
 		}
 		if count >= ExpandFailThreshold {
-			upd.Status = task.Ptr(task.StatusHumanRequired)
+			toStatus = task.StatusBlocked
+			reason := formatExpandFailureReason(count, cause)
+			extra.Escalation = task.MachineFailure("umbrella.expansion_exhausted", reason)
+			extra.AutonomyOutcome = task.QuarantinedOutcome()
 		}
-		return upd, nil
+		return task.TransitionIntent{
+			ToStatus: toStatus,
+			Actor:    "umbrella.expand.record-failure",
+			Extra:    extra,
+		}, nil
 	})
 	if err != nil {
 		return fmt.Errorf("tag tracker expand-failed: %w", err)
@@ -919,7 +927,7 @@ func recordExpandFailure(tasks *task.Manager, umb github.Issue, tracker existing
 // are only crash-resume state; keeping them after success would make later
 // expansions trust a stale sub-issue snapshot.
 func clearExpandFailure(tasks *task.Manager, trackerID string) error {
-	_, err := tasks.UpdateFn(trackerID, func(cur task.Task) (task.Update, error) {
+	_, err := tasks.UpdateFnBy(trackerID, "umbrella.expand.clear_failure", func(cur task.Task) (task.Update, error) {
 		nextBody := removeExpandCheckpointBody(cur.Body)
 		if ParseExpandFailCount(cur.Tags) == 0 &&
 			!HasActiveExpandPhase(cur.Tags) &&
@@ -950,11 +958,8 @@ func clearExpandFailure(tasks *task.Manager, trackerID string) error {
 func formatExpandFailureReason(count int, cause error) string {
 	reason := fmt.Sprintf("umbrella expansion failed (attempt %d): %v", count, cause)
 	const maxLen = 200
-	if len(reason) <= maxLen {
-		return reason
-	}
 	const tail = "..."
-	return reason[:maxLen-len(tail)] + tail
+	return textutil.TruncateBytesTotal(reason, maxLen, tail)
 }
 
 // childProjectID returns the repo a child should be worked in: the sub-issue's
@@ -1027,7 +1032,7 @@ func claudeModelOverride(model string) map[string]string {
 	if strings.TrimSpace(model) == "" {
 		return nil
 	}
-	return map[string]string{"claude": model}
+	return map[string]string{providerid.Claude: model}
 }
 
 // IsUmbrellaIssue reports whether a GitHub issue should be auto-expanded as an

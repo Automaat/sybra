@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 )
@@ -15,6 +16,7 @@ type PlanningService struct {
 	engine *workflow.Engine
 	tasks  *task.Manager
 	agents *agent.Manager
+	audit  audit.Store
 }
 
 // TriageTask starts the triage workflow for the given task. Idempotent:
@@ -42,7 +44,7 @@ func (s *PlanningService) PlanTask(id string) error {
 	if t.Workflow != nil && t.Workflow.State != "" {
 		return nil
 	}
-	if err := s.engine.StartWorkflow(id, "simple-task-plan"); err != nil {
+	if err := startPlanningWorkflowForTask(s.engine, t); err != nil {
 		// Concurrent auto-start (from CreateTask) holds the per-task start
 		// lock — that's also a no-op outcome from the user's perspective.
 		if errors.Is(err, workflow.ErrWorkflowAlreadyActive) {
@@ -77,7 +79,20 @@ func (s *PlanningService) approve(id string) (task.Task, error) {
 	if err := s.handlePlanReviewAction(id, "approve", nil); err != nil {
 		return task.Task{}, err
 	}
+	// Reached only via the plan-review GUI action (or a cluster-forwarded
+	// proxy of it) — never by SetPlanAutoApproveHook, which logs its own
+	// plan.approved with auto=true from a different call site. An explicit,
+	// non-auto approval is a durable operator-action signal the evaluation
+	// scorecard reads for human-touch classification (issue #2727).
+	s.logPlanReviewAudit(audit.EventPlanApproved, id)
 	return s.tasks.Get(id)
+}
+
+func (s *PlanningService) logPlanReviewAudit(eventType, taskID string) {
+	if s.audit == nil {
+		return
+	}
+	_ = s.audit.Log(audit.Event{Type: eventType, TaskID: taskID, Data: map[string]any{"auto": false}})
 }
 
 func (s *PlanningService) handlePlanReviewAction(id, action string, data map[string]string) error {
@@ -85,14 +100,14 @@ func (s *PlanningService) handlePlanReviewAction(id, action string, data map[str
 }
 
 func recoverCompletedPlanReview(t workflow.TaskInfo) (*workflow.Execution, bool, error) {
-	if t.Status != string(task.StatusPlanReview) || t.Workflow == nil ||
+	if t.Status != task.StatusPlanReview || t.Workflow == nil ||
 		t.Workflow.WorkflowID != "simple-task-plan" ||
 		t.Workflow.CurrentStep != "" ||
 		t.Workflow.State != workflow.ExecCompleted {
 		return nil, false, nil
 	}
 	if problems := completedPlanReviewRecoveryProblems(t); len(problems) > 0 {
-		return nil, false, fmt.Errorf("cannot recover plan review workflow for task %s: %s", t.ID, strings.Join(problems, "; "))
+		return nil, false, conflictError(fmt.Sprintf("cannot recover plan review workflow for task %s: %s", t.ID, strings.Join(problems, "; ")))
 	}
 
 	wf := *t.Workflow
@@ -162,6 +177,7 @@ func (s *PlanningService) reject(id, feedback string) (task.Task, error) {
 	if err := s.handlePlanReviewAction(id, "reject", data); err != nil {
 		return task.Task{}, err
 	}
+	s.logPlanReviewAudit(audit.EventPlanRejected, id)
 	_ = s.tasks.Comments().ResolveAll(id)
 	return s.tasks.Get(id)
 }

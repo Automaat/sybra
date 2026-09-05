@@ -6,25 +6,36 @@
     toolUseId: string
     toolName: string
     input: Record<string, unknown>
-    onrespond: (toolUseId: string, approved: boolean) => void
+    onrespond: (toolUseId: string, approved: boolean) => Promise<void>
   }
 
   const { toolUseId, toolName, input, onrespond }: Props = $props()
 
   let responding = $state(false)
+  let error = $state<string | null>(null)
 
   function isEditTool(): boolean {
     return toolName === 'Edit' || toolName === 'Write'
   }
 
-  async function handleApprove() {
+  async function submit(approved: boolean) {
+    if (responding) return
     responding = true
-    onrespond(toolUseId, true)
+    error = null
+    try {
+      await onrespond(toolUseId, approved)
+    } catch (err) {
+      error = err instanceof Error ? err.message : 'Failed to submit response. Please try again.'
+      responding = false
+    }
   }
 
-  async function handleReject() {
-    responding = true
-    onrespond(toolUseId, false)
+  function handleApprove() {
+    void submit(true)
+  }
+
+  function handleReject() {
+    void submit(false)
   }
 </script>
 
@@ -84,4 +95,10 @@
       Reject
     </button>
   </div>
+
+  {#if error}
+    <p role="alert" class="mt-2 text-xs text-error-600 dark:text-error-400">
+      {error} You can try again.
+    </p>
+  {/if}
 </div>

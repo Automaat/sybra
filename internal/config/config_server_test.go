@@ -12,6 +12,7 @@ func isolateServerEnv(t *testing.T) {
 	t.Setenv("SYBRA_AUTH_TOKEN", "")
 	t.Setenv("SYBRA_ALLOWED_ORIGINS", "")
 	t.Setenv("SYBRA_WEBHOOK_SECRET", "")
+	t.Setenv("SYBRA_GITHUB_WEBHOOK_SECRET", "")
 }
 
 func TestLoadGeneratesAndPersistsServerAuthToken(t *testing.T) {
@@ -162,14 +163,21 @@ func TestLoadWebhookDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Webhook.Enabled {
-		t.Fatal("Webhook.Enabled = true, want false by default")
+	if cfg.GitHub.Webhook.Enabled {
+		t.Fatal("GitHub.Webhook.Enabled = true, want false by default")
 	}
-	if cfg.Webhook.Port != DefaultWebhookPort {
-		t.Fatalf("Webhook.Port = %d, want %d", cfg.Webhook.Port, DefaultWebhookPort)
+	if cfg.GitHub.Webhook.Port != DefaultWebhookPort {
+		t.Fatalf("GitHub.Webhook.Port = %d, want %d", cfg.GitHub.Webhook.Port, DefaultWebhookPort)
 	}
-	if cfg.Webhook.Secret != "" {
-		t.Fatalf("Webhook.Secret = %q, want empty by default", cfg.Webhook.Secret)
+	if cfg.GitHub.Webhook.Secret != "" || cfg.GitHub.Webhook.TaskSecret != "" {
+		t.Fatalf("GitHub.Webhook secrets = (%q, %q), want empty by default",
+			cfg.GitHub.Webhook.Secret, cfg.GitHub.Webhook.TaskSecret)
+	}
+	if cfg.GitHub.Webhook.TaskEnabled {
+		t.Fatal("GitHub.Webhook.TaskEnabled = true, want false by default")
+	}
+	if cfg.GitHub.Webhook.CommandPrefix != DefaultGitHubWebhookCommandPrefix {
+		t.Fatalf("GitHub.Webhook.CommandPrefix = %q, want %q", cfg.GitHub.Webhook.CommandPrefix, DefaultGitHubWebhookCommandPrefix)
 	}
 }
 
@@ -179,7 +187,7 @@ func TestLoadWebhookSecretEnvOverride(t *testing.T) {
 	t.Setenv("SYBRA_HOME", dir)
 	t.Setenv("SYBRA_WEBHOOK_SECRET", "env-webhook-secret")
 
-	yaml := []byte("webhook:\n  secret: file-secret\n")
+	yaml := []byte("webhook:\n  enabled: true\n  port: 9092\n  secret: file-secret\n")
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yaml, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +196,41 @@ func TestLoadWebhookSecretEnvOverride(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Webhook.Secret != "env-webhook-secret" {
-		t.Fatalf("Webhook.Secret = %q, want env override", cfg.Webhook.Secret)
+	if cfg.GitHub.Webhook.TaskSecret != "env-webhook-secret" {
+		t.Fatalf("GitHub.Webhook.TaskSecret = %q, want env override", cfg.GitHub.Webhook.TaskSecret)
+	}
+	if !cfg.GitHub.Webhook.Enabled || cfg.GitHub.Webhook.Port != 9092 {
+		t.Fatalf("legacy webhook listener = (%v, %d), want (true, 9092)",
+			cfg.GitHub.Webhook.Enabled, cfg.GitHub.Webhook.Port)
+	}
+	if !cfg.GitHub.Webhook.TaskEnabled {
+		t.Fatal("legacy webhook did not preserve the generic task route")
+	}
+}
+
+func TestLoadGitHubWebhookEnvOverrides(t *testing.T) {
+	dir := t.TempDir()
+	isolateServerEnv(t)
+	t.Setenv("SYBRA_HOME", dir)
+	t.Setenv("SYBRA_GITHUB_WEBHOOK_SECRET", "env-github-secret")
+
+	yaml := []byte("github:\n  webhook:\n    enabled: true\n    port: 9091\n    secret: file-secret\n    command_prefix: /file-agent\n")
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yaml, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.GitHub.Webhook.Secret != "env-github-secret" {
+		t.Fatalf("GitHub.Webhook.Secret = %q, want env override", cfg.GitHub.Webhook.Secret)
+	}
+	if cfg.GitHub.Webhook.CommandPrefix != "/file-agent" {
+		t.Fatalf("GitHub.Webhook.CommandPrefix = %q, want /file-agent", cfg.GitHub.Webhook.CommandPrefix)
+	}
+	if !cfg.GitHub.Webhook.Enabled || cfg.GitHub.Webhook.Port != 9091 {
+		t.Fatalf("GitHub.Webhook listener = (%v, %d), want (true, 9091)",
+			cfg.GitHub.Webhook.Enabled, cfg.GitHub.Webhook.Port)
 	}
 }

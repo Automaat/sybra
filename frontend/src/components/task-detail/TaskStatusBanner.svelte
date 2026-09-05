@@ -88,7 +88,7 @@
         </span>
       {/if}
       {#if task.statusReason}
-        <span class={summary ? 'opacity-90' : ''}>{task.statusReason}</span>
+        <span class="line-clamp-3 {summary ? 'opacity-90' : ''}" title={task.statusReason}>{task.statusReason}</span>
       {/if}
       {#if isTamperFlagged}
         <div class="mt-1 flex flex-col gap-2 rounded border border-warning-300 bg-warning-100/70 p-2 text-xs dark:border-warning-700 dark:bg-warning-950/40">

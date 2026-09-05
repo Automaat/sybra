@@ -41,7 +41,7 @@ func TestFetchKnownTaskPRs_SkipsFullFetchForKnownReadyPR(t *testing.T) {
 
 	matchers := []github.TaskMatcher{{ID: "t1", PRNumber: 50, ProjectID: "pet-owner/pet-repo"}}
 
-	first := r.fetchKnownTaskPRs(matchers)
+	first := r.fetchKnownTaskPRs(matchers, nil)
 	if len(first) != 1 || first[0].Number != 50 {
 		t.Fatalf("first cycle: got %+v, want [readyPR]", first)
 	}
@@ -49,7 +49,7 @@ func TestFetchKnownTaskPRs_SkipsFullFetchForKnownReadyPR(t *testing.T) {
 		t.Fatalf("full fetches after first cycle = %d, want 1", fullFetches)
 	}
 
-	second := r.fetchKnownTaskPRs(matchers)
+	second := r.fetchKnownTaskPRs(matchers, nil)
 	if len(second) != 1 || second[0].Number != 50 {
 		t.Fatalf("second cycle: got %+v, want [readyPR]", second)
 	}
@@ -98,7 +98,7 @@ func TestFetchKnownTaskPRs_ForcePushInvalidatesReadyCache(t *testing.T) {
 
 	matchers := []github.TaskMatcher{{ID: "t1", PRNumber: 50, ProjectID: "pet-owner/pet-repo"}}
 
-	if got := r.fetchKnownTaskPRs(matchers); len(got) != 1 || got[0].HeadSHA != "sha50" {
+	if got := r.fetchKnownTaskPRs(matchers, nil); len(got) != 1 || got[0].HeadSHA != "sha50" {
 		t.Fatalf("first cycle: got %+v", got)
 	}
 	if fullFetches != 1 {
@@ -109,7 +109,7 @@ func TestFetchKnownTaskPRs_ForcePushInvalidatesReadyCache(t *testing.T) {
 	currentHeadSHA = "sha-forced"
 	currentUpdatedAt = "2026-07-02T11:00:00Z"
 
-	got := r.fetchKnownTaskPRs(matchers)
+	got := r.fetchKnownTaskPRs(matchers, nil)
 	if len(got) != 1 || got[0].HeadSHA != "sha-forced" {
 		t.Fatalf("second cycle: got %+v, want fresh forced-push snapshot", got)
 	}
@@ -124,7 +124,7 @@ func TestFetchKnownTaskPRs_ForcePushInvalidatesReadyCache(t *testing.T) {
 	// full fetch — but only if the new state was itself ready; here it isn't
 	// (RESTApproved=false), so the cache should stay empty and every
 	// subsequent cycle keeps re-fetching until re-approved.
-	third := r.fetchKnownTaskPRs(matchers)
+	third := r.fetchKnownTaskPRs(matchers, nil)
 	if fullFetches != 3 {
 		t.Fatalf("full fetches after third cycle = %d, want 3 (not-ready state must never be cached)", fullFetches)
 	}
@@ -166,22 +166,22 @@ func TestFetchKnownTaskPRs_ClosedAtSameHeadInvalidatesReadyCache(t *testing.T) {
 		fetchHeadStateFn: func(repo string, number int) (string, bool, string, error) {
 			return "sha50", false, "2026-07-02T10:00:00Z", nil
 		},
-		readyPRCache: map[string]readyPRState{
-			"pet-owner/pet-repo#50": {HeadSHA: "sha50", UpdatedAt: "2026-07-02T10:00:00Z", PR: readyPR},
-		},
+		prSnapshots: PRSnapshotStore{entries: map[string]prSnapshot{
+			"pet-owner/pet-repo#50": {headSHA: "sha50", updatedAt: "2026-07-02T10:00:00Z", ready: &readyPR},
+		}},
 	}
 
 	matchers := []github.TaskMatcher{{ID: "t1", PRNumber: 50, ProjectID: "pet-owner/pet-repo"}}
 
-	got := r.fetchKnownTaskPRs(matchers)
+	got := r.fetchKnownTaskPRs(matchers, nil)
 	if len(got) != 0 {
 		t.Fatalf("got %+v, want no open PRs (the cached PR is now closed)", got)
 	}
 	if fullFetches != 1 {
 		t.Fatalf("full fetches = %d, want 1 (closed state must force a full fetch, not reuse the cache)", fullFetches)
 	}
-	if _, ok := r.readyPRCache["pet-owner/pet-repo#50"]; ok {
-		t.Fatal("readyPRCache entry must be evicted once the cheap probe reports the PR is no longer open")
+	if _, ok := r.prSnapshots.Ready("pet-owner/pet-repo#50"); ok {
+		t.Fatal("ready-cache entry must be evicted once the cheap probe reports the PR is no longer open")
 	}
 }
 
@@ -231,7 +231,7 @@ func TestFetchKnownTaskPRs_StatusEventInvalidatesReadyCacheAtSameHead(t *testing
 
 	matchers := []github.TaskMatcher{{ID: "t1", PRNumber: 50, ProjectID: "pet-owner/pet-repo"}}
 
-	if got := r.fetchKnownTaskPRs(matchers); len(got) != 1 || got[0].CIStatus != "SUCCESS" {
+	if got := r.fetchKnownTaskPRs(matchers, nil); len(got) != 1 || got[0].CIStatus != "SUCCESS" {
 		t.Fatalf("first cycle: got %+v, want cached ready PR", got)
 	}
 	if fullFetches != 1 {
@@ -241,20 +241,20 @@ func TestFetchKnownTaskPRs_StatusEventInvalidatesReadyCacheAtSameHead(t *testing
 	// Simulate a same-head CI/status event: updatedAt moves, head SHA doesn't.
 	currentUpdatedAt = failedCIPR.UpdatedAt
 
-	got := r.fetchKnownTaskPRs(matchers)
+	got := r.fetchKnownTaskPRs(matchers, nil)
 	if fullFetches != 2 {
 		t.Fatalf("full fetches after same-head status event = %d, want 2 (updatedAt change must invalidate the cache)", fullFetches)
 	}
 	if len(got) != 1 || got[0].CIStatus != "FAILURE" {
 		t.Fatalf("second cycle: got %+v, want fresh failed-CI snapshot, not the stale cached green one", got)
 	}
-	if _, ok := r.readyPRCache["pet-owner/pet-repo#50"]; ok {
-		t.Fatal("readyPRCache must not cache a no-longer-ready (CI failed) snapshot")
+	if _, ok := r.prSnapshots.Ready("pet-owner/pet-repo#50"); ok {
+		t.Fatal("ready-cache must not cache a no-longer-ready (CI failed) snapshot")
 	}
 }
 
 // TestHandleAutoMerge_EvictsReadyCache verifies that a successful merge
-// evicts the PR's readyPRCache entry, so the next poll cycle does a fresh
+// evicts the PR's ready-cache entry, so the next poll cycle does a fresh
 // fetch instead of replaying a stale "still open and ready" snapshot for a
 // PR that is now actually merged and closed.
 func TestHandleAutoMerge_EvictsReadyCache(t *testing.T) {
@@ -296,14 +296,14 @@ func TestHandleAutoMerge_EvictsReadyCache(t *testing.T) {
 		mergePRViaREST: func(repo string, number int, headSHA string) error {
 			return nil
 		},
-		readyPRCache: map[string]readyPRState{
-			"pet-owner/pet-repo#50": {HeadSHA: "sha50", UpdatedAt: "2026-07-02T10:00:00Z", PR: pr},
-		},
+		prSnapshots: PRSnapshotStore{entries: map[string]prSnapshot{
+			"pet-owner/pet-repo#50": {headSHA: "sha50", updatedAt: "2026-07-02T10:00:00Z", ready: &pr},
+		}},
 	}
 
 	r.handleAutoMerge(context.Background(), github.PRIssue{Kind: github.PRIssueReadyToMerge, TaskID: created.ID, PR: pr})
 
-	if _, ok := r.readyPRCache["pet-owner/pet-repo#50"]; ok {
-		t.Fatal("readyPRCache entry must be evicted after a merge attempt")
+	if _, ok := r.prSnapshots.Ready("pet-owner/pet-repo#50"); ok {
+		t.Fatal("ready-cache entry must be evicted after a merge attempt")
 	}
 }

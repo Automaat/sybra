@@ -1,0 +1,3 @@
+short = "k3d"
+full = "aqua:k3d-io/k3d"
+explicit_backend = false

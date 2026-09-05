@@ -5,6 +5,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Automaat/sybra/internal/backoff"
+	"github.com/Automaat/sybra/internal/task"
 )
 
 // MaxParallelTagPrefix carries the planner's max-parallel value on the tracker
@@ -252,16 +255,7 @@ func HasRecoverExhaustedTag(tags []string) bool {
 // given the failure count after the attempt that just failed (1 for the
 // first failure). Doubles per failure from a 1 hour base, capped at 24 hours.
 func RecoverBackoff(failCount int) time.Duration {
-	if failCount < 1 {
-		failCount = 1
-	}
-	shift := failCount - 1
-	const maxShift = 10 // 1h<<10 already exceeds the 24h cap; bounds the shift against overflow
-	if shift > maxShift {
-		shift = maxShift
-	}
-	d := recoverBackoffBase * time.Duration(1<<uint(shift))
-	return min(d, recoverBackoffMax)
+	return backoff.ForAttempt(max(failCount, 1), recoverBackoffBase, recoverBackoffMax).Delay
 }
 
 // ReplaceTagPrefix returns tags with every entry sharing prefix removed and
@@ -283,13 +277,13 @@ func ReplaceTagPrefix(tags []string, prefix, newTag string) []string {
 // GitHub sub-issue's labels — they route the task into other automations
 // (reviews, handoff lanes, the gate itself, bug containment).
 var controlTags = map[string]bool{
-	"review":    true,
-	"blocked":   true,
-	"handoff":   true,
-	"umbrella":  true,
-	GatedTag:    true,
-	"sybra-bug": true,
-	"scrubbed":  true,
+	"review":                  true,
+	"blocked":                 true,
+	"handoff":                 true,
+	"umbrella":                true,
+	GatedTag:                  true,
+	string(task.FlagSybraBug): true,
+	string(task.FlagScrubbed): true,
 }
 
 // InheritableLabels filters a sub-issue's GitHub labels down to those safe to

@@ -20,14 +20,13 @@ type V2NamespaceDoc struct {
 var v2NamespaceDocs = []V2NamespaceDoc{
 	{Name: "instance", OwnershipRule: "Machine role, local routing, and operator-scoped UX defaults.", Paths: []string{"instance", "instance.project_types"}},
 	{Name: "execution", OwnershipRule: "How Sybra launches and routes agent work across providers and local backends.", Paths: []string{"execution.agent", "execution.providers"}},
-	{Name: "workflow", OwnershipRule: "Task-stage policy, planning/testing orchestration, and board-driven automation.", Paths: []string{"workflow.orchestrator", "workflow.testing", "workflow.triage", "workflow.umbrella"}},
+	{Name: "workflow", OwnershipRule: "Task-stage policy, planning/testing orchestration, and board-driven automation.", Paths: []string{"workflow.orchestrator", "workflow.testing", "workflow.triage", "workflow.umbrella", "workflow.admission"}},
 	{Name: "integrations", OwnershipRule: "External systems Sybra talks to on the operator's behalf.", Paths: []string{"integrations.notification", "integrations.github", "integrations.renovate", "integrations.browser"}},
 	{Name: "supervision", OwnershipRule: "Health checks, review escalation, and autonomous oversight loops.", Paths: []string{"supervision.human_review", "supervision.monitor", "supervision.watchdog", "supervision.self_monitor", "supervision.evaluation", "supervision.learning_digest", "supervision.harness_evolution", "supervision.prompt_lab"}},
-	{Name: "storage", OwnershipRule: "Filesystem-backed retention and path layout under SYBRA_HOME.", Paths: []string{"storage.attachments", "storage.trash", "storage.sandboxes", "storage.task_snapshot", "storage.paths"}},
-	{Name: "observability", OwnershipRule: "Logs, audit, metrics, experimentation, and operator evidence retention.", Paths: []string{"observability.logging", "observability.audit", "observability.metrics", "observability.experience", "observability.ab_testing"}},
+	{Name: "storage", OwnershipRule: "Durable-storage backend selection, retention, and path layout under SYBRA_HOME.", Paths: []string{"storage.database", "storage.attachments", "storage.trash", "storage.sandboxes", "storage.task_snapshot", "storage.paths"}},
+	{Name: "observability", OwnershipRule: "Logs, audit, metrics, experimentation, and operator evidence retention.", Paths: []string{"observability.logging", "observability.audit", "observability.metrics", "observability.experience", "observability.intervention", "observability.ab_testing"}},
 	{Name: "routing", OwnershipRule: "Adaptive provider-routing policy that tunes experiment weights from observed execution outcomes.", Paths: []string{"routing"}},
 	{Name: "server", OwnershipRule: "Local API/server exposure and auth for the running Sybra instance.", Paths: []string{"server"}},
-	{Name: "webhook", OwnershipRule: "Inbound external task-creation webhook listener and request-signing controls.", Paths: []string{"webhook"}},
 	{Name: "cluster", OwnershipRule: "Cluster/task-trust policy for multi-node execution backends.", Paths: []string{"cluster"}},
 	{Name: "auto_update", OwnershipRule: "Deployment self-update behavior for long-running Sybra installs.", Paths: []string{"auto_update"}},
 }
@@ -52,6 +51,7 @@ type topLevelNamespaceRule struct {
 var topLevelNamespaceRules = []topLevelNamespaceRule{
 	{legacyKey: "logging", canonical: []string{"observability", "logging"}, deprecated: "observability.logging", namespace: "observability"},
 	{legacyKey: "audit", canonical: []string{"observability", "audit"}, deprecated: "observability.audit", namespace: "observability"},
+	{legacyKey: "database", canonical: []string{"storage", "database"}, deprecated: "storage.database", namespace: "storage"},
 	{legacyKey: "attachments", canonical: []string{"storage", "attachments"}, deprecated: "storage.attachments", namespace: "storage"},
 	{legacyKey: "trash", canonical: []string{"storage", "trash"}, deprecated: "storage.trash", namespace: "storage"},
 	{legacyKey: "sandbox", canonical: []string{"storage", "sandboxes"}, deprecated: "storage.sandboxes", namespace: "storage"},
@@ -62,8 +62,10 @@ var topLevelNamespaceRules = []topLevelNamespaceRule{
 	{legacyKey: "orchestrator", canonical: []string{"workflow", "orchestrator"}, deprecated: "workflow.orchestrator", namespace: "workflow"},
 	{legacyKey: "triage", canonical: []string{"workflow", "triage"}, deprecated: "workflow.triage", namespace: "workflow"},
 	{legacyKey: "umbrella", canonical: []string{"workflow", "umbrella"}, deprecated: "workflow.umbrella", namespace: "workflow"},
+	{legacyKey: "admission", canonical: []string{"workflow", "admission"}, deprecated: "workflow.admission", namespace: "workflow"},
 	{legacyKey: "notification", canonical: []string{"integrations", "notification"}, deprecated: "integrations.notification", namespace: "integrations"},
 	{legacyKey: "github", canonical: []string{"integrations", "github"}, deprecated: "integrations.github", namespace: "integrations"},
+	{legacyKey: "webhook", canonical: []string{"integrations", "github", "webhook"}, deprecated: "integrations.github.webhook", namespace: "integrations"},
 	{legacyKey: "review_hold", canonical: []string{"integrations", "github", "review_hold"}, deprecated: "integrations.github.review_hold", namespace: "integrations"},
 	{legacyKey: "renovate", canonical: []string{"integrations", "renovate"}, deprecated: "integrations.renovate", namespace: "integrations"},
 	{legacyKey: "browser", canonical: []string{"integrations", "browser"}, deprecated: "integrations.browser", namespace: "integrations"},
@@ -77,6 +79,7 @@ var topLevelNamespaceRules = []topLevelNamespaceRule{
 	{legacyKey: "prompt_lab", canonical: []string{"supervision", "prompt_lab"}, deprecated: "supervision.prompt_lab", namespace: "supervision"},
 	{legacyKey: "metrics", canonical: []string{"observability", "metrics"}, deprecated: "observability.metrics", namespace: "observability"},
 	{legacyKey: "experience", canonical: []string{"observability", "experience"}, deprecated: "observability.experience", namespace: "observability"},
+	{legacyKey: "intervention", canonical: []string{"observability", "intervention"}, deprecated: "observability.intervention", namespace: "observability"},
 	{legacyKey: "ab_testing", canonical: []string{"observability", "ab_testing"}, deprecated: "observability.ab_testing", namespace: "observability"},
 	{legacyKey: "project_types", canonical: []string{"instance", "project_types"}, deprecated: "instance.project_types", namespace: "instance", directField: true},
 	{legacyKey: "tasks_dir", canonical: []string{"storage", "paths", "tasks"}, deprecated: "storage.paths.tasks", namespace: "storage", directField: true},
@@ -122,15 +125,42 @@ func CanonicalFilePathForLegacy(path string) (string, bool) {
 	return "", false
 }
 
+// unknownKeySink decides what a namespace does with a key this build does not
+// know. A strict caller gets an error and stops; a diagnostic collects the
+// path and skips the key, so the rest of the document still resolves and every
+// stale key is reported in one pass rather than one per run.
+type unknownKeySink struct {
+	lenient   bool
+	collected []string
+}
+
+func (s *unknownKeySink) reject(path string) error {
+	if s == nil || !s.lenient {
+		return fmt.Errorf("%w %q", ErrUnknownConfigKey, path)
+	}
+	s.collected = append(s.collected, path)
+	return nil
+}
+
+// NormalizeV2Document rewrites a schema v2 document into the flat internal
+// shape, failing on any key it does not know.
 func NormalizeV2Document(root *yaml.Node) (*yaml.Node, []string, error) {
+	doc, warnings, _, err := normalizeV2Document(root, &unknownKeySink{})
+	return doc, warnings, err
+}
+
+// normalizeV2Document returns the unknown keys it skipped alongside the
+// document, so a lenient caller can report them without losing everything
+// else in the file.
+func normalizeV2Document(root *yaml.Node, sink *unknownKeySink) (doc *yaml.Node, warnings, unknown []string, err error) {
 	builder := newFlatConfigBuilder()
-	warnings := []string{}
+	warnings = []string{}
 	top, ok := yamlDocumentMapping(root)
 	if !ok {
 		if root == nil || root.Kind == 0 {
-			return root, nil, nil
+			return root, nil, nil, nil
 		}
-		return nil, nil, fmt.Errorf("config root must be a mapping")
+		return nil, nil, nil, fmt.Errorf("config root must be a mapping")
 	}
 	for i := 0; i+1 < len(top.Content); i += 2 {
 		keyNode := top.Content[i]
@@ -145,37 +175,38 @@ func NormalizeV2Document(root *yaml.Node) (*yaml.Node, []string, error) {
 				warnings = append(warnings, warn)
 			}
 			if err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 			continue
 		}
 		switch key {
 		case "instance":
-			if err := normalizeInstanceNamespace(builder, valueNode); err != nil {
-				return nil, nil, err
+			if err := normalizeInstanceNamespace(builder, valueNode, sink); err != nil {
+				return nil, nil, nil, err
 			}
 		case "execution":
-			if err := normalizeSimpleNamespace(builder, valueNode, map[string]string{
+			if err := normalizeSimpleNamespaceSink(builder, valueNode, sink, map[string]string{
 				"agent":     "agent",
 				"providers": "providers",
 			}, "execution"); err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 		case "workflow":
-			if err := normalizeSimpleNamespace(builder, valueNode, map[string]string{
+			if err := normalizeSimpleNamespaceSink(builder, valueNode, sink, map[string]string{
 				"orchestrator": "orchestrator",
 				"testing":      "testing",
 				"triage":       "triage",
 				"umbrella":     "umbrella",
+				"admission":    "admission",
 			}, "workflow"); err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 		case "integrations":
-			if err := normalizeIntegrationsNamespace(builder, valueNode); err != nil {
-				return nil, nil, err
+			if err := normalizeIntegrationsNamespace(builder, valueNode, sink); err != nil {
+				return nil, nil, nil, err
 			}
 		case "supervision":
-			if err := normalizeSimpleNamespace(builder, valueNode, map[string]string{
+			if err := normalizeSimpleNamespaceSink(builder, valueNode, sink, map[string]string{
 				"human_review":      "human_review",
 				"monitor":           "monitor",
 				"watchdog":          "watchdog",
@@ -185,31 +216,34 @@ func NormalizeV2Document(root *yaml.Node) (*yaml.Node, []string, error) {
 				"harness_evolution": "harness_evolution",
 				"prompt_lab":        "prompt_lab",
 			}, "supervision"); err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 		case "storage":
-			if err := normalizeStorageNamespace(builder, valueNode); err != nil {
-				return nil, nil, err
+			if err := normalizeStorageNamespace(builder, valueNode, sink); err != nil {
+				return nil, nil, nil, err
 			}
 		case "observability":
-			if err := normalizeSimpleNamespace(builder, valueNode, map[string]string{
-				"logging":    "logging",
-				"audit":      "audit",
-				"metrics":    "metrics",
-				"experience": "experience",
-				"ab_testing": "ab_testing",
+			if err := normalizeSimpleNamespaceSink(builder, valueNode, sink, map[string]string{
+				"logging":      "logging",
+				"audit":        "audit",
+				"metrics":      "metrics",
+				"experience":   "experience",
+				"intervention": "intervention",
+				"ab_testing":   "ab_testing",
 			}, "observability"); err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 		case "routing", "server", "cluster", "auto_update", "webhook":
 			if err := builder.setTopLevel(key, valueNode, key); err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 		default:
-			return nil, nil, fmt.Errorf("unknown config key %q", key)
+			if err := sink.reject(key); err != nil {
+				return nil, nil, nil, err
+			}
 		}
 	}
-	return builder.document(), warnings, nil
+	return builder.document(), warnings, sink.collected, nil
 }
 
 func MigrateRawConfig(raw []byte, toVersion int) (*MigrationResult, error) {
@@ -230,17 +264,19 @@ func MigrateRawConfig(raw []byte, toVersion int) (*MigrationResult, error) {
 	}
 	canonical := newCanonicalConfigBuilder()
 	canonical.setScalarTopLevel("schema_version", strconv.Itoa(CurrentSchemaVersion))
-	preserveLegacyReviewLoop := fileCfg.SchemaVersion() < CurrentSchemaVersion
 	for i := 0; i+1 < len(flatRoot.Content); i += 2 {
 		key := flatRoot.Content[i].Value
 		if key == "schema_version" {
 			continue
 		}
 		value := flatRoot.Content[i+1]
-		if err := migrateLegacyTopLevelIntoCanonical(canonical, key, value, nil, preserveLegacyReviewLoop); err != nil {
+		if err := migrateLegacyTopLevelIntoCanonical(canonical, key, value, nil); err != nil {
 			return nil, err
 		}
 	}
+	applyLegacyUnboundedReviewLoop(canonical, fileCfg)
+	relocateLegacyGitHubReviewRoundsPerHour(canonical)
+	preserveLegacyWebhookTaskRoute(canonical, fileCfg)
 	canonicalBytes, err := marshalYAMLDocument(canonical.document())
 	if err != nil {
 		return nil, err
@@ -257,6 +293,36 @@ func MigrateRawConfig(raw []byte, toVersion int) (*MigrationResult, error) {
 		Moves:       moves,
 		Warnings:    fileCfg.Warnings(),
 	}, nil
+}
+
+func preserveLegacyWebhookTaskRoute(canonical *canonicalConfigBuilder, fileCfg *FileConfig) {
+	if fileCfg == nil {
+		return
+	}
+	enabledNode, ok := fileCfg.authoredNodeAt("webhook", "enabled")
+	if !ok {
+		return
+	}
+	var enabled bool
+	if err := enabledNode.Decode(&enabled); err != nil || !enabled {
+		return
+	}
+	integrationsNode, ok := yamlMappingValue(canonical.root, "integrations")
+	if !ok {
+		return
+	}
+	githubNode, ok := yamlMappingValue(integrationsNode, "github")
+	if !ok {
+		return
+	}
+	webhookNode, ok := yamlMappingValue(githubNode, "webhook")
+	if !ok || yamlMappingHasKey(webhookNode, "task_enabled") {
+		return
+	}
+	webhookNode.Content = append(webhookNode.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "task_enabled"},
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: "true"},
+	)
 }
 
 func normalizeYAMLBytes(raw []byte) []byte {
@@ -353,10 +419,13 @@ func canonicalMovePathForLegacy(legacyPath string) (string, bool) {
 			return canonical, true
 		}
 	}
+	if canonical, ok := CanonicalFilePathForLegacy(legacyPath); ok {
+		return canonical, true
+	}
 	if IsSecretYAMLPath(legacyPath) {
 		return legacyPath, true
 	}
-	return CanonicalFilePathForLegacy(legacyPath)
+	return "", false
 }
 
 func renderMoveValues(legacyPath string, node *yaml.Node) (before, after string) {
@@ -438,6 +507,77 @@ func (b *flatConfigBuilder) setTopLevel(dest string, value *yaml.Node, source st
 		cloneYAMLNode(value),
 	)
 	return nil
+}
+
+// applyLegacyUnboundedReviewLoop mirrors the pre-#2499 "review_until_clean:
+// true implies an uncapped review→fix→review loop" compat shim, now
+// expressed through the single review-rate-limit knob
+// (execution.agent.review_rounds_per_hour) instead of a second
+// allow-unbounded flag: a legacy config that opted into the old uncapped loop
+// keeps that behavior by disabling the rate limit, rather than losing it
+// silently now that the old keys are gone from the schema. Skipped if the
+// legacy file explicitly set either now-dead key, or already carries a rate
+// limit of its own under either the current (agent) or briefly-lived legacy
+// (github) key.
+func applyLegacyUnboundedReviewLoop(canonical *canonicalConfigBuilder, fileCfg *FileConfig) {
+	if fileCfg == nil || fileCfg.SchemaVersion() >= CurrentSchemaVersion {
+		return
+	}
+	if fileCfg.Has("agent", "allow_unbounded_review_rounds") || fileCfg.Has("agent", "max_review_rounds") ||
+		fileCfg.Has("agent", "review_rounds_per_hour") || fileCfg.Has("github", "review_rounds_per_hour") {
+		return
+	}
+	executionNode, ok := yamlMappingValue(canonical.root, "execution")
+	if !ok {
+		return
+	}
+	agentNode, ok := yamlMappingValue(executionNode, "agent")
+	if !ok || !yamlMappingBool(agentNode, "review_until_clean") {
+		return
+	}
+	if yamlMappingHasKey(agentNode, "review_rounds_per_hour") {
+		return
+	}
+	agentNode.Content = append(agentNode.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "review_rounds_per_hour"},
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: "-1"},
+	)
+}
+
+// relocateLegacyGitHubReviewRoundsPerHour moves review_rounds_per_hour from
+// integrations.github to execution.agent in the migrated canonical tree.
+// fieldAliasSpecs' generic leaf-rename only fires within a node's existing
+// parent, so the field's one-day stint on GitHubConfig would otherwise
+// survive migration under its old namespace forever — functionally harmless
+// (Resolve applies the same alias on every parse) but never actually
+// canonicalized. Skipped if execution.agent already carries an explicit
+// value, leaving any real conflict for Resolve's alias check to catch.
+func relocateLegacyGitHubReviewRoundsPerHour(canonical *canonicalConfigBuilder) {
+	integrationsNode, ok := yamlMappingValue(canonical.root, "integrations")
+	if !ok {
+		return
+	}
+	githubNode, ok := yamlMappingValue(integrationsNode, "github")
+	if !ok {
+		return
+	}
+	value, ok := yamlMappingValue(githubNode, "review_rounds_per_hour")
+	if !ok {
+		return
+	}
+	executionNode, ok := yamlMappingValue(canonical.root, "execution")
+	if !ok {
+		return
+	}
+	agentNode, ok := yamlMappingValue(executionNode, "agent")
+	if !ok || yamlMappingHasKey(agentNode, "review_rounds_per_hour") {
+		return
+	}
+	yamlMappingRemove(githubNode, "review_rounds_per_hour")
+	agentNode.Content = append(agentNode.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "review_rounds_per_hour"},
+		value,
+	)
 }
 
 type canonicalConfigBuilder struct {
@@ -522,7 +662,7 @@ func normalizeLegacyTopLevel(builder *flatConfigBuilder, key string, value *yaml
 	return false, "", nil
 }
 
-func normalizeSimpleNamespace(builder *flatConfigBuilder, node *yaml.Node, allowed map[string]string, prefix string) error {
+func normalizeSimpleNamespaceSink(builder *flatConfigBuilder, node *yaml.Node, sink *unknownKeySink, allowed map[string]string, prefix string) error {
 	if node.Kind != yaml.MappingNode {
 		return fmt.Errorf("%s must be a mapping", prefix)
 	}
@@ -530,7 +670,10 @@ func normalizeSimpleNamespace(builder *flatConfigBuilder, node *yaml.Node, allow
 		key := node.Content[i].Value
 		dest, ok := allowed[key]
 		if !ok {
-			return fmt.Errorf("unknown config key %q", prefix+"."+key)
+			if err := sink.reject(prefix + "." + key); err != nil {
+				return err
+			}
+			continue
 		}
 		if err := builder.setTopLevel(dest, node.Content[i+1], prefix+"."+key); err != nil {
 			return err
@@ -539,11 +682,11 @@ func normalizeSimpleNamespace(builder *flatConfigBuilder, node *yaml.Node, allow
 	return nil
 }
 
-func normalizeInstanceNamespace(builder *flatConfigBuilder, node *yaml.Node) error {
-	return normalizeSimpleNamespace(builder, node, map[string]string{"project_types": "project_types"}, "instance")
+func normalizeInstanceNamespace(builder *flatConfigBuilder, node *yaml.Node, sink *unknownKeySink) error {
+	return normalizeSimpleNamespaceSink(builder, node, sink, map[string]string{"project_types": "project_types"}, "instance")
 }
 
-func normalizeIntegrationsNamespace(builder *flatConfigBuilder, node *yaml.Node) error {
+func normalizeIntegrationsNamespace(builder *flatConfigBuilder, node *yaml.Node, sink *unknownKeySink) error {
 	if node.Kind != yaml.MappingNode {
 		return fmt.Errorf("integrations must be a mapping")
 	}
@@ -560,7 +703,9 @@ func normalizeIntegrationsNamespace(builder *flatConfigBuilder, node *yaml.Node)
 				return err
 			}
 		default:
-			return fmt.Errorf("unknown config key %q", "integrations."+key)
+			if err := sink.reject("integrations." + key); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -594,7 +739,7 @@ func normalizeGitHubNamespace(builder *flatConfigBuilder, node *yaml.Node) error
 	return nil
 }
 
-func normalizeStorageNamespace(builder *flatConfigBuilder, node *yaml.Node) error {
+func normalizeStorageNamespace(builder *flatConfigBuilder, node *yaml.Node, sink *unknownKeySink) error {
 	if node.Kind != yaml.MappingNode {
 		return fmt.Errorf("storage must be a mapping")
 	}
@@ -602,6 +747,10 @@ func normalizeStorageNamespace(builder *flatConfigBuilder, node *yaml.Node) erro
 		key := node.Content[i].Value
 		value := node.Content[i+1]
 		switch key {
+		case "database":
+			if err := builder.setTopLevel("database", value, "storage.database"); err != nil {
+				return err
+			}
 		case "attachments":
 			if err := builder.setTopLevel("attachments", value, "storage.attachments"); err != nil {
 				return err
@@ -619,18 +768,20 @@ func normalizeStorageNamespace(builder *flatConfigBuilder, node *yaml.Node) erro
 				return err
 			}
 		case "paths":
-			if err := normalizeStoragePathsNamespace(builder, value); err != nil {
+			if err := normalizeStoragePathsNamespace(builder, value, sink); err != nil {
 				return err
 			}
 		default:
-			return fmt.Errorf("unknown config key %q", "storage."+key)
+			if err := sink.reject("storage." + key); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
 }
 
-func normalizeStoragePathsNamespace(builder *flatConfigBuilder, node *yaml.Node) error {
-	return normalizeSimpleNamespace(builder, node, map[string]string{
+func normalizeStoragePathsNamespace(builder *flatConfigBuilder, node *yaml.Node, sink *unknownKeySink) error {
+	return normalizeSimpleNamespaceSink(builder, node, sink, map[string]string{
 		"tasks":       "tasks_dir",
 		"skills":      "skills_dir",
 		"repo":        "repo_dir",
@@ -641,12 +792,12 @@ func normalizeStoragePathsNamespace(builder *flatConfigBuilder, node *yaml.Node)
 	}, "storage.paths")
 }
 
-func migrateLegacyTopLevelIntoCanonical(builder *canonicalConfigBuilder, key string, value *yaml.Node, parent []string, preserveLegacyReviewLoop bool) error {
+func migrateLegacyTopLevelIntoCanonical(builder *canonicalConfigBuilder, key string, value *yaml.Node, parent []string) error {
 	for _, rule := range topLevelNamespaceRules {
 		if key != rule.legacyKey {
 			continue
 		}
-		transformed, err := migrateNodeToCanonical([]string{key}, value, preserveLegacyReviewLoop)
+		transformed, err := migrateNodeToCanonical([]string{key}, value)
 		if err != nil {
 			return err
 		}
@@ -655,7 +806,7 @@ func migrateLegacyTopLevelIntoCanonical(builder *canonicalConfigBuilder, key str
 	return builder.setPath(append(slices.Clone(parent), key), value)
 }
 
-func migrateNodeToCanonical(path []string, node *yaml.Node, preserveLegacyReviewLoop bool) (*yaml.Node, error) {
+func migrateNodeToCanonical(path []string, node *yaml.Node) (*yaml.Node, error) {
 	if node == nil {
 		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!null", Value: "null"}, nil
 	}
@@ -692,23 +843,13 @@ func migrateNodeToCanonical(path []string, node *yaml.Node, preserveLegacyReview
 				)
 				continue
 			}
-			child, err := migrateNodeToCanonical(childPath, node.Content[i+1], preserveLegacyReviewLoop)
+			child, err := migrateNodeToCanonical(childPath, node.Content[i+1])
 			if err != nil {
 				return nil, err
 			}
 			out.Content = append(out.Content,
 				&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: childKey},
 				child,
-			)
-		}
-		if preserveLegacyReviewLoop &&
-			joinPath(path) == "agent" &&
-			!yamlMappingHasKey(out, "allow_unbounded_review_rounds") &&
-			!yamlMappingHasKey(out, "max_review_rounds") &&
-			yamlMappingBool(out, "review_until_clean") {
-			out.Content = append(out.Content,
-				&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "allow_unbounded_review_rounds"},
-				&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: "true"},
 			)
 		}
 		return out, nil
@@ -737,6 +878,22 @@ func yamlMappingValue(mapping *yaml.Node, key string) (*yaml.Node, bool) {
 func yamlMappingHasKey(mapping *yaml.Node, key string) bool {
 	_, ok := yamlMappingValue(mapping, key)
 	return ok
+}
+
+// yamlMappingRemove deletes key from mapping in place, returning its value
+// and whether it was present.
+func yamlMappingRemove(mapping *yaml.Node, key string) (*yaml.Node, bool) {
+	if mapping == nil || mapping.Kind != yaml.MappingNode {
+		return nil, false
+	}
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		if mapping.Content[i].Value == key {
+			value := mapping.Content[i+1]
+			mapping.Content = slices.Delete(mapping.Content, i, i+2)
+			return value, true
+		}
+	}
+	return nil, false
 }
 
 func yamlMappingBool(mapping *yaml.Node, key string) bool {

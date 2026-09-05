@@ -3,9 +3,15 @@ package provider
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Automaat/sybra/internal/clock"
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 func TestParseClaudeAuthStatus(t *testing.T) {
@@ -78,15 +84,17 @@ func TestCodexVersionAtLeast(t *testing.T) {
 		have string
 		want bool
 	}{
-		{"equal", "0.142.2", true},
-		{"newer_patch", "0.142.3", true},
-		{"newer_minor", "0.143.0", true},
+		{"equal", "0.145.0", true},
+		{"newer_patch", "0.145.1", true},
+		{"newer_minor", "0.146.0", true},
 		{"newer_major", "1.0.0", true},
-		{"older_patch", "0.142.1", false},
-		{"older_minor", "0.141.9", false},
-		{"shorter_equal_prefix", "0.142", false},
-		{"longer_equal_prefix", "0.142.2.1", true},
-		{"suffix_tolerated", "0.142.2-beta", true},
+		{"older_patch", "0.144.9", false},
+		{"older_minor", "0.142.2", false},
+		// A missing trailing component reads as zero, so "0.145" == "0.145.0".
+		{"shorter_equal_prefix", "0.145", true},
+		{"shorter_older_prefix", "0.144", false},
+		{"longer_equal_prefix", "0.145.0.1", true},
+		{"suffix_tolerated", "0.145.0-beta", true},
 		{"unparseable_fails_open", "", true},
 		{"garbage_fails_open", "vNext", true},
 	}
@@ -113,7 +121,49 @@ func TestCodexVersionRegexExtracts(t *testing.T) {
 	}
 }
 
+func TestProbeCodexOldCLIMarksProviderUnhealthy(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "codex")
+	body := "#!/bin/sh\n" +
+		"case \"$1:$2\" in\n" +
+		"  login:status) printf 'Logged in using ChatGPT\\n' ;;\n" +
+		"  --version:) printf 'codex-cli 0.142.1\\n' ;;\n" +
+		"  *) exit 2 ;;\n" +
+		"esac\n"
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+
+	st, err := ProbeCodex(context.Background())
+	if err != nil {
+		t.Fatalf("ProbeCodex: %v", err)
+	}
+	if st.Healthy {
+		t.Fatal("Healthy = true, want false for an old Codex CLI")
+	}
+	if st.Reason != "cli_too_old" {
+		t.Fatalf("Reason = %q, want cli_too_old", st.Reason)
+	}
+	if !strings.Contains(st.Detail, "0.142.1") || !strings.Contains(st.Detail, minCodexVersion) {
+		t.Fatalf("Detail = %q, want old and minimum versions", st.Detail)
+	}
+}
+
+// classifierNow pins the classifier tests' clock a few days before the
+// "resets Jul 1 at 5pm" fixtures, so the parsed instant is a concrete
+// sub-clamp duration instead of depending on the wall clock.
+var classifierNow = time.Date(2026, time.June, 28, 12, 0, 0, 0, time.Local)
+
+// julyFirstReset is what the Jul 1 fixtures parse to under classifierNow.
+var julyFirstReset = time.Date(2026, time.July, 1, 17, 0, 0, 0, time.Local).Sub(classifierNow)
+
 func TestClassifyClaudeError(t *testing.T) {
+	// Pin the clock: several fixtures carry "resets Jul 1 at 5pm", which is now
+	// parsed into a concrete instant rather than falling back to the fixed
+	// cooldown. julyFirstReset is that instant relative to the pinned now.
+	pinNow(t, classifierNow)
+
 	cases := []struct {
 		name           string
 		in             ErrorSample
@@ -130,8 +180,8 @@ func TestClassifyClaudeError(t *testing.T) {
 		{"stderr_rate_limit", ErrorSample{Stderr: "rate limit exceeded"}, SignalRateLimit, "rate_limited", 0},
 		{"content_session_limit", ErrorSample{Content: "You've hit your session limit · resets 4:30pm"}, SignalRateLimit, "rate_limited", 0},
 		{"content_usage_limit", ErrorSample{Content: "usage limit reached for this period"}, SignalRateLimit, "rate_limited", 0},
-		{"content_weekly_limit", ErrorSample{Content: "You've hit your weekly limit · resets Jul 1 at 5pm"}, SignalRateLimit, "weekly_limit", weeklyLimitCooldown},
-		{"stderr_weekly_limit", ErrorSample{Stderr: "You've hit your weekly limit · resets Jul 1 at 5pm"}, SignalRateLimit, "weekly_limit", weeklyLimitCooldown},
+		{"content_weekly_limit", ErrorSample{Content: "You've hit your weekly limit · resets Jul 1 at 5pm"}, SignalRateLimit, "weekly_limit", julyFirstReset},
+		{"stderr_weekly_limit", ErrorSample{Stderr: "You've hit your weekly limit · resets Jul 1 at 5pm"}, SignalRateLimit, "weekly_limit", julyFirstReset},
 		{"weekly_word_without_specific_phrase_stays_rate_limited", ErrorSample{Content: "usage limit reached · resets weekly on Monday"}, SignalRateLimit, "rate_limited", 0},
 		{"clean_content_rate_limit_exceeded", ErrorSample{Content: "rate limit exceeded", ContentIsCleanResult: true}, SignalRateLimit, "rate_limited", 0},
 		{"clean_content_rate_limit_reached", ErrorSample{Content: "rate limit reached", ContentIsCleanResult: true}, SignalRateLimit, "rate_limited", 0},
@@ -143,7 +193,7 @@ func TestClassifyClaudeError(t *testing.T) {
 		{
 			"structured_429_with_weekly_content_stays_weekly",
 			ErrorSample{ErrorStatus: 429, Content: "You've hit your weekly limit · resets Jul 1 at 5pm"},
-			SignalRateLimit, "weekly_limit", weeklyLimitCooldown,
+			SignalRateLimit, "weekly_limit", julyFirstReset,
 		},
 		{
 			"structured_rate_limit_error_type_with_weekly_stderr_stays_weekly",
@@ -153,7 +203,8 @@ func TestClassifyClaudeError(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, reason, retryAfter := ClassifyClaudeError(tc.in)
+			c := ClassifyClaudeError(tc.in)
+			got, reason, retryAfter, _ := c.Signal, c.Reason, c.RetryAfter, c.Source
 			if got != tc.want {
 				t.Errorf("signal: got %v want %v", got, tc.want)
 			}
@@ -168,6 +219,11 @@ func TestClassifyClaudeError(t *testing.T) {
 }
 
 func TestClassifyCodexError(t *testing.T) {
+	// Pin the clock: several fixtures carry "resets Jul 1 at 5pm", which is now
+	// parsed into a concrete instant rather than falling back to the fixed
+	// cooldown. julyFirstReset is that instant relative to the pinned now.
+	pinNow(t, classifierNow)
+
 	cases := []struct {
 		name           string
 		in             ErrorSample
@@ -221,7 +277,7 @@ func TestClassifyCodexError(t *testing.T) {
 		{
 			"structured_429_with_weekly_content_stays_weekly",
 			ErrorSample{ErrorStatus: 429, Content: "You've hit your weekly limit · resets Jul 1 at 5pm"},
-			SignalRateLimit, "weekly_limit", weeklyLimitCooldown,
+			SignalRateLimit, "weekly_limit", julyFirstReset,
 		},
 		{
 			"structured_rate_limit_type_with_weekly_stderr_stays_weekly",
@@ -231,7 +287,8 @@ func TestClassifyCodexError(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, reason, retryAfter := ClassifyCodexError(tc.in)
+			c := ClassifyCodexError(tc.in)
+			got, reason, retryAfter, _ := c.Signal, c.Reason, c.RetryAfter, c.Source
 			if got != tc.want {
 				t.Errorf("signal: got %v want %v", got, tc.want)
 			}
@@ -260,7 +317,8 @@ func TestClassifyCopilotError(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, _, _ := ClassifyCopilotError(tc.in)
+			c := ClassifyCopilotError(tc.in)
+			got, _, _, _ := c.Signal, c.Reason, c.RetryAfter, c.Source
 			if got != tc.want {
 				t.Errorf("got %v want %v", got, tc.want)
 			}
@@ -352,10 +410,10 @@ func TestProbeOnce_ClearsSeedBeforeGateWiring(t *testing.T) {
 	}
 }
 
-func newTestChecker(t *testing.T) (*Checker, *fakeEmitter, *fakeClock) {
+func newTestChecker(t *testing.T) (*Checker, *fakeEmitter, *clock.Fake) {
 	t.Helper()
 	fe := &fakeEmitter{}
-	clock := &fakeClock{t: time.Unix(1_700_000_000, 0).UTC()}
+	fake := clock.NewFake(time.Unix(1_700_000_000, 0).UTC())
 	c := New(Config{
 		Interval:         time.Minute,
 		ClaudeEnabled:    true,
@@ -364,25 +422,8 @@ func newTestChecker(t *testing.T) (*Checker, *fakeEmitter, *fakeClock) {
 		ClaudeRLCooldown: 15 * time.Minute,
 		CodexRLCooldown:  15 * time.Minute,
 	}, fe.emit, nil)
-	c.now = clock.Now
-	return c, fe, clock
-}
-
-type fakeClock struct {
-	mu sync.Mutex
-	t  time.Time
-}
-
-func (f *fakeClock) Now() time.Time {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.t
-}
-
-func (f *fakeClock) advance(d time.Duration) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.t = f.t.Add(d)
+	c.clock = fake
+	return c, fe, fake
 }
 
 func TestChecker_FlipsOnFailure(t *testing.T) {
@@ -487,7 +528,7 @@ func TestChecker_ProbeSuccessResetsProbeErrorStreak(t *testing.T) {
 }
 
 func TestChecker_SuppressedProbeErrorAdvancesLastCheck(t *testing.T) {
-	c, _, clock := newTestChecker(t)
+	c, _, fake := newTestChecker(t)
 	c.probeClaude = func(context.Context) (Status, error) {
 		return Status{Provider: "claude", Healthy: true, Reason: "ok"}, nil
 	}
@@ -498,7 +539,7 @@ func TestChecker_SuppressedProbeErrorAdvancesLastCheck(t *testing.T) {
 	c.checkAll(ctx)
 	healthyAt := c.Snapshot()["claude"].LastCheck
 
-	clock.advance(time.Minute)
+	fake.Advance(time.Minute)
 	c.probeClaude = func(context.Context) (Status, error) {
 		return Status{}, errors.New("context deadline exceeded")
 	}
@@ -630,33 +671,95 @@ func TestFailover_NoFixedPriority(t *testing.T) {
 	}
 }
 
-func TestChecker_PassiveAuthPersistsUntilProbe(t *testing.T) {
-	c, _, _ := newTestChecker(t)
-	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
-	c.ReportAuthFailure("claude", "logged_out")
-	if c.IsHealthy("claude") {
+func TestChecker_PassiveAuthHoldsUntilCooldownExpires(t *testing.T) {
+	c, _, fake := newTestChecker(t)
+	c.setStatus(providerid.Claude, Status{Provider: providerid.Claude, Healthy: true, Reason: "ok"}, true)
+	c.ReportAuthFailure(providerid.Claude, "logged_out")
+	if c.IsHealthy(providerid.Claude) {
 		t.Fatalf("should be unhealthy after passive signal")
 	}
 	// A second passive signal should not reset LastCheck needlessly or emit again.
-	c.ReportAuthFailure("claude", "logged_out")
-	if c.IsHealthy("claude") {
+	c.ReportAuthFailure(providerid.Claude, "logged_out")
+	if c.IsHealthy(providerid.Claude) {
 		t.Fatalf("still unhealthy")
 	}
-	// Successful probe clears it.
-	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
-	if !c.IsHealthy("claude") {
-		t.Fatalf("probe should clear passive failure")
+	c.setStatus(providerid.Claude, Status{Provider: providerid.Claude, Healthy: true, Reason: "ok"}, true)
+	if c.IsHealthy(providerid.Claude) {
+		t.Fatalf("a probe inside the hold window resurrected a provider a run reported logged out")
+	}
+	if c.RateLimited(providerid.Claude) {
+		t.Fatalf("an auth hold must not read as a rate-limit cooldown")
+	}
+	fake.Advance(16 * time.Minute)
+	c.setStatus(providerid.Claude, Status{Provider: providerid.Claude, Healthy: true, Reason: "ok"}, true)
+	if !c.IsHealthy(providerid.Claude) {
+		t.Fatalf("probe should clear the auth hold once the cooldown expires")
+	}
+}
+
+func TestChecker_AuthHoldSurvivesAnUnhealthyProbe(t *testing.T) {
+	c, _, fake := newTestChecker(t)
+	c.setStatus(providerid.Claude, Status{Provider: providerid.Claude, Healthy: true, Reason: "ok"}, true)
+	c.ReportAuthFailure(providerid.Claude, "logged_out")
+	for _, intervening := range []Status{
+		{Provider: providerid.Claude, Healthy: false, Reason: "logged_out"},
+		{Provider: providerid.Claude, Healthy: false, Reason: "probe_error", Detail: "exec: no such file"},
+		{Provider: providerid.Claude, Healthy: false, Reason: RateLimitReason},
+	} {
+		c.setStatus(providerid.Claude, intervening, true)
+	}
+	fake.Advance(5 * time.Minute)
+	c.setStatus(providerid.Claude, Status{Provider: providerid.Claude, Healthy: true, Reason: "ok"}, true)
+	if c.IsHealthy(providerid.Claude) {
+		t.Fatalf("the hold was dropped by an intervening unhealthy probe")
+	}
+	fake.Advance(11 * time.Minute)
+	c.setStatus(providerid.Claude, Status{Provider: providerid.Claude, Healthy: true, Reason: "ok"}, true)
+	if !c.IsHealthy(providerid.Claude) {
+		t.Fatalf("provider never recovered after the hold expired")
+	}
+}
+
+func TestChecker_AuthHoldExtendsOnARepeatedRunFailure(t *testing.T) {
+	c, _, fake := newTestChecker(t)
+	c.setStatus(providerid.Claude, Status{Provider: providerid.Claude, Healthy: true, Reason: "ok"}, true)
+	c.ReportAuthFailure(providerid.Claude, "logged_out")
+	fake.Advance(10 * time.Minute)
+	c.ReportAuthFailure(providerid.Claude, "logged_out")
+	fake.Advance(6 * time.Minute)
+	c.setStatus(providerid.Claude, Status{Provider: providerid.Claude, Healthy: true, Reason: "ok"}, true)
+	if c.IsHealthy(providerid.Claude) {
+		t.Fatalf("the second run failure did not extend the hold")
+	}
+	fake.Advance(10 * time.Minute)
+	c.setStatus(providerid.Claude, Status{Provider: providerid.Claude, Healthy: true, Reason: "ok"}, true)
+	if !c.IsHealthy(providerid.Claude) {
+		t.Fatalf("provider never recovered after the extended hold expired")
+	}
+}
+
+func TestChecker_LivenessOnlyProbeDoesNotClearPassiveAuthFailure(t *testing.T) {
+	for _, provider := range []string{"copilot", "opencode"} {
+		t.Run(provider, func(t *testing.T) {
+			c, _, _ := newTestChecker(t)
+			c.setStatus(provider, Status{Provider: provider, Healthy: true, Reason: "ok"}, true)
+			c.ReportAuthFailure(provider, "logged_out")
+			c.setStatus(provider, Status{Provider: provider, Healthy: true, Reason: "ok"}, true)
+			if c.IsHealthy(provider) || c.Reason(provider) != "logged_out" {
+				t.Fatalf("version-only probe resurrected logged-out %s: healthy=%v reason=%q", provider, c.IsHealthy(provider), c.Reason(provider))
+			}
+		})
 	}
 }
 
 func TestChecker_RateLimitExpires(t *testing.T) {
-	c, _, clock := newTestChecker(t)
+	c, _, fake := newTestChecker(t)
 	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
-	c.ReportRateLimit("claude", 10*time.Minute, "rate_limit_error")
+	c.ReportRateLimit("claude", 10*time.Minute, "rate_limit_error", CooldownFromConfig)
 	if c.IsHealthy("claude") {
 		t.Fatalf("claude should be rate-limited")
 	}
-	clock.advance(11 * time.Minute)
+	fake.Advance(11 * time.Minute)
 	c.clearExpiredRateLimits()
 	if !c.IsHealthy("claude") {
 		t.Fatalf("rate-limit window should have expired")
@@ -725,17 +828,17 @@ func TestChecker_FlapEmitsPerFlipNotPerProbe(t *testing.T) {
 // regression that cleared the window on successful probe would release the
 // gate early and let the agent hit the real rate limit again.
 func TestChecker_ProbeHealthyPreservesActiveRateLimit(t *testing.T) {
-	c, _, clock := newTestChecker(t)
+	c, _, fake := newTestChecker(t)
 	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
 
 	// Mark rate-limited for 10m.
-	c.ReportRateLimit("claude", 10*time.Minute, "rate_limit_error")
+	c.ReportRateLimit("claude", 10*time.Minute, "rate_limit_error", CooldownFromConfig)
 	if c.IsHealthy("claude") {
 		t.Fatalf("claude should be rate-limited immediately after ReportRateLimit")
 	}
 
 	// Advance only 1 minute, well within the window.
-	clock.advance(1 * time.Minute)
+	fake.Advance(1 * time.Minute)
 
 	// Simulate an active probe that would otherwise flip us to healthy —
 	// the window must override it.
@@ -755,7 +858,7 @@ func TestChecker_ProbeHealthyPreservesActiveRateLimit(t *testing.T) {
 	}
 
 	// Advance past the window; clearExpiredRateLimits must release.
-	clock.advance(20 * time.Minute)
+	fake.Advance(20 * time.Minute)
 	c.clearExpiredRateLimits()
 	if !c.IsHealthy("claude") {
 		t.Errorf("claude should be healthy after rate-limit window expires")
@@ -817,5 +920,189 @@ func TestNilChecker_IsAnAbsentGateNotAPanic(t *testing.T) {
 		t.Errorf("Failover = %q, want empty: an absent gate has no view to fail over with", got)
 	}
 	gate.ReportAuthFailure("codex", "logged_out")
-	gate.ReportRateLimit("codex", time.Minute, "429")
+	gate.ReportRateLimit("codex", time.Minute, "429", CooldownFromConfig)
+}
+
+func TestChecker_AuthHoldKeepsDispatchOnAPeer(t *testing.T) {
+	c, _, fake := newTestChecker(t)
+	c.setStatus(providerid.Claude, Status{Provider: providerid.Claude, Healthy: true, Reason: "ok"}, true)
+	c.setStatus(providerid.Codex, Status{Provider: providerid.Codex, Healthy: true, Reason: "ok"}, true)
+	c.ReportAuthFailure(providerid.Claude, "logged_out")
+	c.setStatus(providerid.Claude, Status{Provider: providerid.Claude, Healthy: true, Reason: "ok"}, true)
+	if c.IsHealthy(providerid.Claude) {
+		t.Fatalf("claude is schedulable again, so no dispatch would ever reach a peer")
+	}
+	if got := c.Failover(providerid.Claude); got != providerid.Codex {
+		t.Fatalf("failover = %q, want codex while claude is held out", got)
+	}
+	fake.Advance(16 * time.Minute)
+	c.setStatus(providerid.Claude, Status{Provider: providerid.Claude, Healthy: true, Reason: "ok"}, true)
+	if !c.IsHealthy(providerid.Claude) {
+		t.Fatalf("claude never returned after the hold expired")
+	}
+}
+
+func TestChecker_AuthHoldReachesTheHealthEvent(t *testing.T) {
+	c, fe, _ := newTestChecker(t)
+	c.setStatus(providerid.Claude, Status{Provider: providerid.Claude, Healthy: true, Reason: "ok"}, true)
+	c.ReportAuthFailure(providerid.Claude, "logged_out")
+	fe.mu.Lock()
+	defer fe.mu.Unlock()
+	last := fe.events[len(fe.events)-1]
+	if last.Provider != providerid.Claude || last.Healthy {
+		t.Fatalf("last event = %+v, want an unhealthy claude event", last)
+	}
+	if last.AuthHeldUntil.IsZero() {
+		t.Fatal("health event omits authHeldUntil, so an operator cannot see when the provider returns")
+	}
+	if !last.AuthHeldUntil.After(last.LastCheck) {
+		t.Fatalf("authHeldUntil %v is not after lastCheck %v", last.AuthHeldUntil, last.LastCheck)
+	}
+}
+
+func TestChecker_AuthHoldSurvivesAnExpiringRateLimit(t *testing.T) {
+	c, _, fake := newTestChecker(t)
+	c.setStatus(providerid.Claude, Status{Provider: providerid.Claude, Healthy: true, Reason: "ok"}, true)
+	c.ReportAuthFailure(providerid.Claude, "logged_out")
+	c.ReportRateLimit(providerid.Claude, time.Minute, "429", CooldownFromConfig)
+	fake.Advance(90 * time.Second)
+	c.clearExpiredRateLimits()
+	if c.IsHealthy(providerid.Claude) {
+		t.Fatalf("an expiring rate limit released a provider a run reported logged out")
+	}
+	fake.Advance(15 * time.Minute)
+	c.setStatus(providerid.Claude, Status{Provider: providerid.Claude, Healthy: true, Reason: "ok"}, true)
+	if !c.IsHealthy(providerid.Claude) {
+		t.Fatalf("claude never returned after the hold expired")
+	}
+}
+
+func TestChecker_LivenessProbeCannotResurrectAfterAReasonChange(t *testing.T) {
+	for _, name := range []string{providerid.Copilot, providerid.OpenCode} {
+		t.Run(name, func(t *testing.T) {
+			c, _, fake := newTestChecker(t)
+			c.SetProviderEnabled(name, true)
+			c.setStatus(name, Status{Provider: name, Healthy: true, Reason: "ok"}, true)
+			c.ReportAuthFailure(name, "logged_out")
+
+			for range 3 {
+				c.setStatus(name, Status{Provider: name, Healthy: false, Reason: "probe_error", Detail: "exec: no such file"}, true)
+			}
+			if got := c.Reason(name); got != "probe_error" {
+				t.Fatalf("reason = %q, want the intervening probe errors to have overwritten it", got)
+			}
+
+			fake.Advance(30 * time.Minute)
+			c.setStatus(name, Status{Provider: name, Healthy: true, Reason: "ok"}, true)
+
+			if c.IsHealthy(name) {
+				t.Fatalf("a version-only probe resurrected %s after a run reported it logged out", name)
+			}
+			if got := c.Reason(name); got != "logged_out" {
+				t.Fatalf("reason = %q, want logged_out so the operator sees the real cause", got)
+			}
+		})
+	}
+}
+
+func TestChecker_ReEnablingClearsARunAuthFailure(t *testing.T) {
+	c, _, fake := newTestChecker(t)
+	c.SetProviderEnabled(providerid.Copilot, true)
+	c.setStatus(providerid.Copilot, Status{Provider: providerid.Copilot, Healthy: true, Reason: "ok"}, true)
+	c.ReportAuthFailure(providerid.Copilot, "logged_out")
+	fake.Advance(16 * time.Minute)
+
+	c.SetProviderEnabled(providerid.Copilot, false)
+	c.SetProviderEnabled(providerid.Copilot, true)
+	c.setStatus(providerid.Copilot, Status{Provider: providerid.Copilot, Healthy: true, Reason: "ok"}, true)
+
+	if !c.IsHealthy(providerid.Copilot) {
+		t.Fatalf("re-enabling the provider left it held out: reason=%q", c.Reason(providerid.Copilot))
+	}
+}
+
+func TestChecker_ExpiringRateLimitDoesNotReleaseARunAuthFailure(t *testing.T) {
+	c, _, fake := newTestChecker(t)
+	c.SetProviderEnabled(providerid.Copilot, true)
+	c.setStatus(providerid.Copilot, Status{Provider: providerid.Copilot, Healthy: true, Reason: "ok"}, true)
+	c.ReportAuthFailure(providerid.Copilot, "logged_out")
+	c.ReportRateLimit(providerid.Copilot, time.Minute, "429", CooldownFromConfig)
+
+	fake.Advance(16 * time.Minute)
+	c.clearExpiredRateLimits()
+
+	if c.IsHealthy(providerid.Copilot) {
+		t.Fatalf("an expiring rate limit released a provider a run found logged out: reason=%q", c.Reason(providerid.Copilot))
+	}
+}
+
+func TestChecker_BlockedLivenessProbeEmitsOneFlipAndKeepsDetailHonest(t *testing.T) {
+	c, fe, _ := newTestChecker(t)
+	c.SetProviderEnabled(providerid.Copilot, true)
+	c.setStatus(providerid.Copilot, Status{Provider: providerid.Copilot, Healthy: true, Reason: "ok"}, true)
+	c.ReportAuthFailure(providerid.Copilot, "logged_out")
+	c.setStatus(providerid.Copilot, Status{Provider: providerid.Copilot, Healthy: false, Reason: "probe_error", Detail: "exec: no such file"}, true)
+
+	before := fe.count()
+	c.setStatus(providerid.Copilot, Status{Provider: providerid.Copilot, Healthy: true, Reason: "ok"}, true)
+	if got := fe.count() - before; got != 1 {
+		t.Fatalf("flips on the blocked probe = %d, want exactly 1", got)
+	}
+	for range 3 {
+		c.setStatus(providerid.Copilot, Status{Provider: providerid.Copilot, Healthy: true, Reason: "ok"}, true)
+	}
+	if got := fe.count() - before; got != 1 {
+		t.Fatalf("flips after repeated blocked probes = %d, want the first one only", got)
+	}
+
+	snap := c.Snapshot()[providerid.Copilot]
+	if snap.Reason != "logged_out" {
+		t.Fatalf("reason = %q, want logged_out", snap.Reason)
+	}
+	if snap.Detail != "" {
+		t.Fatalf("detail = %q, want no unrelated explanation beside a logged_out reason", snap.Detail)
+	}
+}
+
+func TestChecker_ReEnablingDoesNotCancelTheAuthCooldown(t *testing.T) {
+	c, _, _ := newTestChecker(t)
+	c.setStatus(providerid.Claude, Status{Provider: providerid.Claude, Healthy: true, Reason: "ok"}, true)
+	c.ReportAuthFailure(providerid.Claude, "logged_out")
+
+	c.SetProviderEnabled(providerid.Claude, false)
+	c.SetProviderEnabled(providerid.Claude, true)
+	c.setStatus(providerid.Claude, Status{Provider: providerid.Claude, Healthy: true, Reason: "ok"}, true)
+
+	if c.IsHealthy(providerid.Claude) {
+		t.Fatal("a toggle is not a login: the cooldown was cancelled and dispatch would resume against a logged-out provider")
+	}
+}
+
+func TestChecker_AuthFailureUnderAnyReasonStillHolds(t *testing.T) {
+	c, _, _ := newTestChecker(t)
+	c.SetProviderEnabled(providerid.Copilot, true)
+	c.setStatus(providerid.Copilot, Status{Provider: providerid.Copilot, Healthy: true, Reason: "ok"}, true)
+	c.ReportAuthFailure(providerid.Copilot, "invalid_api_key")
+	c.setStatus(providerid.Copilot, Status{Provider: providerid.Copilot, Healthy: true, Reason: "ok"}, true)
+
+	if c.IsHealthy(providerid.Copilot) {
+		t.Fatal("an auth failure reported under another reason left the provider schedulable")
+	}
+	if got := c.Reason(providerid.Copilot); got != "logged_out" {
+		t.Fatalf("reason = %q, want the caller's wording kept out of the key the guards read", got)
+	}
+}
+
+func TestChecker_BlockedProbeKeepsTheAuthDetail(t *testing.T) {
+	c, _, _ := newTestChecker(t)
+	c.SetProviderEnabled(providerid.Copilot, true)
+	c.setStatus(providerid.Copilot, Status{Provider: providerid.Copilot, Healthy: true, Reason: "ok"}, true)
+	c.ReportAuthFailure(providerid.Copilot, "invalid_api_key")
+
+	c.setStatus(providerid.Copilot, Status{Provider: providerid.Copilot, Healthy: true, Reason: "ok"}, true)
+
+	snap := c.Snapshot()[providerid.Copilot]
+	if snap.Detail != "invalid_api_key" {
+		t.Fatalf("detail = %q, want the caller's explanation of the auth failure kept", snap.Detail)
+	}
 }

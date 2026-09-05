@@ -46,6 +46,10 @@ agent:
   post_result_cost_usd: 5
   max_assistant_events: 50
   require_permissions: false
+  # sybra-server refuses to start without an explicit posture, so an omitted
+  # key can never be mistaken for a contained one. "off" suits this harness:
+  # the fake provider CLIs write only inside $TMP.
+  sandbox_mode: "off"
 orchestrator:
   dispatch_interval_seconds: 3600
   maintenance_interval_seconds: 3600
@@ -98,12 +102,24 @@ SH
 chmod +x "$TMP/fakebin/claude" "$TMP/fakebin/codex" "$TMP/fakebin/copilot"
 ```
 
+Bind the harness server in its own config, not with `SYBRA_PORT` alone. The
+CLI ignores `SYBRA_HOST`/`SYBRA_PORT` when it looks for a board — they name
+where a server *listens*, and letting one steer a client aims it at whatever
+answers there — so a harness that only sets them leaves the CLI dialling the
+default port, which is where an operator's real Sybra listens:
+
+```bash
+cat >> "$TMP/home/config.yaml" <<YAML
+cluster:
+  bind_addrs: ["127.0.0.1:$PORT"]
+YAML
+```
+
 Start the server:
 
 ```bash
 PATH="$TMP/fakebin:$PATH" \
 SYBRA_HOME="$TMP/home" \
-SYBRA_PORT="$PORT" \
 go run ./cmd/sybra-server
 ```
 
@@ -192,14 +208,14 @@ Acceptance checks:
 
 ```bash
 api TaskService GetTask "[\"$TASK_ID\"]" | jq '.status, .agentRuns[-1]'
-cat "$TMP/home/stats.json" | jq '.[-1]'
+tail -n 1 "$TMP/home/stats.json" | jq .
 api App GetEvaluationReport '[]' | jq '.byAgentModel, .byExperimentKind'
 ```
 
 Expected:
 
 - `agentRuns[-1]` has `model`, `experimentId`, `variantId`, `assignmentUnit`, and `assignmentKey`.
-- `stats.json[-1]` has the same A/B metadata.
+- The final NDJSON record in `stats.json` has the same A/B metadata.
 - Copilot smoke runs preserve fractional `premiumRequests` such as `7.5`.
 - Evaluation report includes rows in `byAgentModel` and `byExperimentKind` groups (`kind: "model"`, `"prompt"`, `"skill"`, `"unknown"`), each with a `groups[]` list keyed by `experimentId` (never mixing two experiments' rows), and each `groups[].rows`/`groups[].rowsContribution` breakdown carrying role drilldowns when multiple roles are present.
 

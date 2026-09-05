@@ -3,12 +3,82 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
-	"net/http"
-	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/Automaat/sybra/internal/providerid"
+	"github.com/Automaat/sybra/internal/testutil/backendconformance"
+
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes/fake"
+	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
+	k8stesting "k8s.io/client-go/testing"
 )
+
+func TestGitOutputUsesWorkspaceDirectoryAndDisablesPrompts(t *testing.T) {
+	binDir := t.TempDir()
+	fakeGit := filepath.Join(binDir, "git")
+	if err := os.WriteFile(fakeGit, []byte("#!/bin/sh\nprintf '%s\\n%s\\n' \"$PWD\" \"$GIT_TERMINAL_PROMPT\"\n"), 0o755); err != nil {
+		t.Fatalf("write fake git: %v", err)
+	}
+	t.Setenv("PATH", binDir)
+
+	workspace := t.TempDir()
+	out, err := gitOutput(t.Context(), workspace, "status", "--short")
+	if err != nil {
+		t.Fatalf("gitOutput: %v", err)
+	}
+	lines := strings.Split(out, "\n")
+	if len(lines) != 2 || lines[1] != "0" {
+		t.Fatalf("git environment = %q, want working directory and prompt=0", out)
+	}
+	actualInfo, err := os.Stat(lines[0])
+	if err != nil {
+		t.Fatalf("stat actual working directory: %v", err)
+	}
+	wantInfo, err := os.Stat(workspace)
+	if err != nil {
+		t.Fatalf("stat expected working directory: %v", err)
+	}
+	if !os.SameFile(actualInfo, wantInfo) {
+		t.Fatalf("working directory = %q, want %q", lines[0], workspace)
+	}
+}
+
+func TestK8sGitWorkspaceNeedsPushIgnoresLocalPRRef(t *testing.T) {
+	repo := t.TempDir()
+	runGit := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	runGit("init")
+	runGit("config", "user.email", "test@test.com")
+	runGit("config", "user.name", "Test")
+	runGit("config", "commit.gpgsign", "false")
+	runGit("commit", "--allow-empty", "-m", "base")
+	runGit("update-ref", "refs/remotes/origin/main", "HEAD")
+	runGit("commit", "--allow-empty", "-m", "pr head")
+	runGit("update-ref", "refs/sybra/pr/42", "HEAD")
+
+	if !k8sGitWorkspaceNeedsPush(t.Context(), repo) {
+		t.Fatal("PR head absent from remote-tracking refs must still be pushed")
+	}
+}
 
 func TestK8sName(t *testing.T) {
 	got := k8sName("Sybra Agent_BAD.ID/With Stuff")
@@ -47,20 +117,16 @@ func TestK8sRunnerBaseEnvProjectsSecretRefs(t *testing.T) {
 			SecretKey:  "anthropic_api_key",
 		}},
 	})
-	env := r.baseEnv(&Agent{ID: "agent-1", TaskID: "task-1"}, RunConfig{Prompt: "hello"})
+	env := r.baseEnv(ExecutionSpec{ID: "agent-1", TaskID: "task-1"}, RunConfig{Prompt: "hello"})
 	if len(env) != 5 {
 		t.Fatalf("env len = %d, want 5: %#v", len(env), env)
 	}
-	secret, ok := env[4]["valueFrom"].(map[string]any)
-	if !ok {
-		t.Fatalf("secret env missing valueFrom: %#v", env[4])
+	ref := env[4].ValueFrom
+	if ref == nil || ref.SecretKeyRef == nil {
+		t.Fatalf("secret env missing secretKeyRef: %#v", env[4])
 	}
-	ref, ok := secret["secretKeyRef"].(map[string]any)
-	if !ok {
-		t.Fatalf("secret env missing secretKeyRef: %#v", secret)
-	}
-	if ref["name"] != "sybra-provider-api-keys" || ref["key"] != "anthropic_api_key" {
-		t.Fatalf("secretKeyRef = %#v", ref)
+	if ref.SecretKeyRef.Name != "sybra-provider-api-keys" || ref.SecretKeyRef.Key != "anthropic_api_key" {
+		t.Fatalf("secretKeyRef = %#v", ref.SecretKeyRef)
 	}
 }
 
@@ -77,15 +143,78 @@ func TestK8sRunnerVolumeSpecProjectsPVCMounts(t *testing.T) {
 	if len(volumes) != 1 || len(mounts) != 1 {
 		t.Fatalf("volume spec len = volumes:%d mounts:%d, want 1/1", len(volumes), len(mounts))
 	}
-	pvc, ok := volumes[0]["persistentVolumeClaim"].(map[string]any)
-	if !ok {
+	if volumes[0].PersistentVolumeClaim == nil {
 		t.Fatalf("volume missing pvc spec: %#v", volumes[0])
 	}
-	if pvc["claimName"] != "sybra-home" {
-		t.Fatalf("claimName = %#v, want sybra-home", pvc["claimName"])
+	if volumes[0].PersistentVolumeClaim.ClaimName != "sybra-home" {
+		t.Fatalf("claimName = %#v, want sybra-home", volumes[0].PersistentVolumeClaim.ClaimName)
 	}
-	if mounts[0]["mountPath"] != "/data/sybra/home" {
-		t.Fatalf("mountPath = %#v, want /data/sybra/home", mounts[0]["mountPath"])
+	if mounts[0].MountPath != "/data/sybra/home" {
+		t.Fatalf("mountPath = %#v, want /data/sybra/home", mounts[0].MountPath)
+	}
+}
+
+func TestK8sCreateJobBuildsTypedManifest(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	r := newFakeK8sJobRunner(client, nil, K8sJobRunnerConfig{
+		Namespace: "sybra-poc",
+		Image:     "busybox:1.36",
+		Command:   []string{"sh", "-c", "echo ok"},
+		TTL:       300,
+		Env:       []K8sJobEnvVar{{Name: "PLAIN", Value: "value"}},
+		SecretEnv: []K8sJobSecretEnvVar{{
+			Name:       "SECRET",
+			SecretName: "sybra-provider-api-keys",
+			SecretKey:  "token",
+		}},
+		Volumes: []K8sJobVolume{{
+			Name:      "sybra-home",
+			ClaimName: "sybra-home",
+			MountPath: "/data/sybra/home",
+			ReadOnly:  true,
+		}},
+	})
+
+	a := &Agent{ID: "agent-1", TaskID: "owner/repo"}
+	if err := r.createJob(t.Context(), "sybra-agent-agent-1", executionSpecFromAgent(a), RunConfig{Prompt: "hello"}); err != nil {
+		t.Fatalf("createJob: %v", err)
+	}
+	actions := client.Actions()
+	if len(actions) == 0 {
+		t.Fatal("expected create action")
+	}
+	createAction, ok := actions[0].(k8stesting.CreateAction)
+	if !ok {
+		t.Fatalf("first action = %T, want CreateAction", actions[0])
+	}
+	job, ok := createAction.GetObject().(*batchv1.Job)
+	if !ok {
+		t.Fatalf("created object = %T, want *batchv1.Job", createAction.GetObject())
+	}
+	if job.Spec.TTLSecondsAfterFinished == nil || *job.Spec.TTLSecondsAfterFinished != 300 {
+		t.Fatalf("ttlSecondsAfterFinished = %#v, want 300", job.Spec.TTLSecondsAfterFinished)
+	}
+	if got := job.Labels["sybra.task/id"]; got != "repo" {
+		t.Fatalf("task label = %q, want repo", got)
+	}
+	if job.Spec.Template.Spec.SecurityContext == nil || job.Spec.Template.Spec.SecurityContext.RunAsNonRoot == nil || !*job.Spec.Template.Spec.SecurityContext.RunAsNonRoot {
+		t.Fatalf("security context = %#v, want runAsNonRoot=true", job.Spec.Template.Spec.SecurityContext)
+	}
+	container := job.Spec.Template.Spec.Containers[0]
+	if strings.Join(container.Command, " ") != "sh -c echo ok" {
+		t.Fatalf("command = %#v, want injected command", container.Command)
+	}
+	if len(container.Env) != 5 {
+		t.Fatalf("env len = %d, want 5", len(container.Env))
+	}
+	if container.Env[4].ValueFrom == nil || container.Env[4].ValueFrom.SecretKeyRef == nil || container.Env[4].ValueFrom.SecretKeyRef.Name != "sybra-provider-api-keys" {
+		t.Fatalf("secret env = %#v", container.Env[4])
+	}
+	if len(job.Spec.Template.Spec.Volumes) != 1 || job.Spec.Template.Spec.Volumes[0].PersistentVolumeClaim == nil {
+		t.Fatalf("volumes = %#v, want pvc volume", job.Spec.Template.Spec.Volumes)
+	}
+	if len(container.VolumeMounts) != 1 || !container.VolumeMounts[0].ReadOnly {
+		t.Fatalf("volumeMounts = %#v, want readonly pvc mount", container.VolumeMounts)
 	}
 }
 
@@ -93,7 +222,7 @@ func TestK8sProviderInvocationRunsInPodWorkdir(t *testing.T) {
 	cfg := RunConfig{Provider: "codex", Mode: "headless", Prompt: "hello", RequirePermissions: false}
 	a := &Agent{ID: "agent-1", TaskID: "task-1", Provider: "codex", Mode: "headless", Model: "gpt-5.5"}
 
-	inv, err := buildK8sProviderInvocation(a, cfg, defaultK8sWorkdir)
+	inv, err := buildK8sProviderInvocation(executionSpecFromAgent(a), cfg, defaultK8sWorkdir)
 	if err != nil {
 		t.Fatalf("buildK8sProviderInvocation: %v", err)
 	}
@@ -113,7 +242,7 @@ func TestK8sProviderInvocationSupportsOpenCode(t *testing.T) {
 		Model:    "openrouter/deepseek/deepseek-v4-flash",
 	}
 
-	inv, err := buildK8sProviderInvocation(a, cfg, defaultK8sWorkdir)
+	inv, err := buildK8sProviderInvocation(executionSpecFromAgent(a), cfg, defaultK8sWorkdir)
 	if err != nil {
 		t.Fatalf("buildK8sProviderInvocation: %v", err)
 	}
@@ -142,7 +271,7 @@ func TestK8sProviderInvocationDoesNotResumeStatelessPodSession(t *testing.T) {
 	}
 	a.SetSessionID("ses_previous")
 
-	inv, err := buildK8sProviderInvocation(a, cfg, defaultK8sWorkdir)
+	inv, err := buildK8sProviderInvocation(executionSpecFromAgent(a), cfg, defaultK8sWorkdir)
 	if err != nil {
 		t.Fatalf("buildK8sProviderInvocation: %v", err)
 	}
@@ -223,8 +352,8 @@ func TestAppendK8sPRRepoEnv(t *testing.T) {
 
 			var got string
 			for _, e := range env {
-				if e["name"] == "SYBRA_K8S_PR_REPO" {
-					got, _ = e["value"].(string)
+				if e.Name == "SYBRA_K8S_PR_REPO" {
+					got = e.Value
 				}
 			}
 			if got != tt.want {
@@ -253,33 +382,26 @@ func TestK8sRunnerFailedTTLHonorsConfiguredValue(t *testing.T) {
 }
 
 func TestPatchJobTTLSendsMergePatch(t *testing.T) {
-	var gotMethod, gotContentType, gotPath string
-	var gotBody map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		gotMethod = req.Method
-		gotContentType = req.Header.Get("Content-Type")
-		gotPath = req.URL.Path
-		_ = json.NewDecoder(req.Body).Decode(&gotBody)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
-	r := newK8sJobRunner(discardK8sLogger(), K8sJobRunnerConfig{Namespace: "sybra-poc"})
-	r.apiURL = srv.URL
-	r.client = srv.Client()
-	r.token = "test-token"
+	client := fake.NewSimpleClientset(&batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: "sybra-agent-abc", Namespace: "sybra-poc"}})
+	r := newFakeK8sJobRunner(client, nil, K8sJobRunnerConfig{Namespace: "sybra-poc"})
 
 	if err := r.patchJobTTL(context.Background(), "sybra-agent-abc", 86400); err != nil {
 		t.Fatalf("patchJobTTL: %v", err)
 	}
-	if gotMethod != http.MethodPatch {
-		t.Fatalf("method = %s, want PATCH", gotMethod)
+	actions := client.Actions()
+	if len(actions) == 0 {
+		t.Fatal("expected patch action")
 	}
-	if gotContentType != "application/merge-patch+json" {
-		t.Fatalf("content-type = %s, want application/merge-patch+json", gotContentType)
+	patchAction, ok := actions[len(actions)-1].(k8stesting.PatchAction)
+	if !ok {
+		t.Fatalf("last action = %T, want PatchAction", actions[len(actions)-1])
 	}
-	if want := "/apis/batch/v1/namespaces/sybra-poc/jobs/sybra-agent-abc"; gotPath != want {
-		t.Fatalf("path = %s, want %s", gotPath, want)
+	if patchAction.GetPatchType() != types.MergePatchType {
+		t.Fatalf("patch type = %s, want %s", patchAction.GetPatchType(), types.MergePatchType)
+	}
+	var gotBody map[string]any
+	if err := json.Unmarshal(patchAction.GetPatch(), &gotBody); err != nil {
+		t.Fatalf("unmarshal patch: %v", err)
 	}
 	spec, _ := gotBody["spec"].(map[string]any)
 	if got, want := spec["ttlSecondsAfterFinished"], float64(86400); got != want {
@@ -292,108 +414,336 @@ func TestPatchJobTTLSendsMergePatch(t *testing.T) {
 // that dropped the call, inverted the failedTTL!=ttl guard, or moved it into
 // the success branch would pass every other test in this file.
 func TestK8sRunPatchesFailedJobTTL(t *testing.T) {
-	var patchSeen bool
-	var patchTTL float64
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/namespaces/sybra-poc/pods", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}})
-	})
-	mux.HandleFunc("/apis/batch/v1/namespaces/sybra-poc/jobs", func(w http.ResponseWriter, req *http.Request) {
-		if req.Method != http.MethodPost {
-			t.Errorf("unexpected method on jobs collection: %s", req.Method)
+	jobName := "sybra-agent-test-agent"
+	client := fake.NewSimpleClientset()
+	client.PrependReactor("get", "jobs", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		getAction, ok := action.(k8stesting.GetAction)
+		if !ok || getAction.GetName() != jobName {
+			return false, nil, nil
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{})
+		return true, &batchv1.Job{
+			ObjectMeta: metav1.ObjectMeta{Name: jobName, Namespace: "sybra-poc"},
+			Status:     batchv1.JobStatus{Failed: 1},
+		}, nil
 	})
-	mux.HandleFunc("/apis/batch/v1/namespaces/sybra-poc/jobs/sybra-agent-test-agent", func(w http.ResponseWriter, req *http.Request) {
-		switch req.Method {
-		case http.MethodGet:
-			_ = json.NewEncoder(w).Encode(map[string]any{"status": map[string]any{"failed": 1}})
-		case http.MethodPatch:
-			patchSeen = true
-			var body map[string]any
-			_ = json.NewDecoder(req.Body).Decode(&body)
-			spec, _ := body["spec"].(map[string]any)
-			patchTTL, _ = spec["ttlSecondsAfterFinished"].(float64)
-			w.WriteHeader(http.StatusOK)
-		default:
-			t.Errorf("unexpected method on job resource: %s", req.Method)
-		}
-	})
-	srv := httptest.NewServer(mux)
-	defer srv.Close()
+	r := newFakeK8sJobRunner(client, newFakePodClient(client.CoreV1().Pods("sybra-poc")), K8sJobRunnerConfig{Namespace: "sybra-poc", TTL: 300, FailedTTL: 86400})
 
-	r := newK8sJobRunner(discardK8sLogger(), K8sJobRunnerConfig{Namespace: "sybra-poc", TTL: 300, FailedTTL: 86400})
-	r.apiURL = srv.URL
-	r.client = srv.Client()
-	r.token = "test-token"
-
-	m, _ := newTestManager(t)
 	a := &Agent{ID: "test-agent", TaskID: "task-1", Provider: "claude"}
+	sink := &recordingExecutionSink{}
+	r.Run(t.Context(), "kubernetes:test-agent", ExecutionStart{Spec: executionSpecFromAgent(a), Config: RunConfig{}, Sink: sink})
 
-	r.Run(t.Context(), m, a, RunConfig{})
-
-	if !patchSeen {
+	patchAction := lastPatchAction(client.Actions())
+	if patchAction == nil {
 		t.Fatal("expected a PATCH to extend TTL on the failed Job, saw none")
 	}
+	var gotBody map[string]any
+	if err := json.Unmarshal(patchAction.GetPatch(), &gotBody); err != nil {
+		t.Fatalf("unmarshal patch: %v", err)
+	}
+	spec, _ := gotBody["spec"].(map[string]any)
+	patchTTL, _ := spec["ttlSecondsAfterFinished"].(float64)
 	if patchTTL != 86400 {
 		t.Fatalf("patched ttlSecondsAfterFinished = %v, want 86400", patchTTL)
 	}
-	if a.GetExitErr() == nil {
-		t.Fatal("expected the agent to record an error for a failed Job")
+	if err := sink.completedErr(); err == nil {
+		t.Fatal("expected a failed completion event for a failed Job")
 	}
 }
 
 // TestK8sRunSkipsPatchWhenFailedTTLMatchesTTL confirms the guard actually
 // saves the extra API call when there's nothing to extend.
 func TestK8sRunSkipsPatchWhenFailedTTLMatchesTTL(t *testing.T) {
-	var patchSeen bool
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/namespaces/sybra-poc/pods", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}})
-	})
-	mux.HandleFunc("/apis/batch/v1/namespaces/sybra-poc/jobs", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{})
-	})
-	mux.HandleFunc("/apis/batch/v1/namespaces/sybra-poc/jobs/sybra-agent-test-agent", func(w http.ResponseWriter, req *http.Request) {
-		switch req.Method {
-		case http.MethodGet:
-			_ = json.NewEncoder(w).Encode(map[string]any{"status": map[string]any{"failed": 1}})
-		case http.MethodPatch:
-			patchSeen = true
-			w.WriteHeader(http.StatusOK)
+	jobName := "sybra-agent-test-agent"
+	client := fake.NewSimpleClientset()
+	client.PrependReactor("get", "jobs", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		getAction, ok := action.(k8stesting.GetAction)
+		if !ok || getAction.GetName() != jobName {
+			return false, nil, nil
 		}
+		return true, &batchv1.Job{
+			ObjectMeta: metav1.ObjectMeta{Name: jobName, Namespace: "sybra-poc"},
+			Status:     batchv1.JobStatus{Failed: 1},
+		}, nil
 	})
-	srv := httptest.NewServer(mux)
-	defer srv.Close()
+	r := newFakeK8sJobRunner(client, newFakePodClient(client.CoreV1().Pods("sybra-poc")), K8sJobRunnerConfig{Namespace: "sybra-poc", TTL: 300, FailedTTL: 300})
 
-	r := newK8sJobRunner(discardK8sLogger(), K8sJobRunnerConfig{Namespace: "sybra-poc", TTL: 300, FailedTTL: 300})
-	r.apiURL = srv.URL
-	r.client = srv.Client()
-	r.token = "test-token"
-
-	m, _ := newTestManager(t)
 	a := &Agent{ID: "test-agent", TaskID: "task-1", Provider: "claude"}
+	sink := &recordingExecutionSink{}
+	r.Run(t.Context(), "kubernetes:test-agent", ExecutionStart{Spec: executionSpecFromAgent(a), Config: RunConfig{}, Sink: sink})
 
-	r.Run(t.Context(), m, a, RunConfig{})
-
-	if patchSeen {
+	if lastPatchAction(client.Actions()) != nil {
 		t.Fatal("expected no PATCH when failedTTL equals ttl — the Job already has that TTL from creation")
 	}
 }
 
-func TestPatchJobTTLReturnsErrorOnNonSuccessStatus(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		w.WriteHeader(http.StatusUnsupportedMediaType)
-		_, _ = w.Write([]byte("boom"))
-	}))
-	defer srv.Close()
+func TestK8sExecutionBackendStopDeletesJobAndRecoveryObservesCancellation(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	runner := newFakeK8sJobRunner(client, nil, K8sJobRunnerConfig{Namespace: "sybra-poc"})
+	backend := &k8sExecutionBackend{
+		callbackExecutionBackend: newCallbackExecutionBackend("kubernetes"),
+		runner:                   runner,
+	}
+	runCtx, cancel := context.WithCancel(t.Context())
+	initial := &recordingExecutionSink{}
+	handle, err := backend.Start(runCtx, ExecutionStart{
+		Spec:   ExecutionSpec{ID: "stop-agent", TaskID: "task-1", Provider: providerid.Claude},
+		Config: RunConfig{},
+		Sink:   initial,
+		stop: func(context.Context) error {
+			cancel()
+			return nil
+		},
+		inspect: func() ExecutionInspection {
+			return ExecutionInspection{State: "running", Agent: View{ID: "stop-agent"}}
+		},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if !pollUntil(time.Second, time.Millisecond, func() bool {
+		return hasK8sAction(client.Actions(), "create", "jobs")
+	}) {
+		t.Fatalf("Job was not created; actions = %+v", client.Actions())
+	}
+	recovered := &recordingExecutionSink{}
+	if err := backend.Recover(t.Context(), handle, recovered); err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if err := backend.Stop(runCtx, handle); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if err := backend.Stop(runCtx, handle); err != nil {
+		t.Fatalf("repeated Stop: %v", err)
+	}
+	if !pollUntil(time.Second, time.Millisecond, func() bool {
+		return hasK8sAction(client.Actions(), "delete", "jobs")
+	}) {
+		t.Fatalf("Stop did not delete Job; actions = %+v", client.Actions())
+	}
+	if !pollUntil(time.Second, time.Millisecond, func() bool {
+		return errors.Is(recovered.completedErr(), context.Canceled)
+	}) {
+		t.Fatalf("recovered sink did not observe cancellation; events = %+v", recovered.events)
+	}
+}
 
-	r := newK8sJobRunner(discardK8sLogger(), K8sJobRunnerConfig{Namespace: "sybra-poc"})
-	r.apiURL = srv.URL
-	r.client = srv.Client()
-	r.token = "test-token"
+func TestK8sExecutionBackendCommonConformance(t *testing.T) {
+	backendconformance.Run(t, k8sCommonConformanceFixture)
+}
+
+func k8sCommonConformanceFixture(t *testing.T, emit func(backendconformance.Event)) backendconformance.Fixture {
+	t.Helper()
+	client := fake.NewSimpleClientset()
+	pods := newFakePodClient(client.CoreV1().Pods("sybra-poc"))
+	runner := newFakeK8sJobRunner(client, pods, K8sJobRunnerConfig{Namespace: "sybra-poc"})
+	backend := &k8sExecutionBackend{callbackExecutionBackend: newCallbackExecutionBackend("kubernetes"), runner: runner}
+	runCtx, cancel := context.WithCancel(t.Context())
+	var releaseOnce sync.Once
+	jobName := "sybra-agent-agent-1"
+	sink := executionEventSinkFunc(func(_ context.Context, _ ExecutionHandle, event ExecutionEvent) {
+		emit(backendconformance.Event{Kind: executionEventKind(event.Kind), Err: event.Err})
+	})
+	start := ExecutionStart{
+		Spec: ExecutionSpec{ID: "agent-1", TaskID: "task-1", Provider: providerid.Claude}, Sink: sink,
+		stop: func(context.Context) error { cancel(); return nil },
+		inspect: func() ExecutionInspection {
+			return ExecutionInspection{State: "running", Agent: View{ID: "agent-1"}}
+		},
+	}
+	release := func() {
+		releaseOnce.Do(func() {
+			podName := "agent-1-pod"
+			_, _ = client.CoreV1().Pods("sybra-poc").Create(t.Context(), &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: podName, Namespace: "sybra-poc", Labels: map[string]string{"job-name": jobName}},
+			}, metav1.CreateOptions{})
+			pods.logs[podName] = "{\"type\":\"assistant\"}\n"
+			job, err := client.BatchV1().Jobs("sybra-poc").Get(t.Context(), jobName, metav1.GetOptions{})
+			if err == nil {
+				job.Status.Succeeded = 1
+				_, _ = client.BatchV1().Jobs("sybra-poc").UpdateStatus(t.Context(), job, metav1.UpdateOptions{})
+			}
+		})
+	}
+	return backendconformance.Fixture{
+		Start: func() (string, error) {
+			handle, err := backend.Start(runCtx, start)
+			return string(handle), err
+		},
+		InvalidStart: func() error {
+			invalid := start
+			invalid.Spec.ID = ""
+			_, err := backend.Start(runCtx, invalid)
+			return err
+		},
+		Stop: func(handle string) error { return backend.Stop(runCtx, ExecutionHandle(handle)) },
+		Recover: func(handle string, recovered func(backendconformance.Event)) error {
+			recoveredSink := executionEventSinkFunc(func(_ context.Context, _ ExecutionHandle, event ExecutionEvent) {
+				recovered(backendconformance.Event{Kind: executionEventKind(event.Kind), Err: event.Err})
+			})
+			return backend.Recover(t.Context(), ExecutionHandle(handle), recoveredSink)
+		},
+		Inspect: func(handle string) error {
+			_, err := backend.Inspect(t.Context(), ExecutionHandle(handle))
+			return err
+		},
+		Release: release,
+	}
+}
+
+func TestK8sExecutionBackendAcceptsCreateBeforeStartReturns(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	createEntered := make(chan struct{})
+	releaseCreate := make(chan struct{})
+	client.PrependReactor("create", "jobs", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		close(createEntered)
+		<-releaseCreate
+		createAction := action.(k8stesting.CreateAction)
+		return false, createAction.GetObject(), nil
+	})
+	runner := newFakeK8sJobRunner(client, nil, K8sJobRunnerConfig{Namespace: "sybra-poc"})
+	backend := &k8sExecutionBackend{
+		callbackExecutionBackend: newCallbackExecutionBackend("kubernetes"),
+		runner:                   runner,
+	}
+	type startResult struct {
+		handle ExecutionHandle
+		err    error
+	}
+	result := make(chan startResult, 1)
+	go func() {
+		handle, err := backend.Start(t.Context(), ExecutionStart{
+			Spec: ExecutionSpec{ID: "accept-agent", TaskID: "task-1", Provider: providerid.Claude},
+			Sink: &recordingExecutionSink{},
+			stop: func(context.Context) error { return nil },
+			inspect: func() ExecutionInspection {
+				return ExecutionInspection{State: "running", Agent: View{ID: "accept-agent"}}
+			},
+		})
+		result <- startResult{handle: handle, err: err}
+	}()
+	<-createEntered
+	select {
+	case got := <-result:
+		t.Fatalf("Start returned before Job creation was accepted: %+v", got)
+	default:
+	}
+	close(releaseCreate)
+	got := <-result
+	if got.err != nil {
+		t.Fatalf("Start: %v", got.err)
+	}
+	if err := backend.Stop(t.Context(), got.handle); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	actions := client.Actions()
+	createIndex, deleteIndex := -1, -1
+	for i, action := range actions {
+		switch {
+		case action.GetVerb() == "create" && action.GetResource().Resource == "jobs":
+			createIndex = i
+		case action.GetVerb() == "delete" && action.GetResource().Resource == "jobs":
+			deleteIndex = i
+		}
+	}
+	if createIndex < 0 || deleteIndex <= createIndex {
+		t.Fatalf("actions = %+v, want accepted Create before Delete", actions)
+	}
+}
+
+func hasK8sAction(actions []k8stesting.Action, verb, resource string) bool {
+	for _, action := range actions {
+		if action.GetVerb() == verb && action.GetResource().Resource == resource {
+			return true
+		}
+	}
+	return false
+}
+
+type recordingExecutionSink struct {
+	mu     sync.Mutex
+	events []ExecutionEvent
+}
+
+func (s *recordingExecutionSink) EmitExecutionEvent(_ context.Context, _ ExecutionHandle, event ExecutionEvent) {
+	s.mu.Lock()
+	s.events = append(s.events, event)
+	s.mu.Unlock()
+}
+
+func (s *recordingExecutionSink) completedErr() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, event := range slices.Backward(s.events) {
+		if event.Kind == ExecutionCompleted {
+			return event.Err
+		}
+	}
+	return nil
+}
+
+func TestPatchJobTTLReturnsErrorOnNonSuccessStatus(t *testing.T) {
+	client := fake.NewSimpleClientset(&batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: "sybra-agent-abc", Namespace: "sybra-poc"}})
+	client.PrependReactor("patch", "jobs", func(_ k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, fmt.Errorf("boom")
+	})
+	r := newFakeK8sJobRunner(client, nil, K8sJobRunnerConfig{Namespace: "sybra-poc"})
 
 	if err := r.patchJobTTL(context.Background(), "sybra-agent-abc", 86400); err == nil {
 		t.Fatal("expected error for non-2xx response")
 	}
+}
+
+func TestPatchJobTTLRejectsOutOfRangeValue(t *testing.T) {
+	r := newFakeK8sJobRunner(fake.NewSimpleClientset(), nil, K8sJobRunnerConfig{Namespace: "sybra-poc"})
+
+	if err := r.patchJobTTL(context.Background(), "sybra-agent-abc", -1); err == nil {
+		t.Fatal("expected negative ttl to fail")
+	}
+}
+
+func TestK8sTTLSecondsRejectsOutOfRangeValue(t *testing.T) {
+	if _, err := k8sTTLSeconds(-1); err == nil {
+		t.Fatal("expected negative ttl to fail")
+	}
+}
+
+type fakePodClient struct {
+	corev1client typedcorev1.PodInterface
+	logs         map[string]string
+	logErr       map[string]error
+}
+
+func newFakePodClient(corev1client typedcorev1.PodInterface) *fakePodClient {
+	return &fakePodClient{corev1client: corev1client, logs: map[string]string{}, logErr: map[string]error{}}
+}
+
+func (p *fakePodClient) List(ctx context.Context, opts metav1.ListOptions) (*corev1.PodList, error) {
+	return p.corev1client.List(ctx, opts)
+}
+
+func (p *fakePodClient) Logs(_ context.Context, podName, _ string) (string, error) {
+	if err := p.logErr[podName]; err != nil {
+		return "", err
+	}
+	return p.logs[podName], nil
+}
+
+func newFakeK8sJobRunner(clientset *fake.Clientset, pods k8sPodClient, cfg K8sJobRunnerConfig) *k8sJobRunner {
+	r := newK8sJobRunner(discardK8sLogger(), cfg)
+	r.jobs = clientset.BatchV1().Jobs(cfg.Namespace)
+	if pods == nil {
+		pods = newFakePodClient(clientset.CoreV1().Pods(cfg.Namespace))
+	}
+	r.pods = pods
+	r.clientErr = nil
+	return r
+}
+
+func lastPatchAction(actions []k8stesting.Action) k8stesting.PatchAction {
+	for _, action := range slices.Backward(actions) {
+		if patchAction, ok := action.(k8stesting.PatchAction); ok {
+			return patchAction
+		}
+	}
+	return nil
 }

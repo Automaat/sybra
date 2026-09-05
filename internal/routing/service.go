@@ -196,10 +196,27 @@ func (s *Service) tick() {
 		return
 	}
 	rep, ok := s.report()
+	if ok {
+		maxAge := s.cfg.EvaluationMaxAge()
+		if tw := evaluation.Trustworthy(rep, s.now(), maxAge); !tw.Trustworthy {
+			s.logger.Warn("routing.tick.evaluation_untrustworthy", "reason", tw.Reason)
+			s.rollbackToBaseline(prevOverlay, base, tw.Reason, false)
+			return
+		}
+	}
 	if !ok {
-		if s.cfg.Enabled && prevOverlay.Version == 0 && len(prevOverlay.Experiments) == 0 {
+		switch {
+		case s.cfg.Enabled && prevOverlay.Version == 0 && len(prevOverlay.Experiments) == 0:
 			s.persistAndApply(bootstrapOverlay(1, s.now(), base), base)
-		} else {
+		case len(prevOverlay.Experiments) > 0:
+			// A learned overlay is already live (loaded from disk and re-pushed
+			// by ApplyPersistedOverlay), but no evaluation report exists —
+			// evaluation is disabled, or this is a restart before the service
+			// publishes its first report. Missing evidence must fall back to the
+			// stable production baseline, not keep serving stale learned weights.
+			// rollbackToBaseline no-ops when the overlay is already at baseline.
+			s.rollbackToBaseline(prevOverlay, base, "no evaluation report", true)
+		default:
 			s.logger.Debug("routing.tick.no_report")
 		}
 		return
@@ -507,6 +524,16 @@ func pruneOverlay(prev Overlay, base abtest.Config, now time.Time) (Overlay, boo
 }
 
 func bootstrapOverlay(version int, now time.Time, base abtest.Config) Overlay {
+	return declaredWeightsOverlay(version, now, base, true)
+}
+
+// declaredWeightsOverlay builds an overlay whose weights are copied verbatim
+// from base's declared (operator-configured) values — i.e. carrying no
+// learned adjustment at all. insufficientData is stamped true whenever no
+// trustworthy scores back the generation (a fresh bootstrap, or a rollback
+// triggered by a missing evaluation report) and false only for a rollback
+// where scores existed but were discarded as untrustworthy, not absent.
+func declaredWeightsOverlay(version int, now time.Time, base abtest.Config, insufficientData bool) Overlay {
 	overlay := Overlay{Version: version, GeneratedAt: now}
 	for i := range base.Experiments {
 		exp := base.Experiments[i]
@@ -522,7 +549,7 @@ func bootstrapOverlay(version int, now time.Time, base abtest.Config) Overlay {
 			ov.Variants = append(ov.Variants, OverlayVariant{
 				VariantID:        variant.ID,
 				Weight:           variant.Weight,
-				InsufficientData: true,
+				InsufficientData: insufficientData,
 			})
 		}
 		if len(ov.Variants) > 0 {
@@ -533,6 +560,55 @@ func bootstrapOverlay(version int, now time.Time, base abtest.Config) Overlay {
 		return overlay.Experiments[i].ExperimentID < overlay.Experiments[j].ExperimentID
 	})
 	return overlay
+}
+
+// rollbackToBaseline discards any adaptive weight shift and resets the
+// overlay to base's declared weights because the evaluation report backing
+// this tick is untrustworthy — the "keep one stable production baseline"
+// fail-safe: an untrustworthy signal must never be allowed to keep
+// promoting/expanding experiment traffic away from it. A no-op (nothing
+// saved, applied, or audited) when the overlay is already at baseline, so a
+// sustained outage does not churn a new version every tick.
+//
+// insufficientData mirrors the two rollback causes so the baseline is
+// weight-equivalent to a bootstrap generation when evidence is absent:
+// true when scores are absent (no evaluation report — the same state a
+// bootstrap encodes), false when a report existed but was discarded as
+// untrustworthy. Passing false on the no-report path would make the rollback
+// baseline differ from the bootstrap overlay solely by this flag, churning a
+// spurious generation + audit on the first tick after a fresh enabled startup.
+func (s *Service) rollbackToBaseline(prevOverlay Overlay, base abtest.Config, reason string, insufficientData bool) {
+	baseline := declaredWeightsOverlay(prevOverlay.Version+1, s.now(), base, insufficientData)
+	if overlaysEquivalent(baseline, prevOverlay) {
+		s.logger.Debug("routing.tick.evaluation_untrustworthy_already_baseline", "reason", reason)
+		return
+	}
+	if err := s.store.Save(baseline); err != nil {
+		s.logger.Warn("routing.overlay.save_failed", "err", err)
+		return
+	}
+	s.mu.Lock()
+	s.overlay = baseline
+	s.mu.Unlock()
+
+	applied := false
+	if s.cfg.Enabled && s.apply != nil {
+		merged := mergeWeights(base, baseline)
+		if err := s.apply(merged); err != nil {
+			s.logger.Warn("routing.apply.failed", "err", err, "version", baseline.Version)
+		} else {
+			applied = true
+		}
+	}
+	s.emit(OverlayEvent, baseline)
+	if err := s.auditLog(audit.Event{Type: audit.EventRoutingRolledBack, Data: map[string]any{
+		"version": baseline.Version,
+		"applied": applied,
+		"reason":  reason,
+	}}); err != nil {
+		s.logger.Warn("routing.audit.failed", "err", err)
+	}
+	s.logger.Warn("routing.rollback", "version", baseline.Version, "reason", reason, "applied", applied)
 }
 
 // mergeWeights clones base and overwrites each configured variant's Weight

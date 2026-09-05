@@ -12,19 +12,27 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/agentgrant"
 	"github.com/Automaat/sybra/internal/agentqueue"
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/attachment"
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/backoff"
 	"github.com/Automaat/sybra/internal/bgop"
+	"github.com/Automaat/sybra/internal/cleanup"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/db"
 	"github.com/Automaat/sybra/internal/diskreclaim"
 	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/httpserve"
+	"github.com/Automaat/sybra/internal/intervention"
 	"github.com/Automaat/sybra/internal/learning"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/loopagent"
+	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/notification"
 	"github.com/Automaat/sybra/internal/poll"
@@ -33,16 +41,25 @@ import (
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/prompteval"
 	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/recovery"
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/skillsync"
 	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/sybra/clusterlead"
+	"github.com/Automaat/sybra/internal/sybra/dispatch"
 	"github.com/Automaat/sybra/internal/sybra/review"
+	"github.com/Automaat/sybra/internal/sybra/runenv"
+	"github.com/Automaat/sybra/internal/sybra/verification"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/task/taskdb"
+	"github.com/Automaat/sybra/internal/taskstatus"
+	"github.com/Automaat/sybra/internal/toolledger"
 	"github.com/Automaat/sybra/internal/umbrella"
 	"github.com/Automaat/sybra/internal/watcher"
+	"github.com/Automaat/sybra/internal/workercontrol"
 	"github.com/Automaat/sybra/internal/workflow"
+	"github.com/Automaat/sybra/internal/workflowpr"
 )
 
 const (
@@ -128,10 +145,10 @@ func (s *liveLimitPollState) recordResult(now time.Time, result limits.LiveRefre
 			logger.Warn("limits.live_poll.invalidate", "provider", limits.ProviderClaude, "err", err)
 		}
 		s.claudeAuthFailures++
-		backoff := liveLimitAuthBackoff(s.claudeAuthFailures)
-		s.next[limits.ProviderClaude] = now.Add(backoff)
+		retryDelay := liveLimitAuthBackoff(s.claudeAuthFailures)
+		s.next[limits.ProviderClaude] = now.Add(retryDelay)
 		if !s.claudeAuthOpen {
-			logger.Warn("limits.live_poll.claude_auth", "backoff", backoff, "err", claude.Err)
+			logger.Warn("limits.live_poll.claude_auth", "backoff", retryDelay, "err", claude.Err)
 			s.claudeAuthOpen = true
 		}
 		return
@@ -145,20 +162,7 @@ func (s *liveLimitPollState) recordResult(now time.Time, result limits.LiveRefre
 }
 
 func liveLimitAuthBackoff(failures int) time.Duration {
-	if failures <= 1 {
-		return liveLimitPollInterval
-	}
-	backoff := liveLimitPollInterval
-	for range failures - 1 {
-		if backoff >= liveLimitPollAuthBackoffMax {
-			return liveLimitPollAuthBackoffMax
-		}
-		backoff *= 2
-	}
-	if backoff > liveLimitPollAuthBackoffMax {
-		return liveLimitPollAuthBackoffMax
-	}
-	return backoff
+	return backoff.ForAttempt(max(failures, 1), liveLimitPollInterval, liveLimitPollAuthBackoffMax).Delay
 }
 
 func liveLimitProviderEnabled(policy limits.Policy, providerName string) bool {
@@ -174,12 +178,16 @@ type startupDegradedEvent struct {
 	Reason    string `json:"reason"`
 }
 
-func (a *App) initBgops(emit func(string, any)) {
-	a.bgops = bgop.NewTracker(emit, filepath.Join(config.HomeDir(), "bgops.json"), a.logger)
+func (a *App) initBgops(ctx context.Context, emit func(string, any)) {
+	a.bgops = bgop.NewTracker(emit, a.openBgopStore(ctx), a.logger)
 	a.bgops.LoadFromDisk()
 }
 
+// initFileWatcher starts the tasks-directory watcher only for the file backend: every Manager mutation already emits task:created/updated/deleted directly (see eventPath's doc comment), so on the database backend there is no file for the watcher to see and nothing it would be first to notice.
 func (a *App) initFileWatcher(ctx context.Context, emit func(string, any)) {
+	if a.currentConfig().DatabaseEnabled() {
+		return
+	}
 	w := watcher.New(a.tasksDir, emit, a.logger)
 	if err := w.Start(ctx); err != nil {
 		a.logger.Error("watcher.start", "err", err)
@@ -281,7 +289,7 @@ func (a *App) initIssuesFetcher(emit func(string, any)) *poll.IssuesFetcher {
 func (a *App) logAutomationsSummary() {
 	loopAgentsEnabled := 0
 	if a.loopAgents != nil {
-		if las, err := a.loopAgents.List(); err == nil {
+		if las, err := a.loopAgents.List(a.ctx); err == nil {
 			for i := range las {
 				if las[i].Enabled {
 					loopAgentsEnabled++
@@ -308,13 +316,72 @@ func (a *App) logAutomationsSummary() {
 		"triage", a.cfg.Triage.Enabled,
 		"human_review", a.humanReview != nil,
 		"project_types", projectTypes,
+		"sandbox_mode", a.cfg.DefaultSandboxMode(),
 		"loop_agents_enabled", loopAgentsEnabled,
 		"prompteval_runner", promptevalRunner.Name(),
 		"promptfoo_present", (&prompteval.PromptfooRunner{}).Available(),
+		"providers", a.cfg.Providers.EnabledNames(),
 	)
+	a.warnThinFailoverChain()
 }
 
-func (a *App) initStats() {
+// warnThinFailoverChain says at startup when this instance has fewer than two
+// providers it can actually dispatch to. A one-leg chain has no failover at
+// all, and that is how one weekly limit plus one usage limit turned into a dead
+// board on 2026-08-05 — a state that was only visible by grepping the app log
+// for provider.health.flip after the fact.
+//
+// Health is meaningful here because initProviderHealth's ProbeOnce has already
+// run by the time the summary is logged; a nil checker means health checking is
+// off, and only the configured count is knowable.
+func (a *App) warnThinFailoverChain() {
+	enabled := a.cfg.Providers.EnabledNames()
+	switch len(enabled) {
+	case 0:
+		a.logger.Error("app.providers.none-enabled",
+			"detail", "no provider is enabled; this instance cannot dispatch at all")
+	case 1:
+		a.logger.Warn("app.providers.no-failover",
+			"enabled", enabled,
+			"detail", "one provider enabled; a single rate limit stalls the board")
+	}
+	if a.providerHealth == nil {
+		return
+	}
+	snap := a.providerHealth.Snapshot()
+	healthy := make([]string, 0, len(enabled))
+	for _, name := range enabled {
+		if st, ok := snap[name]; ok && st.Healthy {
+			healthy = append(healthy, name)
+		}
+	}
+	switch {
+	case len(healthy) == 0:
+		a.logger.Error("app.providers.no-capacity",
+			"enabled", enabled,
+			"detail", "no enabled provider is healthy; nothing can dispatch")
+	case len(healthy) < 2:
+		a.logger.Warn("app.providers.thin-capacity",
+			"enabled", enabled, "healthy", healthy,
+			"detail", "only one healthy provider; a single rate limit stalls the board")
+	default:
+		a.logger.Info("app.providers.capacity", "enabled", enabled, "healthy", healthy)
+	}
+}
+
+func (a *App) initStats(ctx context.Context) {
+	if a.database != nil {
+		importCtx, cancel := context.WithTimeout(ctx, importTimeout)
+		defer cancel()
+		if err := stats.Import(importCtx, a.database, config.StatsFile(), a.importScope(), a.logger); err != nil {
+			a.logger.Error("stats.import", "err", err)
+		} else if store, err := stats.NewSQLStore(a.database, a.logger); err != nil {
+			a.logger.Error("stats.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
+		} else {
+			a.stats = store
+			return
+		}
+	}
 	statsStore, err := stats.NewStore(config.StatsFile())
 	if err != nil {
 		a.logger.Warn("stats.init.degraded", "err", err)
@@ -329,12 +396,14 @@ func (a *App) initStats() {
 
 // initLocalStores wires the small local-only data stores that degrade to nil
 // on failure rather than blocking startup.
-func (a *App) initLocalStores() {
+func (a *App) initLocalStores(ctx context.Context) {
 	a.initAttachments()
 	a.initArtifacts()
-	a.initExperience()
+	a.verification = verification.New(filepath.Join(config.HomeDir(), "verification"), a.artifacts, a.logger)
+	a.initExperience(ctx)
+	a.initIntervention()
 	a.initLearning()
-	a.initAgentQueue()
+	a.initAgentQueue(ctx)
 }
 
 func (a *App) initAttachments() {
@@ -351,13 +420,36 @@ func (a *App) initAttachments() {
 	})
 }
 
-func (a *App) initExperience() {
-	store, err := experience.New(a.cfg.ExperiencesDir())
+func (a *App) initExperience(ctx context.Context) {
+	dir := a.cfg.ExperiencesDir()
+	if a.database != nil {
+		if err := experience.Import(ctx, a.database, dir, a.importScope(), a.logger); err != nil {
+			// Degrade to files rather than start on a half-populated table: an
+			// empty advisory memory reads as "this project has no history",
+			// which is a worse answer than the one the files still hold.
+			a.logger.Error("experience.import", "err", err)
+		} else if store, err := experience.NewSQLStore(a.database); err != nil {
+			a.logger.Error("experience.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
+		} else {
+			a.experience = store
+			return
+		}
+	}
+	store, err := experience.New(dir)
 	if err != nil {
 		a.logger.Warn("experience.init.degraded", "err", err)
 		return
 	}
 	a.experience = store
+}
+
+func (a *App) initIntervention() {
+	store, err := intervention.New(a.cfg.InterventionsDir())
+	if err != nil {
+		a.logger.Warn("intervention.init.degraded", "err", err)
+		return
+	}
+	a.intervention = store
 }
 
 // initLearning constructs the Learning Digest store. A failure degrades to a
@@ -372,8 +464,11 @@ func (a *App) initLearning() {
 	a.learning = store
 }
 
-func (a *App) initAgentQueue() {
-	queue, err := agentqueue.New(config.AgentQueueDir(), agentqueue.Options{MaxDepth: a.cfg.Agent.Queue.MaxDepth}, a.logger)
+func (a *App) initAgentQueue(ctx context.Context) {
+	queue, err := agentqueue.New(config.AgentQueueDir(), agentqueue.Options{
+		MaxDepth: a.cfg.Agent.Queue.MaxDepth,
+		Store:    a.openAgentQueueStore(ctx),
+	}, a.logger)
 	if err != nil {
 		a.logger.Warn("agentqueue.init.degraded", "err", err)
 		return
@@ -381,8 +476,10 @@ func (a *App) initAgentQueue() {
 	a.agentQueue = queue
 }
 
-func (a *App) initLimits() {
-	limitStore, err := limits.NewStore(config.LimitsFile())
+// initLimits opens the quota store, taking the store the caller already built
+// so the import's context belongs to startup while the live poller keeps the
+// app's own long-lived one.
+func (a *App) initLimits(limitStore *limits.Store, err error) {
 	if err != nil {
 		a.logger.Warn("limits.init.degraded", "err", err)
 		return
@@ -415,6 +512,7 @@ func (a *App) initLimits() {
 func (a *App) initSandboxes() {
 	mgr := sandbox.NewManager(filepath.Join(config.HomeDir(), "sandboxes"), a.logger)
 	mgr.SetRetentionWindow(sandboxRetentionWindow(a.cfg))
+	mgr.SetProtectedFindings(a.cleanupProtected)
 	a.sandboxes = mgr
 }
 
@@ -424,15 +522,23 @@ func (a *App) agentManagerConfig(approvalAddr string) agent.ManagerConfig {
 		OnComplete:   a.onAgentComplete,
 		ApprovalAddr: approvalAddr,
 		SessionSink: func(taskID, agentID, sessionID string) error {
-			return a.tasks.UpdateRun(taskID, agentID, task.RunPatch{SessionID: task.Ptr(sessionID)})
+			return a.tasks.UpdateRunBy(taskID, "agentorch.record_session", agentID, task.RunPatch{SessionID: task.Ptr(sessionID)})
 		},
-		TaskExists:  a.taskExistsForAgent,
-		TaskStatus:  a.taskStatusForAgent,
-		LimitSink:   a.recordLimitSnapshot,
-		Artifacts:   a.artifacts,
-		SandboxHome: a.sandboxes.SybraHomeDir,
-		ControlHome: config.HomeDir(),
-		GhShimDir:   filepath.Join(config.HomeDir(), "shims"),
+		TaskExists: a.taskExistsForAgent,
+		TaskStatus: a.taskStatusForAgent,
+		TaskGeneration: func(taskID string) (int64, bool) {
+			t, err := a.tasks.Get(taskID)
+			return t.Generation, err == nil
+		},
+		LimitSink:              a.recordLimitSnapshot,
+		Artifacts:              a.artifacts,
+		SandboxHome:            a.sandboxes.SybraHomeDir,
+		ControlHome:            config.HomeDir(),
+		GhShimDir:              filepath.Join(config.HomeDir(), "shims"),
+		AllowAmbientReviewAuth: a.cfg.GitHub.AllowAmbientReviewAuth,
+		ControlEvent: func(kind string, data map[string]any) {
+			a.logAudit(kind, "", "", data)
+		},
 	}
 	if a.cfg.SurviveRestartEnabled() {
 		cfg.SurviveRestartDir = config.AgentsDir()
@@ -441,9 +547,37 @@ func (a *App) agentManagerConfig(approvalAddr string) agent.ManagerConfig {
 }
 
 func (a *App) initAgentManager(ctx context.Context, emit func(string, any)) error {
+	providerLimits := make(map[string]int, len(providerid.All()))
+	for _, name := range providerid.All() {
+		providerLimits[name] = a.cfg.Providers.Limits.MaxInFlightPerProvider
+	}
+	var err error
+	var ledger dispatch.Persistence
+	if a.database != nil {
+		ledger, err = a.openAttemptLedger(ctx)
+		if err != nil {
+			return fmt.Errorf("dispatch admission: %w", err)
+		}
+	}
+	a.attempts, err = dispatch.New(ctx, dispatch.Options{
+		Dir:   config.AttemptLeasesDir(),
+		Store: ledger,
+		Limits: dispatch.Limits{
+			Global:     a.cfg.Agent.MaxConcurrent,
+			ByProvider: providerLimits,
+		},
+		TTL: time.Minute,
+	})
+	if err != nil {
+		return fmt.Errorf("dispatch admission: %w", err)
+	}
 	approvalServer, approvalAddr := a.startApprovalServer(ctx, emit)
 	agentCfg := a.agentManagerConfig(approvalAddr)
-	var err error
+	agentCfg.AttemptAdmission = a.attempts
+	if approvalServer != nil {
+		agentCfg.ControlTarget = approvalAddr
+		agentCfg.ControlToken = approvalServer.VerifierToken
+	}
 	a.agents, err = agent.NewManager(ctx, emit, a.logger, a.logDir, agentCfg)
 	if err != nil && agentCfg.SurviveRestartDir != "" && errors.Is(err, agent.ErrSurvivalRegistry) {
 		a.logger.Error("agent.survive-restart.init", "err", err)
@@ -465,13 +599,36 @@ func (a *App) initAgentManager(ctx context.Context, emit func(string, any)) erro
 		a.logger.Error("agent.manager.init", "err", err)
 		return fmt.Errorf("agent manager: %w", err)
 	}
+	// One-shot classifier and judge calls run the same provider CLIs on this
+	// host, so route them through the manager's sandbox rather than leaving
+	// them to spawn unwrapped in the serving process's own directory (#3383).
+	a.agents.RegisterOneShotCommands()
 	a.agents.SetGHAppToken(github.CurrentAppToken)
+	github.SetAppTokenChangeHook(func() {
+		if err := a.agents.SyncGHAppToken(); err != nil {
+			a.logger.Warn("github.app.token.publish", "err", err)
+		}
+	})
+	a.agents.SetGHVerifierAppToken(github.CurrentVerifierAppToken)
+	// Applied at construction, not after Startup returns: the recovery pass
+	// below dispatches agents, and one that starts before its board is named
+	// spends a whole run on CLI calls that every one of them refuses.
+	a.agents.SetBoard(a.boardTarget, a.boardToken, a.boardCA)
+	// initToolLedger runs before this function, when a.agents is still nil, so
+	// its own SetToolLedger call is skipped. Without re-binding here the
+	// manager's ledger stays nil and Logger.Log's nil guard drops every record
+	// silently — the ledger creates its directory, never writes a line, and
+	// looks healthy while collecting nothing (#2788).
+	a.agents.SetToolLedger(a.toolLedger)
 	if agentCfg.SurviveRestartDir != "" {
 		a.logger.Info("agent.survive-restart.enabled", "dir", agentCfg.SurviveRestartDir)
 	}
 	if approvalServer != nil {
 		approvalServer.SetManager(a.agents)
 		a.agentSvc.approval = approvalServer
+		if a.verification != nil {
+			a.verification.SetGrantRevoker(approvalServer.RevokeVerifierGrantForSandbox)
+		}
 	}
 	return nil
 }
@@ -494,10 +651,13 @@ func (a *App) agentRuntimeConfig(cfg *config.Config) agent.ManagerRuntimeConfig 
 		DispatchJitterMs:       cfg.Agent.DispatchJitterMs,
 		HeadlessSteerable:      cfg.DefaultHeadlessSteerable(),
 		SandboxMode:            cfg.DefaultSandboxMode(),
+		SandboxReadMode:        cfg.DefaultSandboxReadMode(),
 		PlaywrightMCPEnabled:   cfg.PlaywrightMCPEnabled(),
 		PlaywrightMCPExtraArgs: cfg.PlaywrightMCPExtraArgs(),
 		K8sJobsEnabled:         cfg.Agent.K8sJobs.Enabled,
 		K8sJobs:                k8sJobRunnerConfigFromConfig(cfg.Agent.K8sJobs),
+		RoleEffort:             cfg.Agent.RoleEffort,
+		ClassReservations:      agent.ParseClassReservations(cfg.Agent.ClassReservations),
 	}
 }
 
@@ -533,11 +693,67 @@ func k8sJobRunnerConfigFromConfig(cfg config.K8sJobsConfig) agent.K8sJobRunnerCo
 }
 
 func (a *App) onAgentComplete(ag *agent.Agent) {
+	var lease verification.Lease
+	var disposable bool
+	if a.verification != nil {
+		lease, disposable = a.verification.LeaseForAgent(ag.ID)
+		if disposable {
+			if lease.WorkspaceDir != "" {
+				if err := a.verification.Finalize(context.Background(), lease, nil, agentOutputText(ag), lease.CertificateID); err != nil {
+					ag.SetExitErr(err)
+				}
+			}
+		}
+	}
+	revoked := true
+	if a.agentSvc != nil && a.agentSvc.approval != nil && ag.EffectiveRole().IsVerifier() {
+		if err := a.agentSvc.approval.RevokeVerifierGrantForSandbox(ag.SandboxHomeDir()); err != nil {
+			revoked = false
+			ag.SetExitErr(fmt.Errorf("revoke verifier control grant: %w", err))
+		}
+	}
+	if disposable && revoked {
+		a.verification.Release(lease)
+	}
+	if a.runenv != nil && agentRunEnvironmentFailed(ag) {
+		a.runenv.InvalidateTask(ag.TaskID)
+	}
 	if a.agentCompletion == nil {
 		a.logger.Warn("agent.complete.unwired", "id", ag.ID, "task_id", ag.TaskID)
 		return
 	}
 	a.agentCompletion.OnComplete(ag)
+}
+
+func agentOutputText(ag *agent.Agent) string {
+	var b strings.Builder
+	outputs := ag.Output()
+	for i := range outputs {
+		event := &outputs[i]
+		if event.Content != "" {
+			b.WriteString(event.Content)
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
+}
+
+func agentRunEnvironmentFailed(ag *agent.Agent) bool {
+	if runenv.IsEnvironmentFailure(ag.GetExitErr()) {
+		return true
+	}
+	outputs := ag.Output()
+	for i := range outputs {
+		event := &outputs[i]
+		if event.Type != "result" && event.ErrorType == "" && event.TerminalReason == "" {
+			continue
+		}
+		diagnostic := strings.Join([]string{event.Content, event.ErrorType, event.TerminalReason}, " ")
+		if runenv.IsEnvironmentFailure(errors.New(diagnostic)) {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *App) recordLimitSnapshot(snapshot limits.Snapshot) {
@@ -573,7 +789,7 @@ func (a *App) taskStatusForAgent(taskID string) (string, bool) {
 }
 
 func (a *App) startLiveLimitPolling(ctx context.Context, limitStore *limits.Store, policy limits.Policy) {
-	a.wg.Go(func() {
+	a.goWhileRunning(func() {
 		state := newLiveLimitPollState(time.Now().UTC())
 		for {
 			if ctx.Err() != nil {
@@ -613,32 +829,43 @@ func (a *App) limitPolicy() limits.Policy {
 	p.WeeklyThresholdPercent = a.cfg.Providers.Limits.WeeklyThresholdPercent
 	p.PreferUnderused = a.cfg.Providers.Limits.PreferUnderused
 	p.SubscriptionMonthlyUSD = map[string]float64{
-		"claude":   a.cfg.Providers.Claude.MonthlySubscriptionUSD,
-		"codex":    a.cfg.Providers.Codex.MonthlySubscriptionUSD,
-		"copilot":  a.cfg.Providers.Copilot.MonthlySubscriptionUSD,
-		"opencode": a.cfg.Providers.OpenCode.MonthlySubscriptionUSD,
+		providerid.Claude:   a.cfg.Providers.Claude.MonthlySubscriptionUSD,
+		providerid.Codex:    a.cfg.Providers.Codex.MonthlySubscriptionUSD,
+		providerid.Copilot:  a.cfg.Providers.Copilot.MonthlySubscriptionUSD,
+		providerid.OpenCode: a.cfg.Providers.OpenCode.MonthlySubscriptionUSD,
 	}
 	p.ProviderEnabled = map[string]bool{
-		"claude":   a.cfg.Providers.Claude.Enabled,
-		"codex":    a.cfg.Providers.Codex.Enabled,
-		"copilot":  a.cfg.Providers.Copilot.Enabled,
-		"opencode": a.cfg.Providers.OpenCode.Enabled,
+		providerid.Claude:   a.cfg.Providers.Claude.Enabled,
+		providerid.Codex:    a.cfg.Providers.Codex.Enabled,
+		providerid.Copilot:  a.cfg.Providers.Copilot.Enabled,
+		providerid.OpenCode: a.cfg.Providers.OpenCode.Enabled,
 	}
 	return p
 }
 
 func (a *App) initStatusHook() {
-	a.tasks.SetStatusChangeHook(func(taskID, from, to string) {
+	a.tasks.SetStatusChangeHook(func(taskID, from, to string, changed task.Task) {
 		releaseTaskAgents := shouldReleaseTaskAgentsForStatus(task.Status(to))
 		data := map[string]any{"from": from, "to": to}
+		if !changed.Escalation.IsZero() {
+			data["escalation_code"] = changed.Escalation.Code
+			data["failure_owner"] = string(changed.Escalation.Owner)
+			data["evidence_provenance"] = string(changed.Escalation.Provenance)
+			data["autonomy_outcome"] = string(changed.AutonomyOutcome)
+		}
 		if to == string(task.StatusHumanRequired) {
-			if t, err := a.tasks.Get(taskID); err == nil {
-				if kind := expectedHumanKind(t); kind != "" {
-					data["human_kind"] = kind
-				}
+			if kind := expectedHumanKind(changed); kind != "" {
+				data["human_kind"] = kind
 			}
 		}
 		a.logAudit(audit.EventTaskStatusChanged, taskID, "", data)
+		if a.maybeQuarantineStatusBounce(taskID, from, to) {
+			// Stop the agent the pause was meant to interrupt. Without this it
+			// runs on, and its completion advances the workflow onto a step
+			// that writes a live status back over the pause.
+			a.releaseTaskAgents(taskID)
+			return
+		}
 
 		local := true
 		runsNoAgent := false
@@ -654,9 +881,19 @@ func (a *App) initStatusHook() {
 
 		// Advance workflows whose current run_agent step declares a
 		// matching wait_for_status. This is how interactive agents (which
-		// never exit between turns) signal step completion.
+		// never exit between turns) signal step completion. Gated on
+		// startupRecoveryDone: a step's completion can itself fire a
+		// dispatch (e.g. maybeRecoverHumanRequiredAlreadyFixedOnMain), and
+		// HasRunningAgentForTask reads an empty registry until reattach
+		// finishes — see startupRecoveryPending's doc comment (#2752). Deferred
+		// rather than dropped: nothing else re-delivers a wait_for_status match,
+		// so a suppressed event would park the step until an operator intervenes.
 		if local && a.workflowEngine != nil {
-			a.workflowEngine.HandleStatusChange(taskID, to)
+			if a.startupRecoveryDone() {
+				a.workflowEngine.HandleStatusChange(taskID, to)
+			} else {
+				a.deferStatusChange(taskID)
+			}
 		}
 		// HandleStatusChange may reroute a human-required self-escalation back
 		// into the PR flow (missing live-PR blocker recovery). When it does the
@@ -676,7 +913,9 @@ func (a *App) initStatusHook() {
 
 		switch to {
 		case string(task.StatusTodo):
-			if !runsNoAgent {
+			// Todo is the entry point for new work. Approved plans now transition
+			// directly to in-progress and skip this lane.
+			if !runsNoAgent && from != string(task.StatusPlanReview) {
 				a.dispatchTaskCreatedWorkflow(taskID)
 			}
 		case string(task.StatusPlanning):
@@ -703,8 +942,8 @@ func (a *App) initStatusHook() {
 			if a.notifier != nil {
 				a.notifier.Send(notification.LevelWarning, "Needs human", msg, taskID, "")
 			}
-			if local && a.runsScheduler() && a.humanReview != nil {
-				go a.humanReview.maybeSpawn(taskID, from)
+			if local && a.runsScheduler() && a.startupRecoveryDone() && a.humanReview != nil {
+				go a.humanReview.maybeSpawn(a.schedulerContext(), taskID, from)
 			}
 		case string(task.StatusReadyReview):
 			if !runsNoAgent {
@@ -724,6 +963,118 @@ func (a *App) initStatusHook() {
 			}
 		}
 	})
+}
+
+func (a *App) maybeQuarantineStatusBounce(taskID, from, to string) bool {
+	if !a.statusBounceTripped(taskID, from, to) {
+		return false
+	}
+	reason := fmt.Sprintf("automatic status loop detected (%s → %s repeated); task paused", from, to)
+	if _, err := a.tasks.Apply(task.TransitionIntent{
+		TaskID: taskID, ToStatus: task.StatusBlocked, Actor: "app.status-bounce",
+		ExpectedStatus: task.Ptr(task.Status(to)),
+		Extra: task.Update{
+			StatusReason:    task.Ptr(reason),
+			Escalation:      task.MachineFailure("workflow.status_bounce", reason),
+			AutonomyOutcome: task.QuarantinedOutcome(),
+		},
+		OperatorOverride: true,
+	}); err != nil {
+		a.logger.Error("task.status-bounce.pause-failed", "task_id", taskID, "err", err)
+	} else {
+		a.logger.Warn("task.status-bounce.paused", "task_id", taskID, "from", from, "to", to)
+	}
+	return true
+}
+
+const statusBounceLimit = 3
+
+// statusBounceWindow bounds how long a transition is remembered. It is a
+// memory bound rather than the discriminator: a contending pair can repeat on
+// whatever tick its slowest dispatcher polls at, which is minutes, so a window
+// tight enough to exclude sequential fix rounds would also stop catching the
+// contention this detector exists for.
+const statusBounceWindow = 2 * time.Hour
+
+type statusBounceState struct {
+	edges map[string][]bounceEdge
+}
+
+type bounceEdge struct {
+	at    time.Time
+	actor string
+}
+
+// recentActors returns the distinct actors that took an edge inside the
+// window, dropping the entries that have aged out.
+func (s *statusBounceState) recentActors(edge string, now time.Time) map[string]int {
+	cutoff := now.Add(-statusBounceWindow)
+	kept := s.edges[edge][:0]
+	actors := make(map[string]int)
+	for _, e := range s.edges[edge] {
+		if !e.at.After(cutoff) {
+			continue
+		}
+		kept = append(kept, e)
+		actors[e.actor]++
+	}
+	s.edges[edge] = kept
+	if len(kept) == 0 {
+		delete(s.edges, edge)
+	}
+	return actors
+}
+
+// contendingActors reports how many times the busiest actor took an edge that
+// some other actor also took. One automation driving a task through round
+// after round writes both directions itself; two automations fighting over a
+// task write the same pair against each other, and that difference is what
+// separates ordinary work from a loop.
+func contendingActors(forward, reverse map[string]int) int {
+	worst := 0
+	for actor, n := range forward {
+		for other := range reverse {
+			if other != actor && n > worst {
+				worst = n
+			}
+		}
+	}
+	return worst
+}
+
+// statusBounceTripped reports whether this transition completes a repeated
+// reciprocal loop (A→B and B→A). A single repeated transition is not enough:
+// bulk status edits and legitimate retries can repeat one direction, whereas
+// a reciprocal pair is the distinctive signature of competing automations.
+func (a *App) statusBounceTripped(taskID, from, to string) bool {
+	return a.statusBounceTrippedAt(taskID, from, to, a.tasks.LastStatusActor(taskID), time.Now())
+}
+
+func (a *App) statusBounceTrippedAt(taskID, from, to, actor string, now time.Time) bool {
+	if taskID == "" || from == "" || to == "" || from == to ||
+		from == string(task.StatusBlocked) || to == string(task.StatusBlocked) {
+		return false
+	}
+	key := from + "\x00" + to
+	reverse := to + "\x00" + from
+	a.statusBounceMu.Lock()
+	defer a.statusBounceMu.Unlock()
+	if a.statusBounces == nil {
+		a.statusBounces = make(map[string]*statusBounceState)
+	}
+	state := a.statusBounces[taskID]
+	if state == nil {
+		state = &statusBounceState{edges: make(map[string][]bounceEdge)}
+		a.statusBounces[taskID] = state
+	}
+	state.edges[key] = append(state.edges[key], bounceEdge{at: now, actor: actor})
+	forward := state.recentActors(key, now)
+	back := state.recentActors(reverse, now)
+	if len(state.edges) == 0 {
+		delete(a.statusBounces, taskID)
+	}
+	return contendingActors(forward, back) >= statusBounceLimit &&
+		contendingActors(back, forward) >= statusBounceLimit-1
 }
 
 func (a *App) closeLinkedIssueOnDone(taskID string) {
@@ -770,9 +1121,36 @@ func (a *App) releaseTaskAgents(taskID string) {
 	if len(targets) == 0 {
 		return
 	}
+	// Agents started after the park are deliberate new dispatches, not
+	// leftovers from before it, so they are not this release's to reap.
+	//
+	// The status hook fires with prev == "" the first time this process
+	// observes a task, which happens on every restart. For an
+	// already-parked task that fabricates a fresh transition into
+	// human-required and reaps whatever is running — including a review
+	// agent dispatched seconds earlier. Measured: a task parked at 08:08
+	// had its review agent killed 1.6ms after start at 08:47, and since
+	// human-required is what the review phase asserts to mean "needs you",
+	// the only agent that could clear it was the one being killed.
+	// Scoped to human-required only. releaseTaskAgents also runs for terminal
+	// statuses, and a done/cancelled task must reap every agent regardless of
+	// when it started — otherwise a restart can leave work running against a
+	// task that is already finished.
+	parkedAt := time.Time{}
+	if t, err := a.tasks.Get(taskID); err == nil && t.Status == task.StatusHumanRequired {
+		parkedAt = t.StatusChangedAt
+	}
 	filtered := make([]*agent.Agent, 0, len(targets))
 	for _, ag := range targets {
-		if ag.EffectiveRole() == agent.RoleHumanReview {
+		if ag.EffectiveRole().DiagnosesBlockedTask() {
+			continue
+		}
+		// !Before, not After: a tie means the agent started in the same instant
+		// the park was recorded, which is the dispatch that triggered it.
+		if !parkedAt.IsZero() && !ag.StartedAt.Before(parkedAt) {
+			a.logger.Info("task.status.release-agent.skip-newer",
+				"task_id", taskID, "agent_id", ag.ID,
+				"started_at", ag.StartedAt, "status_changed_at", parkedAt)
 			continue
 		}
 		filtered = append(filtered, ag)
@@ -791,7 +1169,7 @@ func (a *App) releaseTaskAgents(taskID string) {
 	// Tracking it here only needs to guarantee the signal is sent — once
 	// StopAgent's SIGINT/SIGKILL reaches the OS, delivery no longer depends
 	// on this process staying alive.
-	a.wg.Go(func() {
+	a.goWhileRunning(func() {
 		for _, ag := range filtered {
 			var err error
 			if ag.Mode == "headless" && ag.CompletedSuccessfully() {
@@ -807,7 +1185,13 @@ func (a *App) releaseTaskAgents(taskID string) {
 }
 
 func (a *App) runsTaskLocally(t task.Task) bool {
-	return a.cfg == nil || a.cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride).Local
+	cfg := a.currentConfig()
+	if cfg != nil && cfg.IsLeader() && a.workerControl != nil {
+		// The leader owns every canonical workflow now; node metadata selects
+		// only the execution backend for each run, never another task owner.
+		return true
+	}
+	return cfg == nil || cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride).Local
 }
 
 func (a *App) isWorkProject(projectID string) bool {
@@ -829,9 +1213,24 @@ func (a *App) auditClusterBlock(taskID, node, reason string) {
 }
 
 func (a *App) initCluster() {
+	if a.cfg != nil && a.cfg.IsLeader() && a.workerControl != nil && a.agents != nil {
+		a.agents.SetExecutionBackend(newLeaderExecutionBackend(a))
+		if a.taskSvc != nil {
+			a.taskSvc.leaderRunPlacement = true
+		}
+		if a.workflowEngine != nil {
+			a.workflowEngine.SetDispatchGate(func(workflow.TaskInfo) bool { return true })
+		}
+		if len(a.cfg.Cluster.Followers) > 0 {
+			a.logger.Warn("cluster.follower-mode.deprecated", "migration", "run sybra-agentd workers against this leader; task snapshot assignment and mirroring are disabled")
+		}
+		a.logger.Info("cluster.leader.run-placement.enabled")
+		return
+	}
 	if a.workflowEngine != nil {
 		a.workflowEngine.SetDispatchGate(func(ti workflow.TaskInfo) bool {
-			return a.cfg == nil || a.cfg.HomeNodeForTask(ti.ProjectID, ti.NodeOverride).Local
+			cfg := a.currentConfig()
+			return cfg == nil || cfg.HomeNodeForTask(ti.ProjectID, ti.NodeOverride).Local
 		})
 	}
 	if a.cfg == nil || !a.cfg.IsLeader() {
@@ -883,7 +1282,7 @@ func (a *App) initCluster() {
 //     without this branch it sits inert with no PR. Mirrors the
 //     testing/ready-review cases.
 func (a *App) dispatchStatusWorkflow(taskID string, status task.Status) {
-	if !a.runsScheduler() {
+	if !a.runsScheduler() || !a.startupRecoveryDone() {
 		return
 	}
 	if a.workflowEngine == nil {
@@ -940,14 +1339,15 @@ func expectedHumanKind(t task.Task) string {
 // owns a non-terminal workflow, so duplicate watcher/status events are harmless.
 // dispatchTaskCreatedWorkflow, dispatchPlanningWorkflow and dispatchStatusWorkflow
 // are the three sinks through which a task auto-starts work, so each gates on
-// runsScheduler itself rather than trusting its callers. Gating call sites was
-// tried and leaked twice: the watcher reaches these both via the status hook and
-// via maybeStartWorkflowForExternalTask, and because the task store writes
+// runsScheduler (and startupRecoveryDone, see its doc comment) itself rather
+// than trusting its callers. Gating call sites was tried and leaked twice: the
+// watcher reaches these both via the status hook and via
+// maybeStartWorkflowForExternalTask, and because the task store writes
 // atomically (temp file + rename) fsnotify reports every external write — even a
 // tags-only update — as CREATE, so the create path is far hotter than its name
 // suggests.
 func (a *App) dispatchTaskCreatedWorkflow(taskID string) {
-	if !a.runsScheduler() {
+	if !a.runsScheduler() || !a.startupRecoveryDone() {
 		return
 	}
 	if a.workflowEngine == nil || a.tasks == nil || a.agents == nil {
@@ -956,15 +1356,15 @@ func (a *App) dispatchTaskCreatedWorkflow(taskID string) {
 	if taskID == "" {
 		return
 	}
-	a.wg.Go(func() {
+	a.goWhileRunning(func() {
 		t, err := a.tasks.Get(taskID)
 		if err != nil {
 			return
 		}
-		// Only front-of-pipeline tasks. simple-task-plan's trigger has no status
-		// condition, so without this guard a task.created dispatch could restart
-		// planning on an in-review/done task.
-		if t.Status != task.StatusNew && t.Status != task.StatusTodo && t.Status != task.StatusPlanning {
+		// Only fresh task.created entries. Planning re-entry has its own lane:
+		// restarting simple-task-plan from step 1 would re-run triage, which can
+		// hand a rejected/reset planning task straight back to implementation.
+		if t.Status != task.StatusNew && t.Status != task.StatusTodo {
 			return
 		}
 		if !a.runsTaskLocally(t) {
@@ -978,6 +1378,21 @@ func (a *App) dispatchTaskCreatedWorkflow(taskID string) {
 				if _, err := a.assigner.Route(a.ctx, t); err != nil {
 					a.logger.Warn("cluster.assign.failed", "task_id", taskID, "err", err)
 				}
+			}
+			return
+		}
+		// Before approved plans handed directly to implementation, they landed
+		// in todo. Promote those legacy records instead of replaying task.created
+		// and discarding their approved contracts by re-running triage.
+		// This runs after node routing, so a remote task is still assigned to its
+		// owner before that owner starts implementation.
+		if t.Status == task.StatusTodo && hasApprovedPlanContract(t) {
+			if _, err := a.tasks.ApplyStatusEffect(taskID, task.StatusEffect{
+				Source:         "workflow.legacy-approved-plan",
+				ToStatus:       task.StatusInProgress,
+				ExpectedStatus: t.Status,
+			}); err != nil {
+				a.logger.Error("workflow.approved-plan.promote", "task_id", taskID, "err", err)
 			}
 			return
 		}
@@ -1024,11 +1439,35 @@ func (a *App) maybeStartWorkflowForExternalTask(path string) {
 	if id == "" {
 		return
 	}
-	a.dispatchTaskCreatedWorkflow(id)
+	t, err := a.tasks.Get(id)
+	if err != nil {
+		return
+	}
+	switch t.Status {
+	case task.StatusPlanning:
+		a.dispatchPlanningWorkflow(id)
+	default:
+		a.dispatchTaskCreatedWorkflow(id)
+	}
 }
 
-func (a *App) initAudit() {
-	al, err := audit.NewLogger(a.auditDir)
+// initToolLedger opens the always-on tool-call ledger. A failure degrades to
+// no recording rather than blocking startup: the ledger informs future policy,
+// it does not gate anything running now.
+func (a *App) initToolLedger(ctx context.Context) {
+	l, err := a.openToolLedger(ctx)
+	if err != nil {
+		a.logger.Warn("tool_ledger.init.degraded", "err", err)
+		return
+	}
+	a.toolLedger = l
+	if a.agents != nil {
+		a.agents.SetToolLedger(l)
+	}
+}
+
+func (a *App) initAudit(ctx context.Context) {
+	al, err := a.openAuditStore(ctx)
 	if err != nil {
 		a.logger.Warn("audit.init.degraded", "err", err)
 		// a.audit remains nil; logAudit() is a no-op when audit is nil.
@@ -1039,7 +1478,10 @@ func (a *App) initAudit() {
 	if retentionDays <= 0 {
 		retentionDays = 30
 	}
-	if err := audit.Cleanup(a.auditDir, retentionDays); err != nil {
+	// Through the store, not the package-level file cleanup: with a database
+	// backend the day-files stop growing and pruning them frees nothing, while
+	// audit_events — the highest-rate table there is — would grow forever.
+	if err := a.audit.Cleanup(retentionDays); err != nil {
 		a.logger.Warn("audit.cleanup", "err", err)
 	}
 
@@ -1062,6 +1504,11 @@ func (a *App) initAudit() {
 // directories left by tasks that no longer exist.
 func (a *App) initArtifacts() {
 	a.artifacts = artifact.New(config.ArtifactsDir())
+	// CompletionEvidence rides the same per-task artifact store/directory as
+	// every other harness artifact — one more named blob, not a second store
+	// to stand up or GC separately (initArtifacts' delete hook below already
+	// covers it via a.artifacts.Delete).
+	a.evidenceStore = evidence.NewStore(a.artifacts)
 	a.tasks.SetDeleteHook(func(id string) {
 		if err := a.artifacts.Delete(id); err != nil {
 			a.logger.Warn("artifact.gc.delete", "task_id", id, "err", err)
@@ -1093,16 +1540,17 @@ func (a *App) initProviderHealth(ctx context.Context, emit func(string, any)) {
 		return
 	}
 	pc := provider.New(provider.Config{
-		Interval:           time.Duration(a.cfg.Providers.HealthCheck.IntervalSeconds) * time.Second,
-		ClaudeEnabled:      a.cfg.Providers.Claude.Enabled,
-		CodexEnabled:       a.cfg.Providers.Codex.Enabled,
-		CopilotEnabled:     a.cfg.Providers.Copilot.Enabled,
-		OpenCodeEnabled:    a.cfg.Providers.OpenCode.Enabled,
-		AutoFailover:       a.cfg.Providers.AutoFailover,
-		ClaudeRLCooldown:   time.Duration(a.cfg.Providers.Claude.RateLimitCooldownSeconds) * time.Second,
-		CodexRLCooldown:    time.Duration(a.cfg.Providers.Codex.RateLimitCooldownSeconds) * time.Second,
-		CopilotRLCooldown:  time.Duration(a.cfg.Providers.Copilot.RateLimitCooldownSeconds) * time.Second,
-		OpenCodeRLCooldown: time.Duration(a.cfg.Providers.OpenCode.RateLimitCooldownSeconds) * time.Second,
+		Interval:            time.Duration(a.cfg.Providers.HealthCheck.IntervalSeconds) * time.Second,
+		ClaudeEnabled:       a.cfg.Providers.Claude.Enabled,
+		CodexEnabled:        a.cfg.Providers.Codex.Enabled,
+		CopilotEnabled:      a.cfg.Providers.Copilot.Enabled,
+		OpenCodeEnabled:     a.cfg.Providers.OpenCode.Enabled,
+		AutoFailover:        a.cfg.Providers.AutoFailover,
+		ClaudeRLCooldown:    time.Duration(a.cfg.Providers.Claude.RateLimitCooldownSeconds) * time.Second,
+		CodexRLCooldown:     time.Duration(a.cfg.Providers.Codex.RateLimitCooldownSeconds) * time.Second,
+		CopilotRLCooldown:   time.Duration(a.cfg.Providers.Copilot.RateLimitCooldownSeconds) * time.Second,
+		OpenCodeRLCooldown:  time.Duration(a.cfg.Providers.OpenCode.RateLimitCooldownSeconds) * time.Second,
+		AuthFailureCooldown: time.Duration(a.cfg.Providers.HealthCheck.AuthFailureCooldownSeconds) * time.Second,
 	}, emit, a.logger)
 	// New seeds every provider Healthy=false until probed; probe once here,
 	// before the gate is live, so startLifecycle's dispatch never sees a
@@ -1127,15 +1575,17 @@ func (a *App) emitDegradedWarnings(emit func(string, any)) {
 // initAutomations starts every per-machine task source in dependency order
 // and returns the GitHub issues fetcher (still consumed by
 // startBackgroundServices). Extracted so Startup stays under funlen.
-func (a *App) initAutomations(emit func(string, any)) *poll.IssuesFetcher {
+func (a *App) initAutomations(ctx context.Context, emit func(string, any)) *poll.IssuesFetcher {
 	a.initRenovate(emit)
 	a.initPromptLab()
 	a.initTriage()
-	a.initHumanReview()
+	a.initHumanReview(ctx)
 	return a.initIssuesFetcher(emit)
 }
 
-func (a *App) initWorkflowEngine() {
+// initWorkflowEngine wires the engine onto wfStore, which the caller opens: the
+// engine's own contexts outlive startup, so the import's belongs to the caller.
+func (a *App) initWorkflowEngine(wfStore workflow.Repository) {
 	if os.Getenv("SYBRA_DISABLE_WORKFLOWS") == "1" {
 		a.logger.Info("workflow.disabled")
 		return
@@ -1144,41 +1594,31 @@ func (a *App) initWorkflowEngine() {
 	if q != nil && a.agentOrch != nil {
 		a.agentOrch.SetQueue(q)
 	}
-
-	wfStore, err := workflow.NewStore(config.WorkflowsDir())
-	if err != nil {
-		a.logger.Error("workflow.store.init", "err", err)
+	if wfStore == nil {
 		return
 	}
 	a.workflowStore = wfStore
+	// After the import, never before: seeding writes each builtin under its own
+	// id, so an import that followed it would overwrite an operator's edited
+	// copy with the shipped one.
 	if syncErr := workflow.SyncBuiltins(wfStore); syncErr != nil {
 		a.logger.Error("workflow.sync-builtins", "err", syncErr)
 	}
 	agentLauncher := a.newWorkflowAgentLauncher()
-	a.workflowEngine = workflow.NewEngine(
+	if a.sandboxes == nil {
+		panic("wire workflow engine: sandbox manager is nil")
+	}
+	engine, err := workflow.NewEngine(
 		wfStore,
 		&taskAdapter{tasks: a.tasks, projects: a.projects},
 		agentLauncher,
 		a.logger,
+		a.workflowDependencies(agentLauncher),
 	)
-	a.workflowEngine.SetPRLinker(prLinkerAdapter{})
-	a.workflowEngine.SetPRStateFetcher(prStateFetcherAdapter{})
-	a.workflowEngine.SetPRHeadFetcher(prHeadFetcherAdapter{})
-	a.workflowEngine.SetPRCreator(prCreatorAdapter{})
-	a.workflowEngine.SetPRCloser(prCloserAdapter{})
-	a.workflowEngine.SetPRFinder(prFinderAdapter{})
-	a.workflowEngine.SetPRAnyStateFinder(prFinderAdapter{})
-	a.workflowEngine.SetPRExistenceChecker(prExistenceCheckerAdapter{})
-	a.workflowEngine.SetPRContentGenerator(prContentGeneratorAdapter{gen: &prcontent.FallbackGenerator{Logger: a.logger, Gate: a.providerHealth}})
-	a.workflowEngine.SetTaskClassifier(a.newTaskClassifierAdapter())
-	a.workflowEngine.SetPRReviewRequester(prReviewRequesterAdapter{})
-	a.workflowEngine.SetWorktreeGetter(&worktreeGetterAdapter{tasks: a.tasks, mgr: a.worktrees})
-	a.workflowEngine.SetAttemptNoteAppender(&attemptNoteAppenderAdapter{})
-	a.workflowEngine.SetBranchSyncer(&branchSyncerAdapter{tasks: a.tasks, mgr: a.worktrees})
-	a.workflowEngine.SetCheckConfigGetter(&checkConfigGetterAdapter{tasks: a.tasks, projects: a.projects, mgr: a.worktrees})
-	a.workflowEngine.SetCostBudgetChecker(agentLauncher)
-	a.workflowEngine.SetAttemptWorktreeManager(&attemptWorktreeAdapter{tasks: a.tasks, mgr: a.worktrees})
-	a.workflowEngine.SetManualTestConfigGetter(&manualTestConfigGetterAdapter{tasks: a.tasks, projects: a.projects, mgr: a.worktrees})
+	if err != nil {
+		panic("wire workflow engine: " + err.Error())
+	}
+	a.workflowEngine = engine
 	a.configureWorkflowPolicies()
 	if a.cfg.Evaluation.Offline.Enabled {
 		gate := prompteval.NewGate(prompteval.New(config.PromptEvalDir()), a.cfg.Evaluation.Offline)
@@ -1191,7 +1631,11 @@ func (a *App) initWorkflowEngine() {
 	if a.artifacts != nil {
 		a.workflowEngine.SetArtifactRecorder(&artifactRecorderAdapter{store: a.artifacts})
 	}
+	if a.evidenceStore != nil {
+		a.workflowEngine.SetEvidenceRecorder(&evidenceRecorderAdapter{store: a.evidenceStore})
+	}
 	a.workflowEngine.SetContext(a.ctx)
+	a.workflowEngine.SetDrainContext(a.schedulerCtx)
 	// Recover worktree-prep rebase conflicts via the conflict pr-fix instead of
 	// escalating to a human. Wired here (not at construction) because the
 	// orchestrator is built before the reviewer. Routed through
@@ -1229,7 +1673,7 @@ func (a *App) initWorkflowEngine() {
 				queued[snap[i].TaskID] = snap[i]
 			}
 			toItem := func(t workflow.TaskInfo) agentqueue.Item {
-				it := agentqueue.Item{TaskID: t.ID, Priority: task.Priority(t.Priority), Status: task.Status(t.Status)}
+				it := agentqueue.Item{TaskID: t.ID, Priority: task.Priority(t.Priority), Status: t.Status}
 				if qit, ok := queued[t.ID]; ok {
 					it.Manual = qit.Manual
 					it.Enqueued = qit.Enqueued
@@ -1259,11 +1703,47 @@ func (a *App) initWorkflowEngine() {
 	// to the completion.Handler constructed there.
 }
 
+func (a *App) workflowDependencies(agentLauncher *agentAdapter) workflow.Dependencies {
+	return workflow.Dependencies{
+		PR: workflow.PRSurface{
+			Linker:           workflowpr.LinkerAdapter{},
+			ReviewRequester:  workflowpr.ReviewRequesterAdapter{},
+			StateFetcher:     workflowpr.StateFetcherAdapter{},
+			ThreadFetcher:    workflowpr.ThreadFetcherAdapter{},
+			HeadFetcher:      workflowpr.HeadFetcherAdapter{},
+			MetaFetcher:      workflowpr.MetaFetcherAdapter{},
+			Creator:          workflowpr.CreatorAdapter{},
+			Closer:           workflowpr.CloserAdapter{},
+			Finder:           workflowpr.FinderAdapter{},
+			AnyStateFinder:   workflowpr.FinderAdapter{},
+			ExistenceChecker: workflowpr.ExistenceCheckerAdapter{},
+			ContentGenerator: workflowpr.ContentGeneratorAdapter{Gen: &prcontent.FallbackGenerator{Logger: a.logger, Gate: a.providerHealth}},
+		},
+		Execution: workflow.ExecutionSurface{
+			Worktrees:            &worktreeGetterAdapter{tasks: a.tasks, mgr: a.worktrees},
+			SidecarDir:           a.sandboxes.SybraHomeDir,
+			AttemptNotes:         &attemptNoteAppenderAdapter{},
+			BranchSyncer:         &branchSyncerAdapter{tasks: a.tasks, mgr: a.worktrees},
+			Checks:               &checkConfigGetterAdapter{tasks: a.tasks, projects: a.projects, mgr: a.worktrees},
+			ManualTests:          &manualTestConfigGetterAdapter{tasks: a.tasks, projects: a.projects, mgr: a.worktrees},
+			Classifier:           a.newTaskClassifierAdapter(),
+			CostBudget:           agentLauncher,
+			AttemptWorktrees:     &attemptWorktreeAdapter{tasks: a.tasks, mgr: a.worktrees},
+			Verification:         &verificationWorkspaceAdapter{mgr: a.verification},
+			VerificationCommands: agentLauncher,
+			PostRun:              a.postRunReconciliation(),
+		},
+	}
+}
+
 func (a *App) configureWorkflowPolicies() {
 	a.configureTestingEscalation()
 	a.workflowEngine.SetMaxCheckpoints(a.cfg.MaxCheckpoints())
+	a.workflowEngine.SetVerifyChecksMaxConcurrent(a.cfg.VerifyChecksMaxConcurrent())
 	a.workflowEngine.SetABTestingConfig(a.abTestingConfig())
 	a.configurePlanAutoApproval()
+	a.configureAdmissionPolicy()
+	a.configureEvidencePolicy()
 }
 
 func (a *App) configurePlanAutoApproval() {
@@ -1276,20 +1756,111 @@ func (a *App) configurePlanAutoApproval() {
 	})
 }
 
+// configureAdmissionPolicy wires the admission_preflight step's config and
+// its audit hook. The hook writes admission.decided without making
+// internal/workflow import internal/audit — mirrors configurePlanAutoApproval.
+func (a *App) configureAdmissionPolicy() {
+	a.workflowEngine.SetAdmissionConfig(a.cfg.Admission)
+	a.workflowEngine.SetAdmissionDecisionHook(func(t workflow.TaskInfo, d workflow.AdmissionDecision) {
+		data := map[string]any{
+			"outcome":         d.Outcome,
+			"risk_tier":       d.RiskTier,
+			"permission_tier": d.PermissionTier,
+			"blocker_kind":    d.BlockerKind,
+			"reason":          d.Reason,
+			"failure_code":    d.FailureCode,
+			"task_generation": t.Generation,
+		}
+		if d.Outcome == string(taskstatus.Blocked) {
+			data["preflight_detectable"] = true
+			if a.stats != nil {
+				cost, tokens, runs, usageKnown := preflightUsage(a.stats.AllForTask(t.ID), t.ID, t.Generation)
+				data["usage_known"], data["cost_usd"], data["tokens"], data["prior_runs"] = usageKnown, cost, tokens, runs
+			} else {
+				data["usage_known"], data["cost_usd"], data["tokens"], data["prior_runs"] = false, 0.0, 0, 0
+			}
+		}
+		a.logAudit(audit.EventAdmissionDecided, t.ID, "", data)
+	})
+}
+
+func preflightUsage(records []stats.RunRecord, taskID string, generation int64) (cost float64, tokens, runs int, known bool) {
+	legacyUnattributed := false
+	var cohort uint64
+	cohortKnown := false
+	for i := range records {
+		record := &records[i]
+		if record.TaskID != taskID {
+			continue
+		}
+		if !record.TaskGenerationKnown || generation < 0 {
+			legacyUnattributed = true
+			continue
+		}
+		// #nosec G115 -- the negative generation case is rejected above.
+		if record.TaskGeneration > uint64(generation) {
+			continue
+		}
+		if !cohortKnown || record.TaskGeneration > cohort {
+			cohort, cohortKnown = record.TaskGeneration, true
+		}
+	}
+	known = !legacyUnattributed
+	for i := range records {
+		record := &records[i]
+		if !cohortKnown || record.TaskID != taskID || !record.TaskGenerationKnown || record.TaskGeneration != cohort {
+			continue
+		}
+		runs++
+		cost += record.CostUSD
+		tokens += record.InputTokens + record.OutputTokens + record.CacheCreationInputTokens + record.CacheReadInputTokens + record.ReasoningTokens
+		if record.CostUSD == 0 && record.InputTokens == 0 && record.OutputTokens == 0 && record.CacheCreationInputTokens == 0 && record.CacheReadInputTokens == 0 && record.ReasoningTokens == 0 && record.PremiumRequests == 0 {
+			known = false
+		}
+	}
+	if runs == 0 {
+		known = !legacyUnattributed
+	}
+	return cost, tokens, runs, known
+}
+
+// configureEvidencePolicy wires the require_evidence step's config and its
+// audit hook. The hook writes completion_evidence.verified/blocked without
+// making internal/workflow import internal/audit — mirrors
+// configureAdmissionPolicy.
+func (a *App) configureEvidencePolicy() {
+	a.workflowEngine.SetEvidenceConfig(a.cfg.Agent.Evidence)
+	a.workflowEngine.SetEvidenceDecisionHook(func(t workflow.TaskInfo, d workflow.EvidenceDecision) {
+		event := audit.EventCompletionEvidenceVerified
+		if d.Outcome == "blocked" {
+			event = audit.EventCompletionEvidenceBlocked
+		}
+		a.logAudit(event, t.ID, "", map[string]any{
+			"outcome": d.Outcome,
+			"reason":  d.Reason,
+		})
+	})
+}
+
 func (a *App) newWorkflowAgentLauncher() *agentAdapter {
 	pressureGate := a.getPressureGate()
+	adapter := &agentAdapter{
+		agents:          a.agents,
+		agentOrch:       a.agentOrch,
+		tasks:           a.tasks,
+		projects:        a.projects,
+		sandboxes:       a.sandboxes,
+		experience:      a.experience,
+		pressure:        pressureGate,
+		remotePlacement: a.cfg != nil && a.cfg.IsLeader() && a.workerControl != nil && a.agents != nil,
+		runenv:          a.runenv,
+		verification:    a.verification,
+	}
 	if a.agentOrch != nil {
 		a.agentOrch.SetPressureGate(pressureGate)
+		a.agentOrch.SetPressureAdmission(adapter.pressureAdmission)
 	}
-	return &agentAdapter{
-		agents:     a.agents,
-		agentOrch:  a.agentOrch,
-		tasks:      a.tasks,
-		projects:   a.projects,
-		sandboxes:  a.sandboxes,
-		experience: a.experience,
-		pressure:   pressureGate,
-	}
+	return adapter
 }
 
 func (a *App) getPressureGate() *pressure.Gate {
@@ -1321,27 +1892,16 @@ func (a *App) getDiskReclaimer() *diskreclaim.Reclaimer {
 func (a *App) configureTestingEscalation() {
 	a.workflowEngine.SetTestingMaxAttempts(a.cfg.TestingMaxAttempts())
 	a.workflowEngine.SetReviewUntilClean(a.cfg.ReviewUntilClean())
-	a.workflowEngine.SetMaxReviewRounds(a.cfg.MaxReviewRounds())
-	a.workflowEngine.SetAllowUnboundedReviewRounds(a.cfg.AllowUnboundedReviewRounds())
+	a.workflowEngine.SetReviewRoundsPerHour(a.cfg.Agent.ReviewRoundsPerHourLimit())
 	a.workflowEngine.SetOpenPROnUnrunnableGate(a.cfg.TestingOpenPROnUnrunnableGateEnabled())
+	a.workflowEngine.SetVerifyTimeout(a.cfg.VerifyTimeout())
 	a.warnUnboundedReviewLoop()
 }
 
-// warnUnboundedReviewLoop surfaces the one posture where the review→fix cycle
-// has no stopping condition at all: the legacy uncapped review→fix→review loop
-// plus no cumulative task-cost ceiling. Fresh installs now default to a review
-// round cap; this warning remains for explicit opt-ins.
+// warnUnboundedReviewLoop is kept for historical call sites. The shared review
+// budget now carries a fixed lifetime cap in addition to the hourly limit, so
+// review→fix cycles are always bounded even when the hourly cap is disabled.
 func (a *App) warnUnboundedReviewLoop() {
-	if !a.cfg.ReviewUntilClean() || !a.cfg.AllowUnboundedReviewRounds() || a.cfg.Agent.MaxTaskCostUSD > 0 {
-		return
-	}
-	a.logger.Warn("review.loop.unbounded",
-		"review_until_clean", true,
-		"allow_unbounded_review_rounds", true,
-		"max_task_cost_usd", 0,
-		"detail", "review→fix cycles until CLEAN with no review-round cap and no task-cost ceiling; "+
-			"set agent.max_task_cost_usd to bound it, disable allow_unbounded_review_rounds, or set agent.review_until_clean: false for a single review pass",
-	)
 }
 
 func (a *App) initAgentConfig() {
@@ -1352,11 +1912,14 @@ func (a *App) initAgentConfig() {
 		TurnCostFraction:        a.cfg.Agent.TurnCostFraction,
 		TurnMultiplier:          a.cfg.Agent.TurnMultiplier,
 		CheckpointOnTurnCeiling: a.cfg.CheckpointOnTurnCeilingEnabled(),
+		MaxSubagentEvents:       a.cfg.Agent.MaxSubagentEvents,
 	})
 }
 
 func (a *App) startApprovalServer(ctx context.Context, emit func(string, any)) (srv *agent.ApprovalServer, addr string) {
-	srv, err := agent.NewApprovalServer(ctx, emit, a.logger, a.cfg.Agent.ApprovalPort)
+	controlDir := filepath.Join(config.HomeDir(), "control")
+	srv, err := agent.NewDurableApprovalServer(ctx, emit, a.logger, a.cfg.Agent.ApprovalPort,
+		filepath.Join(controlDir, "approval-port"), filepath.Join(controlDir, "verifier-token-hashes.json"))
 	if err != nil {
 		a.logger.Error("approval-server.init", "err", err)
 		return nil, ""
@@ -1382,7 +1945,24 @@ func (a *App) logAudit(eventType, taskID, agentID string, data map[string]any) {
 // first boot only. It is disabled by default so the user can review the
 // configuration in the GUI before enabling. Idempotent: if a record with
 // the same Name already exists this is a no-op.
-func (a *App) initLoopAgents() error {
+func (a *App) initLoopAgents(ctx context.Context) error {
+	if a.database != nil {
+		importCtx, cancel := context.WithTimeout(ctx, importTimeout)
+		defer cancel()
+		// Degrade to the files on a failed import, as every other domain does.
+		// Continuing to an empty table drops the operator's schedules for the
+		// whole uptime while their definitions sit intact on disk, and the
+		// first-boot seed then re-creates the built-in one under a new id — all
+		// behind a single log line.
+		if err := loopagent.Import(importCtx, a.database, a.cfg.LoopAgentsDir, a.importScope(), a.logger); err != nil {
+			a.logger.Error("loopagent.import", "err", err)
+		} else if store, err := loopagent.NewSQLStore(a.database); err != nil {
+			a.logger.Error("loopagent.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
+		} else {
+			a.loopAgents = store
+			return nil
+		}
+	}
 	store, err := loopagent.NewStore(a.cfg.LoopAgentsDir)
 	if err != nil {
 		a.logger.Error("loopagent.store.init", "err", err)
@@ -1392,31 +1972,122 @@ func (a *App) initLoopAgents() error {
 	return nil
 }
 
+// initProjects opens the project metadata store and applies the resolved
+// commit-signing policy to it and to the workflows no dispatcher seeds.
+func (a *App) initProjects(ctx context.Context) error {
+	projStore, err := a.openProjectStore(ctx)
+	if err != nil {
+		a.logger.Error("project.store.init", "err", err)
+		return fmt.Errorf("project store: %w", err)
+	}
+	signingPolicy := project.NormalizeSigningPolicy(a.cfg.CommitSigning())
+	projStore.SetSigningPolicy(signingPolicy)
+	workflow.SetDefaultCommitSignFlags(signingPolicy.CommitFlags(ctx))
+	a.projects = projStore
+	// Retrofits maintenance.auto=false onto existing clones; see #2978.
+	if err := projStore.MigrateDisableAutoMaintenance(ctx); err != nil {
+		a.logger.Warn("project.store.migrate_maintenance_auto", "err", err)
+	}
+	return nil
+}
+
+// initDatabase opens the configured backend and applies pending migrations.
+// A wrong or unreachable setting aborts startup here rather than surfacing as
+// a store failure later, so the operator sees which setting is at fault.
+func (a *App) initDatabase(ctx context.Context) error {
+	if !a.cfg.DatabaseEnabled() {
+		return nil
+	}
+	backend := a.cfg.DatabaseBackend()
+	dsn := a.cfg.DatabaseDSN()
+	database, err := db.Open(ctx, db.Options{
+		Backend:         backend,
+		DSN:             dsn,
+		MaxOpenConns:    a.cfg.Database.MaxOpenConns,
+		MaxIdleConns:    a.cfg.Database.MaxIdleConns,
+		ConnMaxLifetime: time.Duration(a.cfg.Database.ConnMaxLifetimeSeconds) * time.Second,
+	})
+	if err != nil {
+		a.logger.Error("db.open", "backend", backend, "dsn", db.RedactDSN(dsn), "err", err)
+		return fmt.Errorf("database: %w", err)
+	}
+	if metrics.Enabled() {
+		database.SetTransactionObserver(func(observation db.TransactionObservation) {
+			metrics.DatabaseTransaction(
+				context.Background(),
+				string(observation.Dialect),
+				observation.Result,
+				observation.Duration,
+				observation.AdmissionWait,
+			)
+		})
+	}
+	version, err := db.SchemaVersion(ctx, database)
+	if err != nil {
+		_ = database.Close()
+		a.logger.Error("db.schema_version", "backend", backend, "err", err)
+		return fmt.Errorf("database: %w", err)
+	}
+	a.database = database
+	runGrants, err := agentgrant.New(filepath.Join(config.HomeDir(), "run-grants.json"), 15*time.Minute)
+	if err != nil {
+		_ = database.Close()
+		return fmt.Errorf("run grants: %w", err)
+	}
+	a.workerControl = workercontrol.NewWithGrantStore(database, runGrants)
+	a.workerControl.SetGrantAuditSink(func(event agentgrant.AuditEvent) {
+		eventType := audit.EventRunGrantUsed
+		switch event.Kind {
+		case "grant.issued":
+			eventType = audit.EventRunGrantIssued
+		case "grant.revoked":
+			eventType = audit.EventRunGrantRevoked
+		}
+		_ = a.audit.Log(audit.Event{Type: eventType, TaskID: event.TaskID, Data: map[string]any{
+			"run_id": event.RunID, "effect_id": event.EffectID, "workflow_generation": event.WorkflowGeneration,
+			"action": event.Action, "allowed": event.Allowed,
+		}})
+	})
+	a.logger.Info("db.ready", "backend", backend, "dsn", db.RedactDSN(dsn), "schema_version", version)
+	return nil
+}
+
+func (a *App) closeDatabase() {
+	if a.database == nil {
+		return
+	}
+	if err := a.database.Close(); err != nil {
+		a.logger.Warn("db.close", "err", err)
+	}
+	a.database = nil
+	a.workerControl = nil
+}
+
 func (a *App) initLoopScheduler(ctx context.Context, emit func(string, any)) {
 	a.loopSched = loopagent.NewScheduler(ctx, a.loopAgents, a.agents, a.logger, emit, config.HomeDir())
-	a.seedDefaultLoopAgents()
+	a.seedDefaultLoopAgents(ctx)
 	a.loopSched.SyncContext(ctx)
 }
 
-func (a *App) seedDefaultLoopAgents() {
+func (a *App) seedDefaultLoopAgents(ctx context.Context) {
 	if a.loopAgents == nil {
 		return
 	}
 	const name = "sybra-self-monitor"
-	if _, ok := a.loopAgents.FindByName(name); ok {
-		return
-	}
-	created, err := a.loopAgents.Create(loopagent.LoopAgent{
+	created, inserted, err := a.loopAgents.CreateIfAbsentByName(ctx, loopagent.LoopAgent{
 		Name:         name,
 		Prompt:       "/sybra-self-monitor",
 		IntervalSec:  21600, // 6 hours
 		AllowedTools: []string{"Bash", "Read", "Grep", "Glob"},
-		Provider:     "claude",
+		Provider:     providerid.Claude,
 		Model:        "sonnet",
 		Enabled:      false,
 	})
 	if err != nil {
 		a.logger.Warn("loopagent.seed.failed", "name", name, "err", err)
+		return
+	}
+	if !inserted {
 		return
 	}
 	a.logger.Info("loopagent.seed.created", "id", created.ID, "name", name)
@@ -1446,10 +2117,12 @@ func (a *App) newRecovery() *recovery.Recovery {
 		WorkflowEngine:     a.workflowEngine,
 		Orchestrator:       a.agentOrch,
 		Projects:           a.projects,
-		PRs:                newRecoveryPRResolver(),
+		PRs:                newRecoveryPRResolver(a.projects),
+		Reconciler:         a.postRunReconciliation(),
 		Logger:             a.logger,
 		Throttle:           a.restartStaleErr,
 		WG:                 &a.wg,
+		ProtectedFindings:  a.cleanupProtected,
 		LogDir:             a.logDir,
 		LogRetention:       retention,
 		LogGzipAfter:       gzipAfter,
@@ -1464,6 +2137,13 @@ func (a *App) newRecovery() *recovery.Recovery {
 			// (sybra#2210) — glob-expanded fresh on every sweep since each
 			// test run gets its own directory.
 			filepath.Join(os.TempDir(), "sybra-test-*"),
+			filepath.Join(os.TempDir(), "sybra-k8s-poc-*"),
+		},
+		OwnedOrphanRoots: []string{
+			// These roots can also contain operator-run provider processes, so
+			// recovery requires the explicit SYBRA_AGENT_OWNER marker here.
+			config.HomeDir(),
+			a.repoDir,
 		},
 		// Also gate on the instance role: RunStartupCleanup calls
 		// RestartStaleInProgress outside the (gated) maintenance pass, so an
@@ -1471,6 +2151,9 @@ func (a *App) newRecovery() *recovery.Recovery {
 		// on boot with no operator action. Evaluated per call, so it sees the
 		// role applyInstanceRole resolves at the top of startLifecycle.
 		DispatchGate: func(t task.Task) bool { return a.runsScheduler() && a.runsTaskLocally(t) },
+	}
+	if a.workflowEngine != nil {
+		r.ConflictRecovery = a.workflowEngine.TryConflictRecovery
 	}
 	// Gate on the config, not just a non-nil snapshotter: the snapshotter is
 	// always constructed, but when the feature is disabled its repo is never
@@ -1485,7 +2168,7 @@ func (a *App) newRecovery() *recovery.Recovery {
 // configuration. UserHomeDir is best-effort — when unavailable the user-home
 // destinations (~/.claude/skills, ~/.codex/skills) are silently skipped so
 // startup still succeeds in environments without a usable home dir.
-func (a *App) syncSkillsBundle() {
+func (a *App) syncSkillsBundle(signing project.SigningPolicy) {
 	userHome, err := os.UserHomeDir()
 	if err != nil {
 		a.logger.Debug("skills.sync.no_user_home", "err", err)
@@ -1497,6 +2180,353 @@ func (a *App) syncSkillsBundle() {
 		PrimaryDst:           a.skillsDir,
 		SybraHomeDir:         config.HomeDir(),
 		UserHomeDir:          userHome,
-		DowngradeCommitFlags: !project.GPGSigningAvailable(context.Background()),
+		DowngradeCommitFlags: !signing.SignsCommits(context.Background()),
 	})
+}
+
+// openWorkflowStore returns the definition store for the configured backend, importing the existing files the first time a database is used.
+//
+// A failed import falls back to files rather than starting on a half-populated table: an empty workflow set means no task can dispatch at all.
+func (a *App) openWorkflowStore(ctx context.Context) (workflow.Repository, error) {
+	dir := config.WorkflowsDir()
+	if a.database != nil {
+		ctx, cancel := context.WithTimeout(ctx, importTimeout)
+		defer cancel()
+		if err := workflow.Import(ctx, a.database, dir, a.importScope(), a.logger); err != nil {
+			a.logger.Error("workflow.import", "err", err)
+		} else if store, err := workflow.NewSQLStore(a.database); err != nil {
+			a.logger.Error("workflow.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
+		} else {
+			return store, nil
+		}
+	}
+	store, err := workflow.NewStore(dir)
+	if err != nil {
+		// Returned as a nil interface, not a nil *Store: a typed nil is a
+		// non-nil interface, so every caller's nil check passes it through and
+		// the first method call panics on the nil receiver.
+		return nil, err
+	}
+	return store, nil
+}
+
+// importTimeout bounds a one-off copy of a domain's files into the database, on top of the startup context it derives from, so a stalled backend cannot hold startup open forever even while nothing has cancelled it.
+const importTimeout = 2 * time.Minute
+
+// openBgopStore returns where background operations survive a restart, importing the existing document the first time a database is used.
+//
+// A failed import degrades to the file: these records drive a progress panel, and losing them costs an operator visibility rather than work.
+func (a *App) openBgopStore(ctx context.Context) bgop.Persistence {
+	path := filepath.Join(config.HomeDir(), "bgops.json")
+	if a.database != nil {
+		ctx, cancel := context.WithTimeout(ctx, importTimeout)
+		defer cancel()
+		// The home this instance serves, digested: stable across its restarts so
+		// it reclaims its own rows, and different from any other instance
+		// sharing the board so it never deletes theirs.
+		owner := a.importScope()
+		if err := bgop.Import(ctx, a.database, path, owner, a.logger); err != nil {
+			a.logger.Error("bgop.import", "err", err)
+		} else if store, err := bgop.NewSQLPersistence(a.database, owner); err != nil {
+			a.logger.Error("bgop.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
+		} else {
+			return store
+		}
+	}
+	return bgop.NewFilePersistence(path)
+}
+
+// importScope identifies whose files an import is copying in.
+//
+// A postgres board is shared by several machines, each with its own home and
+// its own files. Keyed by domain alone, whichever instance started first would
+// claim the domain and every other machine's records would sit unimported
+// forever with nothing reporting it. The digest is stable across this
+// instance's restarts and differs between instances.
+func (a *App) importScope() string {
+	return httpserve.HomeID(config.HomeDir())
+}
+
+// openAuditStore returns the audit trail for the configured backend, importing
+// the existing day-files the first time a database is used. A failed import
+// degrades to the files: the trail is what an operator reads to explain what
+// happened, and an empty one reads as "nothing happened".
+func (a *App) openAuditStore(ctx context.Context) (audit.Store, error) {
+	if a.database != nil {
+		importCtx, cancel := context.WithTimeout(ctx, importTimeout)
+		defer cancel()
+		if err := audit.Import(importCtx, a.database, a.auditDir, a.importScope(), a.logger); err != nil {
+			a.logger.Error("audit.import", "err", err)
+		} else if store, err := audit.NewSQLStore(a.database); err != nil {
+			a.logger.Error("audit.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
+		} else {
+			return store, nil
+		}
+	}
+	store, err := audit.NewLogger(a.auditDir)
+	if err != nil {
+		return nil, err
+	}
+	return store, nil
+}
+
+// openToolLedger returns the tool-call ledger for the configured backend.
+func (a *App) openToolLedger(ctx context.Context) (toolledger.Store, error) {
+	if a.database != nil {
+		importCtx, cancel := context.WithTimeout(ctx, importTimeout)
+		defer cancel()
+		if err := toolledger.Import(importCtx, a.database, a.cfg.ToolLedgerDir(), a.importScope(), a.logger); err != nil {
+			a.logger.Error("tool_ledger.import", "err", err)
+		} else if store, err := toolledger.NewSQLStore(a.database); err != nil {
+			a.logger.Error("tool_ledger.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
+		} else {
+			return store, nil
+		}
+	}
+	l, err := toolledger.New(a.cfg.ToolLedgerDir())
+	if err != nil {
+		return nil, err
+	}
+	return l, nil
+}
+
+// openLimitsStore returns the quota store for the configured backend. A failed
+// import degrades to the file: quota state gates provider selection, and
+// starting from nothing would read as unlimited headroom on every provider.
+func (a *App) openLimitsStore(ctx context.Context) (*limits.Store, error) {
+	if a.database != nil {
+		importCtx, cancel := context.WithTimeout(ctx, importTimeout)
+		defer cancel()
+		if err := limits.Import(importCtx, a.database, config.LimitsFile(), a.importScope(), a.logger); err != nil {
+			a.logger.Error("limits.import", "err", err)
+		} else if persistence, err := limits.NewSQLPersistence(a.database); err != nil {
+			a.logger.Error("limits.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
+		} else if store, err := limits.NewStoreWith(persistence); err != nil {
+			a.logger.Error("limits.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
+		} else {
+			return store, nil
+		}
+	}
+	return limits.NewStore(config.LimitsFile())
+}
+
+// openTaskPersistence returns the task.Persistence Manager's CRUD runs against for the configured backend, importing existing task files the first time a database is used, or nil when the caller should build the Manager with task.NewManager(fileStore, ...) instead. That constructor wires fileStore through its own file-backed Persistence adapter internally, so a nil return here is never itself passed to task.NewManagerWithPersistence, which requires a non-nil Persistence.
+//
+// fileStore is still required either way: Comments/Plans/PlanDrafts, the
+// trash-generation history, and the leader-follower mirror's direct sidecar
+// writes are not part of Persistence yet (see the follow-up issue linked
+// from #3268), so Manager keeps reaching the file store for those regardless
+// of which Persistence backs task CRUD. A failed import degrades to the
+// files the same way every other domain's does here.
+func (a *App) openTaskPersistence(ctx context.Context) task.Persistence {
+	if a.database == nil {
+		return nil
+	}
+	importCtx, cancel := context.WithTimeout(ctx, importTimeout)
+	defer cancel()
+	if err := taskdb.Import(importCtx, a.database, a.tasksDir, a.importScope(), a.logger); err != nil {
+		a.logger.Error("task.import", "err", err)
+		return nil
+	}
+	// A board that already ran the import above under the sidecarsOnDisk
+	// suffix bug fixed alongside this call is missing PlanContract/CodeReview/
+	// SpecDecision sidecars permanently otherwise, since dbimport.Once never
+	// retries a domain that already completed. This runs under its own
+	// marker so it costs nothing once it has caught every affected task up;
+	// a failure here does not fall back to the file backend the way the
+	// import above does — the core task data already imported correctly, so
+	// missing three sidecar kinds is a gap to log and retry next start, not
+	// a reason to abandon the whole database backend. Own timeout, not
+	// importCtx's already-derived deadline: a large first-time import can
+	// spend most of that budget before this even starts scanning.
+	backfillCtx, backfillCancel := context.WithTimeout(ctx, importTimeout)
+	defer backfillCancel()
+	if err := taskdb.BackfillMissingSidecarKinds(backfillCtx, a.database, a.tasksDir, a.importScope(), a.logger); err != nil {
+		a.logger.Error("task.import.sidecar_backfill", "err", err)
+	}
+	sqlStore, err := taskdb.NewSQLStore(a.database)
+	if err != nil {
+		a.logger.Error("task.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
+		return nil
+	}
+	sqlStore.SetMaxHistoryPerTask(a.cfg.Database.MaxTaskHistoryPerTask)
+	sqlStore.SetMaxHistoryBytesPerTask(a.cfg.Database.MaxTaskHistoryBytesPerTask)
+	projectionCtx, projectionCancel := context.WithTimeout(ctx, importTimeout)
+	defer projectionCancel()
+	if err := sqlStore.BackfillBoardProjections(projectionCtx); err != nil {
+		// Core task rows remain usable through doc while every completed
+		// projection row is already checkpointed. Keep the database backend and
+		// retry the remaining legacy rows next start instead of failing startup.
+		a.logger.Error("task.board_projection.backfill", "err", err)
+	}
+	a.maintainTaskStorage(ctx, sqlStore)
+	return taskdb.NewPersistence(sqlStore)
+}
+
+// maintainTaskStorage brings a board that ran without the current document
+// and history caps down to them.
+//
+// Off the startup path: the per-write trim already bounds every task from here
+// on, so this is catch-up for what accumulated before, and a board large enough
+// to need it is exactly the one that must not wait for it before serving. It is
+// tracked on the App's wait group so Shutdown cannot close the database out from
+// under it, and it runs after the board-projection backfill rather than beside
+// it, because sqlite admits one writer and the two would otherwise contend.
+func (a *App) maintainTaskStorage(ctx context.Context, store *taskdb.SQLStore) {
+	a.wg.Go(func() {
+		if compacted, err := store.CompactOversizedDocuments(ctx); err != nil {
+			a.logger.Warn("task.document.compact_oversized", "compacted", compacted, "err", err)
+		} else if compacted > 0 {
+			a.logger.Info("task.document.compact_oversized", "compacted", compacted)
+		}
+		if err := store.TrimHistoryOverCap(ctx); err != nil {
+			a.logger.Warn("task.history.trim_over_cap", "err", err)
+		}
+		if err := store.TrimHistoryOverBytes(ctx); err != nil {
+			a.logger.Warn("task.history.trim_over_bytes", "err", err)
+		}
+		if err := store.ReclaimStorage(ctx); err != nil {
+			a.logger.Warn("task.storage.reclaim", "err", err)
+		}
+	})
+}
+
+// openProjectStore returns the project records for the configured backend,
+// importing the existing files the first time a database is used.
+//
+// Clones stay on disk either way; only the record moves. A failed import
+// degrades to the files: an empty project list reads as "nothing is
+// registered", and every task carrying a project id would lose its repository.
+func (a *App) openProjectStore(ctx context.Context) (*project.Store, error) {
+	dir := filepath.Join(config.HomeDir(), "projects")
+	clones := filepath.Join(config.HomeDir(), "clones")
+	if a.database != nil {
+		importCtx, cancel := context.WithTimeout(ctx, importTimeout)
+		defer cancel()
+		if err := project.Import(importCtx, a.database, dir, a.importScope(), a.logger); err != nil {
+			a.logger.Error("project.import", "err", err)
+		} else if store, err := project.NewSQLStore(a.database); err != nil {
+			a.logger.Error("project.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
+		} else {
+			return project.NewStoreWith(dir, clones, store)
+		}
+	}
+	return project.NewStore(dir, clones)
+}
+
+// openAttemptLedger returns the admission ledger for the configured backend,
+// importing the existing document the first time a database is used.
+//
+// It fails closed rather than degrading. Every other store here falls back to
+// files when its backend cannot be opened, because a degraded advisory store
+// costs an operator information. This one is coordination: on a board shared by
+// several machines, one instance falling back to its own file while the others
+// use the database means two ledgers deciding admission independently — which
+// is precisely the double-dispatch this backend exists to prevent, and worse
+// than not starting.
+//
+// Call it only with a database configured; the file-backed deployment keeps the
+// YAML ledger and never reaches here.
+func (a *App) openAttemptLedger(ctx context.Context) (dispatch.Persistence, error) {
+	if a.database == nil {
+		return nil, errors.New("attempt lease store: no database configured")
+	}
+	importCtx, cancel := context.WithTimeout(ctx, importTimeout)
+	defer cancel()
+	if err := dispatch.Import(importCtx, a.database, config.AttemptLeasesDir(), a.importScope(), a.logger); err != nil {
+		return nil, fmt.Errorf("attempt lease import: %w", err)
+	}
+	store, err := dispatch.NewSQLPersistence(a.database)
+	if err != nil {
+		return nil, fmt.Errorf("attempt lease store: %w", err)
+	}
+	return store, nil
+}
+
+// openAgentQueueStore returns the queue's durability mirror for the configured
+// backend, importing the existing item files the first time a database is used.
+//
+// A failed import returns nil, which leaves the queue on its files. Starting on
+// an empty mirror would drop every queued item on the next restart.
+func (a *App) openAgentQueueStore(ctx context.Context) agentqueue.Persistence {
+	if a.database == nil {
+		return nil
+	}
+	importCtx, cancel := context.WithTimeout(ctx, importTimeout)
+	defer cancel()
+	if err := agentqueue.Import(importCtx, a.database, config.AgentQueueDir(), a.importScope(), a.logger); err != nil {
+		a.logger.Error("agentqueue.import", "err", err)
+		return nil
+	}
+	store, err := agentqueue.NewSQLStore(a.database, a.logger)
+	if err != nil {
+		a.logger.Error("agentqueue.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
+		return nil
+	}
+	return store
+}
+
+// openIncidentStore returns the incident ledger for the configured backend,
+// importing the existing files the first time a database is used.
+//
+// A failed import degrades to the files: an empty ledger reads as "nothing has
+// ever failed", so the monitor would re-file every open incident as new.
+func (a *App) openIncidentStore(ctx context.Context) (*monitor.IncidentStore, error) {
+	dir := config.MonitorIncidentsDir()
+	if a.database != nil {
+		importCtx, cancel := context.WithTimeout(ctx, importTimeout)
+		defer cancel()
+		if err := monitor.ImportIncidents(importCtx, a.database, dir, a.importScope(), a.logger); err != nil {
+			a.logger.Error("incidents.import", "err", err)
+		} else if store, err := monitor.NewSQLIncidentStore(a.database); err != nil {
+			a.logger.Error("incidents.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
+		} else {
+			return monitor.NewIncidentStoreWith(dir, store)
+		}
+	}
+	return monitor.NewIncidentStore(dir)
+}
+
+// newDurableIssueSink returns the retrying GitHub issue sink for the configured
+// backend, importing the pending outbox the first time a database is used.
+//
+// A failed import degrades to the files: an empty outbox reads as nothing
+// pending, so a filing stranded by an expired credential would never be
+// retried and the incident it belongs to would go unreported.
+func (a *App) newDurableIssueSink(ctx context.Context, inner *monitor.GHIssueSink, name string) (*monitor.DurableGHIssueSink, error) {
+	dir := filepath.Join(config.GHIssueOutboxDir(), name)
+	if a.database != nil {
+		ctx, cancel := context.WithTimeout(ctx, importTimeout)
+		defer cancel()
+		if err := monitor.ImportIssueOutbox(ctx, a.database, dir, a.importScope(), a.logger); err != nil {
+			a.logger.Error("issueoutbox.import", "err", err)
+		} else if store, err := monitor.NewSQLIssueOutbox(a.database, a.logger); err != nil {
+			a.logger.Error("issueoutbox.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
+		} else {
+			return monitor.NewDurableGHIssueSinkWith(inner, store, name, a.logger, a.audit), nil
+		}
+	}
+	return monitor.NewDurableGHIssueSink(inner, dir, name, a.logger, a.audit)
+}
+
+// openProtectedStore returns the protected-findings ledger for the configured
+// backend, importing the existing document the first time a database is used.
+//
+// A failed import degrades to the document: an empty ledger reads as nothing
+// protected, and the next cleanup pass is then free to delete the very paths
+// the findings existed to hold.
+func (a *App) openProtectedStore(ctx context.Context) *cleanup.ProtectedStore {
+	path := cleanup.DefaultProtectedStorePath()
+	if a.database != nil {
+		importCtx, cancel := context.WithTimeout(ctx, importTimeout)
+		defer cancel()
+		if err := cleanup.ImportProtected(importCtx, a.database, path, a.importScope(), a.logger); err != nil {
+			a.logger.Error("protectedfindings.import", "err", err)
+		} else if store, err := cleanup.NewSQLProtectedStore(a.database); err != nil {
+			a.logger.Error("protectedfindings.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
+		} else {
+			return cleanup.NewProtectedStoreWith(path, store)
+		}
+	}
+	return cleanup.NewProtectedStore(path)
 }

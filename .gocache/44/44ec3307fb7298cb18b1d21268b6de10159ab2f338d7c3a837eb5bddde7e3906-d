@@ -1,0 +1,3 @@
+./doc.go
+./fake_apiserverinternal_client.go
+./fake_storageversion.go

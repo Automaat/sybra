@@ -5,7 +5,17 @@ import (
 	"strings"
 )
 
-var all = []string{"claude", "codex", "copilot", "opencode"}
+// The provider ids Sybra can dispatch to. These are for Go comparisons only —
+// the wire format is unchanged, so config files, persisted records and test
+// fixtures keep using the same bare strings.
+const (
+	Claude   = "claude"
+	Codex    = "codex"
+	Copilot  = "copilot"
+	OpenCode = "opencode"
+)
+
+var all = []string{Claude, Codex, Copilot, OpenCode}
 
 // List returns the provider universe as a comma-separated string for use in
 // human-readable validation messages, so those messages stay single-sourced.

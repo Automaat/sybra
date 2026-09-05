@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte'
-  import { ChevronLeft } from '@lucide/svelte'
+  import { AlertTriangle, ChevronLeft } from '@lucide/svelte'
   import { SegmentedControl } from '@skeletonlabs/skeleton-svelte'
   import { taskStore } from '../stores/tasks.svelte.js'
   import TaskHeaderBar from '../components/task-detail/TaskHeaderBar.svelte'
@@ -22,6 +22,7 @@
   import TaskProgressPanel from '../components/task-detail/TaskProgressPanel.svelte'
   import TaskChildrenPanel from '../components/task-detail/TaskChildrenPanel.svelte'
   import { childrenForUmbrella } from '../lib/umbrella-progress.js'
+  import { formatCostShort } from '../lib/cost.js'
   import { ListTaskProgress } from '$lib/api'
 
   interface Props {
@@ -35,7 +36,7 @@
 
   const { taskId, onback, onviewagent, ondelete, onreviewplan, onselecttask }: Props = $props()
 
-  const t = $derived(taskStore.tasks.get(taskId) ?? null)
+  const t = $derived(taskStore.detail(taskId) ?? null)
   let error = $state('')
   // The detail body is split into tabs so a big task (plan + review + many runs)
   // is scannable instead of a single long scroll. Default is always Overview.
@@ -81,6 +82,12 @@
     return activeTab === tab ? layout : 'hidden'
   }
 
+  function formatBytes(bytes: number): string {
+    if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`
+    if (bytes >= 1024) return `${Math.round(bytes / 1024)} KiB`
+    return `${bytes} B`
+  }
+
   function cycleTab(dir: number) {
     const vals = tabs.map((tb) => tb.value)
     const i = vals.indexOf(activeTab)
@@ -89,7 +96,9 @@
   }
 
   $effect(() => {
-    loadTask()
+    const release = taskStore.retainDetail(taskId)
+    void loadTask()
+    return release
   })
 
   async function loadTask() {
@@ -199,6 +208,36 @@
       <!-- Persistent header: always visible above the tabs. -->
       <TaskHeaderBar task={t} {ondelete} />
       <TaskStatusBanner task={t} />
+      {#if t.documentCompaction}
+        <div
+          data-testid="task-document-compaction"
+          class="flex items-start gap-3 rounded-lg border border-warning-300 bg-warning-50 px-4 py-3 text-sm text-warning-900 dark:border-warning-700 dark:bg-warning-950/40 dark:text-warning-200"
+        >
+          <AlertTriangle size={18} class="mt-0.5 shrink-0" />
+          <div>
+            <p class="font-semibold">Older task history was compacted</p>
+            <p class="mt-1 opacity-80">
+              Sybra bounded this task after it reached {formatBytes(t.documentCompaction.largestBytesSeen)}.
+              {#if t.documentCompaction.droppedAgentRuns}
+                {t.documentCompaction.droppedAgentRuns} old run{t.documentCompaction.droppedAgentRuns === 1 ? '' : 's'} removed.
+              {/if}
+              {#if t.documentCompaction.trimmedRunFields}
+                {t.documentCompaction.trimmedRunFields} prompt/result field{t.documentCompaction.trimmedRunFields === 1 ? '' : 's'} shortened.
+              {/if}
+              {#if t.documentCompaction.trimmedWorkflow}
+                {t.documentCompaction.trimmedWorkflow} workflow/effect history entr{t.documentCompaction.trimmedWorkflow === 1 ? 'y' : 'ies'} shortened or removed.
+              {/if}
+              {#if t.documentCompaction.droppedRunCostUsd}
+                {formatCostShort(t.documentCompaction.droppedRunCostUsd)} of removed-run cost remains counted toward the task budget.
+              {/if}
+              {#if t.documentCompaction.bodyTruncated}
+                The description was shortened as a last resort.
+              {/if}
+              Full run transcripts may still be available from their log files.
+            </p>
+          </div>
+        </div>
+      {/if}
       <HumanRequiredPanel task={t} />
       <PromptLabProposalPanel task={t} />
       {#if pendingApproval && activeTab !== 'plan'}

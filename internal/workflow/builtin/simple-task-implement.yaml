@@ -19,13 +19,32 @@ trigger:
       operator: not_contains
       value: prompt-lab-proposal
 steps:
+  # Mechanical check (no LLM): deterministic pre-dispatch admission checks —
+  # plan contract validity (including v2 admission-facts fields), oversize
+  # scope, and push credential readiness — before any code-author agent is
+  # dispatched. Covers both the planned path (already checked once by
+  # simple-task-plan's validate_plan_contract) and the noplan/handoff paths
+  # that reach in-progress without ever running that step. A failure flips
+  # the task to human-required with a terminal credential_required or
+  # operator_decision blocker; see execAdmissionPreflight.
+  - id: admission_preflight
+    name: Admission Preflight
+    type: admission_preflight
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: implement
+
   - id: implement
     name: Implement
     type: run_agent
     config:
       role: implementation
       mode: "{{.Task.AgentMode}}"
-      model: sonnet
+      model: '{{if getvar .Vars "verify_retry_model"}}{{getvar .Vars "verify_retry_model"}}{{else}}cheap{{end}}'
       max_retries: 2
       prompt: >-
         Implement this task. When done, commit your work and push the branch to
@@ -48,7 +67,7 @@ steps:
         focused checks pass and you are satisfied with the diff: commit and
         push. If the deterministic suite later fails, you will be re-asked
         with the exact failing command and its output.
-        {{- if currenttestfailures .Task.Body}}
+        {{- if currenttestfailures .Task.CurrentTestFailures}}
 
         A prior implementation FAILED adversarial manual testing. Fix the root
         cause of every defect reported below (not just the symptom) — the
@@ -56,13 +75,13 @@ steps:
 
         ## Current Test Failures
 
-        {{currenttestfailures .Task.Body}}
+        {{currenttestfailures .Task.CurrentTestFailures}}
         {{- end}}
-        {{- if acceptanceledger .Task.Body}}
+        {{- if acceptanceledger .Task.AcceptanceLedger}}
 
         ## Acceptance Ledger — all must hold simultaneously
 
-        {{acceptanceledger .Task.Body}}
+        {{acceptanceledger .Task.AcceptanceLedger}}
         {{- end}}
         {{- if getvar .Vars "verify_reask_note"}}
 
@@ -95,6 +114,20 @@ steps:
 
         Before finishing, re-check your change against a short checklist:
         tests updated, edge cases covered, no leftover debug code.
+
+        If you made no commits because the requested change is already present
+        on the base branch, so this task is a duplicate that needs no PR,
+        declare it by setting the task's status reason to exactly one JSON
+        object and nothing else:
+
+            sybra-cli update {{.Task.ID}} --status human-required \
+              --status-reason '{"decision":"already-fixed-on-main","reason":"<one sentence>"}'
+
+        Only that exact call counts as a declaration. Writing the same JSON in
+        your response, quoting it, or describing the situation in prose does
+        not, and leaves the task for a human. Declare it only when you made no
+        commits and the change is genuinely already on the base branch; in
+        every other case park with an ordinary prose reason instead.
         {{- if .Task.PlanContract}}
 
         ## Executable Plan Contract
@@ -102,11 +135,6 @@ steps:
         ```json
         {{plancontractjson .Task.PlanContract .Task.ID}}
         ```
-        {{- else if .Task.Plan}}
-
-        ## Plan
-
-        {{.Task.Plan}}
         {{- end}}
     next:
       # Watchdog stop (or any other pre-completion escalation) sets
@@ -158,53 +186,23 @@ steps:
           operator: equals
           value: human-required
         goto: ""
-      - goto: focused_checks
+      - goto: parallel_gates
 
-  # Mechanical changed-surface gate (no LLM): run configured focused checks
-  # derived from the committed diff after codegen has handled deterministic
-  # mutation such as go mod tidy. Failures re-enter implementation with
-  # surface-linked context until the retry cap parks the task human-required;
-  # unmatched diffs skip this step and still run the downstream verify_checks
-  # gate.
-  - id: focused_checks
-    name: Focused Checks
-    type: focused_checks
-    next:
-      - when:
-          field: task.status
-          operator: equals
-          value: human-required
-        goto: ""
-      - goto: detect_tampering
-
-  # Mechanical check (no LLM): inspects the worktree diff for reward-hacking /
-  # test-tampering signals — deleted assertions, added skip/xfail markers,
-  # deleted test files, neutered CI config. A high-severity finding flips the
-  # task to human-required (with the offending rules in the reason) so it
-  # cannot reach done without an explicit human bless. Benign test changes are
-  # recorded in a tamper-report.json artifact but do not block. Skips
-  # gracefully when no worktree exists or no verification files changed.
-  - id: detect_tampering
-    name: Detect Test Tampering
-    type: detect_tampering
-    next:
-      - when:
-          field: task.status
-          operator: equals
-          value: human-required
-        goto: ""
-      - goto: verify_checks
-
-  # Mechanical check (no LLM): run the project's `checks.verify` suite on the
-  # agent's branch HEAD before review. A non-zero exit flips the task to
-  # human-required so an implementation that does not pass its own declared
-  # tests cannot reach a PR. Complements detect_tampering (which catches
-  # structural test tampering). Opt-in: a no-op unless the project defines
-  # checks.verify. No git mutation; add the `verify-blessed` tag to override a
-  # known-flaky suite.
-  - id: verify_checks
-    name: Verify Checks
-    type: verify_checks
+  # Mechanical gate (no LLM): runs the three deterministic post-implement
+  # gates — focused_checks (changed-surface checks derived from the
+  # committed diff), detect_tampering (worktree diff scan for reward-hacking
+  # / test-tampering signals), and verify_checks (the project's
+  # `checks.verify` suite) — concurrently instead of serially, then joins
+  # before routing. Each gate still records its own evidence/verdict and
+  # decides its own outcome exactly as when they ran as separate steps (see
+  # execParallelGates, engine_steps_parallel_gates.go); this only overlaps
+  # their wall-clock. A gate flagging human-required or verify_checks
+  # blocking take precedence over an auto-fixable failure, which re-enters
+  # implementation with either/both gates' context until the retry cap parks
+  # the task human-required.
+  - id: parallel_gates
+    name: Parallel Deterministic Gates
+    type: parallel_gates
     next:
       - when:
           field: task.status
@@ -215,6 +213,14 @@ steps:
           field: task.status
           operator: equals
           value: human-required
+        goto: ""
+      # verify_checks can prove the failure belongs to an untouched package
+      # and move the task directly to ready-pr. End this implementation
+      # workflow so the status-change cascade can start simple-task-pr.
+      - when:
+          field: task.status
+          operator: equals
+          value: ready-pr
         goto: ""
       - when:
           field: task.pr_number

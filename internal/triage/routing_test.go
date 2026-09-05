@@ -42,7 +42,7 @@ func TestRouteMode(t *testing.T) {
 		want                              string
 	}{
 		{"pet keeps headless", "headless", "feature", "pet", "headless"},
-		{"pet keeps interactive", "interactive", "feature", "pet", "interactive"},
+		{"stray interactive floored to headless", "interactive", "feature", "pet", "headless"},
 		{"work feature no longer forced", "headless", "feature", "work", "headless"},
 		{"work review stays headless", "headless", "review", "work", "headless"},
 		{"empty project type", "headless", "feature", "", "headless"},

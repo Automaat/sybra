@@ -29,7 +29,41 @@ func TestReapOrphanProviderProcesses(t *testing.T) {
 	if got := m.ReapOrphanProviderProcesses(context.Background(), []string{root}); got != 1 {
 		t.Fatalf("reaped = %d, want 1", got)
 	}
-	waitForProcessExit(t, proc.Process.Pid)
+	if processAlive(proc.Process.Pid) {
+		t.Fatal("reaper returned before orphan process termination")
+	}
+}
+
+func TestReapOwnedOrphanProviderProcessesRequiresOwnerMarker(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("linux-only process enumeration test")
+	}
+	prevGrace := stopSIGINTGrace
+	stopSIGINTGrace = 20 * time.Millisecond
+	t.Cleanup(func() { stopSIGINTGrace = prevGrace })
+
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir(), ManagerConfig{})
+	root := t.TempDir()
+	ownerless := spawnProviderProcess(t, root)
+	if got, confirmed := m.ReapOwnedOrphanProviderProcessesConfirmed(context.Background(), []string{root}); got != 0 || !confirmed {
+		t.Fatalf("ownerless shared-root sweep = %d, %v; want 0, true", got, confirmed)
+	}
+	if !processAlive(ownerless.Process.Pid) {
+		t.Fatal("owned-only sweep killed an ownerless provider process")
+	}
+
+	ownerAssignment := mcpOwner{AgentID: "owned-agent", TaskID: "task-1", Mode: "headless"}
+	owned := spawnOwnedMCPHelperProcess(t, root, "chrome-devtools-mcp", ownerAssignment)
+	// Start returns before the child has exec'd, so until the exec lands the
+	// process still reads as the test binary with no owner marker and the
+	// sweep has nothing to reap.
+	waitForOwnedProcessUnderRoot(t, []string{root}, processOwner(ownerAssignment), "chrome-devtools-mcp")
+	if got, confirmed := m.ReapOwnedOrphanProviderProcessesConfirmed(context.Background(), []string{root}); got != 1 || !confirmed {
+		t.Fatalf("owned shared-root sweep = %d, %v; want 1, true", got, confirmed)
+	}
+	if processAlive(owned.Process.Pid) {
+		t.Fatal("owned-only reaper returned before owned process termination")
+	}
 }
 
 func TestReapOrphanProviderProcesses_SkipsTrackedPID(t *testing.T) {
@@ -366,7 +400,10 @@ func waitForOwnedProcessUnderRoot(t *testing.T, roots []string, owner processOwn
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		procs := listProviderProcessesUnderRoots(context.Background(), roots)
+		procs, observed := listProviderProcessesUnderRoots(context.Background(), roots)
+		if !observed {
+			t.Fatal("provider process scan was not confirmed")
+		}
 		for _, proc := range procs {
 			if proc.Owner == owner && proc.Command == wantCommand {
 				return proc.PID

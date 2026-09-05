@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # Every Wails-bound method that is also allowlisted for HTTP dispatch in
-# internal/sybra/services.go (ServiceRegistry) must have a matching shim
-# export in both frontend/src/lib/api.ts (the pick() re-export used by the
-# rest of the frontend) and frontend/src/lib/api-http.ts (the actual HTTP
-# implementation used by the web build). Miss either one and the method is
-# silently unreachable from one of the two build targets.
+# internal/sybra/services.go (ServiceRegistry) must have a matching
+# implementation in frontend/src/lib/api-http.ts, which is the frontend's only
+# transport. Miss it and the method is unreachable from the UI.
+#
+# frontend/src/lib/api.ts is the import surface the rest of the frontend uses;
+# it re-exports api-http.ts wholesale, and this script asserts that it still
+# does — a hand-written export list there would reintroduce the second place a
+# method has to be added.
 #
 # services.go is the source of truth: it is the one hand-maintained list a
 # method must be added to for HTTP dispatch to work at all, so drift here
@@ -60,16 +63,29 @@ if [[ "${#methods[@]}" -eq 0 ]]; then
   exit 1
 fi
 
-read_lines_into api_ts_exports < <(grep -oE '^export const [A-Za-z0-9_]+' "${API_TS}" | sed -E 's/^export const //' | sort -u)
+if ! grep -qE "^export \* from './api-http\.js'" "${API_TS}"; then
+  echo "::error file=${API_TS}::must re-export api-http.ts wholesale (export * from './api-http.js')" >&2
+  exit 1
+fi
+
+# The generated service bindings call Wails IPC, which nothing serves any more:
+# a component importing one posts to /wails/runtime and gets 405. Only the
+# models.* files (plain type/class declarations) may be imported from src.
+stray_bindings="$(grep -rn "bindings/" frontend/src \
+  --include='*.ts' --include='*.svelte' \
+  | grep -v '/models\.js' \
+  | grep -v '^frontend/src/lib/api\.ts:' || true)"
+if [[ -n "${stray_bindings}" ]]; then
+  echo "::error::frontend/src must reach the server through \$lib/api; these import a generated Wails call path, which nothing serves:" >&2
+  echo "${stray_bindings}" >&2
+  exit 1
+fi
+
 read_lines_into api_http_exports < <(grep -oE '^export (async )?function [A-Za-z0-9_]+' "${API_HTTP_TS}" | sed -E 's/^export (async )?function //' | sort -u)
 
 fail=0
 
 for method in "${methods[@]}"; do
-  if ! printf '%s\n' "${api_ts_exports[@]}" | grep -qx "${method}"; then
-    echo "::error file=${API_TS}::HTTP-allowlisted method ${method} (${SERVICES_GO}) has no 'export const ${method}' shim" >&2
-    fail=1
-  fi
   if ! printf '%s\n' "${api_http_exports[@]}" | grep -qx "${method}"; then
     echo "::error file=${API_HTTP_TS}::HTTP-allowlisted method ${method} (${SERVICES_GO}) has no 'export function ${method}' implementation" >&2
     fail=1
@@ -77,7 +93,7 @@ for method in "${methods[@]}"; do
 done
 
 if [[ "${fail}" -eq 0 ]]; then
-  echo "api shim sync OK — ${#methods[@]} HTTP-allowlisted methods all have api.ts + api-http.ts shims"
+  echo "api shim sync OK — ${#methods[@]} HTTP-allowlisted methods all have api-http.ts implementations"
 fi
 
 exit "${fail}"

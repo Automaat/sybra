@@ -18,9 +18,9 @@ steps:
   # Skip review when tagged noreview/trivial or already CLEAN-reviewed in a
   # prior run. A persisted NEEDS_FIXES review must win over task.reviewed: the
   # review role marks task.reviewed when it completes, even for non-clean
-  # verdicts. If the review loop later hits max_review_rounds, that unresolved
-  # verdict parks the task blocked; the next ready-review pass must not skip
-  # the fresh code review.
+  # verdicts. If the review loop later exhausts its rolling-hour review
+  # budget, that unresolved verdict parks the task; the next
+  # ready-review pass must not skip the fresh code review.
   # On skip, jump straight to done_review so the task still advances to
   # testing — trivial-tagged tasks then also skip testing (see testing-task.yaml's
   # maybe_test), landing directly on ready-pr.
@@ -34,9 +34,9 @@ steps:
         value: noreview
     next:
       - when:
-          field: task.code_review
-          operator: starts_with
-          value: 'Review Verdict: NEEDS_FIXES'
+          field: task.code_review_verdict
+          operator: equals
+          value: NEEDS_FIXES
         goto: triage_review
       - when:
           field: task.reviewed
@@ -89,7 +89,7 @@ steps:
     name: Clear Stale Review Sidecar
     type: shell
     config:
-      command: rm -f .sybra-review-{{.Task.ID}}.md
+      command: rm -f {{sidecardir .Vars}}/.sybra-review-{{.Task.ID}}.md
       dir: '{{getvar .Vars "_dir"}}'
     next:
       - goto: pick_review_method
@@ -135,16 +135,23 @@ steps:
       provider: cross
       needs_worktree: true
       max_retries: 2
+      output_schema: >-
+        {"type":"object","properties":{"verdict":{"type":"string","enum":["CLEAN","NEEDS_FIXES"]}},"required":["verdict"],"additionalProperties":false}
       prompt: >-
         Review the changes on the current branch vs origin/main.
         The PR has not been created yet — review the local diff.
+        {{- if getvar .Vars "review_reask_note"}}
+
+        RETRY GUIDANCE — your previous final message was invalid:
+        {{getvar .Vars "review_reask_note"}}
+        {{- end}}
 
         Steps:
-          1. git diff origin/main..HEAD > .sybra-diff-{{.Task.ID}}.patch
+          1. git diff origin/main..HEAD > {{sidecardir .Vars}}/.sybra-diff-{{.Task.ID}}.patch
           2. Run /adversarial-review against that patch and the worktree source
-          3. Save the full review to .sybra-review-{{.Task.ID}}.md
+          3. Save the full review to {{sidecardir .Vars}}/.sybra-review-{{.Task.ID}}.md
 
-        The FIRST line of .sybra-review-{{.Task.ID}}.md MUST be exactly the
+        The FIRST line of {{sidecardir .Vars}}/.sybra-review-{{.Task.ID}}.md MUST be exactly the
         verdict line /adversarial-review emits, copied verbatim:
           - `Review Verdict: CLEAN` when no surviving finding requires a code
             change before PR creation. Style-only comments, simplification
@@ -155,13 +162,17 @@ steps:
         This line gates whether a fix-review agent runs next — get it right.
 
         Do NOT submit anything to GitHub. Sybra will ingest
-        .sybra-review-{{.Task.ID}}.md as the code_review sidecar
+        {{sidecardir .Vars}}/.sybra-review-{{.Task.ID}}.md as the code_review sidecar
         after you exit — you do not need to call sybra-cli yourself.
         The review file is git-excluded and remains for the next step (fix_review) to
         read directly.
+
+        Your FINAL message of the turn must be ONLY the schema-valid JSON
+        verdict object: `{"verdict":"CLEAN"}` or
+        `{"verdict":"NEEDS_FIXES"}`.
       import_sidecar:
         kind: code_review
-        from: '{{getvar .Vars "_dir"}}/.sybra-review-{{.Task.ID}}.md'
+        from: '{{sidecardir .Vars}}/.sybra-review-{{.Task.ID}}.md'
     next:
       - goto: require_code_review
 
@@ -187,16 +198,23 @@ steps:
       provider: ab
       needs_worktree: true
       max_retries: 2
+      output_schema: >-
+        {"type":"object","properties":{"verdict":{"type":"string","enum":["CLEAN","NEEDS_FIXES"]}},"required":["verdict"],"additionalProperties":false}
       prompt: >-
         Review the changes on the current branch vs origin/main.
         The PR has not been created yet — review the local diff.
+        {{- if getvar .Vars "review_reask_note"}}
+
+        RETRY GUIDANCE — your previous final message was invalid:
+        {{getvar .Vars "review_reask_note"}}
+        {{- end}}
 
         Steps:
-          1. git diff origin/main..HEAD > .sybra-diff-{{.Task.ID}}.patch
+          1. git diff origin/main..HEAD > {{sidecardir .Vars}}/.sybra-diff-{{.Task.ID}}.patch
           2. Run /staff-code-review against that patch and the worktree source
-          3. Save the full review to .sybra-review-{{.Task.ID}}.md
+          3. Save the full review to {{sidecardir .Vars}}/.sybra-review-{{.Task.ID}}.md
 
-        The FIRST line of .sybra-review-{{.Task.ID}}.md MUST be exactly one
+        The FIRST line of {{sidecardir .Vars}}/.sybra-review-{{.Task.ID}}.md MUST be exactly one
         verdict marker, mapped from /staff-code-review's native verdict:
           - `Review Verdict: CLEAN` for APPROVE, and for
             APPROVE_WITH_COMMENTS only when every comment is low-severity,
@@ -207,19 +225,23 @@ steps:
         This line gates whether a fix-review agent runs next — get it right.
 
         Do NOT submit anything to GitHub. Sybra will ingest
-        .sybra-review-{{.Task.ID}}.md as the code_review sidecar
+        {{sidecardir .Vars}}/.sybra-review-{{.Task.ID}}.md as the code_review sidecar
         after you exit — you do not need to call sybra-cli yourself.
         The review file is git-excluded and remains for the next step (fix_review) to
         read directly.
+
+        Your FINAL message of the turn must be ONLY the schema-valid JSON
+        verdict object: `{"verdict":"CLEAN"}` or
+        `{"verdict":"NEEDS_FIXES"}`.
       import_sidecar:
         kind: code_review
-        from: '{{getvar .Vars "_dir"}}/.sybra-review-{{.Task.ID}}.md'
+        from: '{{sidecardir .Vars}}/.sybra-review-{{.Task.ID}}.md'
     next:
       - goto: require_code_review
 
   # Guard: mirrors require_plan_critique in simple-task-plan. Flips task
   # to human-required when the review sidecar is empty (e.g. agent never
-  # wrote .sybra-review-…md, or its sandbox blocked the path).
+  # wrote {{sidecardir .Vars}}/.sybra-review-…md, or its sandbox blocked the path).
   # Without this, fix_review reads the sidecar file and the GUI never sees what
   # the reviewer wrote.
   - id: require_code_review
@@ -227,6 +249,8 @@ steps:
     type: require_sidecar
     config:
       sidecar: code_review
+      retry_step_var: review_verdict_source_step
+      max_retries: 2
     next:
       - when:
           field: task.status
@@ -239,24 +263,27 @@ steps:
   # entirely, saving ~1 wasted agent run per clean-review task — which is
   # nearly every landing.
   #
-  # Unlike the plan-side verdict gate this replaced (deleted: it tested for a
-  # literal the critic never emitted, so it never fired), the reviewer's
-  # verdict format is mandated by this workflow's own review prompt. Keep the
-  # prompt and this check in sync — an unenforced format is how the plan-side
-  # gate silently rotted.
+  # The review agent's final message is output_schema-enforced JSON. This
+  # step's own type handles malformed/missing verdicts via bounded retry and
+  # escalation; the YAML only routes the already-extracted wf var.
   - id: route_review_verdict
     name: Route on Review Verdict
-    type: condition
-    config:
-      check:
-        field: task.code_review
-        operator: starts_with
-        value: 'Review Verdict: CLEAN'
+    type: route_review_verdict
     next:
+      # Stop when this step just escalated. It hands a task to a human when a
+      # review round produced no verdict after its retries, and without this
+      # the empty verdict falls through to the fix edge below and sends an
+      # agent after the previous round's findings on an already-parked task.
+      # require_code_review carries the same stop for the same reason.
       - when:
-          field: task.code_review
-          operator: starts_with
-          value: 'Review Verdict: CLEAN'
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - when:
+          field: vars.review_verdict
+          operator: equals
+          value: CLEAN
         goto: done_review
       - goto: fix_review
 
@@ -269,13 +296,14 @@ steps:
       needs_worktree: true
       max_retries: 2
       prompt: >-
-        Read the code review at .sybra-review-{{.Task.ID}}.md
+        Read the code review at {{sidecardir .Vars}}/.sybra-review-{{.Task.ID}}.md
 
         For each actionable finding (critical/high/medium severity), fix the code.
         Skip low-severity nitpicks and style-only comments.
 
-        When done, commit your changes (do NOT push yet — push happens with PR
-        creation). Sign commits with `git commit -s -S`.
+        When done, commit your changes (do NOT push yet — Sybra will push the
+        branch deterministically before verification and PR creation). Sign
+        commits with `git commit {{commitsignflags .Vars}}`.
         Use conventional commit format: `fix(review): address review comments`.
 
         Never weaken, skip, delete, or hardcode tests to satisfy a review
@@ -286,6 +314,55 @@ steps:
         {{getvar .Vars "watchdog_reask_note"}}
         {{- end}}
     next:
+      - goto: push_review_fix_branch
+
+  # Mechanical sync point: the fix-review agent is intentionally told not to
+  # push, so make the branch push an explicit workflow step before verifying
+  # the post-fix HEAD. A best-effort completion hook is not enough here: if a
+  # local fix commit is stranded, verify/testing/PR creation can observe a
+  # different branch state than the one the review fixer produced.
+  - id: push_review_fix_branch
+    name: Push Review Fix Branch
+    type: push_branch
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: blocked
+        goto: ""
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: verify_checks
+
+  # Mechanical check (no LLM): re-run the project's checks.verify suite after
+  # the review-fix agent committed. The implement-stage verify_checks only saw
+  # the pre-fix HEAD, so without this a fix that broke the suite would reach a
+  # PR unverified — and the require_evidence completion gate would flag
+  # verify_checks stale against the final HEAD. Opt-in: a no-op unless the
+  # project defines checks.verify. Same blocking semantics as the implement
+  # stage — a non-zero exit flips the task to human-required.
+  - id: verify_checks
+    name: Verify Checks
+    type: verify_checks
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: blocked
+        goto: ""
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - when:
+          field: task.status
+          operator: equals
+          value: ready-pr
+        goto: ""
       - goto: detect_tampering
 
   # Mechanical check (no LLM): re-scan the full diff for test/CI tampering after
@@ -298,10 +375,14 @@ steps:
   # and detect_tampering only inspects test/CI tampering, not whether the fix
   # is right or introduced a fresh bug. Re-review until CLEAN shuts that gap.
   #
-  # Fresh installs now default to a bounded review-round cap
-  # (agent.max_review_rounds, default 3). review_until_clean: false still opts
-  # into the single-pass posture, while allow_unbounded_review_rounds: true
-  # restores the legacy uncapped loop.
+  # Bounded by the same durable ReviewBudget the inbound PR-review dispatcher
+  # enforces (agent.review_rounds_per_hour, default 3 rounds/hour) rather
+  # than a separate per-workflow-execution round cap — one owner for "is this
+  # task reviewing too much" (#2499). review_until_clean: false still opts
+  # into the single-pass posture; set agent.review_rounds_per_hour to a
+  # negative value to disable the hourly cap. The lifetime safety ceiling is
+  # immutable and escalates to human-required rather than pretending an hourly
+  # configuration change can recover it.
   #
   # A backward goto to a sync step is safe because the run_agent steps in the
   # cycle are async: each agent completion re-enters executeSteps with a fresh
@@ -322,18 +403,32 @@ steps:
           value: "false"
         goto: done_review
       - when:
-          field: task.review_round_limit_reached
+          field: task.review_lifetime_exceeded
           operator: equals
           value: "true"
-        goto: review_round_limit_hit
+        goto: review_lifetime_exhausted
+      - when:
+          field: task.review_budget_exceeded
+          operator: equals
+          value: "true"
+        goto: review_budget_exhausted
       - goto: clear_review_sidecar
 
-  - id: review_round_limit_hit
-    name: Review Round Limit Hit
+  - id: review_budget_exhausted
+    name: Review Budget Exhausted
     type: set_status
     config:
       status: blocked
-      status_reason: automated review hit max_review_rounds without a CLEAN verdict - latest NEEDS_FIXES review is not eligible for testing or PR creation; inspect the latest review or opt into allow_unbounded_review_rounds
+      status_reason: automated review spent its rolling-hour budget without a CLEAN verdict - latest NEEDS_FIXES review is not eligible for testing or PR creation; inspect the latest review or raise agent.review_rounds_per_hour
+    next:
+      - goto: ""
+
+  - id: review_lifetime_exhausted
+    name: Review Lifetime Ceiling Exhausted
+    type: set_status
+    config:
+      status: human-required
+      status_reason: automated review reached its per-task lifetime safety ceiling without a CLEAN verdict - inspect the latest review and decide whether to revise scope or continue manually
     next:
       - goto: ""
 

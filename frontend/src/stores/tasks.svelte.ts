@@ -20,6 +20,11 @@ import { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/mod
 import { EntityStore } from './entity-store.svelte.js'
 import { needsPlanApproval } from '../lib/statuses.js'
 
+function taskIDFromFilePath(path: string): string {
+  const base = path.split('/').pop() ?? path
+  return base.split('.')[0] ?? ''
+}
+
 class TaskStore extends EntityStore<Task> {
   // Per-id operation counter guarding the async patchOne against its own
   // out-of-order completion. patchOne re-reads it after GetTask resolves and
@@ -28,6 +33,14 @@ class TaskStore extends EntityStore<Task> {
   // overwrite newer state, since the Map is last-write-wins. IDs are never
   // reused, so a monotonic per-id counter is sufficient.
   #opSeq = new Map<string, number>()
+
+  // Collection loads intentionally contain only the board projection. Keep
+  // full task records in a separate, reference-counted map so the 30-second
+  // board poll cannot erase sidecars (plans, critiques, reviews, etc.) from an
+  // open detail surface. Entries are retained only while a component uses
+  // them; full tasks can contain large run histories.
+  detailItems = $state<Map<string, Task>>(new Map())
+  #detailRefs = new Map<string, number>()
 
   #bumpSeq(id: string): number {
     const n = (this.#opSeq.get(id) ?? 0) + 1
@@ -62,6 +75,64 @@ class TaskStore extends EntityStore<Task> {
     this.items = v
   }
 
+  protected override mergeLoadedItem(item: Task, previous: Task | undefined): Task {
+    if (!previous || !previous.agentRuns?.length || !item.agentRuns?.length) return item
+    const previousRuns = new Map(previous.agentRuns.map((run) => [run.agentId, run]))
+    return Task.createFrom({
+      ...item,
+      agentRuns: item.agentRuns.map((run) => {
+        const hydrated = previousRuns.get(run.agentId)
+        if (!hydrated) return run
+        return {
+          ...run,
+          prompt: run.prompt || hydrated.prompt,
+          result: run.result || hydrated.result,
+        }
+      }),
+    })
+  }
+
+  detail(id: string): Task | undefined {
+    return this.detailItems.get(id) ?? this.items.get(id)
+  }
+
+  isDetailHydrated(id: string): boolean {
+    return this.detailItems.has(id)
+  }
+
+  retainDetail(id: string): () => void {
+    this.#detailRefs.set(id, (this.#detailRefs.get(id) ?? 0) + 1)
+    return () => {
+      const remaining = (this.#detailRefs.get(id) ?? 1) - 1
+      if (remaining > 0) {
+        this.#detailRefs.set(id, remaining)
+        return
+      }
+      this.#detailRefs.delete(id)
+      const next = new Map(this.detailItems)
+      next.delete(id)
+      this.detailItems = next
+    }
+  }
+
+  refreshRetainedDetails(): void {
+    for (const id of this.#detailRefs.keys()) void this.patchOne(id)
+  }
+
+  private setTask(result: Task): void {
+    this.set(result.id, result)
+    if (!this.#detailRefs.has(result.id)) return
+    this.detailItems = new Map(this.detailItems).set(result.id, result)
+  }
+
+  private deleteTask(id: string): void {
+    this.delete(id)
+    if (!this.detailItems.has(id)) return
+    const next = new Map(this.detailItems)
+    next.delete(id)
+    this.detailItems = next
+  }
+
   byStatus(status: string): Task[] {
     if (status === 'all') return this.list
     return this.list.filter((t) => t.status === status)
@@ -77,16 +148,16 @@ class TaskStore extends EntityStore<Task> {
 
   async get(id: string): Promise<Task> {
     const result = await GetTask(id)
-    this.set(result.id, result)
+    this.setTask(result)
     return result
   }
 
   // Fetch one task and upsert it into the reactive Map without rebuilding the
   // whole Map. Drives the live task:created/updated event handler so a single
   // changed file re-renders one card instead of forcing a full reload + total
-  // re-render. Swallows errors: the id may have just vanished, or be derived
-  // from a sidecar whose parent is gone — the trailing delete event or the
-  // background poll reconciles.
+  // re-render. If it can no longer be fetched, refresh the board: this also
+  // surfaces Store.List's synthetic degraded entry for a task file that was
+  // edited into an unreadable state.
   async patchOne(id: string): Promise<void> {
     const mine = this.#bumpSeq(id)
     try {
@@ -94,9 +165,17 @@ class TaskStore extends EntityStore<Task> {
       // Superseded by a later remove/patch while this fetch was in flight —
       // applying it now would resurrect a deleted task or clobber newer state.
       if (this.#opSeq.get(id) !== mine) return
-      if (result?.id) this.set(result.id, result)
+      // A previous failed fetch may have refreshed the board with Store.List's
+      // synthetic degraded entry for this same source file. Once the file is
+      // repaired, remove that warning card as the real task returns.
+      for (const [candidateID, candidate] of this.items) {
+        if (candidate.degraded && candidateID !== result.id && taskIDFromFilePath(candidate.filePath) === id) {
+          this.deleteTask(candidateID)
+        }
+      }
+      if (result?.id) this.setTask(result)
     } catch {
-      // Task unreadable/removed — leave the Map untouched.
+      void this.load()
     }
   }
 
@@ -105,18 +184,18 @@ class TaskStore extends EntityStore<Task> {
   // this id is discarded when it resolves.
   removeOne(id: string): void {
     this.#bumpSeq(id)
-    this.delete(id)
+    this.deleteTask(id)
   }
 
   async create(title: string, body: string, mode: string): Promise<Task> {
     const result = await CreateTask(title, body, mode)
-    this.set(result.id, result)
+    this.setTask(result)
     return result
   }
 
   async update(id: string, updates: Record<string, any>): Promise<Task> {
     const result = await UpdateTask(id, updates)
-    this.set(result.id, result)
+    this.setTask(result)
     return result
   }
 
@@ -125,7 +204,7 @@ class TaskStore extends EntityStore<Task> {
     this.#blessing = new Set(this.#blessing).add(id)
     try {
       const result = await BlessTampering(id)
-      this.set(result.id, result)
+      this.setTask(result)
       return result
     } finally {
       const next = new Set(this.#blessing)
@@ -136,7 +215,7 @@ class TaskStore extends EntityStore<Task> {
 
   async remove(id: string): Promise<void> {
     await DeleteTask(id)
-    this.delete(id)
+    this.deleteTask(id)
   }
 
   async approvePlan(id: string): Promise<void> {
@@ -146,7 +225,7 @@ class TaskStore extends EntityStore<Task> {
       return
     }
     const result = await ApprovePlan(id)
-    this.set(result.id, result)
+    this.setTask(result)
   }
 
   async rejectPlan(id: string, feedback: string): Promise<void> {
@@ -156,7 +235,7 @@ class TaskStore extends EntityStore<Task> {
       return
     }
     const result = await RejectPlan(id, feedback)
-    this.set(result.id, result)
+    this.setTask(result)
   }
 
   async reassign(id: string, node: string): Promise<void> {
@@ -174,19 +253,19 @@ class TaskStore extends EntityStore<Task> {
 
   async approveProposal(id: string): Promise<Task> {
     const result = await ApproveProposal(id)
-    this.set(result.id, result)
+    this.setTask(result)
     return result
   }
 
   async rejectProposal(id: string, feedback: string): Promise<Task> {
     const result = await RejectProposal(id, feedback)
-    this.set(result.id, result)
+    this.setTask(result)
     return result
   }
 
   async dispatchFromHumanRequired(id: string, target: string, reason: string): Promise<Task> {
     const result = await DispatchFromHumanRequired(id, target, reason)
-    this.set(result.id, result)
+    this.setTask(result)
     return result
   }
 }

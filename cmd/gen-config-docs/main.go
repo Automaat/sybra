@@ -344,7 +344,7 @@ func render(sections []section) string {
 			renderSection(&b, sec)
 		}
 	}
-	return b.String()
+	return strings.TrimRight(b.String(), "\n") + "\n"
 }
 
 func escapeDoc(doc string) string {

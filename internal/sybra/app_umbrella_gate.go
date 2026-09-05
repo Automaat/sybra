@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -61,7 +62,7 @@ const (
 func (a *App) releaseUnblockedChildren(ctx context.Context) {
 	a.recoverDegradedUmbrellas()
 
-	tasks, err := a.tasks.List()
+	tasks, err := a.tasks.ListBoard()
 	if err != nil {
 		return
 	}
@@ -101,17 +102,37 @@ func (a *App) releaseUnblockedChildren(ctx context.Context) {
 		return
 	}
 
+	crossProgramRefs := map[string][]string{} // task ID -> free-text external blockers found in its body
+	// mergedDeps mirrors the DependsOn set the gate's own release decision runs
+	// against — t.DependsOn folded together with body-derived cross-program refs
+	// (umbrella.ExternalBlockers). holdScopeVerdictBlocked matches a scope
+	// verdict against this same merged set, not the raw t.DependsOn, so a verdict
+	// naming a body-referenced external ref still holds the child (see finding on
+	// namesScopeVerdictDep reading t.DependsOn directly).
+	mergedDeps := make(map[string][]string, len(tasks))
+
 	for i := range tasks {
 		t := &tasks[i]
 		expanding := false
 		if t.UmbrellaIssue != "" {
 			expanding = stateFor(t.UmbrellaIssue).expanding
 		}
+		dependsOn := t.DependsOn
+		if t.UmbrellaIssue != "" {
+			if refs := umbrella.ExternalBlockers(t.Body, t.Issue); len(refs) > 0 {
+				crossProgramRefs[t.ID] = refs
+				dependsOn = mergeIssueRefs(dependsOn, refs)
+				if !slices.Equal(dependsOn, t.DependsOn) {
+					a.persistCrossProgramDeps(ctx, t, dependsOn)
+				}
+			}
+		}
+		mergedDeps[t.ID] = dependsOn
 		nodes[i] = umbrella.Node{
 			ID:        t.ID,
 			Issue:     t.Issue,
 			Umbrella:  t.UmbrellaIssue,
-			DependsOn: t.DependsOn,
+			DependsOn: dependsOn,
 			Done:      t.Status == task.StatusDone,
 			// Gate-marked todo children (current model) and legacy
 			// blocked+gated children (tasks created before this change)
@@ -142,6 +163,8 @@ func (a *App) releaseUnblockedChildren(ctx context.Context) {
 		cyclic[umbrella.NormalizeIssueRef(umb)] = true
 	}
 
+	a.flagCrossProgramBlockers(crossProgramRefs, nodes, byID, g)
+
 	for ref, st := range states {
 		if st.expanding {
 			delete(states, ref)
@@ -155,7 +178,9 @@ func (a *App) releaseUnblockedChildren(ctx context.Context) {
 	// children still release so independent work under the umbrella can proceed.
 	// Expanding/recovering trackers are removed from states above, so release
 	// and rollup both hold until the complete DAG is visible.
-	a.releaseCapped(ctx, g.ReadyToRelease(), byID, states)
+	ready := a.holdUnmetConditions(g.ReadyToRelease(), byID, states, mergedDeps)
+	ready = a.holdScopeVerdictBlocked(ready, byID, states, mergedDeps)
+	a.releaseCapped(ctx, ready, byID, states)
 
 	// An in-flight recovery run owns this umbrella's tracker/children this
 	// tick; skip its rollup entirely rather than computing status from a
@@ -177,6 +202,388 @@ func hasStartedImplementation(t *task.Task) bool {
 		}
 	}
 	return false
+}
+
+// persistCrossProgramDeps writes a body-derived external dependency ref (see
+// umbrella.ExternalBlockers) into t's own DependsOn field so the precondition
+// survives as structured state a human or the next agent run can read
+// directly, instead of being re-derived from prose on every gate tick and
+// every dispatch decision (the exact churn behind sybra#2640: task aa8a3956
+// re-confirmed the same unmet #2464 precondition across 5+ runs because
+// nothing durable recorded it). Kept alongside the ephemeral merge used for
+// this tick's graph — that merge is discarded at function return, so without
+// this write the field a human inspects via `sybra-cli get`/the GUI would
+// never show the dependency the gate is actually enforcing. On success,
+// updates t in place so the rest of this tick's pass (nodes[i] below, byID)
+// observes the new value immediately, and best-effort forwards the edit to a
+// follower-homed task's home node the same way TaskService.UpdateTask does
+// for any other Tags/DependsOn edit — a missed push just leaves Mirror's
+// drift backstop to repair it on the next reconcile.
+func (a *App) persistCrossProgramDeps(ctx context.Context, t *task.Task, merged []string) {
+	updated, err := a.tasks.UpdateBy(t.ID, "umbrella.gate.persist_cross_program_deps", task.Update{DependsOn: task.Ptr(merged)})
+	if err != nil {
+		a.logger.Error("umbrella.gate.cross_program_blocker.persist_failed", "task_id", t.ID, "err", err)
+		return
+	}
+	t.DependsOn = updated.DependsOn
+	if a.assigner == nil {
+		return
+	}
+	pushCtx, cancel := context.WithTimeout(ctx, pushReleaseTimeout)
+	defer cancel()
+	if _, err := a.assigner.PushFieldUpdate(pushCtx, updated); err != nil {
+		a.logger.Warn("umbrella.gate.cross_program_blocker.push_failed", "task_id", t.ID, "err", err)
+	}
+}
+
+// mergeIssueRefs unions extra into existing, de-duplicated by
+// NormalizeIssueRef and preserving existing's entries (and their original
+// spelling) first.
+func mergeIssueRefs(existing, extra []string) []string {
+	seen := make(map[string]bool, len(existing)+len(extra))
+	out := make([]string, 0, len(existing)+len(extra))
+	for _, r := range append(slices.Clone(existing), extra...) {
+		key := umbrella.NormalizeIssueRef(r)
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, r)
+	}
+	return out
+}
+
+// flagCrossProgramBlockers stamps a distinct StatusReason on a still-gated
+// (Awaiting) child whose body names a free-text "after #N"/"strictly after
+// #N" dependency (see umbrella.ExternalBlockers) that has not resolved to a
+// done task — almost always a cross-program issue no Sybra task tracks at
+// all, since the planner's DependsOn can only ever reference the umbrella's
+// own sub-issues (buildPlanSchema). Without this, the child's board card
+// looks indistinguishable from any other dependency-satisfied child, and a
+// human — or an automated review cycle that got as far as dispatching it
+// before catching the mismatch — rediscovers the same unmet dependency from
+// scratch every time instead of seeing it named up front (real incident:
+// umbrella #2493's child #2503 named "strictly after #2464" in its body and
+// was released anyway, burning 4 review runs re-confirming the same gap;
+// sybra#2616). Only touches tasks that are actually held back by one of
+// these refs, so it never fights releaseCapped for a child ready to go.
+func (a *App) flagCrossProgramBlockers(refsByTask map[string][]string, nodes []umbrella.Node, byID map[string]*task.Task, g *umbrella.Graph) {
+	if len(refsByTask) == 0 {
+		return
+	}
+	awaiting := make(map[string]bool, len(nodes))
+	for _, n := range nodes {
+		awaiting[n.ID] = n.Awaiting
+	}
+	for id, refs := range refsByTask {
+		if !awaiting[id] {
+			continue
+		}
+		unresolved := g.UnresolvedRefs(refs)
+		if len(unresolved) == 0 {
+			continue
+		}
+		t := byID[id]
+		if t == nil {
+			continue
+		}
+		reason := externalBlockerReason(unresolved)
+		if t.StatusReason == reason {
+			continue
+		}
+		if _, err := a.tasks.UpdateBy(id, "umbrella.gate.flag_cross_program_blocker", task.Update{StatusReason: task.Ptr(reason)}); err != nil {
+			a.logger.Error("umbrella.gate.cross_program_blocker.flag_failed", "task_id", id, "err", err)
+			continue
+		}
+		t.StatusReason = reason
+	}
+}
+
+// externalBlockerReason renders a deterministic, human-facing status reason
+// naming the specific unresolved cross-program ref(s) still holding a child
+// back, distinct from the generic reasons trackerRollup/releaseCapped use.
+func externalBlockerReason(refs []string) string {
+	sorted := slices.Clone(refs)
+	slices.Sort(sorted)
+	return "held: body names external dependency " + strings.Join(sorted, ", ") + " not tracked as done"
+}
+
+// dependencyConditionReasonPrefix marks a human-required status_reason as
+// having been written by holdUnmetConditions for a "note"-kind
+// task.DepCondition, mirroring dependencyScopeVerdictReasonPrefix's pattern
+// for the (deliberately distinct) scope-verdict gate.
+const dependencyConditionReasonPrefix = "held: unmet depends_on condition for"
+
+// holdUnmetConditions filters ready — the children ReadyToRelease has
+// confirmed have every depends_on ref resolved to Done — removing any child
+// whose task.DependsOnConditions names a condition on one of those very refs
+// that is not yet satisfied. Runs before holdScopeVerdictBlocked so a fresh
+// note/label condition is enforced on the same tick a dependency first
+// closes, not one tick later.
+//
+// A child with no DependsOnConditions returns immediately with no I/O and no
+// task.Update — every existing no-condition child (and its tests) sees zero
+// behavior change. For a child that does carry conditions, only the first
+// condition whose Ref matches a current dependency is evaluated per tick
+// (validateDepConditions enforces at most one condition per ref at write
+// time); a Ref that no longer names a current dependency is inert, exactly
+// like a stale blocker.KindDependencyScopeUnmet verdict.
+func (a *App) holdUnmetConditions(ready []string, byID map[string]*task.Task, states map[string]*umbrellaState, mergedDeps map[string][]string) []string {
+	if len(ready) == 0 {
+		return ready
+	}
+	kept := ready[:0]
+	for _, id := range ready {
+		t := byID[id]
+		if t == nil || len(t.DependsOnConditions) == 0 {
+			kept = append(kept, id)
+			continue
+		}
+		if a.holdChildUnmetCondition(t, mergedDeps[id], states) {
+			continue
+		}
+		kept = append(kept, id)
+	}
+	return kept
+}
+
+// holdChildUnmetCondition evaluates t's DependsOnConditions against its
+// current dependency set, applying at most the first matching (non-inert)
+// condition per tick. Returns held=true when the child must not release this
+// tick — the caller drops it from ready without further checks.
+func (a *App) holdChildUnmetCondition(t *task.Task, dependsOn []string, states map[string]*umbrellaState) (held bool) {
+	for _, cond := range t.DependsOnConditions {
+		if !matchesDepRef(cond.Ref, dependsOn) {
+			continue // inert: Ref is not among this task's current dependencies
+		}
+		switch cond.Kind {
+		case task.DepConditionKindNote:
+			a.escalateUnmetCondition(t, cond, states)
+			return true
+		case task.DepConditionKindLabel:
+			met, checked := a.labelConditionMet(cond)
+			if !checked {
+				// FetchIssue failed or the ref is unresolvable — fail closed
+				// and retry next tick rather than releasing on unverifiable
+				// input.
+				return true
+			}
+			if !met {
+				a.holdSelfHealingCondition(t, unmetLabelConditionReason(cond))
+				return true
+			}
+		default:
+			// Unrecognized Kind (a hand-edited task file — CLI/API input is
+			// validated at write time by task.applyDependsOnConditionsField).
+			// Fail closed: hold without escalating.
+			a.holdSelfHealingCondition(t, unknownConditionKindReason(cond))
+			return true
+		}
+	}
+	return false
+}
+
+// labelConditionMet checks a "label" DepCondition against its referenced
+// closing issue's current GitHub labels. checked=false means the check could
+// not be performed (unresolvable ref or a FetchIssue error) and the caller
+// must fail closed rather than read met's zero value as "absent".
+func (a *App) labelConditionMet(cond task.DepCondition) (met, checked bool) {
+	repo, number, ok := umbrella.ParseRef(cond.Ref)
+	if !ok {
+		a.logger.Warn("umbrella.gate.condition.unresolvable_ref", "ref", cond.Ref)
+		return false, false
+	}
+	fetch := a.umbrellaFetchIssue
+	if fetch == nil {
+		fetch = github.FetchIssue
+	}
+	issue, err := fetch(repo, number)
+	if err != nil {
+		a.logger.Warn("umbrella.gate.condition.fetch_issue_failed", "ref", cond.Ref, "err", err)
+		return false, false
+	}
+	return slices.Contains(issue.Labels, cond.Value), true
+}
+
+// holdSelfHealingCondition records reason on t without changing Status — the
+// child stays gated/blocked (or todo+tagged) exactly as before, so a later
+// tick re-evaluates it once the underlying condition changes (a label is
+// applied, or the task file is corrected). No-ops when reason already
+// matches, so a condition that stays unmet across many ticks does not write
+// (or push to a follower) every single tick.
+func (a *App) holdSelfHealingCondition(t *task.Task, reason string) {
+	if t.StatusReason == reason {
+		return
+	}
+	if _, err := a.tasks.UpdateBy(t.ID, "umbrella.gate.hold_self_healing_condition", task.Update{StatusReason: task.Ptr(reason)}); err != nil {
+		a.logger.Error("umbrella.gate.condition.hold_failed", "task_id", t.ID, "err", err)
+		return
+	}
+	t.StatusReason = reason
+}
+
+func unmetLabelConditionReason(cond task.DepCondition) string {
+	return "held: depends_on " + cond.Ref + " missing required label " + cond.Value
+}
+
+func unknownConditionKindReason(cond task.DepCondition) string {
+	return "held: depends_on " + cond.Ref + " has unrecognized condition kind " + cond.Kind
+}
+
+// escalateUnmetCondition holds t at human-required for a "note"-kind
+// condition, naming the ref and the free-text acceptance note a human must
+// confirm before this can release. Sets blocker.KindDependencyConditionUnmet
+// — deliberately not blocker.KindDependencyScopeUnmet, so a human clearing
+// this blocker is never misread as having confirmed an unrelated scope
+// verdict (see blocker.KindDependencyConditionUnmet's doc comment).
+//
+// Clearing the blocker alone does not release the child: as long as this
+// condition still names a current dependency, holdChildUnmetCondition
+// re-escalates the next tick it becomes ready again. A human must remove or
+// edit the condition itself (via a --depends-on-condition update) once the
+// note's scope is confirmed to exist — an accepted limitation matching
+// blocker.KindDependencyScopeUnmet's existing require-explicit-human-edit
+// design, not an oversight.
+func (a *App) escalateUnmetCondition(t *task.Task, cond task.DepCondition, states map[string]*umbrellaState) {
+	reason := dependencyConditionReasonPrefix + " " + cond.Ref + ": " + cond.Value
+	if _, err := a.tasks.Apply(task.TransitionIntent{
+		TaskID:   t.ID,
+		ToStatus: task.StatusHumanRequired,
+		Actor:    "umbrella.gate.condition.escalate",
+		Extra: task.Update{
+			StatusReason:    task.Ptr(reason),
+			Escalation:      task.SpecificationRequired("umbrella.dependency_condition_unmet", reason),
+			AutonomyOutcome: task.HumanRequiredOutcome(),
+			Blocker: task.Ptr(blocker.State{
+				Kind:       blocker.KindDependencyConditionUnmet,
+				Code:       cond.Ref,
+				NextAction: cond.Value,
+			}),
+		},
+	}); err != nil {
+		a.logger.Error("umbrella.gate.condition.escalate_failed", "task_id", t.ID, "err", err)
+		return
+	}
+	if st := states[umbrella.NormalizeIssueRef(t.UmbrellaIssue)]; st != nil {
+		st.setChildStatus(t.ID, task.StatusHumanRequired)
+		st.anyHR = true
+	}
+	a.logger.Info("umbrella.gate.condition.held", "task_id", t.ID, "dep", cond.Ref)
+}
+
+// dependencyScopeVerdictReasonPrefix marks a human-required status_reason as
+// having been written by holdScopeVerdictBlocked, mirroring
+// externalBlockerReason/admissionPreflightReasonPrefix's pattern for other
+// mechanical gates.
+const dependencyScopeVerdictReasonPrefix = "held: prior verdict flagged unmet scope for"
+
+// holdScopeVerdictBlocked filters ready — the children ReadyToRelease just
+// confirmed have every depends_on ref resolved to Done — removing any child
+// whose Blocker already carries an explicit prior verdict
+// (blocker.KindDependencyScopeUnmet) that one of those very refs did not
+// actually satisfy the scope this task needs, and escalating it to
+// human-required instead. depsSatisfied only ever asks "is the referenced
+// task Done?" — it cannot tell a scope-complete closure from one that merely
+// closed the same issue number (sybra#2637: umbrella #2493's child #2503
+// cycled blocked -> todo -> human-required 8 times because PR #2620 closed
+// #2464 without implementing the permutation-contract scope #2503 actually
+// depended on, burning a fresh implementation-agent run each cycle). Once a
+// prior run recorded that verdict, trust it over the raw Done flag: require a
+// human to clear the blocker (or record a fresh one) after confirming the
+// scope now genuinely exists, rather than silently re-dispatching into the
+// same already-known-negative cycle. A blocker whose Code no longer names a
+// current depends_on ref (e.g. DependsOn was edited since) is stale and must
+// not hold release.
+func (a *App) holdScopeVerdictBlocked(ready []string, byID map[string]*task.Task, states map[string]*umbrellaState, mergedDeps map[string][]string) []string {
+	if len(ready) == 0 {
+		return ready
+	}
+	kept := ready[:0]
+	for _, id := range ready {
+		t := byID[id]
+		if t == nil || !namesScopeVerdictDep(t, mergedDeps[id]) {
+			kept = append(kept, id)
+			continue
+		}
+		reason := dependencyScopeVerdictReasonPrefix + " " + t.Blocker.Code +
+			" — clear the blocker once the required scope is confirmed to exist"
+		if _, err := a.tasks.Apply(task.TransitionIntent{
+			TaskID:   id,
+			ToStatus: task.StatusHumanRequired,
+			Actor:    "umbrella.gate.scope_verdict.hold",
+			Extra: task.Update{
+				StatusReason:    task.Ptr(reason),
+				Escalation:      task.SpecificationRequired("umbrella.dependency_scope_unmet", reason),
+				AutonomyOutcome: task.HumanRequiredOutcome(),
+				Blocker:         task.Ptr(t.Blocker),
+			},
+		}); err != nil {
+			a.logger.Error("umbrella.gate.scope_verdict.hold_failed", "task_id", id, "err", err)
+			kept = append(kept, id) // don't silently strand it on our own write error
+			continue
+		}
+		if st := states[umbrella.NormalizeIssueRef(t.UmbrellaIssue)]; st != nil {
+			st.setChildStatus(id, task.StatusHumanRequired)
+			st.anyHR = true
+		}
+		a.logger.Info("umbrella.gate.scope_verdict.held", "task_id", id, "dep", t.Blocker.Code)
+	}
+	return kept
+}
+
+// namesScopeVerdictDep reports whether t carries an explicit prior
+// dependency-scope-unmet verdict naming one of its own current dependency refs.
+// dependsOn is the same merged set the gate's release decision runs against
+// (t.DependsOn plus body-derived cross-program refs), not the raw t.DependsOn,
+// so a verdict naming a body-referenced external ref is still honored.
+func namesScopeVerdictDep(t *task.Task, dependsOn []string) bool {
+	if t.Blocker.Kind != blocker.KindDependencyScopeUnmet || t.Blocker.Code == "" {
+		return false
+	}
+	if dependsOn == nil {
+		dependsOn = t.DependsOn
+	}
+	return matchesDepRef(t.Blocker.Code, dependsOn)
+}
+
+// matchesDepRef reports whether code names one of the dependsOn refs. It first
+// matches on the canonical "owner/repo#n" form (via NormalizeIssueRef, which
+// collapses github.com URLs and lowercases shorthand). If code is a bare "#n"
+// (or plain "n") with no owner/repo — the spelling a human copies straight off
+// a GitHub issue, which NormalizeIssueRef cannot canonicalize without a repo —
+// it falls back to matching by issue number alone. That errs toward holding the
+// child rather than releasing it into the known-negative re-dispatch cycle this
+// gate exists to stop (sybra#2637).
+func matchesDepRef(code string, dependsOn []string) bool {
+	target := umbrella.NormalizeIssueRef(code)
+	if slices.ContainsFunc(dependsOn, func(ref string) bool {
+		return umbrella.NormalizeIssueRef(ref) == target
+	}) {
+		return true
+	}
+	if n, ok := bareIssueNumber(code); ok {
+		return slices.ContainsFunc(dependsOn, func(ref string) bool {
+			_, rn, rok := umbrella.ParseRef(ref)
+			return rok && rn == n
+		})
+	}
+	return false
+}
+
+// bareIssueNumber parses a repo-less issue reference ("#42" or "42") into its
+// number. It reports ok=false for anything carrying an owner/repo (those are
+// handled by the canonical NormalizeIssueRef path) or that is not a plain
+// number.
+func bareIssueNumber(s string) (int, bool) {
+	s = strings.TrimPrefix(strings.TrimSpace(s), "#")
+	if s == "" || strings.ContainsAny(s, "/#") {
+		return 0, false
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 // accumulateChild folds one child task's status into its umbrella's tally.
@@ -249,6 +656,45 @@ func isWorkflowOwnedBlock(t *task.Task) bool {
 	return t.Blocker.Actor == blocker.ActorWorkflow
 }
 
+// clearGateTagOnHandedOffChildren strips the gating tag from a child that has
+// already run an implementation agent.
+//
+// Once implementation starts, the umbrella gate has handed the child to its
+// own workflow: Awaiting excludes it via hasStartedImplementation, so the gate
+// will never release it again. But the tag it left behind still makes
+// skipTaskCreatedWorkflow refuse the child, and ResumeStalled skips a terminal
+// workflow — so nothing owns the task and it sits in todo forever. Measured on
+// the server: six children stranded this way since 2026-08-01, none of them
+// waiting on an unmet dependency.
+//
+// Clearing the tag is the narrow fix: it hands the child back to the normal
+// dispatcher at exactly the point the gate stopped owning it, and is a no-op
+// for children the gate is still legitimately holding or the workflow parked.
+func (a *App) clearGateTagOnHandedOffChildren(tasks []task.Task) {
+	for i := range tasks {
+		t := &tasks[i]
+		if t.UmbrellaIssue == "" || !slices.Contains(t.Tags, umbrellaGatedTag) {
+			continue
+		}
+		// todo only. A child parked `blocked` with implementation history was
+		// put there deliberately by the workflow (watchdog exhaustion,
+		// sybra#2538) and its tag is what marks it as not the gate's to
+		// release — clearing it there would re-release work that was stopped
+		// on purpose. A gated child sitting in todo has no such owner.
+		if t.Status != task.StatusTodo || !hasStartedImplementation(t) {
+			continue
+		}
+		newTags := slices.DeleteFunc(slices.Clone(t.Tags), func(s string) bool {
+			return s == umbrellaGatedTag
+		})
+		if _, err := a.tasks.UpdateBy(t.ID, "umbrella.gate.clear_handed_off_tag", task.Update{Tags: &newTags}); err != nil {
+			a.logger.Warn("umbrella.gate.stale-tag-clear", "task_id", t.ID, "err", err)
+			continue
+		}
+		a.logger.Info("umbrella.gate.stale-tag-cleared", "task_id", t.ID, "umbrella", t.UmbrellaIssue)
+	}
+}
+
 // isRunningChild reports whether a child status occupies a parallelism slot —
 // i.e. it has been released and is somewhere in the pipeline but not finished.
 func isRunningChild(s task.Status) bool {
@@ -277,15 +723,20 @@ func (a *App) releaseCapped(ctx context.Context, ready []string, byID map[string
 		newTags := slices.DeleteFunc(slices.Clone(t.Tags), func(s string) bool {
 			return s == umbrellaGatedTag
 		})
-		updated, err := a.tasks.Update(id, task.Update{
-			Status:       task.Ptr(task.StatusTodo),
-			Tags:         &newTags,
-			StatusReason: task.Ptr("umbrella dependencies satisfied"),
+		result, err := a.tasks.Apply(task.TransitionIntent{
+			TaskID:   id,
+			ToStatus: task.StatusTodo,
+			Actor:    "umbrella.gate.release",
+			Extra: task.Update{
+				Tags:         &newTags,
+				StatusReason: task.Ptr("umbrella dependencies satisfied"),
+			},
 		})
 		if err != nil {
 			a.logger.Error("umbrella.release.failed", "task_id", id, "err", err)
 			continue
 		}
+		updated := result.Task
 		pushed, err := a.pushReleaseToHomeNode(ctx, updated)
 		if err != nil {
 			a.logger.Error("umbrella.release.push_failed", "task_id", id, "err", err)
@@ -293,10 +744,14 @@ func (a *App) releaseCapped(ctx context.Context, ready []string, byID map[string
 			// here either — restore the pre-release state so ReadyToRelease
 			// picks this child up again next tick instead of leaving the
 			// leader's board silently diverged from the follower forever.
-			if _, rerr := a.tasks.Update(id, task.Update{
-				Status:       task.Ptr(prevStatus),
-				Tags:         &prevTags,
-				StatusReason: task.Ptr(prevReason),
+			if _, rerr := a.tasks.Apply(task.TransitionIntent{
+				TaskID:   id,
+				ToStatus: prevStatus,
+				Actor:    "umbrella.gate.release.rollback",
+				Extra: task.Update{
+					Tags:         &prevTags,
+					StatusReason: task.Ptr(prevReason),
+				},
 			}); rerr != nil {
 				a.logger.Error("umbrella.release.rollback_failed", "task_id", id, "err", rerr)
 			}
@@ -327,6 +782,8 @@ func (a *App) releaseCapped(ctx context.Context, ready []string, byID map[string
 // releases queued behind it in the same releaseCapped loop — by at most this
 // long rather than up to 30s per stuck release.
 const pushReleaseTimeout = 5 * time.Second
+
+const blockedTrackerChildrenCompleteReason = "children complete, tracker blocked — needs release"
 
 // pushReleaseToHomeNode forwards a just-released child's new state to its
 // home follower when the task isn't homed locally. The local a.tasks.Update
@@ -398,9 +855,6 @@ func (a *App) rollupTrackers(states map[string]*umbrellaState, cyclic map[string
 		if st.tracker == nil {
 			continue
 		}
-		if st.tracker.Status == task.StatusBlocked {
-			continue
-		}
 		// A tracker is "settled" once it has outlived the creation window, so a
 		// childless tally that just reflects children still being materialized
 		// is not mistaken for a completed umbrella. A zero CreatedAt (e.g. a
@@ -408,9 +862,27 @@ func (a *App) rollupTrackers(states map[string]*umbrellaState, cyclic map[string
 		// infinitely old, so it never bypasses the guard.
 		settled := !st.tracker.CreatedAt.IsZero() &&
 			time.Since(st.tracker.CreatedAt) > umbrellaSettleDelay
+		if st.tracker.Status == task.StatusBlocked {
+			// A blocked tracker can be owned by an operator or another workflow
+			// path. Preserve that ownership while work remains, but once every
+			// materialized child is done stamp an explicit, actionable reason
+			// instead of leaving an invisible permanent dead end. Do not close
+			// the umbrella or override the blocked status: release remains an
+			// operator decision.
+			desired, _, doClose := trackerRollup(st, cyclic[key], settled)
+			if desired == task.StatusDone && doClose &&
+				st.tracker.StatusReason != blockedTrackerChildrenCompleteReason {
+				if _, err := a.tasks.UpdateBy(st.tracker.ID, "umbrella.gate.tracker_blocked_complete", task.Update{
+					StatusReason: task.Ptr(blockedTrackerChildrenCompleteReason),
+				}); err != nil {
+					a.logger.Error("umbrella.tracker.blocked_complete.update.failed", "task_id", st.tracker.ID, "err", err)
+				}
+			}
+			continue
+		}
 		desired, reason, doClose := trackerRollup(st, cyclic[key], settled)
 		if body := umbrellaTrackerBody(st.tracker.Body, st.children); body != st.tracker.Body {
-			if _, err := a.tasks.Update(st.tracker.ID, task.Update{
+			if _, err := a.tasks.UpdateBy(st.tracker.ID, "umbrella.gate.tracker_progress_update", task.Update{
 				Body: task.Ptr(body),
 			}); err != nil {
 				a.logger.Error("umbrella.tracker.progress.update.failed", "task_id", st.tracker.ID, "err", err)
@@ -426,9 +898,20 @@ func (a *App) rollupTrackers(states map[string]*umbrellaState, cyclic map[string
 		if doClose && a.closeUmbrellaIssue(st.tracker.Issue) {
 			continue
 		}
-		if _, err := a.tasks.Update(st.tracker.ID, task.Update{
-			Status:       task.Ptr(desired),
-			StatusReason: task.Ptr(reason),
+		if _, err := a.tasks.Apply(task.TransitionIntent{
+			TaskID:   st.tracker.ID,
+			ToStatus: desired,
+			Actor:    "umbrella.gate.tracker_rollup",
+			Extra: func() task.Update {
+				extra := task.Update{
+					StatusReason: task.Ptr(reason),
+				}
+				if desired == task.StatusHumanRequired {
+					extra.Escalation = task.SpecificationRequired("umbrella.rollup_requires_decision", reason)
+					extra.AutonomyOutcome = task.HumanRequiredOutcome()
+				}
+				return extra
+			}(),
 		}); err != nil {
 			a.logger.Error("umbrella.tracker.update.failed", "task_id", st.tracker.ID, "err", err)
 			continue
@@ -571,7 +1054,7 @@ func trackerRollup(st *umbrellaState, cyclic, settled bool) (status task.Status,
 	case st.anyHR:
 		return task.StatusHumanRequired, "umbrella child needs attention", false
 	case st.anyBlocked:
-		return task.StatusHumanRequired, "umbrella child is blocked", false
+		return task.StatusInProgress, "umbrella child is quarantined", false
 	case unresolvedCancellation:
 		return task.StatusHumanRequired, "umbrella child was cancelled", false
 	case expandFailing:

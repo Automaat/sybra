@@ -7,6 +7,14 @@ import (
 	"time"
 )
 
+func TestDispatchPromptUsesTypedIncidentFailureCode(t *testing.T) {
+	a := Anomaly{Kind: KindBottleneck, Fingerprint: "incident:one", IncidentScope: "fleet", Evidence: map[string]any{"failure_code": "reconciliation.repair"}}
+	prompt := dispatchPromptForAnomaly(a, "", "")
+	if !strings.Contains(prompt, "Typed failure code: reconciliation.repair") {
+		t.Fatalf("typed failure code missing from prompt: %s", prompt)
+	}
+}
+
 func TestDeterministicIssueBody_StuckHumanBlocked_HumanRequired(t *testing.T) {
 	a := Anomaly{
 		Kind:        KindStuckHumanBlocked,
@@ -96,8 +104,8 @@ func TestDeterministicIssueBody_StuckHumanBlocked_HumanRequired_AfterHumanReview
 	if !strings.Contains(body, "sybra-cli update jkl012 --status todo") {
 		t.Error("hint should include actionable sybra-cli retry command with task id")
 	}
-	if !strings.Contains(body, "sybra-cli update jkl012 --mode interactive --status todo") {
-		t.Error("hint should include interactive-mode option for tasks whose scope exceeds automation")
+	if !strings.Contains(body, "this is ongoing human work") {
+		t.Error("hint should call out continued human involvement for tasks whose scope exceeds automation")
 	}
 	if strings.Contains(body, "sybra_bug") {
 		t.Error("hint must not reference sybra_bug outcome — that path sets status=blocked, not human-required")
@@ -153,8 +161,8 @@ func TestDeterministicIssueBody_StuckHumanBlocked_HumanRequired_VerdictHuman(t *
 	if !strings.Contains(body, "scope beyond automation") {
 		t.Error("hint should mention scope beyond automation")
 	}
-	if !strings.Contains(body, "sybra-cli update abc999 --mode interactive --status todo") {
-		t.Error("hint should include interactive hand-off command")
+	if !strings.Contains(body, "sybra-cli update abc999 --status todo") {
+		t.Error("hint should include actionable unblock command")
 	}
 	// When verdict is known-human, the conditional phrasing is no longer needed
 	if strings.Contains(body, "If the note says scope exceeds automation") {
@@ -189,8 +197,8 @@ func TestDeterministicIssueBody_StuckHumanBlocked_HumanRequired_VerdictHuman_Wit
 	if !strings.Contains(body, "scope") {
 		t.Error("hint should mention scope/human-input reason")
 	}
-	if !strings.Contains(body, "sybra-cli update abc999 --mode interactive --status todo") {
-		t.Error("hint should include interactive hand-off command even when PR is linked")
+	if !strings.Contains(body, "sybra-cli update abc999 --status todo") {
+		t.Error("hint should include actionable unblock command even when PR is linked")
 	}
 	// Must not redirect to PR merge automation — human input is the blocker, not PR state
 	if strings.Contains(body, "APPROVED") {

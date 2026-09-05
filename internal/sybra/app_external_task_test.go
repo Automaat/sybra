@@ -271,10 +271,18 @@ func TestApp_StatusHookRestartsTodoAndPlanningExternalUpdates(t *testing.T) {
 				t.Fatalf("Get: %v", err)
 			}
 			if got.Workflow == nil || got.Workflow.WorkflowID != "simple-task-plan" {
-				t.Fatalf("external %s update did not restart task.created workflow, got %+v", target, got.Workflow)
+				t.Fatalf("external %s update did not restart planning workflow, got %+v", target, got.Workflow)
 			}
 			if got.Workflow.State == workflow.ExecFailed {
 				t.Fatalf("external %s update kept stale failed workflow: %+v", target, got.Workflow)
+			}
+			if target == task.StatusPlanning {
+				if got.Workflow.RecordForStep("triage") != nil {
+					t.Fatalf("external planning update re-entered triage: %+v", got.Workflow.RecordForStep("triage"))
+				}
+				if got.Status == task.StatusInProgress {
+					t.Fatalf("external planning update flipped to %q, want planning-side status", got.Status)
+				}
 			}
 		})
 	}
@@ -314,6 +322,35 @@ func TestApp_MaybeStartWorkflowForExternalTask_RemoteMirrorDoesNotReroute(t *tes
 	}
 	if got := fixture.assignedTasks(); len(got) != 0 {
 		t.Fatalf("remote mirror re-routed %d times, want 0", len(got))
+	}
+}
+
+// TestApp_MaybeStartWorkflowForExternalTask_UnroutedTodoWithPlanContractStillRoutes
+// guards against a regression where the approved-plan-contract skip (added to
+// stop a todo task with an already-approved plan from being swept back into
+// triage) accidentally short-circuited cluster routing too. A todo task that
+// belongs to a follower's project and has no AssignedNode yet must still be
+// routed/assigned on the leader, even though it already carries a valid plan
+// contract.
+func TestApp_MaybeStartWorkflowForExternalTask_UnroutedTodoWithPlanContractStillRoutes(t *testing.T) {
+	fixture := setupRemoteMirrorFixture(t)
+
+	unrouted := task.Task{
+		ID:           "ext-unrouted",
+		Title:        "unrouted with plan contract",
+		Status:       task.StatusTodo,
+		AgentMode:    task.AgentModeHeadless,
+		ProjectID:    "owner/pet",
+		PlanContract: validTestPlanContract("ext-unrouted"),
+		CreatedAt:    time.Now().UTC(),
+		UpdatedAt:    time.Now().UTC(),
+	}
+	path := fixture.write(unrouted)
+	fixture.app.maybeStartWorkflowForExternalTask(path)
+	fixture.app.wg.Wait()
+
+	if got := fixture.assignedTasks(); len(got) != 1 {
+		t.Fatalf("unrouted todo task with a plan contract was routed %d times, want 1", len(got))
 	}
 }
 

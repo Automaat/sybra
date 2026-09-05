@@ -1,14 +1,13 @@
 <script lang="ts">
   import { fly } from 'svelte/transition'
   import { ChevronDown, ChevronUp, PanelLeft } from '@lucide/svelte'
-  import type { Agent, ConvoEvent } from '../../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
+  import type { Agent } from '../../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
   import type { TimelineEntry } from '$lib/timeline.js'
   import type { PlanStep } from '$lib/plan-steps.js'
   import type { TimestampedStreamEvent } from '$lib/timeline.js'
   import type { ToolUseSignal } from '$lib/workspace-tabs.js'
   import { convoStore } from '../../stores/convo.svelte.js'
   import ToolApproval from '../ToolApproval.svelte'
-  import ChatView from '../ChatView.svelte'
   import StreamOutput from '../StreamOutput.svelte'
   import ActionTimeline from '../ActionTimeline.svelte'
   import ThreePanelLayout from './ThreePanelLayout.svelte'
@@ -22,7 +21,6 @@
     selectedIndex: number | null
     onselect: (i: number) => void
     streamOutputs: TimestampedStreamEvent[]
-    convoEvents: ConvoEvent[]
     allAgents: Agent[]
     latestToolUse: ToolUseSignal | undefined
     onnavigate: (id: string) => void
@@ -35,7 +33,6 @@
     selectedIndex,
     onselect,
     streamOutputs,
-    convoEvents,
     allAgents,
     latestToolUse,
     onnavigate,
@@ -107,24 +104,11 @@
             </div>
           {/if}
           <div class="min-w-0 flex-1">
-            {#if a.mode === 'interactive'}
-              <ChatView
-                agentId={a.id}
-                agentState={a.state}
-                costUsd={a.costUsd}
-                inputTokens={a.inputTokens ?? 0}
-                outputTokens={a.outputTokens ?? 0}
-                highlightIndex={selectedIndex}
-                suppressApprovals={true}
-                onvisibleindex={(i) => { if (selectedIndex === null) onselect(i) }}
-              />
-            {:else}
-              <StreamOutput
-                agentId={a.id}
-                highlightIndex={selectedIndex}
-                onvisibleindex={(i) => { if (selectedIndex === null) onselect(i) }}
-              />
-            {/if}
+            <StreamOutput
+              agentId={a.id}
+              highlightIndex={selectedIndex}
+              onvisibleindex={(i) => { if (selectedIndex === null) onselect(i) }}
+            />
           </div>
         </div>
       {/if}
@@ -136,7 +120,6 @@
       agentId={a.id}
       taskId={a.taskId}
       {streamOutputs}
-      {convoEvents}
       {planSteps}
       {latestToolUse}
     />

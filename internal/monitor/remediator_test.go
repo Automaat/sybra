@@ -6,12 +6,13 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
-func TestRemediator_LostAgent_MarksRunningRunStopped(t *testing.T) {
+func TestRemediator_LostAgent_DefersRunMutationToReconciliation(t *testing.T) {
 	t.Parallel()
 	withRun := func(t *task.Task) {
 		t.AgentRuns = []task.AgentRun{
@@ -50,19 +51,10 @@ func TestRemediator_LostAgent_MarksRunningRunStopped(t *testing.T) {
 		t.Error("status_reason should explain recovery handoff")
 	}
 
-	// Running agent run must be marked stopped before the task update.
-	if len(ft.runUpdates) != 1 {
-		t.Fatalf("want 1 run update, got %d", len(ft.runUpdates))
-	}
-	ru := ft.runUpdates[0]
-	if ru.taskID != "task1" {
-		t.Errorf("runUpdate taskID = %q, want task1", ru.taskID)
-	}
-	if ru.agentID != "lost-agent" {
-		t.Errorf("runUpdate agentID = %q, want lost-agent", ru.agentID)
-	}
-	if ru.patch.State == nil || *ru.patch.State != "stopped" {
-		t.Errorf("runUpdate state = %v, want stopped", ru.patch.State)
+	// The monitor is only a recovery-intent producer. Mutating the run before
+	// admission re-observes it could fence a live detached process.
+	if len(ft.runUpdates) != 0 {
+		t.Fatalf("want reconciliation to own run updates, got %d", len(ft.runUpdates))
 	}
 }
 
@@ -336,10 +328,48 @@ func TestRemediator_StuckHumanBlocked_KnownLostAgentCause_HumanVerdictDoesNotRet
 	}
 }
 
+func TestRemediator_StuckHumanBlocked_KnownLostAgentCause_UmbrellaDoesNotRetry(t *testing.T) {
+	t.Parallel()
+	existing := mkTask("hr5", task.StatusHumanRequired, func(t *task.Task) {
+		t.StatusReason = "watchdog: stop"
+		t.Tags = []string{"medium"}
+		t.TaskType = task.TaskTypeUmbrella
+	})
+	ft := &fakeTasks{tasks: []task.Task{existing}}
+	rem := newRemediator(ft, nil, nil, nil)
+	a := Anomaly{
+		Kind:   KindStuckHumanBlocked,
+		TaskID: "hr5",
+		Evidence: map[string]any{
+			"status":                         "human-required",
+			"known_lost_agent_investigation": true,
+		},
+	}
+
+	label, err := rem.Apply(context.Background(), a)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if label == "" {
+		t.Fatal("expected non-empty label")
+	}
+	if len(ft.updates) != 1 {
+		t.Fatalf("want 1 update, got %d", len(ft.updates))
+	}
+	u := ft.updates[0]
+	if u.u.Status != nil {
+		t.Fatalf("status must not change for umbrella tracker, got %v", u.u.Status)
+	}
+	if u.u.Tags != nil {
+		t.Fatalf("tags must not change for umbrella tracker, got %v", *u.u.Tags)
+	}
+}
+
 func TestRemediator_StuckHumanBlocked_KnownLostAgentCause_TamperFlagDoesNotRetry(t *testing.T) {
 	t.Parallel()
 	existing := mkTask("hr4", task.StatusHumanRequired, func(t *task.Task) {
 		t.StatusReason = workflow.TamperFlaggedReasonPrefix + " removed coverage in internal/foo_test.go"
+		t.Blocker = blocker.State{Kind: blocker.KindTamperDetected, Actor: blocker.ActorWorkflow}
 		t.Tags = []string{"medium"}
 	})
 	ft := &fakeTasks{tasks: []task.Task{existing}}

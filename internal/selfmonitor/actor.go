@@ -15,10 +15,8 @@ import (
 // Defined as a local interface so tests can inject a fake without pulling in
 // the full filesystem-backed store.
 type taskUpdater interface {
-	UpdateFn(id string, fn func(cur task.Task) (task.Update, error)) (task.Task, error)
+	Apply(intent task.TransitionIntent) (task.TransitionResult, error)
 }
-
-var errTriageMismatchStatusChanged = errors.New("triage_mismatch task status changed")
 
 // Actor applies autonomous remediations to confirmed health findings.
 // DryRun=true (the config default) logs the intended action without modifying
@@ -69,24 +67,21 @@ func (a *Actor) flipAgentMode(inv InvestigatedFinding) ActionRecord {
 	}
 
 	mode := task.AgentModeHeadless
-	status := task.StatusTodo
-	currentStatus := task.Status("")
-	if _, err := a.Tasks.UpdateFn(inv.Finding.TaskID, func(cur task.Task) (task.Update, error) {
-		currentStatus = cur.Status
-		if cur.Status != task.StatusHumanRequired {
-			return task.Update{}, errTriageMismatchStatusChanged
-		}
-		return task.Update{
-			AgentMode: &mode,
-			Status:    &status,
-		}, nil
+	expected := task.StatusHumanRequired
+	if _, err := a.Tasks.Apply(task.TransitionIntent{
+		TaskID:         inv.Finding.TaskID,
+		ToStatus:       task.StatusTodo,
+		Actor:          "selfmonitor.flip_agent_mode",
+		ExpectedStatus: &expected,
+		Extra:          task.Update{AgentMode: &mode},
 	}); err != nil {
-		if errors.Is(err, errTriageMismatchStatusChanged) {
+		var conflict *task.ConflictError
+		if errors.As(err, &conflict) {
 			if a.Logger != nil {
 				a.Logger.Info("actor.flip_agent_mode.skipped",
 					"task", inv.Finding.TaskID,
 					"fingerprint", inv.Fingerprint,
-					"status", currentStatus)
+					"status", conflict.ActualStatus)
 			}
 			return ActionRecord{}
 		}

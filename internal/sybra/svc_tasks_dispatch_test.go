@@ -15,8 +15,14 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/artifact"
+	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/intervention"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/reviewbudget"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/umbrella"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -79,7 +85,7 @@ func setupDispatchTestService(t *testing.T, launcher *fakeAgentLauncher) (*TaskS
 	svc, a := setupTaskService(t)
 	launcher.tasks = a.tasks
 	ta := &taskAdapter{tasks: a.tasks}
-	svc.workflowEngine = workflow.NewEngine(mustWorkflowStore(t), ta, launcher, a.logger)
+	svc.workflowEngine = workflow.NewTestEngine(mustWorkflowStore(t), ta, launcher, a.logger)
 	return svc, a
 }
 
@@ -101,7 +107,7 @@ func newHumanRequiredTask(t *testing.T, a *App, prNumber int) task.Task {
 	if err != nil {
 		t.Fatal(err)
 	}
-	update := task.Update{Status: task.Ptr(task.StatusHumanRequired)}
+	update := task.Update{Status: task.Ptr(task.StatusHumanRequired), Escalation: task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"), AutonomyOutcome: task.HumanRequiredOutcome()}
 	if prNumber > 0 {
 		update.PRNumber = task.Ptr(prNumber)
 	}
@@ -199,9 +205,11 @@ func newReadyPRHumanRequiredTask(t *testing.T, a *App, engine *workflow.Engine) 
 		t.Fatal(err)
 	}
 	updated, err := a.tasks.Update(tk.ID, task.Update{
-		Status:    task.Ptr(task.StatusHumanRequired),
-		ProjectID: task.Ptr("acme/widgets"),
-		Branch:    task.Ptr(branch),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		ProjectID:       task.Ptr("acme/widgets"),
+		Branch:          task.Ptr(branch),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -258,6 +266,37 @@ func TestDispatchFromHumanRequired_HappyPathDispatchingTargets(t *testing.T) {
 			t.Fatalf("startCalls = %d, want 0 (create_pr/push_branch are deterministic Go, not agents)", launcher.startCalls)
 		}
 	})
+}
+
+func TestDispatchFromHumanRequired_ClearsStaleBlocker(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	tk := newHumanRequiredTask(t, a, 0)
+	tk, err := a.tasks.Update(tk.ID, task.Update{
+		StatusReason: task.Ptr(workflow.TamperFlaggedReasonPrefix + " internal/foo_test.go: added-skip"),
+		Blocker: task.Ptr(blocker.State{
+			Kind:  blocker.KindTamperDetected,
+			Actor: blocker.ActorWorkflow,
+		}),
+		Tags: task.Ptr([]string{workflow.TamperBlessedTag}),
+	})
+	if err != nil {
+		t.Fatalf("seed blocker: %v", err)
+	}
+
+	got, err := svc.DispatchFromHumanRequired(tk.ID, string(task.StatusInProgress), "resume after accepting false-positive tamper flag")
+	if err != nil {
+		t.Fatalf("DispatchFromHumanRequired: %v", err)
+	}
+	if got.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
+	}
+	if !got.Blocker.IsZero() {
+		t.Fatalf("Blocker = %+v, want cleared", got.Blocker)
+	}
+	if got.TamperFlagged {
+		t.Fatal("TamperFlagged = true, want false after dispatch")
+	}
 }
 
 // TestDispatchFromHumanRequired_WithStatusHook reproduces the production wiring
@@ -420,8 +459,10 @@ func TestApp_StatusHook_SkipsAgentDispatchForUmbrellaTracker(t *testing.T) {
 	a.initStatusHook()
 
 	tk, err := a.tasks.CreateFull("umbrella tracker", "", task.AgentModeHeadless, task.Update{
-		TaskType: task.Ptr(task.TaskTypeUmbrella),
-		Status:   task.Ptr(task.StatusHumanRequired),
+		TaskType:        task.Ptr(task.TaskTypeUmbrella),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -697,8 +738,107 @@ func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T)
 	if gotUmbrella.Workflow == nil || gotUmbrella.Workflow.WorkflowID != "old-workflow" || gotUmbrella.Workflow.State != workflow.ExecFailed {
 		t.Fatalf("synthetic umbrella task should be left alone, got %+v", gotUmbrella.Workflow)
 	}
-	if launcher.startCalls != 4 {
-		t.Fatalf("startCalls = %d, want 4 for idle/post-plan implementation and inbound review tasks", launcher.startCalls)
+	if launcher.startCalls != 6 {
+		t.Fatalf("startCalls = %d, want 6 for resumed planning, implementation, and inbound review tasks", launcher.startCalls)
+	}
+}
+
+func TestDispatchPlanningWorkflow_RejectedPlanDoesNotRedispatchImplementation(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	svc.workflowEngine.SetTaskClassifier(&taskClassifierAdapter{
+		tasks:      a.tasks,
+		classifier: fakeTriageClassifier{},
+	})
+	a.workflowEngine = svc.workflowEngine
+
+	created, err := a.tasks.Create("rejected plan", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.tasks.UpdateMap(created.ID, map[string]any{
+		"status": string(task.StatusPlanning),
+		"workflow": &workflow.Execution{
+			WorkflowID:  "simple-task-plan",
+			CurrentStep: "review_plan",
+			State:       workflow.ExecCompleted,
+			Variables:   map[string]string{},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	a.dispatchPlanningWorkflow(created.ID)
+
+	got, err := a.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusPlanning {
+		t.Fatalf("status = %q, want planning", got.Status)
+	}
+	if got.Workflow == nil || got.Workflow.WorkflowID != "simple-task-plan" {
+		t.Fatalf("workflow = %+v, want simple-task-plan", got.Workflow)
+	}
+	if got.Workflow.CurrentStep != "plan" {
+		t.Fatalf("current_step = %q, want plan", got.Workflow.CurrentStep)
+	}
+	if len(got.AgentRuns) != 1 {
+		t.Fatalf("agent runs = %+v, want one planning run", got.AgentRuns)
+	}
+	if got.AgentRuns[0].Role != string(agent.RolePlan) {
+		t.Fatalf("agent role = %q, want %q", got.AgentRuns[0].Role, agent.RolePlan)
+	}
+	if launcher.startCalls != 1 {
+		t.Fatalf("startCalls = %d, want 1 planning dispatch", launcher.startCalls)
+	}
+}
+
+func TestDispatchPlanningWorkflow_BlockingPlanCritiqueDoesNotRestartPlanning(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	a.workflowEngine = svc.workflowEngine
+
+	created, err := a.tasks.Create("critiqued plan", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.tasks.UpdateMap(created.ID, map[string]any{
+		"status":        string(task.StatusPlanning),
+		"plan_critique": "## Verdict: REFINE\n\nFix the execution order.",
+		"workflow": &workflow.Execution{
+			WorkflowID:  "simple-task-plan",
+			CurrentStep: "",
+			State:       workflow.ExecCompleted,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := a.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasBlockingPlanCritique(before) {
+		t.Fatalf("test setup did not persist blocking critique: %q", before.PlanCritique)
+	}
+	if before.Workflow == nil || before.Workflow.State != workflow.ExecCompleted {
+		t.Fatalf("test setup workflow = %+v, want completed", before.Workflow)
+	}
+
+	a.dispatchPlanningWorkflow(created.ID)
+
+	got, err := a.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want human-required", got.Status)
+	}
+	if !strings.Contains(got.StatusReason, "existing plan critique verdict is REFINE") {
+		t.Fatalf("status_reason = %q, want blocking critique reason", got.StatusReason)
+	}
+	if launcher.startCalls != 0 {
+		t.Fatalf("startCalls = %d, want 0", launcher.startCalls)
 	}
 }
 
@@ -716,6 +856,277 @@ func TestDispatchFromHumanRequired_InReviewFlipsStatusOnly(t *testing.T) {
 	}
 	if launcher.startCalls != 0 {
 		t.Fatalf("in-review must not dispatch a workflow, got %d agent starts", launcher.startCalls)
+	}
+}
+
+// TestDispatchFromHumanRequired_RecordsInterventionOnUnblock exercises the
+// sybra#2468 capture hook: a genuine human-required unblock is recorded as a
+// normalized intervention record, and a second, equivalent unblock (same
+// blocker kind/code, same action class, same status transition) aggregates
+// into the same record with an incremented recurrence count instead of
+// creating a second one.
+func TestDispatchFromHumanRequired_RecordsInterventionOnUnblock(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+
+	projStore, err := project.NewStore(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	proj, err := projStore.CreateMeta("https://github.com/acme/api.git", project.ProjectTypePet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.projects = projStore
+	svc.cfg = &config.Config{Intervention: config.InterventionConfig{Enabled: true}}
+
+	auditDir := t.TempDir()
+	al, err := audit.NewLogger(auditDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer al.Close()
+	svc.audit = al
+
+	store, err := intervention.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.intervention = store
+
+	newParkedTask := func() task.Task {
+		tk, err := a.tasks.Create("fix the thing", "", "headless")
+		if err != nil {
+			t.Fatal(err)
+		}
+		updated, err := a.tasks.Update(tk.ID, task.Update{
+			Status:          task.Ptr(task.StatusHumanRequired),
+			Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+			AutonomyOutcome: task.HumanRequiredOutcome(),
+			ProjectID:       task.Ptr(proj.ID),
+			PRNumber:        task.Ptr(7),
+			StatusReason:    task.Ptr("needs manual project assignment"),
+			Blocker: &blocker.State{
+				Kind: blocker.KindOperatorDecision,
+				Code: "no_project_assigned",
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return updated
+	}
+
+	tk1 := newParkedTask()
+	if _, err := svc.DispatchFromHumanRequired(tk1.ID, "in-review", "assigned project manually"); err != nil {
+		t.Fatalf("DispatchFromHumanRequired: %v", err)
+	}
+
+	records, err := store.Query(intervention.ProjectKey(proj), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("len(records) = %d, want 1: %+v", len(records), records)
+	}
+	if records[0].Recurrences != 1 {
+		t.Fatalf("Recurrences = %d, want 1", records[0].Recurrences)
+	}
+	if records[0].OperatorActionClass != intervention.OperatorActionHuman {
+		t.Fatalf("OperatorActionClass = %q, want %q", records[0].OperatorActionClass, intervention.OperatorActionHuman)
+	}
+	if records[0].FromStatus != string(task.StatusHumanRequired) || records[0].ToStatus != "in-review" {
+		t.Fatalf("FromStatus/ToStatus = %q/%q, want human-required/in-review", records[0].FromStatus, records[0].ToStatus)
+	}
+
+	// A second, equivalent intervention on a distinct task must aggregate
+	// into the same record instead of creating a new one.
+	tk2 := newParkedTask()
+	if _, err := svc.DispatchFromHumanRequired(tk2.ID, "in-review", "assigned project manually again"); err != nil {
+		t.Fatalf("DispatchFromHumanRequired: %v", err)
+	}
+
+	records, err = store.Query(intervention.ProjectKey(proj), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("len(records) = %d, want 1 (equivalent interventions must dedup): %+v", len(records), records)
+	}
+	if records[0].Recurrences != 2 {
+		t.Fatalf("Recurrences = %d, want 2 on the repeat", records[0].Recurrences)
+	}
+
+	events, err := audit.Read(auditDir, audit.Query{
+		Since: time.Now().Add(-time.Hour),
+		Until: time.Now().Add(time.Hour),
+		Type:  audit.EventInterventionRecorded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("len(EventInterventionRecorded) = %d, want 2: %+v", len(events), events)
+	}
+	// The evaluation scorecard (issue #2727) keys its human-touch
+	// classification off this Data field — a durable operator_action_class
+	// alongside the fingerprint, not just a bare "an intervention happened".
+	for _, e := range events {
+		if got := e.Data["operator_action_class"]; got != string(intervention.OperatorActionHuman) {
+			t.Errorf("Data[operator_action_class] = %v, want %q", got, intervention.OperatorActionHuman)
+		}
+	}
+}
+
+// TestUpdateTask_HumanRequiredUnblockRecordsInterventionAsHuman proves the
+// generic GUI/CLI field-edit endpoint (UpdateTask) is durably attributed the
+// same way as the dedicated Dispatch panel: it is only ever reached by an
+// operator (or a script run on their behalf), never an automated recovery
+// path, so an escape from human-required through it must record a "human"
+// intervention — the signal the evaluation scorecard's human-touch
+// classification reads (issue #2727).
+func TestUpdateTask_HumanRequiredUnblockRecordsInterventionAsHuman(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+
+	projStore, err := project.NewStore(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	proj, err := projStore.CreateMeta("https://github.com/acme/api.git", project.ProjectTypePet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.projects = projStore
+	svc.cfg = &config.Config{Intervention: config.InterventionConfig{Enabled: true}}
+
+	auditDir := t.TempDir()
+	al, err := audit.NewLogger(auditDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer al.Close()
+	svc.audit = al
+
+	store, err := intervention.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.intervention = store
+
+	tk := newHumanRequiredTask(t, a, 0)
+	if _, err := a.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(proj.ID)}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := svc.UpdateTask(tk.ID, map[string]any{
+		"status":        string(task.StatusTodo),
+		"status_reason": "operator edited status directly",
+	}); err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+
+	records, err := store.Query(intervention.ProjectKey(proj), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("len(records) = %d, want 1: %+v", len(records), records)
+	}
+	if records[0].OperatorActionClass != intervention.OperatorActionHuman {
+		t.Fatalf("OperatorActionClass = %q, want %q", records[0].OperatorActionClass, intervention.OperatorActionHuman)
+	}
+
+	events, err := audit.Read(auditDir, audit.Query{
+		Since: time.Now().Add(-time.Hour),
+		Until: time.Now().Add(time.Hour),
+		Type:  audit.EventInterventionRecorded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("len(EventInterventionRecorded) = %d, want 1: %+v", len(events), events)
+	}
+	if got := events[0].Data["operator_action_class"]; got != string(intervention.OperatorActionHuman) {
+		t.Errorf("Data[operator_action_class] = %v, want %q", got, intervention.OperatorActionHuman)
+	}
+}
+
+// TestDispatchFromHumanRequired_InterventionScrubsWorkProjects verifies that
+// an intervention captured for a work-typed project's unblock is routed
+// through the same scrub context as internal/experience: the record's task
+// ID is replaced with an opaque hash and its free-text fields carry no owner/
+// repo/URL, while a public-project record captured under identical
+// conditions passes those fields through untouched.
+func TestDispatchFromHumanRequired_InterventionScrubsWorkProjects(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+
+	projStore, err := project.NewStore(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	proj, err := projStore.CreateMeta("https://github.com/acme/api.git", project.ProjectTypeWork)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.projects = projStore
+	svc.cfg = &config.Config{Intervention: config.InterventionConfig{Enabled: true}}
+
+	store, err := intervention.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.intervention = store
+
+	tk, err := a.tasks.Create("fix the thing", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reason := "resolved by checking https://github.com/acme/api/pull/9 manually"
+	updated, err := a.tasks.Update(tk.ID, task.Update{
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		ProjectID:       task.Ptr(proj.ID),
+		PRNumber:        task.Ptr(7),
+		StatusReason:    task.Ptr("needs manual project assignment"),
+		Blocker: &blocker.State{
+			Kind: blocker.KindOperatorDecision,
+			Code: "no_project_assigned",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := svc.DispatchFromHumanRequired(updated.ID, "in-review", reason); err != nil {
+		t.Fatalf("DispatchFromHumanRequired: %v", err)
+	}
+
+	projectKey := intervention.ProjectKey(proj)
+	if projectKey == proj.ID {
+		t.Fatalf("work project key must be opaque, got the plain project ID %q", projectKey)
+	}
+	records, err := store.Query(projectKey, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("len(records) = %d, want 1: %+v", len(records), records)
+	}
+	rec := records[0]
+	if rec.TaskID == updated.ID {
+		t.Fatalf("TaskID = %q, want an opaque stand-in for the plain task ID", rec.TaskID)
+	}
+	for _, field := range []string{rec.OperatorReason, rec.ProjectID} {
+		if strings.Contains(field, "acme") || strings.Contains(field, "github.com") {
+			t.Fatalf("work-typed record leaked an identifier: %q", field)
+		}
+	}
+	if !strings.Contains(rec.OperatorReason, "[redacted]") {
+		t.Fatalf("OperatorReason = %q, want a [redacted] marker for the embedded GitHub URL", rec.OperatorReason)
 	}
 }
 
@@ -818,7 +1229,7 @@ func TestDispatchFromHumanRequired_FailsClosedOnNoMatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc.workflowEngine = workflow.NewEngine(emptyStore, ta, launcher, a.logger)
+	svc.workflowEngine = workflow.NewTestEngine(emptyStore, ta, launcher, a.logger)
 	tk := newHumanRequiredTask(t, a, 0)
 
 	_, err = svc.DispatchFromHumanRequired(tk.ID, "in-progress", "retry please")
@@ -830,8 +1241,8 @@ func TestDispatchFromHumanRequired_FailsClosedOnNoMatch(t *testing.T) {
 	if getErr != nil {
 		t.Fatal(getErr)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want revert to human-required", got.Status)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want machine-owned dispatch failure quarantined", got.Status)
 	}
 	if !strings.Contains(got.StatusReason, "retry please") {
 		t.Fatalf("status_reason = %q, want it to preserve the operator's reason", got.StatusReason)
@@ -846,7 +1257,7 @@ func TestDispatchFromHumanRequired_ReadyPRAuthorStillFailsClosedOnNoMatch(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc.workflowEngine = workflow.NewEngine(emptyStore, ta, launcher, a.logger)
+	svc.workflowEngine = workflow.NewTestEngine(emptyStore, ta, launcher, a.logger)
 	tk := newHumanRequiredTask(t, a, 42)
 	_, err = a.tasks.Update(tk.ID, task.Update{RunRole: task.Ptr(string(agent.RoleImplementation))})
 	if err != nil {
@@ -862,8 +1273,8 @@ func TestDispatchFromHumanRequired_ReadyPRAuthorStillFailsClosedOnNoMatch(t *tes
 	if getErr != nil {
 		t.Fatal(getErr)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want revert to human-required", got.Status)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want machine-owned dispatch failure quarantined", got.Status)
 	}
 	if !strings.Contains(got.StatusReason, "retry please") {
 		t.Fatalf("status_reason = %q, want it to preserve the operator's reason", got.StatusReason)
@@ -890,8 +1301,8 @@ func TestDispatchFromHumanRequired_NilWorkflowEngineFailsClosed(t *testing.T) {
 	if getErr != nil {
 		t.Fatal(getErr)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want revert to human-required", got.Status)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want machine-owned dispatch failure quarantined", got.Status)
 	}
 }
 
@@ -912,11 +1323,113 @@ func TestDispatchFromHumanRequired_FailsClosedOnDispatchError(t *testing.T) {
 	if getErr != nil {
 		t.Fatal(getErr)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want revert to human-required", got.Status)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want machine-owned dispatch failure quarantined", got.Status)
 	}
 	if !strings.Contains(got.StatusReason, "retry please") {
 		t.Fatalf("status_reason = %q, want it to preserve the operator's reason", got.StatusReason)
+	}
+}
+
+func TestUpdateTask_HumanRequiredUnblockAppendsDecisionProgress(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	svc.artifacts = artifact.New(t.TempDir())
+	tk := newHumanRequiredTask(t, a, 0)
+
+	updated, err := svc.UpdateTask(tk.ID, map[string]any{
+		"status":        string(task.StatusTodo),
+		"status_reason": "operator approved retry after clearing stale watchdog counters",
+	})
+	if err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+	if updated.Status != task.StatusTodo {
+		t.Fatalf("status = %q, want %q", updated.Status, task.StatusTodo)
+	}
+
+	entries, err := svc.artifacts.ReadProgress(tk.ID)
+	if err != nil {
+		t.Fatalf("ReadProgress: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1: %+v", len(entries), entries)
+	}
+	if entries[0].Kind != artifact.ProgressKindDecision {
+		t.Fatalf("kind = %q, want %q", entries[0].Kind, artifact.ProgressKindDecision)
+	}
+	if !strings.Contains(entries[0].Message, "human-required to todo") {
+		t.Fatalf("message = %q, want transition detail", entries[0].Message)
+	}
+	if !strings.Contains(entries[0].Message, "operator approved retry after clearing stale watchdog counters") {
+		t.Fatalf("message = %q, want operator reason", entries[0].Message)
+	}
+}
+
+func TestUpdateTask_HumanRequiredUnblockWithoutReasonDoesNotReuseStaleStatusReason(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	svc.artifacts = artifact.New(t.TempDir())
+	tk := newHumanRequiredTask(t, a, 0)
+	stale := "watchdog: loop stop: stale reason from prior escalation"
+	if _, err := a.tasks.Update(tk.ID, task.Update{StatusReason: &stale}); err != nil {
+		t.Fatalf("seed stale status_reason: %v", err)
+	}
+
+	updated, err := svc.UpdateTask(tk.ID, map[string]any{
+		"status": string(task.StatusTodo),
+	})
+	if err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+	if updated.Status != task.StatusTodo {
+		t.Fatalf("status = %q, want %q", updated.Status, task.StatusTodo)
+	}
+
+	entries, err := svc.artifacts.ReadProgress(tk.ID)
+	if err != nil {
+		t.Fatalf("ReadProgress: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1: %+v", len(entries), entries)
+	}
+	if entries[0].Kind != artifact.ProgressKindDecision {
+		t.Fatalf("kind = %q, want %q", entries[0].Kind, artifact.ProgressKindDecision)
+	}
+	if got := entries[0].Message; got != "Operator decision: moved task from human-required to todo" {
+		t.Fatalf("message = %q, want transition without stale status_reason", got)
+	}
+}
+
+func TestDispatchFromHumanRequired_AppendsDecisionProgress(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	svc.artifacts = artifact.New(t.TempDir())
+	tk := newHumanRequiredTask(t, a, 0)
+
+	updated, err := svc.DispatchFromHumanRequired(tk.ID, string(task.StatusInProgress), "retry after clearing stale watchdog counters")
+	if err != nil {
+		t.Fatalf("DispatchFromHumanRequired: %v", err)
+	}
+	if updated.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want %q", updated.Status, task.StatusInProgress)
+	}
+
+	entries, err := svc.artifacts.ReadProgress(tk.ID)
+	if err != nil {
+		t.Fatalf("ReadProgress: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1: %+v", len(entries), entries)
+	}
+	if entries[0].Kind != artifact.ProgressKindDecision {
+		t.Fatalf("kind = %q, want %q", entries[0].Kind, artifact.ProgressKindDecision)
+	}
+	if !strings.Contains(entries[0].Message, "human-required to in-progress") {
+		t.Fatalf("message = %q, want transition detail", entries[0].Message)
+	}
+	if !strings.Contains(entries[0].Message, "retry after clearing stale watchdog counters") {
+		t.Fatalf("message = %q, want operator reason", entries[0].Message)
 	}
 }
 
@@ -961,6 +1474,160 @@ func TestDispatchInboundReview_SkipsAlreadyReviewedHead(t *testing.T) {
 	}
 	if headCalls.Load() == 0 {
 		t.Fatal("never asked GitHub for the head; the guard cannot be honest about local state alone")
+	}
+}
+
+func TestDispatchInboundReview_SkipsPRAlreadyOwnedByImplementationTask(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	a.workflowEngine = svc.workflowEngine
+	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) {
+		t.Fatal("head lookup must not run for a PR owned by an implementation task")
+		return "", nil
+	}
+
+	tk := newInboundReviewTask(t, a, 151, "needs-approval")
+	tk, err := a.tasks.Update(tk.ID, task.Update{Branch: task.Ptr("feat/owned-pr-12345678")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.tasks.CreateFull("implementation owns PR", "", string(task.AgentModeHeadless), task.Update{
+		Status:    task.Ptr(task.StatusInReview),
+		ProjectID: task.Ptr(tk.ProjectID),
+		PRNumber:  task.Ptr(tk.PRNumber),
+		Branch:    task.Ptr("feat/owned-pr-12345678"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
+
+	got, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow != nil && got.Workflow.WorkflowID == "pr-review" && got.Workflow.State != workflow.ExecCompleted {
+		t.Fatalf("workflow = %+v, want no active pr-review for PR owned by implementation task", got.Workflow)
+	}
+	if launcher.startCalls != 0 {
+		t.Fatalf("startCalls = %d, want 0", launcher.startCalls)
+	}
+}
+
+func TestDispatchInboundReview_SkipsSameRepoBranchAlreadyOwnedByImplementationTask(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	a.workflowEngine = svc.workflowEngine
+	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) {
+		t.Fatal("head lookup must not run for a same-repo branch owned by an implementation task")
+		return "", nil
+	}
+
+	tk := newInboundReviewTask(t, a, 152, "needs-approval")
+	tk, err := a.tasks.Update(tk.ID, task.Update{Branch: task.Ptr("feat/owned-branch-12345678")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.tasks.CreateFull("implementation owns branch before PR number", "", string(task.AgentModeHeadless), task.Update{
+		Status:    task.Ptr(task.StatusInReview),
+		ProjectID: task.Ptr(tk.ProjectID),
+		Branch:    task.Ptr("feat/owned-branch-12345678"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
+
+	got, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow != nil && got.Workflow.WorkflowID == "pr-review" && got.Workflow.State != workflow.ExecCompleted {
+		t.Fatalf("workflow = %+v, want no active pr-review for branch owned by implementation task", got.Workflow)
+	}
+	if launcher.startCalls != 0 {
+		t.Fatalf("startCalls = %d, want 0", launcher.startCalls)
+	}
+}
+
+func TestDispatchInboundReview_SkipsLegacyBranchEmptyReviewWhenFetchedPROwnedByImplementationBranch(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	a.workflowEngine = svc.workflowEngine
+	a.fetchPR = func(context.Context, string, int) (github.PullRequest, error) {
+		return github.PullRequest{
+			Number:      154,
+			Repository:  "Automaat/lightroom-mcp",
+			HeadRefName: "feat/legacy-owned-branch-12345678",
+			HeadRepo:    "Automaat/lightroom-mcp",
+		}, nil
+	}
+	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) {
+		t.Fatal("head lookup must not run after fetched PR proves branch ownership")
+		return "", nil
+	}
+
+	tk := newInboundReviewTask(t, a, 154, "needs-approval")
+	if tk.Branch != "" {
+		t.Fatalf("test setup expected legacy branch-empty review task, got branch %q", tk.Branch)
+	}
+	if _, err := a.tasks.CreateFull("implementation owns branch before PR number", "", string(task.AgentModeHeadless), task.Update{
+		Status:    task.Ptr(task.StatusInReview),
+		ProjectID: task.Ptr(tk.ProjectID),
+		Branch:    task.Ptr("feat/legacy-owned-branch-12345678"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
+
+	got, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Branch != "feat/legacy-owned-branch-12345678" {
+		t.Fatalf("branch = %q, want fetched same-repo branch stamped", got.Branch)
+	}
+	if got.Workflow != nil && got.Workflow.WorkflowID == "pr-review" && got.Workflow.State != workflow.ExecCompleted {
+		t.Fatalf("workflow = %+v, want no active pr-review for fetched branch owned by implementation task", got.Workflow)
+	}
+	if launcher.startCalls != 0 {
+		t.Fatalf("startCalls = %d, want 0", launcher.startCalls)
+	}
+}
+
+func TestDispatchInboundReview_DoesNotSkipSameBranchOwnedByDifferentPR(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	a.workflowEngine = svc.workflowEngine
+	headLookupCalled := false
+	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) {
+		headLookupCalled = true
+		return "", errors.New("stop after ownership guard")
+	}
+
+	tk := newInboundReviewTask(t, a, 153, "needs-approval")
+	tk, err := a.tasks.Update(tk.ID, task.Update{Branch: task.Ptr("feat/shared-branch-12345678")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherPR := 100
+	if _, err := a.tasks.CreateFull("implementation owns a different PR", "", string(task.AgentModeHeadless), task.Update{
+		Status:    task.Ptr(task.StatusInReview),
+		ProjectID: task.Ptr(tk.ProjectID),
+		PRNumber:  task.Ptr(otherPR),
+		Branch:    task.Ptr("feat/shared-branch-12345678"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
+
+	if !headLookupCalled {
+		t.Fatal("head lookup was not called; dispatch incorrectly skipped on branch owned by a different PR")
+	}
+	if launcher.startCalls != 0 {
+		t.Fatalf("startCalls = %d, want 0 after injected head lookup error", launcher.startCalls)
 	}
 }
 
@@ -1083,12 +1750,12 @@ func TestReviewCoversHead(t *testing.T) {
 		{"unknown head fails closed", "abc", 0, "", true},
 		{"unknown head with no prior review fails closed", "", 0, "", true},
 	}
+	budget := reviewbudget.Budget{PerHead: maxReviewAttemptsPerHead}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			tk := task.Task{ReviewedHeadSHA: tt.reviewed, ReviewedHeadAttempts: tt.attempts}
-			if got := reviewCoversHead(tk, tt.head); got != tt.want {
-				t.Errorf("reviewCoversHead(sha=%q attempts=%d, head=%q) = %v, want %v",
+			if got := budget.HeadCovered(tt.reviewed, tt.attempts, tt.head); got != tt.want {
+				t.Errorf("HeadCovered(sha=%q attempts=%d, head=%q) = %v, want %v",
 					tt.reviewed, tt.attempts, tt.head, got, tt.want)
 			}
 		})
@@ -1108,12 +1775,12 @@ func TestNextReviewAttempt(t *testing.T) {
 		{"retry on the same head", "abc", 1, "abc", 2},
 		{"a new push restarts the budget", "abc", 9, "def", 1},
 	}
+	budget := reviewbudget.Budget{PerHead: maxReviewAttemptsPerHead}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			tk := task.Task{ReviewedHeadSHA: tt.reviewed, ReviewedHeadAttempts: tt.attempts}
-			if got := nextReviewAttempt(tk, tt.head); got != tt.want {
-				t.Errorf("nextReviewAttempt = %d, want %d", got, tt.want)
+			if got := budget.NextAttempt(tt.reviewed, tt.attempts, tt.head); got != tt.want {
+				t.Errorf("NextAttempt = %d, want %d", got, tt.want)
 			}
 		})
 	}
@@ -1197,7 +1864,10 @@ func TestDispatchInboundReview_EmptyHeadIsLoggedNotSilent(t *testing.T) {
 }
 
 func reviewRun(started time.Time) task.AgentRun {
-	return task.AgentRun{AgentID: "a", Role: string(agent.RoleReview), StartedAt: started}
+	return task.AgentRun{
+		AgentID: "a", Role: string(agent.RoleReview), StartedAt: started,
+		Outcome: task.RunOutcomeSuccess,
+	}
 }
 
 // The blast-radius cap. Every other gate assumes something: the per-head budget
@@ -1262,9 +1932,10 @@ func TestReviewRateLimitExceeded(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := reviewRateLimitExceeded(task.Task{AgentRuns: tt.runs}, now, tt.limit)
+			budget := reviewbudget.Budget{PerHour: tt.limit}
+			got := budget.HourlyExceeded(taskReviewRuns(task.Task{AgentRuns: tt.runs}), now)
 			if got != tt.want {
-				t.Errorf("reviewRateLimitExceeded(%d runs, limit=%d) = %v, want %v",
+				t.Errorf("HourlyExceeded(%d runs, limit=%d) = %v, want %v",
 					len(tt.runs), tt.limit, got, tt.want)
 			}
 		})
@@ -1302,6 +1973,39 @@ func TestDispatchInboundReview_RateLimitParksForHuman(t *testing.T) {
 	}
 	if !strings.Contains(got.StatusReason, "rate limit") {
 		t.Errorf("StatusReason = %q, want it to name the rate limit", got.StatusReason)
+	}
+}
+
+func TestDispatchInboundReview_TaskLimitParksForHuman(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	a.workflowEngine = svc.workflowEngine
+	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) { return "fresh-head", nil }
+
+	tk := newInboundReviewTask(t, a, 151, "needs-approval")
+	now := time.Now()
+	for i := range config.DefaultReviewRoundsPerTask {
+		// Keep every lifetime run inside the rolling hour too: when both limits
+		// are exhausted, the permanent lifetime reason must take precedence.
+		if err := a.tasks.AddRun(tk.ID, reviewRun(now.Add(-time.Duration(i)*time.Minute))); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
+
+	got, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if launcher.startCalls != 0 {
+		t.Errorf("startCalls = %d, want 0 — dispatched past the lifetime cap", launcher.startCalls)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want %q — a spent lifetime budget must reach a human", got.Status, task.StatusHumanRequired)
+	}
+	if !strings.Contains(got.StatusReason, "review lifetime limit") {
+		t.Errorf("StatusReason = %q, want it to name the lifetime limit", got.StatusReason)
 	}
 }
 
@@ -1385,9 +2089,9 @@ func TestDispatchInboundReview_ParkedTaskIsNotReParked(t *testing.T) {
 }
 
 // Every other dispatch test runs with a nil cfg, which takes the one branch of
-// reviewRoundsPerHourLimit that never executes in production (App always sets
-// cfg). Without this, a resolver that ignores config entirely — or that reads
-// an omitted key as 0 and disables the cap fleet-wide — passes the whole suite.
+// reviewBudget that never executes in production (App always sets cfg).
+// Without this, a resolver that ignores config entirely — or that reads an
+// omitted key as 0 and disables the cap fleet-wide — passes the whole suite.
 func TestDispatchInboundReview_RateLimitReadsRealConfig(t *testing.T) {
 	launcher := &fakeAgentLauncher{}
 	svc, a := setupDispatchTestService(t, launcher)
@@ -1395,7 +2099,7 @@ func TestDispatchInboundReview_RateLimitReadsRealConfig(t *testing.T) {
 	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) { return "fresh-head", nil }
 
 	cfg := config.DefaultConfig()
-	cfg.GitHub.ReviewRoundsPerHour = 1 // deliberately not the default
+	cfg.Agent.ReviewRoundsPerHour = 1 // deliberately not the default
 	a.cfg = cfg
 
 	tk := newInboundReviewTask(t, a, 151, "needs-approval")
@@ -1427,12 +2131,12 @@ func TestDispatchInboundReview_RateLimitDisabledByConfig(t *testing.T) {
 	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) { return "fresh-head", nil }
 
 	cfg := config.DefaultConfig()
-	cfg.GitHub.ReviewRoundsPerHour = -1
+	cfg.Agent.ReviewRoundsPerHour = -1
 	a.cfg = cfg
 
 	tk := newInboundReviewTask(t, a, 151, "needs-approval")
 	now := time.Now()
-	for i := range 10 {
+	for i := range config.DefaultReviewRoundsPerTask - 1 {
 		if err := a.tasks.AddRun(tk.ID, reviewRun(now.Add(-time.Duration(i)*time.Minute))); err != nil {
 			t.Fatal(err)
 		}

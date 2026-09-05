@@ -18,6 +18,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/intervention"
 	"github.com/Automaat/sybra/internal/poll"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
@@ -31,7 +32,7 @@ func TestConflictPrompt_ResolvesAllConflictsAutonomously(t *testing.T) {
 	prompt := buildConflictPrompt(context.Background(), github.PullRequest{
 		Number:      1178,
 		HeadRefName: "fix/example",
-	}, "\n\nFiles changed in this PR:\n- internal/workflow/engine.go\n")
+	}, "\n\nFiles changed in this PR:\n- internal/workflow/engine.go\n", project.SigningAuto)
 
 	for _, forbidden := range []string{
 		"more than 3",
@@ -60,7 +61,7 @@ func TestConflictPrompt_UsesMergeNotRebase(t *testing.T) {
 	prompt := buildConflictPrompt(context.Background(), github.PullRequest{
 		Number:      1178,
 		HeadRefName: "fix/example",
-	}, "")
+	}, "", project.SigningAuto)
 
 	for _, forbidden := range []string{
 		"git rebase",
@@ -82,6 +83,42 @@ func TestConflictPrompt_UsesMergeNotRebase(t *testing.T) {
 	}
 }
 
+func TestConflictDispatchIdentityIncludesBaseSHA(t *testing.T) {
+	t.Parallel()
+
+	baseSHA := "base-1"
+	r := &Handler{
+		logger:    slog.New(slog.DiscardHandler),
+		prTracker: github.NewIssueTracker(time.Minute),
+		fetchPRBaseSHAFn: func(context.Context, string, int) (string, error) {
+			return baseSHA, nil
+		},
+	}
+	issue := github.PRIssue{
+		Kind:   github.PRIssueConflict,
+		TaskID: "task-1",
+		PR: github.PullRequest{
+			Repository: "owner/repo",
+			Number:     42,
+			HeadSHA:    "head-1",
+		},
+	}
+
+	key := r.prIssueDispatchSHA(context.Background(), issue)
+	if got := r.prTracker.Decide(issue.TaskID, issue.Kind, key, ""); got != github.DispatchHandle {
+		t.Fatalf("first conflict decision = %v, want handle", got)
+	}
+	r.prTracker.MarkHandled(issue.TaskID, issue.Kind, key)
+	if got := r.prTracker.Decide(issue.TaskID, issue.Kind, r.prIssueDispatchSHA(context.Background(), issue), ""); got != github.DispatchSkip {
+		t.Fatalf("same head/base decision = %v, want skip", got)
+	}
+
+	baseSHA = "base-2"
+	if got := r.prTracker.Decide(issue.TaskID, issue.Kind, r.prIssueDispatchSHA(context.Background(), issue), ""); got != github.DispatchHandle {
+		t.Fatalf("same head with new base decision = %v, want handle", got)
+	}
+}
+
 func TestConflictPrompt_UsesPRBaseRef(t *testing.T) {
 	t.Parallel()
 
@@ -89,7 +126,7 @@ func TestConflictPrompt_UsesPRBaseRef(t *testing.T) {
 		Number:      1178,
 		HeadRefName: "fix/example",
 		BaseRefName: "master",
-	}, "")
+	}, "", project.SigningAuto)
 
 	if !strings.Contains(prompt, "git merge refs/remotes/origin/master") {
 		t.Fatalf("conflict prompt did not merge the PR base ref (master):\n%s", prompt)
@@ -102,7 +139,7 @@ func TestConflictPrompt_UsesPRBaseRef(t *testing.T) {
 func TestBranchConflictPrompt_DetectsForkRemote(t *testing.T) {
 	t.Parallel()
 
-	prompt := branchConflictPrompt(context.Background(), task.Task{Branch: "fix/example"}, "main")
+	prompt := branchConflictPrompt(context.Background(), task.Task{Branch: "fix/example"}, "main", project.SigningAuto)
 
 	assertPRFixPromptUsesResolvedPushRemote(t, prompt, "fix/example")
 }
@@ -110,7 +147,7 @@ func TestBranchConflictPrompt_DetectsForkRemote(t *testing.T) {
 func TestBranchConflictPrompt_AllowsRebaseBeforePRExists(t *testing.T) {
 	t.Parallel()
 
-	prompt := branchConflictPrompt(context.Background(), task.Task{Branch: "fix/example"}, "main")
+	prompt := branchConflictPrompt(context.Background(), task.Task{Branch: "fix/example"}, "main", project.SigningAuto)
 
 	for _, want := range []string{
 		"git merge refs/remotes/origin/main",
@@ -128,6 +165,33 @@ func TestBranchConflictPrompt_AllowsRebaseBeforePRExists(t *testing.T) {
 	}
 }
 
+func TestSameBranchConflictPrompt_DefersPublishToTrustedWorkflow(t *testing.T) {
+	t.Parallel()
+
+	prompt := sameBranchConflictPrompt(context.Background(), task.Task{Branch: "fix/example", PRNumber: 1178}, "origin", project.SigningAuto)
+	for _, want := range []string{
+		"git fetch origin +refs/heads/fix/example:refs/remotes/origin/fix/example",
+		"Do NOT rebase, amend, or force-push",
+		"Do not push: Sybra will verify and publish this completed merge through its trusted, non-force workflow step",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("same-branch conflict prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, "PUSH_REMOTE=") || strings.Contains(prompt, "git push ") {
+		t.Fatalf("same-branch conflict prompt still authorizes an agent push:\n%s", prompt)
+	}
+}
+
+func TestSameBranchConflictRemote_UnknownHeadOwnerIsNotTrusted(t *testing.T) {
+	t.Parallel()
+
+	remote, trusted := (&Handler{}).sameBranchConflictRemote(context.Background(), task.Task{ProjectID: "acme/widgets"}, github.PullRequest{Repository: "acme/widgets"})
+	if remote != "origin" || trusted {
+		t.Fatalf("unknown head owner resolved to remote=%q trusted=%v, want origin and untrusted", remote, trusted)
+	}
+}
+
 // A pr-fix agent that backgrounds its test run and then narrates "still
 // waiting" status messages instead of blocking on it trips the watchdog's
 // semantic-loop detector and burns the run for nothing. Both conflict
@@ -137,8 +201,8 @@ func TestConflictPrompt_TestsRunSynchronously(t *testing.T) {
 	t.Parallel()
 
 	for _, prompt := range []string{
-		buildConflictPrompt(context.Background(), github.PullRequest{Number: 1178, HeadRefName: "fix/example"}, ""),
-		branchConflictPrompt(context.Background(), task.Task{Branch: "fix/example"}, "main"),
+		buildConflictPrompt(context.Background(), github.PullRequest{Number: 1178, HeadRefName: "fix/example"}, "", project.SigningAuto),
+		branchConflictPrompt(context.Background(), task.Task{Branch: "fix/example"}, "main", project.SigningAuto),
 	} {
 		if !strings.Contains(prompt, "never background a test run or narrate/poll its progress") {
 			t.Fatalf("conflict prompt does not forbid backgrounding/narrating test runs:\n%s", prompt)
@@ -155,12 +219,12 @@ func TestConflictPrompt_UsesHostCommitSignFlags(t *testing.T) {
 	ctx := context.Background()
 	wantFlags := project.CommitSignFlags(ctx)
 
-	prPrompt := buildConflictPrompt(ctx, github.PullRequest{Number: 1178, HeadRefName: "fix/example"}, "")
+	prPrompt := buildConflictPrompt(ctx, github.PullRequest{Number: 1178, HeadRefName: "fix/example"}, "", project.SigningAuto)
 	if !strings.Contains(prPrompt, "git add and git commit "+wantFlags+" to") {
 		t.Fatalf("PR conflict prompt missing host commit sign flags %q:\n%s", wantFlags, prPrompt)
 	}
 
-	branchPrompt := branchConflictPrompt(ctx, task.Task{Branch: "fix/example"}, "main")
+	branchPrompt := branchConflictPrompt(ctx, task.Task{Branch: "fix/example"}, "main", project.SigningAuto)
 	if !strings.Contains(branchPrompt, "git add and git\n# commit "+wantFlags+" to") {
 		t.Fatalf("branch conflict prompt missing host commit sign flags %q:\n%s", wantFlags, branchPrompt)
 	}
@@ -252,9 +316,19 @@ func TestCommentsPrompt_DetectsForkRemote(t *testing.T) {
 		Number:      1178,
 		HeadRefName: "fix/example",
 		URL:         "https://github.com/acme/widgets/pull/1178",
-	})
+	}, project.SigningAuto, reviewThreadBrief{})
 
 	assertPRFixPromptUsesResolvedPushRemote(t, prompt, "fix/example")
+	for _, want := range []string{
+		"re-fetch that one thread",
+		"already replied with the harness footer",
+		"__SHA__",
+		"never retry the same thread through the other API",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("comments prompt missing duplicate-reply guard %q:\n%s", want, prompt)
+		}
+	}
 }
 
 func TestConflictPrompt_DetectsForkRemote(t *testing.T) {
@@ -263,7 +337,7 @@ func TestConflictPrompt_DetectsForkRemote(t *testing.T) {
 	prompt := buildConflictPrompt(context.Background(), github.PullRequest{
 		Number:      1178,
 		HeadRefName: "fix/example",
-	}, "")
+	}, "", project.SigningAuto)
 
 	assertPRFixPromptUsesResolvedPushRemote(t, prompt, "fix/example")
 }
@@ -314,18 +388,27 @@ func assertPRFixPromptUsesResolvedPushRemote(t *testing.T, prompt, branch string
 	}
 }
 
-func TestTruncatePushPreflightReasonKeepsValidUTF8(t *testing.T) {
-	got := truncatePushPreflightReason("prefix \xff café suffix", 12)
+func TestPushPreflightFailureReasonKeepsValidUTF8(t *testing.T) {
+	// The multibyte and invalid bytes must sit BEFORE the 240-byte cut, or
+	// the test passes without exercising either the boundary walk or the
+	// sanitisation — git surfaces remote bytes verbatim, so both can land
+	// anywhere in the string.
+	detail := "\xff café… " + strings.Repeat("remote rejected …", 30)
+	got := pushPreflightFailureReason(errors.New(detail))
+
 	if !utf8.ValidString(got) {
-		t.Fatalf("truncated reason is invalid UTF-8: %q", got)
+		t.Fatalf("preflight reason is invalid UTF-8: %q", got)
 	}
 	if !strings.HasSuffix(got, "...") {
-		t.Fatalf("truncated reason = %q, want ellipsis", got)
+		t.Fatalf("preflight reason = %q, want ellipsis", got)
+	}
+	if !strings.HasPrefix(got, "GitHub push credential preflight failed") {
+		t.Fatalf("preflight reason = %q, want the classified prefix", got)
 	}
 }
 
 func TestStaffCodeReviewRunConfigLeavesProviderUnpinned(t *testing.T) {
-	cfg := StaffCodeReviewRunConfig(task.Task{ID: "review-task", Title: "Needs review"}, "Run /staff-code-review", t.TempDir(), "default")
+	cfg := StaffCodeReviewRunConfig(task.Task{ID: "review-task", Title: "Needs review"}, "Run /staff-code-review", t.TempDir(), "default", "enforce")
 
 	if cfg.Name != agent.RoleReview.AgentName("Needs review") {
 		t.Fatalf("Name = %q, want %q", cfg.Name, agent.RoleReview.AgentName("Needs review"))
@@ -342,8 +425,43 @@ func TestStaffCodeReviewRunConfigLeavesProviderUnpinned(t *testing.T) {
 	if cfg.HeadlessPermissionMode != "default" {
 		t.Fatalf("HeadlessPermissionMode = %q, want default", cfg.HeadlessPermissionMode)
 	}
+	if !cfg.ReadOnlyDir {
+		t.Fatal("ReadOnlyDir = false, want verifier worktree protected")
+	}
+	if cfg.SandboxMode != "enforce" {
+		t.Fatalf("SandboxMode = %q, want enforce", cfg.SandboxMode)
+	}
 	if cfg.DisableProviderFailover {
 		t.Fatal("DisableProviderFailover = true, want false (availability preferred)")
+	}
+}
+
+// TestStaffCodeReviewRunConfigCarriesTaskReasoningEffort proves the operator's
+// per-task pin reaches the run. Without it the Manager would resolve the review
+// role's own baseline instead, silently overriding the pin — this dispatch path
+// does not go through the workflow engine, which is where the other sites
+// resolve effort.
+func TestStaffCodeReviewRunConfigCarriesTaskReasoningEffort(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		pinned string
+		want   string
+	}{
+		{name: "pinned effort is carried", pinned: "xhigh", want: "xhigh"},
+		{name: "unpinned stays empty for the Manager to resolve", pinned: "", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := StaffCodeReviewRunConfig(
+				task.Task{ID: "review-task", Title: "Needs review", ReasoningEffort: tt.pinned},
+				"Run /staff-code-review", t.TempDir(), "default", "enforce",
+			)
+			if cfg.ReasoningEffort != tt.want {
+				t.Fatalf("ReasoningEffort = %q, want %q", cfg.ReasoningEffort, tt.want)
+			}
+		})
 	}
 }
 
@@ -354,10 +472,11 @@ func TestStaffCodeReviewPromptAuthorizesPendingReview(t *testing.T) {
 	for _, want := range []string{
 		"Run /staff-code-review on https://github.com/Automaat/example/pull/123",
 		"Do not ask the operator for confirmation",
-		"Create exactly one PENDING (draft) pull-request review",
 		"findings become inline comments",
 		"if a review for that head already contains the Sybra harness",
-		"Omit `event` so GitHub leaves the review PENDING",
+		"submit with `-f event=REQUEST_CHANGES`",
+		"submit with `-f event=COMMENT`",
+		"omit `event` so GitHub leaves the review PENDING",
 		"_Generated by Sybra harness_",
 	} {
 		if !strings.Contains(prompt, want) {
@@ -370,8 +489,8 @@ func TestStaffCodeReviewPromptNeverAuthorizesApproval(t *testing.T) {
 	t.Parallel()
 
 	prompt := StaffCodeReviewPrompt("Automaat/example", 123)
-	if !strings.Contains(prompt, "NEVER submit any review event") {
-		t.Fatalf("prompt does not withhold submission authority:\n%s", prompt)
+	if !strings.Contains(prompt, "NEVER submit an APPROVE review event") {
+		t.Fatalf("prompt does not withhold approval authority:\n%s", prompt)
 	}
 	for _, banned := range []string{
 		"submit an approve review",
@@ -499,6 +618,36 @@ func TestPRMonitorEligible(t *testing.T) {
 		{
 			name: "in-progress with nothing — not eligible",
 			tk:   task.Task{Status: task.StatusInProgress},
+			want: false,
+		},
+		{
+			name: "ready-pr with PR — eligible (sybra#2645: workflow completed at ready-pr, nothing else watches its PR)",
+			tk:   task.Task{Status: task.StatusReadyPR, PRNumber: 2645},
+			want: true,
+		},
+		{
+			name: "ready-pr with nothing — not eligible",
+			tk:   task.Task{Status: task.StatusReadyPR},
+			want: false,
+		},
+		{
+			name: "ready-review with PR — eligible (sybra#2646: local review loop is blind to real CI failures on the already-open PR)",
+			tk:   task.Task{Status: task.StatusReadyReview, PRNumber: 2646},
+			want: true,
+		},
+		{
+			name: "ready-review with branch only — not eligible (avoid WIP false positives)",
+			tk:   task.Task{Status: task.StatusReadyReview, Branch: "sybra/wip"},
+			want: false,
+		},
+		{
+			name: "testing with PR — eligible, same lane as ready-review",
+			tk:   task.Task{Status: task.StatusTesting, PRNumber: 2646},
+			want: true,
+		},
+		{
+			name: "testing with nothing — not eligible",
+			tk:   task.Task{Status: task.StatusTesting},
 			want: false,
 		},
 		{
@@ -715,22 +864,28 @@ func TestCreateReviewTaskPassesUpdatedTaskToTriage(t *testing.T) {
 		logger: slog.New(slog.DiscardHandler),
 		tasks:  tasks,
 	}
-	r.createReviewTaskWithTriage(github.PullRequest{
-		Number: 2708,
-		Title:  "docs: explain precedence",
-		URL:    "https://github.com/kumahq/kuma-website/pull/2708",
-		Author: "slonka",
-	}, "kumahq/kuma-website", func(t task.Task) {
+	r.createReviewTaskWithTriage("owner", github.PullRequest{
+		Number:        2708,
+		Title:         "docs: explain precedence",
+		URL:           "https://github.com/owner/repo/pull/2708",
+		Author:        "contributor",
+		HeadRefName:   "fix/docs",
+		HeadRepoOwner: "contributor",
+		HeadRepo:      "contributor/repo",
+	}, "owner/repo", func(t task.Task) {
 		got <- t
 	})
 
 	select {
 	case reviewTask := <-got:
-		if reviewTask.ProjectID != "kumahq/kuma-website" {
-			t.Fatalf("ProjectID = %q, want kumahq/kuma-website", reviewTask.ProjectID)
+		if reviewTask.ProjectID != "owner/repo" {
+			t.Fatalf("ProjectID = %q, want owner/repo", reviewTask.ProjectID)
 		}
 		if reviewTask.PRNumber != 2708 {
 			t.Fatalf("PRNumber = %d, want 2708", reviewTask.PRNumber)
+		}
+		if reviewTask.Branch != "" {
+			t.Fatalf("Branch = %q, want empty for forked PR head", reviewTask.Branch)
 		}
 		if reviewTask.Status != task.StatusTodo {
 			t.Fatalf("Status = %q, want %q", reviewTask.Status, task.StatusTodo)
@@ -745,6 +900,78 @@ func TestCreateReviewTaskPassesUpdatedTaskToTriage(t *testing.T) {
 	}
 	if len(files) != 1 {
 		t.Fatalf("created files = %d, want 1", len(files))
+	}
+}
+
+func TestCreateReviewTaskStoresSameRepoHeadBranch(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "tasks")
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	got := make(chan task.Task, 1)
+
+	r := &Handler{
+		logger:        slog.New(slog.DiscardHandler),
+		tasks:         tasks,
+		viewerLoginFn: func() string { return "owner" },
+	}
+	r.createReviewTaskWithTriage("owner", github.PullRequest{
+		Number:        2709,
+		Title:         "fix: owned branch",
+		URL:           "https://github.com/owner/repo/pull/2709",
+		Author:        "owner",
+		HeadRefName:   "fix/owned",
+		HeadRepoOwner: "owner",
+		HeadRepo:      "owner/repo",
+	}, "owner/repo", func(t task.Task) {
+		got <- t
+	})
+
+	select {
+	case reviewTask := <-got:
+		if reviewTask.Branch != "fix/owned" {
+			t.Fatalf("Branch = %q, want same-repo head branch", reviewTask.Branch)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("triage was not called")
+	}
+}
+
+func TestCreateReviewTaskSkipsAnotherAuthorsHeadBranch(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "tasks")
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	got := make(chan task.Task, 1)
+
+	r := &Handler{
+		logger:        slog.New(slog.DiscardHandler),
+		tasks:         tasks,
+		viewerLoginFn: func() string { return "owner" },
+	}
+	r.createReviewTaskWithTriage("owner", github.PullRequest{
+		Number:        2710,
+		Title:         "feat: their branch",
+		URL:           "https://github.com/owner/repo/pull/2710",
+		Author:        "colleague",
+		HeadRefName:   "feat/theirs",
+		HeadRepoOwner: "owner",
+		HeadRepo:      "owner/repo",
+	}, "owner/repo", func(t task.Task) {
+		got <- t
+	})
+
+	select {
+	case reviewTask := <-got:
+		if reviewTask.Branch != "" {
+			t.Fatalf("Branch = %q, want empty for a branch another author owns", reviewTask.Branch)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("triage was not called")
 	}
 }
 
@@ -818,40 +1045,50 @@ func TestAdoptOrphanPRs(t *testing.T) {
 	// Stranded by a premature verify_commits verdict: human-required, branch
 	// set, no PR number — the exact 94af6462 failure shape.
 	orphan := mk("stranded", task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr("implementation agent failed before committing — no commits on branch"),
-		Branch:       task.Ptr("feat/stranded"),
-		ProjectID:    task.Ptr("o/r"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr("implementation agent failed before committing — no commits on branch"),
+		Branch:          task.Ptr("feat/stranded"),
+		ProjectID:       task.Ptr("o/r"),
 	})
 	// Ambiguous: two open PRs in the project share the branch → must NOT adopt.
 	ambiguous := mk("ambiguous", task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr("no commits pushed to branch"),
-		Branch:       task.Ptr("feat/ambig"),
-		ProjectID:    task.Ptr("o/r"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr("no commits pushed to branch"),
+		Branch:          task.Ptr("feat/ambig"),
+		ProjectID:       task.Ptr("o/r"),
 	})
 	// No matching PR → must NOT adopt.
 	noMatch := mk("no-match", task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr("no commits pushed to branch"),
-		Branch:       task.Ptr("feat/orphaned-forever"),
-		ProjectID:    task.Ptr("o/r"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr("no commits pushed to branch"),
+		Branch:          task.Ptr("feat/orphaned-forever"),
+		ProjectID:       task.Ptr("o/r"),
 	})
 	// Same branch name but the only matching PR is in a DIFFERENT repo → the
 	// repo guard must reject it (monitoredPRs spans every repo the user owns).
 	wrongRepo := mk("wrong-repo", task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr("no commits pushed to branch"),
-		Branch:       task.Ptr("feat/cross"),
-		ProjectID:    task.Ptr("o/r"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr("no commits pushed to branch"),
+		Branch:          task.Ptr("feat/cross"),
+		ProjectID:       task.Ptr("o/r"),
 	})
 	// Deliberately stopped by the watchdog (not a link-failure strand) → the
 	// reason gate must keep adoption from resurrecting it.
 	watchdog := mk("watchdog", task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr("watchdog: runaway loop"),
-		Branch:       task.Ptr("feat/wd"),
-		ProjectID:    task.Ptr("o/r"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr("watchdog: runaway loop"),
+		Branch:          task.Ptr("feat/wd"),
+		ProjectID:       task.Ptr("o/r"),
 	})
 	// Already in-review with a PR → not eligible, must be left untouched.
 	healthy := mk("healthy", task.Update{
@@ -1241,7 +1478,7 @@ func TestCancelResolvedPRFixWorkflows(t *testing.T) {
 		t.Fatal(err)
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
-	engine := workflow.NewEngine(wfStore,
+	engine := workflow.NewTestEngine(wfStore,
 		&taskAdapter{tasks: tasks},
 		&agentAdapter{agents: agentMgr, tasks: tasks},
 		logger,
@@ -1356,7 +1593,7 @@ func TestCancelResolvedPRFixWorkflows_CoalescedSiblingStillLive(t *testing.T) {
 		t.Fatal(err)
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
-	engine := workflow.NewEngine(wfStore,
+	engine := workflow.NewTestEngine(wfStore,
 		&taskAdapter{tasks: tasks},
 		&agentAdapter{agents: agentMgr, tasks: tasks},
 		logger,
@@ -1721,7 +1958,7 @@ func TestPrepareWorktree_CircuitBreaker(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got.Status == task.StatusHumanRequired {
+		if got.Status == task.StatusBlocked {
 			t.Fatalf("call %d: task escalated too early (want %d failures before trip)", i+1, wtFailureLimit)
 		}
 	}
@@ -1736,8 +1973,8 @@ func TestPrepareWorktree_CircuitBreaker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q after circuit break, want human-required", got.Status)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q after circuit break, want blocked", got.Status)
 	}
 	// Counter must be deleted so the next task start doesn't carry stale state.
 	if n := r.wtFailures[tk.ID]; n != 0 {
@@ -1844,8 +2081,8 @@ func TestAllowPreparedWorktree_SetupFailureTripsCircuitBreaker(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got.Status == task.StatusHumanRequired {
-			t.Fatalf("call %d: task escalated too early", i+1)
+		if got.Status == task.StatusBlocked {
+			t.Fatalf("call %d: task quarantined too early", i+1)
 		}
 	}
 
@@ -1856,8 +2093,8 @@ func TestAllowPreparedWorktree_SetupFailureTripsCircuitBreaker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q after setup-failure circuit break, want human-required", got.Status)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q after setup-failure circuit break, want blocked", got.Status)
 	}
 }
 
@@ -1886,17 +2123,21 @@ func TestAdoptOrphanMergedPR(t *testing.T) {
 
 	// Task eligible for orphan adoption: stranded in human-required with a branch.
 	orphan := mk("stranded", task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr("commits pushed but no PR created"),
-		Branch:       task.Ptr("feat/stranded"),
-		ProjectID:    task.Ptr("o/r"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr("commits pushed but no PR created"),
+		Branch:          task.Ptr("feat/stranded"),
+		ProjectID:       task.Ptr("o/r"),
 	})
 	// Already linked — must not be touched.
 	linked := mk("linked", task.Update{
-		Status:    task.Ptr(task.StatusHumanRequired),
-		PRNumber:  task.Ptr(99),
-		Branch:    task.Ptr("feat/linked"),
-		ProjectID: task.Ptr("o/r"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		PRNumber:        task.Ptr(99),
+		Branch:          task.Ptr("feat/linked"),
+		ProjectID:       task.Ptr("o/r"),
 	})
 
 	calls := 0
@@ -1977,10 +2218,12 @@ func TestAdoptOrphanPRs_OpenTakesPrecedence(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr("commits pushed but no PR created"),
-		Branch:       task.Ptr("feat/my-branch"),
-		ProjectID:    task.Ptr("o/r"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr("commits pushed but no PR created"),
+		Branch:          task.Ptr("feat/my-branch"),
+		ProjectID:       task.Ptr("o/r"),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -2010,29 +2253,212 @@ func TestAdoptOrphanPRs_OpenTakesPrecedence(t *testing.T) {
 	}
 }
 
-func TestHasReviewTask_ScopedByProject(t *testing.T) {
+func TestHasActiveLocalPROwner_ScopedByProject(t *testing.T) {
 	r := &Handler{}
 	existing := []task.Task{
-		{ProjectID: "org/a", PRNumber: 42, Tags: []string{"review"}},
-		{ProjectID: "org/a", PRNumber: 7, Tags: []string{"backend"}}, // not a review task
+		{ProjectID: "org/a", PRNumber: 42, Branch: "feat/review", Status: task.StatusInReview, Tags: []string{"review"}},
+		{ProjectID: "org/a", PRNumber: 7, Branch: "feat/linked", Status: task.StatusInReview, Tags: []string{"backend"}},     // implementation task owns the PR
+		{ProjectID: "org/a", PRNumber: 9, Branch: "feat/closed", Status: task.StatusDone, Tags: []string{"backend"}},         // historical task is closed
+		{ProjectID: "org/a", PRNumber: 0, Branch: "feat/unlinked", Status: task.StatusInProgress, Tags: []string{"backend"}}, // PR number not stamped yet
+		{ProjectID: "org/a", PRNumber: 100, Branch: "feat/other-pr", Status: task.StatusInReview, Tags: []string{"backend"}}, // different linked PR owns this branch
 	}
 	tests := []struct {
 		name      string
 		projectID string
 		prNumber  int
+		branch    string
+		headRepo  string
 		want      bool
 	}{
-		{"same project + number is a duplicate", "org/a", 42, true},
-		{"same number, different project is not", "org/b", 42, false},
-		{"same project, different number is not", "org/a", 99, false},
-		{"matching number without review tag is not", "org/a", 7, false},
+		{"same project + number review task is a duplicate", "org/a", 42, "", "", true},
+		{"same number, different project is not", "org/b", 42, "feat/review", "org/a", false},
+		{"same project, different number is not", "org/a", 99, "", "", false},
+		{"matching active implementation task owns PR number", "org/a", 7, "", "", true},
+		{"matching active implementation task owns same-repo PR branch before number is stamped", "org/a", 99, "feat/unlinked", "org/a", true},
+		{"matching branch on different linked PR does not own PR", "org/a", 99, "feat/other-pr", "org/a", false},
+		{"matching branch from different-owner fork does not own PR", "org/a", 99, "feat/unlinked", "contributor/a", false},
+		{"matching branch from same-owner fork does not own PR", "org/a", 99, "feat/unlinked", "org/a-fork", false},
+		{"matching branch without head repo does not own PR", "org/a", 99, "feat/unlinked", "", false},
+		{"same branch, different project is not", "org/b", 99, "feat/unlinked", "org/a", false},
+		{"matching terminal implementation task does not own PR", "org/a", 9, "feat/closed", "org/a", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := r.hasReviewTask(existing, tt.projectID, tt.prNumber); got != tt.want {
-				t.Errorf("hasReviewTask(%q, %d) = %v, want %v", tt.projectID, tt.prNumber, got, tt.want)
+			if got := r.hasActiveLocalPROwner(existing, tt.projectID, tt.prNumber, tt.branch, tt.headRepo); got != tt.want {
+				t.Errorf("hasActiveLocalPROwner(%q, %d, %q, %q) = %v, want %v", tt.projectID, tt.prNumber, tt.branch, tt.headRepo, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestMaybeCreateReviewTasksSkipsBranchOwnedPRBeforeNumberLinked(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	projects, err := project.NewStore(filepath.Join(tmp, "projects"), filepath.Join(tmp, "clones"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := projects.CreateMeta("https://github.com/owner/repo", project.ProjectTypePet); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.CreateFull("implementation owns branch", "", string(task.AgentModeHeadless), task.Update{
+		Status:    task.Ptr(task.StatusInProgress),
+		ProjectID: task.Ptr("owner/repo"),
+		Branch:    task.Ptr("feat/x"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &Handler{
+		logger:   slog.New(slog.DiscardHandler),
+		tasks:    tasks,
+		projects: projects,
+	}
+	existing, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.maybeCreateReviewTasks(t.Context(), existing, []github.PullRequest{{
+		Number:        123,
+		Repository:    "owner/repo",
+		HeadRefName:   "feat/x",
+		HeadRepoOwner: "owner",
+		HeadRepo:      "owner/repo",
+		Title:         "owned branch",
+		URL:           "https://github.com/owner/repo/pull/123",
+	}})
+
+	got, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("tasks len = %d, want only existing implementation task: %+v", len(got), got)
+	}
+}
+
+func TestMaybeCreateReviewTasksDoesNotSkipForkPRWithSameBranchName(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	projects, err := project.NewStore(filepath.Join(tmp, "projects"), filepath.Join(tmp, "clones"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := projects.CreateMeta("https://github.com/owner/repo", project.ProjectTypePet); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.CreateFull("implementation owns local branch", "", string(task.AgentModeHeadless), task.Update{
+		Status:    task.Ptr(task.StatusInProgress),
+		ProjectID: task.Ptr("owner/repo"),
+		Branch:    task.Ptr("fix/shared"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	triaged := make(chan struct{})
+	r := &Handler{
+		logger:   slog.New(slog.DiscardHandler),
+		tasks:    tasks,
+		projects: projects,
+		fetchPRStatsFn: func(string, int) (github.PRStats, error) {
+			return github.PRStats{}, nil
+		},
+		startReviewAgentFn: func(task.Task, bool) error {
+			close(triaged)
+			return nil
+		},
+	}
+	existing, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.maybeCreateReviewTasks(t.Context(), existing, []github.PullRequest{{
+		Number:        456,
+		Repository:    "owner/repo",
+		HeadRefName:   "fix/shared",
+		HeadRepoOwner: "owner",
+		HeadRepo:      "owner/repo-fork",
+		Title:         "fork branch",
+		URL:           "https://github.com/owner/repo/pull/456",
+	}})
+
+	got, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("tasks len = %d, want implementation plus inbound review: %+v", len(got), got)
+	}
+	select {
+	case <-triaged:
+	case <-time.After(time.Second):
+		t.Fatal("triage did not complete")
+	}
+}
+
+func TestReconcileReviewPhasesCancelsDuplicateOwnedPRReviewTask(t *testing.T) {
+	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+
+	owner, err := tasks.CreateFull("implement owned PR", "", string(task.AgentModeHeadless), task.Update{
+		Status:    task.Ptr(task.StatusInReview),
+		ProjectID: task.Ptr("owner/repo"),
+		Branch:    task.Ptr("feature/owned-pr-owner"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewTags := []string{"review"}
+	dup, err := tasks.CreateFull("Review: owned PR", "", string(task.AgentModeHeadless), task.Update{
+		Status:    task.Ptr(task.StatusInReview),
+		Tags:      &reviewTags,
+		ProjectID: task.Ptr("owner/repo"),
+		PRNumber:  task.Ptr(123),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := &Handler{
+		logger: slog.New(slog.DiscardHandler),
+		tasks:  tasks,
+	}
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.reconcileReviewPhases(all, github.ReviewSummary{
+		ReviewRequested: []github.PullRequest{{
+			Number:        123,
+			Repository:    "owner/repo",
+			HeadRefName:   "feature/owned-pr-owner",
+			HeadRepoOwner: "owner",
+			HeadRepo:      "owner/repo",
+			Mergeable:     "MERGEABLE",
+			HeadSHA:       "head",
+		}},
+	})
+
+	got, err := tasks.Get(dup.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusCancelled {
+		t.Fatalf("status = %q, want cancelled", got.Status)
+	}
+	if !strings.Contains(got.StatusReason, owner.ID) {
+		t.Fatalf("status_reason = %q, want owner task %s", got.StatusReason, owner.ID)
 	}
 }
 
@@ -2119,12 +2545,17 @@ func TestCloseFinishedReviewTasks(t *testing.T) {
 				t.Fatal(err)
 			}
 			tags := []string{"review"}
-			if _, err := tasks.Update(created.ID, task.Update{
+			update := task.Update{
 				Status:    task.Ptr(tt.taskStatus),
 				Tags:      &tags,
 				ProjectID: task.Ptr("o/r"),
 				PRNumber:  task.Ptr(42),
-			}); err != nil {
+			}
+			if tt.taskStatus == task.StatusHumanRequired {
+				update.Escalation = task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture")
+				update.AutonomyOutcome = task.HumanRequiredOutcome()
+			}
+			if _, err := tasks.Update(created.ID, update); err != nil {
 				t.Fatal(err)
 			}
 
@@ -2294,13 +2725,13 @@ func TestFetchKnownTaskPRs_CircuitBreaksOnRepeatedAuthFailure(t *testing.T) {
 	matchers := []github.TaskMatcher{{ID: "t1", PRNumber: 50, ProjectID: "pet-owner/pet-repo"}}
 
 	for i := range poll.AuthFailureThreshold - 1 {
-		r.fetchKnownTaskPRs(matchers)
+		r.fetchKnownTaskPRs(matchers, nil)
 		if r.AuthCircuitOpen() {
 			t.Fatalf("circuit opened after %d fetches, want threshold %d", i+1, poll.AuthFailureThreshold)
 		}
 	}
 
-	r.fetchKnownTaskPRs(matchers)
+	r.fetchKnownTaskPRs(matchers, nil)
 	if !r.AuthCircuitOpen() {
 		t.Fatalf("circuit did not open after %d consecutive auth failures", poll.AuthFailureThreshold)
 	}
@@ -2313,7 +2744,7 @@ func TestFetchKnownTaskPRs_CircuitBreaksOnRepeatedAuthFailure(t *testing.T) {
 		}
 		return results
 	}
-	r.fetchKnownTaskPRs(matchers)
+	r.fetchKnownTaskPRs(matchers, nil)
 	if r.AuthCircuitOpen() {
 		t.Error("circuit stayed open after a successful fetch")
 	}
@@ -2331,9 +2762,11 @@ func TestPollAndMonitorPRs_BudgetExhaustedUsesSingleRESTFallbackReconcile(t *tes
 		t.Fatal(err)
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
-		Status:    task.Ptr(task.StatusHumanRequired),
-		ProjectID: task.Ptr("o/r"),
-		PRNumber:  task.Ptr(77),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		ProjectID:       task.Ptr("o/r"),
+		PRNumber:        task.Ptr(77),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -2392,7 +2825,7 @@ func TestAdvanceClosedTaskPRs_CancelsStaleWorkflow(t *testing.T) {
 		t.Fatal(err)
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
-	engine := workflow.NewEngine(wfStore,
+	engine := workflow.NewTestEngine(wfStore,
 		&taskAdapter{tasks: tasks},
 		&agentAdapter{agents: agentMgr, tasks: tasks},
 		logger,
@@ -2458,7 +2891,7 @@ func TestAdvanceClosedTaskPRs_ClosesDespiteRunningAgentClaim(t *testing.T) {
 	logger := slog.New(slog.DiscardHandler)
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
 
-	created, err := tasks.Create("Task with merged PR and stale agent", "", string(task.AgentModeInteractive))
+	created, err := tasks.Create("Task with merged PR and stale agent", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2559,9 +2992,11 @@ func TestAdvanceClosedTaskPR_EmitsTaskLanded(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr("waiting for review"),
-		PRNumber:     task.Ptr(1446),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr("waiting for review"),
+		PRNumber:        task.Ptr(1446),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -2604,6 +3039,81 @@ func TestAdvanceClosedTaskPR_EmitsTaskLanded(t *testing.T) {
 	}
 }
 
+// TestAdvanceClosedTaskPR_RecordsInterventionWhenHumanRequired proves the
+// sybra#2468 plan-critic finding is fixed: advanceClosedTaskPR is the second
+// automated exit path from human-required that bypassed the original
+// single-hook design. A PR merging/closing while its task sat human-required
+// must now capture an intervention too.
+func TestAdvanceClosedTaskPR_RecordsInterventionWhenHumanRequired(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	created, err := tasks.Create("Task whose PR was merged", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	projStore, err := project.NewStore(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	proj, err := projStore.CreateMeta("https://github.com/Automaat/sybra.git", project.ProjectTypePet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr("waiting for review"),
+		PRNumber:        task.Ptr(1446),
+		ProjectID:       task.Ptr(proj.ID),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	auditDir := filepath.Join(tmp, "audit")
+	auditLog, err := audit.NewLogger(auditDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer auditLog.Close()
+	logger := slog.New(slog.DiscardHandler)
+	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
+	interventionStore, err := intervention.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &Handler{
+		logger: logger, emit: func(string, any) {},
+		audit:        auditLog,
+		tasks:        tasks,
+		agents:       agentMgr,
+		projects:     projStore,
+		cfg:          &config.Config{Intervention: config.InterventionConfig{Enabled: true}},
+		intervention: interventionStore,
+	}
+
+	if err := r.AdvanceClosedTaskPR(context.Background(), created.ID, 1446, "MERGED"); err != nil {
+		t.Fatalf("AdvanceClosedTaskPR: %v", err)
+	}
+
+	records, err := interventionStore.Query(intervention.ProjectKey(proj), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("len(records) = %d, want 1: %+v", len(records), records)
+	}
+	if records[0].OperatorActionClass != intervention.OperatorActionAutoRecovery {
+		t.Fatalf("OperatorActionClass = %q, want %q", records[0].OperatorActionClass, intervention.OperatorActionAutoRecovery)
+	}
+	if records[0].ToStatus != string(task.StatusDone) {
+		t.Fatalf("ToStatus = %q, want %q", records[0].ToStatus, task.StatusDone)
+	}
+}
+
 func TestPollSecondaryReconcilesKnownTaskPRsWithoutSearch(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
@@ -2628,9 +3138,11 @@ func TestPollSecondaryReconcilesKnownTaskPRsWithoutSearch(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := tasks.Update(closedTask.ID, task.Update{
-		Status:    task.Ptr(task.StatusHumanRequired),
-		ProjectID: task.Ptr("o/r"),
-		PRNumber:  task.Ptr(43),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		ProjectID:       task.Ptr("o/r"),
+		PRNumber:        task.Ptr(43),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -2747,7 +3259,7 @@ func TestCancelResolvedPRFixWorkflows_DefersWhileChecksPending(t *testing.T) {
 		t.Fatal(err)
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
-	engine := workflow.NewEngine(wfStore,
+	engine := workflow.NewTestEngine(wfStore,
 		&taskAdapter{tasks: tasks},
 		&agentAdapter{agents: agentMgr, tasks: tasks},
 		logger,
@@ -2796,6 +3308,233 @@ func TestCancelResolvedPRFixWorkflows_DefersWhileChecksPending(t *testing.T) {
 	}
 }
 
+// A comments-triggered workflow is not assigned to a ci_failure that appears
+// later. Cancel it so the same monitor pass can dispatch a CI fixer instead of
+// letting the stale comments prompt strand the failure.
+func TestCancelResolvedPRFixWorkflows_CancelsCommentsWorkflowThenDispatchesCIFailure(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := slog.New(slog.DiscardHandler)
+	wfStore, err := workflow.NewStore(filepath.Join(tmp, "workflows"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wfStore.Dir(), "test-pr-fix.yaml"),
+		[]byte(mechanicalPRFixYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
+	engine := workflow.NewTestEngine(wfStore,
+		&taskAdapter{tasks: tasks},
+		&agentAdapter{agents: agentMgr, tasks: tasks},
+		logger,
+	)
+
+	created, err := tasks.Create("comments workflow, red CI", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pr44 := 44
+	if _, err := tasks.Update(created.ID, task.Update{PRNumber: &pr44}); err != nil {
+		t.Fatal(err)
+	}
+	wf := &workflow.Execution{
+		WorkflowID:  "pr-fix",
+		CurrentStep: "fix",
+		State:       workflow.ExecWaiting,
+		Variables:   map[string]string{"pr_issue_kind": "comments"},
+	}
+	if _, err := tasks.Update(created.ID, task.Update{Workflow: &wf}); err != nil {
+		t.Fatal(err)
+	}
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := &Handler{
+		logger:          logger,
+		tasks:           tasks,
+		agents:          agentMgr,
+		prTracker:       github.NewIssueTracker(time.Minute),
+		WorkflowEngine:  engine,
+		pushPreflightFn: stubPushPreflight(nil),
+	}
+
+	pr := github.PullRequest{Number: 44, CIStatus: "FAILURE", HasPendingChecks: false, Mergeable: "MERGEABLE"}
+	issues := []github.PRIssue{
+		{Kind: github.PRIssueCIFailure, TaskID: created.ID, PR: pr},
+	}
+	r.cancelResolvedPRFixWorkflows(all, issues, map[string]github.PullRequest{
+		created.ID: pr,
+	})
+	r.handleMatchedPRIssues(context.Background(), issues)
+
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow == nil {
+		t.Fatal("no replacement workflow dispatched")
+	}
+	if got.Workflow.Variables["pr_issue_kind"] != string(github.PRIssueCIFailure) {
+		t.Fatalf("pr_issue_kind = %q, want %q", got.Workflow.Variables["pr_issue_kind"], github.PRIssueCIFailure)
+	}
+	if !strings.Contains(got.Workflow.Variables["prompt"], "Fix failing CI") {
+		t.Fatalf("replacement prompt did not assign the CI failure:\n%s", got.Workflow.Variables["prompt"])
+	}
+	if retries := r.prTracker.Retries(created.ID, github.PRIssueCIFailure); retries != 1 {
+		t.Fatalf("ci_failure retries = %d, want 1", retries)
+	}
+}
+
+// A confirmed flaky failure is handled by the separate rerun/flake path, so it
+// must not keep a comments-only pr-fix workflow pinned open forever once the
+// comments themselves are resolved.
+func TestCancelResolvedPRFixWorkflows_CancelsCommentsWorkflowWhenRemainingCIIsFlaky(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := slog.New(slog.DiscardHandler)
+	wfStore, err := workflow.NewStore(filepath.Join(tmp, "workflows"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := workflow.SyncBuiltins(wfStore); err != nil {
+		t.Fatal(err)
+	}
+	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
+	engine := workflow.NewTestEngine(wfStore,
+		&taskAdapter{tasks: tasks},
+		&agentAdapter{agents: agentMgr, tasks: tasks},
+		logger,
+	)
+
+	created, err := tasks.Create("comments workflow, flaky CI", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pr46 := 46
+	if _, err := tasks.Update(created.ID, task.Update{PRNumber: &pr46}); err != nil {
+		t.Fatal(err)
+	}
+	wf := &workflow.Execution{
+		WorkflowID:  "pr-fix",
+		CurrentStep: "fix",
+		State:       workflow.ExecWaiting,
+		Variables:   map[string]string{"pr_issue_kind": "comments"},
+	}
+	if _, err := tasks.Update(created.ID, task.Update{Workflow: &wf}); err != nil {
+		t.Fatal(err)
+	}
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := &Handler{
+		logger:         logger,
+		tasks:          tasks,
+		prTracker:      github.NewIssueTracker(time.Minute),
+		WorkflowEngine: engine,
+	}
+
+	pr := github.PullRequest{Number: 46, CIStatus: "FAILURE", CIFlaky: true, HasPendingChecks: false, Mergeable: "MERGEABLE"}
+	r.cancelResolvedPRFixWorkflows(all, []github.PRIssue{
+		{Kind: github.PRIssueCIFailure, TaskID: created.ID, PR: pr},
+	}, map[string]github.PullRequest{
+		created.ID: pr,
+	})
+
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow == nil || got.Workflow.State != workflow.ExecCompleted {
+		t.Fatalf("workflow state = %+v, want completed; a confirmed flaky CI failure must not block comments-resolved cancellation", got.Workflow)
+	}
+}
+
+// Comments resolving while checks are still in flight is not settled state:
+// the same run may still land red, so the active pr-fix workflow must survive
+// until GitHub can actually answer the CI question.
+func TestCancelResolvedPRFixWorkflows_DefersCommentsWorkflowWhileChecksPending(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := slog.New(slog.DiscardHandler)
+	wfStore, err := workflow.NewStore(filepath.Join(tmp, "workflows"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := workflow.SyncBuiltins(wfStore); err != nil {
+		t.Fatal(err)
+	}
+	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
+	engine := workflow.NewTestEngine(wfStore,
+		&taskAdapter{tasks: tasks},
+		&agentAdapter{agents: agentMgr, tasks: tasks},
+		logger,
+	)
+
+	created, err := tasks.Create("comments workflow, pending CI", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pr45 := 45
+	if _, err := tasks.Update(created.ID, task.Update{PRNumber: &pr45}); err != nil {
+		t.Fatal(err)
+	}
+	wf := &workflow.Execution{
+		WorkflowID:  "pr-fix",
+		CurrentStep: "fix",
+		State:       workflow.ExecWaiting,
+		Variables:   map[string]string{"pr_issue_kind": "comments"},
+	}
+	if _, err := tasks.Update(created.ID, task.Update{Workflow: &wf}); err != nil {
+		t.Fatal(err)
+	}
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := &Handler{
+		logger:         logger,
+		tasks:          tasks,
+		prTracker:      github.NewIssueTracker(time.Minute),
+		WorkflowEngine: engine,
+	}
+
+	r.cancelResolvedPRFixWorkflows(all, nil, map[string]github.PullRequest{
+		created.ID: {Number: 45, CIStatus: "PENDING", HasPendingChecks: true, Mergeable: "MERGEABLE"},
+	})
+
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow == nil || got.Workflow.State != workflow.ExecWaiting {
+		t.Fatalf("workflow state = %+v, want still waiting; resolved comments must not cancel an active pr-fix while checks are pending", got.Workflow)
+	}
+}
+
 // Once checks land green the ci_failure really is resolved, so the cancel must
 // still fire — the deferral is about unknowable state, not about never cancelling.
 func TestCancelResolvedPRFixWorkflows_CancelsWhenChecksSettleGreen(t *testing.T) {
@@ -2816,7 +3555,7 @@ func TestCancelResolvedPRFixWorkflows_CancelsWhenChecksSettleGreen(t *testing.T)
 		t.Fatal(err)
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
-	engine := workflow.NewEngine(wfStore,
+	engine := workflow.NewTestEngine(wfStore,
 		&taskAdapter{tasks: tasks},
 		&agentAdapter{agents: agentMgr, tasks: tasks},
 		logger,
@@ -3013,5 +3752,52 @@ func TestDurableFixBudgetSpent_CountsPersistedRunsAtHead(t *testing.T) {
 
 	if r.durableFixBudgetSpent(created.ID, "sha-different") {
 		t.Error("budget spent for a head the agents never ran against; a push must reset the budget")
+	}
+}
+
+func TestDurableFixBudgetSpent_UsesConfiguredRetryCap(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	r := &Handler{
+		logger:    slog.New(slog.DiscardHandler),
+		tasks:     tasks,
+		prTracker: github.NewIssueTrackerWithMaxRetries(time.Minute, 10),
+	}
+
+	created, err := tasks.Create("looping pr", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i := range github.MaxRetries {
+		if err := store.AddRun(created.ID, task.AgentRun{
+			AgentID: fmt.Sprintf("a%d", i),
+			Role:    string(agent.RolePRFix),
+			HeadSHA: "sha-head",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if r.durableFixBudgetSpent(created.ID, "sha-head") {
+		t.Fatal("default retry count spent budget even though configured cap is higher")
+	}
+
+	for i := github.MaxRetries; i < 10; i++ {
+		if err := store.AddRun(created.ID, task.AgentRun{
+			AgentID: fmt.Sprintf("a%d", i),
+			Role:    string(agent.RolePRFix),
+			HeadSHA: "sha-head",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !r.durableFixBudgetSpent(created.ID, "sha-head") {
+		t.Fatal("budget not spent after configured retry cap")
 	}
 }

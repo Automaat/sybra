@@ -12,6 +12,9 @@ import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Cr
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as evaluation$0 from "../evaluation/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as stats$0 from "../stats/models.js";
 
 /**
@@ -23,5 +26,22 @@ export function GetStats(): $CancellablePromise<stats$0.StatsResponse> {
     });
 }
 
+/**
+ * ScanEvaluation computes the fleet scorecard from the instance's own stats
+ * and audit log.
+ * 
+ * It sits on StatsService because those two stores are already its
+ * dependencies, and both live under the server's home: a client scanning its
+ * own copies would score a different fleet. `evaluation judge`, `golden` and
+ * `offline` stay client-side by contrast — they read a task through the board
+ * and operator-supplied files, not this instance's corpus.
+ */
+export function ScanEvaluation(): $CancellablePromise<evaluation$0.Report> {
+    return $Call.ByID(649876895).then(($result: any) => {
+        return $$createType1($result);
+    });
+}
+
 // Private type creation functions
 const $$createType0 = stats$0.StatsResponse.createFrom;
+const $$createType1 = evaluation$0.Report.createFrom;

@@ -8,6 +8,7 @@ import (
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/textutil"
 	"github.com/Automaat/sybra/internal/worktreeerr"
 )
 
@@ -96,7 +97,21 @@ func ClassifyAgentStartFailure(err error) AgentStartFailure {
 	if err == nil {
 		return out
 	}
+	if typed, ok := classifyOwnedMachineFailure(err); ok {
+		return typed
+	}
+	var machineFailure interface{ MachineFailureCode() string }
 	switch {
+	case errors.As(err, &machineFailure):
+		out.Permanent = true
+		out.Reason = textutil.TruncateBytesTotal("agent start blocked: machine run environment unavailable ("+machineFailure.MachineFailureCode()+")", startReasonMaxLen, "...")
+		out.Blocker = blocker.State{
+			Kind:       blocker.KindRunEnvironment,
+			Actor:      blocker.ActorWorkflow,
+			Code:       machineFailure.MachineFailureCode(),
+			NextAction: "repair_run_environment",
+		}
+		return out
 	case errors.Is(err, ErrDispatchInFlight):
 		// Transient and self-healing: another dispatcher holds the claim and
 		// will start the agent. Suppress the reason entirely.
@@ -111,7 +126,12 @@ func ClassifyAgentStartFailure(err error) AgentStartFailure {
 		// dispatch-plumbing sentinels above, this names an operator-visible
 		// machine condition, so it DOES surface a status_reason (see
 		// isDeferredNotFailed for why it still never feeds the breaker).
-		out.Reason = truncateReason("work paused: machine under resource pressure — " + resourcePressureDetail(err))
+		out.Reason = textutil.TruncateBytesTotal("work paused: machine under resource pressure — "+resourcePressureDetail(err), startReasonMaxLen, "...")
+		return out
+	case errors.Is(err, worktreeerr.ErrPreparationInFlight):
+		// Transient: another mutating worktree operation owns this path. It
+		// releases when it finishes and the next ResumeStalled tick redispatches
+		// — same treatment as ErrAgentRunning below, no reason, no escalation.
 		return out
 	case errors.Is(err, worktreeerr.ErrAgentRunning):
 		// Transient: PrepareForTask refused to rebase a worktree a tracked
@@ -204,8 +224,44 @@ func ClassifyAgentStartFailure(err error) AgentStartFailure {
 	default:
 		out.Reason = "agent start failed: " + err.Error()
 	}
-	out.Reason = truncateReason(out.Reason)
+	out.Reason = textutil.TruncateBytesTotal(out.Reason, startReasonMaxLen, "...")
 	return out
+}
+
+func classifyOwnedMachineFailure(err error) (AgentStartFailure, bool) {
+	if isCredentialMachineFailure(err) {
+		return classifyCredentialMachineFailure(err), true
+	}
+	if isTransientMachineFailure(err) {
+		return classifyTransientMachineFailure(err), true
+	}
+	return AgentStartFailure{}, false
+}
+
+func classifyTransientMachineFailure(err error) AgentStartFailure {
+	var failure interface{ MachineFailureCode() string }
+	if !errors.As(err, &failure) {
+		return AgentStartFailure{}
+	}
+	return AgentStartFailure{Reason: textutil.TruncateBytesTotal("agent start delayed: transient run environment unavailable ("+failure.MachineFailureCode()+")", startReasonMaxLen, "...")}
+}
+
+func classifyCredentialMachineFailure(err error) AgentStartFailure {
+	var failure interface{ MachineFailureCode() string }
+	if !errors.As(err, &failure) {
+		return AgentStartFailure{}
+	}
+	return AgentStartFailure{
+		Reason:    textutil.TruncateBytesTotal("agent start blocked: credentials unavailable ("+failure.MachineFailureCode()+")", startReasonMaxLen, "..."),
+		Permanent: true,
+		Blocker: blocker.State{
+			Kind:       blocker.KindCredentialRequired,
+			Actor:      blocker.ActorWorkflow,
+			Code:       failure.MachineFailureCode(),
+			NextAction: "refresh_credentials",
+			Exhausted:  true,
+		},
+	}
 }
 
 // isTransientCapacityError reports whether err is a provider-capacity throttle
@@ -233,7 +289,19 @@ func transientAgentStartError(err error) bool {
 		errors.Is(err, ErrResourcePressure) ||
 		errors.Is(err, worktreeerr.ErrTransientFetch) ||
 		errors.Is(err, worktreeerr.ErrAgentRunning) ||
-		errors.Is(err, provider.ErrProviderUnhealthy)
+		errors.Is(err, worktreeerr.ErrPreparationInFlight) ||
+		errors.Is(err, provider.ErrProviderUnhealthy) ||
+		isTransientMachineFailure(err)
+}
+
+func isTransientMachineFailure(err error) bool {
+	var transient interface{ MachineFailureTransient() bool }
+	return errors.As(err, &transient) && transient.MachineFailureTransient()
+}
+
+func isCredentialMachineFailure(err error) bool {
+	var credential interface{ MachineFailureRequiresCredentials() bool }
+	return errors.As(err, &credential) && credential.MachineFailureRequiresCredentials()
 }
 
 // isDeferredNotFailed reports whether err represents a benign defer that must
@@ -244,7 +312,7 @@ func transientAgentStartError(err error) bool {
 // dispatch attempt and wrongly escalate to human-required for a condition
 // that self-heals once load drops.
 func isDeferredNotFailed(err error) bool {
-	return errors.Is(err, ErrResourcePressure)
+	return errors.Is(err, ErrResourcePressure) || isTransientMachineFailure(err)
 }
 
 func isTransientFetchReason(reason string) bool {
@@ -266,18 +334,6 @@ func resourcePressureDetail(err error) string {
 		return "local resource pressure"
 	}
 	return detail
-}
-
-// truncateReason caps a status_reason to startReasonMaxLen bytes with an
-// ASCII ellipsis so the UI banner stays one line. Byte (not rune) bound so
-// the caller can compare against len(reason) without surprises from
-// multi-byte runes.
-func truncateReason(s string) string {
-	if len(s) <= startReasonMaxLen {
-		return s
-	}
-	const tail = "..."
-	return s[:startReasonMaxLen-len(tail)] + tail
 }
 
 // FormatStartFailure is a tiny helper for callers that want to log the same

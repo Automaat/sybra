@@ -57,7 +57,6 @@ describe('TaskHeaderBar', () => {
     mockStartFixReview.mockReset()
     mockUpdate.mockResolvedValue(baseTask)
     mockRemove.mockResolvedValue(undefined)
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
   })
   afterEach(() => {
     cleanup()
@@ -119,26 +118,37 @@ describe('TaskHeaderBar', () => {
     expect(screen.getByText('Run Review')).toBeDefined()
   })
 
-  it('calls remove and ondelete on Delete from the overflow menu', async () => {
+  it('opens an in-app confirmation before deleting from the overflow menu', async () => {
     const ondelete = vi.fn()
     render(TaskHeaderBar, { props: { task: baseTask as never, ondelete } })
     await fireEvent.click(screen.getByLabelText('More actions'))
-    await fireEvent.click(screen.getByText('Delete task'))
+    await fireEvent.click(screen.getByRole('menuitem', { name: 'Delete task' }))
+    expect(screen.getByText('Delete "Test Task"? This cannot be undone.')).toBeDefined()
+    expect(mockRemove).not.toHaveBeenCalled()
+    await fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
     await waitFor(() => {
-      expect(window.confirm).toHaveBeenCalledWith('Delete task "Test Task"? This cannot be undone.')
       expect(mockRemove).toHaveBeenCalledWith('t1')
       expect(ondelete).toHaveBeenCalled()
     })
   })
 
-  it('does not delete when confirmation is cancelled', async () => {
-    vi.mocked(window.confirm).mockReturnValue(false)
+  it('does not delete when the in-app confirmation is cancelled', async () => {
     const ondelete = vi.fn()
     render(TaskHeaderBar, { props: { task: baseTask as never, ondelete } })
     await fireEvent.click(screen.getByLabelText('More actions'))
-    await fireEvent.click(screen.getByText('Delete task'))
+    await fireEvent.click(screen.getByRole('menuitem', { name: 'Delete task' }))
+    await fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     expect(mockRemove).not.toHaveBeenCalled()
     expect(ondelete).not.toHaveBeenCalled()
+    expect(screen.queryByText('Delete "Test Task"? This cannot be undone.')).toBeNull()
+  })
+
+  it('opens the in-app delete confirmation from the window delete event', async () => {
+    render(TaskHeaderBar, { props: { task: baseTask as never, ondelete: vi.fn() } })
+    window.dispatchEvent(new CustomEvent('task-detail:delete'))
+    await waitFor(() => {
+      expect(screen.getByText('Delete "Test Task"? This cannot be undone.')).toBeDefined()
+    })
   })
 
   it('responds to task-detail:edit-title window event', async () => {

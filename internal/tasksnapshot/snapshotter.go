@@ -7,16 +7,14 @@
 // -A`, and if the index is dirty, commit. Polling — not event subscription
 // — is the trigger, so a raw external `rm` is captured for free (`git add
 // -A` is its own change detector). All git operations run against a
-// dedicated GIT_DIR/GIT_WORK_TREE pair via direct exec.CommandContext argv
+// dedicated GIT_DIR/GIT_WORK_TREE pair via the shared git execution boundary
 // (no shell, no remotes, no network) under a per-op timeout, and every
 // error is logged and swallowed by the production entry points so task CRUD
 // can never be broken by a snapshotting failure.
 package tasksnapshot
 
 import (
-	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -26,6 +24,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Automaat/sybra/internal/gitexec"
 )
 
 // opTimeout bounds every individual git invocation.
@@ -82,12 +82,33 @@ func BuildEnv(gitDir, workTree string) []string {
 	base := os.Environ()
 	env := make([]string, 0, len(base)+2)
 	for _, e := range base {
-		if strings.HasPrefix(e, "GIT_") {
+		if strings.HasPrefix(e, "GIT_") && !isGitConfigEnv(e) {
 			continue
 		}
 		env = append(env, e)
 	}
 	return append(env, "GIT_DIR="+gitDir, "GIT_WORK_TREE="+workTree)
+}
+
+// gitConfigEnvKeys name where git looks for configuration, as opposed to which
+// repository it acts on. Stripping GIT_* wholesale took these with it, so a
+// test that isolated its git configuration still had every snapshotter command
+// read the operator's real one — the isolation looked applied and was not.
+// Production sets none of them; the repository variables this function does
+// strip are the ones that must never leak in.
+var gitConfigEnvKeys = []string{
+	"GIT_CONFIG_GLOBAL=",
+	"GIT_CONFIG_SYSTEM=",
+	"GIT_CONFIG_NOSYSTEM=",
+}
+
+func isGitConfigEnv(kv string) bool {
+	for _, k := range gitConfigEnvKeys {
+		if strings.HasPrefix(kv, k) {
+			return true
+		}
+	}
+	return false
 }
 
 // run executes `git <args...>` against this Snapshotter's git-dir/work-tree,
@@ -96,15 +117,9 @@ func BuildEnv(gitDir, workTree string) []string {
 func (s *Snapshotter) run(ctx context.Context, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, opTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Env = BuildEnv(s.gitDir, s.workTree)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
-	}
-	return strings.TrimSpace(stdout.String()), nil
+	return gitexec.Output(ctx, gitexec.Options{
+		Env: BuildEnv(s.gitDir, s.workTree),
+	}, args...)
 }
 
 // hasStagedChanges reports whether the index differs from HEAD, using the
@@ -113,14 +128,13 @@ func (s *Snapshotter) run(ctx context.Context, args ...string) (string, error) {
 func (s *Snapshotter) hasStagedChanges(ctx context.Context) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, opTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "diff", "--cached", "--quiet")
-	cmd.Env = BuildEnv(s.gitDir, s.workTree)
-	err := cmd.Run()
+	err := gitexec.RunQuiet(ctx, gitexec.Options{
+		Env: BuildEnv(s.gitDir, s.workTree),
+	}, "diff", "--cached", "--quiet")
 	if err == nil {
 		return false, nil
 	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+	if code, ok := gitexec.ExitCode(err); ok && code == 1 {
 		return true, nil
 	}
 	return false, err
@@ -279,7 +293,13 @@ func (s *Snapshotter) commitLocked(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 	msg := fmt.Sprintf("snapshot: %s", time.Now().UTC().Format(time.RFC3339))
-	if _, err := s.run(ctx, "commit", "-m", msg); err != nil {
+	// Signing is refused explicitly rather than inherited. BuildEnv strips
+	// GIT_* but git still reads the operator's global config, so an operator
+	// who sets commit.gpgsign globally had every snapshot commit fail with
+	// "gpg failed to sign the data" wherever the agent could not sign — a
+	// sandbox, the server, CI. CommitNow only warns, so the snapshots this
+	// repo exists to provide stopped being taken and nothing said so.
+	if _, err := s.run(ctx, "-c", "commit.gpgsign=false", "commit", "-m", msg); err != nil {
 		return false, fmt.Errorf("git commit: %w", err)
 	}
 	s.lastCommit = time.Now()

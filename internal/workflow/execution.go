@@ -4,7 +4,22 @@ import (
 	"maps"
 	"slices"
 	"time"
+
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
+
+const maxEffectLog = 200
+
+// EffectRecord pairs an EffectID with intent and completion timestamps.
+// It is stored on Execution.EffectLog so retried effects can reuse their
+// original EffectID as an idempotency key.
+type EffectRecord struct {
+	ID             EffectID   `yaml:"id" json:"id"`
+	IntentAt       time.Time  `yaml:"intent_at" json:"intentAt"`
+	Owner          string     `yaml:"owner,omitempty" json:"owner,omitempty"`
+	LeaseExpiresAt *time.Time `yaml:"lease_expires_at,omitempty" json:"leaseExpiresAt,omitempty"`
+	CompletedAt    *time.Time `yaml:"completed_at,omitempty" json:"completedAt,omitempty"`
+}
 
 // ExecState tracks the overall execution state.
 type ExecState string
@@ -18,11 +33,20 @@ const (
 
 // Execution tracks a task's progress through a workflow instance.
 type Execution struct {
-	WorkflowID  string            `yaml:"workflow_id" json:"workflowId"`
-	CurrentStep string            `yaml:"current_step" json:"currentStep"`
-	State       ExecState         `yaml:"state" json:"state"`
-	StepHistory []StepRecord      `yaml:"step_history,omitempty" json:"stepHistory"`
-	Variables   map[string]string `yaml:"variables,omitempty" json:"variables"`
+	WorkflowID string `yaml:"workflow_id" json:"workflowId"`
+	// DefinitionHash pins this execution to the semantic hash of the workflow
+	// definition it started under. Empty means a legacy execution created
+	// before pinning existed and should continue using the live definition.
+	DefinitionHash string            `yaml:"definition_hash,omitempty" json:"definitionHash,omitempty"`
+	CurrentStep    string            `yaml:"current_step" json:"currentStep"`
+	State          ExecState         `yaml:"state" json:"state"`
+	StepHistory    []StepRecord      `yaml:"step_history,omitempty" json:"stepHistory"`
+	Variables      map[string]string `yaml:"variables,omitempty" json:"variables"`
+	// AgentRoutes durably records which async workflow step each still-live
+	// agent was spawned for. This replaces the process-local engine map so
+	// duplicate or late completions keep routing to the step they actually
+	// belong to across restarts and resume races.
+	AgentRoutes map[string]string `yaml:"agent_routes,omitempty" json:"agentRoutes,omitempty"`
 	StartedAt   time.Time         `yaml:"started_at" json:"startedAt"`
 	CompletedAt *time.Time        `yaml:"completed_at,omitempty" json:"completedAt"`
 	// Recovered is set when the execution was advanced by a stale-session
@@ -52,6 +76,10 @@ type Execution struct {
 	// promoteBestOfN can locate the winning attempt's worktree without
 	// depending on live agent state.
 	BestOfNInflight map[string]*BestOfNInflight `yaml:"best_of_n_inflight,omitempty" json:"bestOfNInflight,omitempty"`
+	// EffectLog records intent-before and completion-after for each effect so
+	// retried effects can reuse their original EffectID as an idempotency key.
+	// Trimmed to maxEffectLog oldest-first. Not wired into the engine yet.
+	EffectLog []EffectRecord `yaml:"effect_log,omitempty" json:"effectLog,omitempty"`
 }
 
 // BestOfNInflight is the in-flight bookkeeping for one `best_of_n` parent.
@@ -156,6 +184,9 @@ func (e *Execution) Clone() *Execution {
 	if e.Variables != nil {
 		cloned.Variables = maps.Clone(e.Variables)
 	}
+	if e.AgentRoutes != nil {
+		cloned.AgentRoutes = maps.Clone(e.AgentRoutes)
+	}
 	if e.StepCounts != nil {
 		cloned.StepCounts = maps.Clone(e.StepCounts)
 	}
@@ -203,7 +234,93 @@ func (e *Execution) Clone() *Execution {
 			cloned.BestOfNInflight[key] = &parentClone
 		}
 	}
+	if e.EffectLog != nil {
+		cloned.EffectLog = slices.Clone(e.EffectLog)
+		for i := range cloned.EffectLog {
+			if cloned.EffectLog[i].LeaseExpiresAt != nil {
+				t := *cloned.EffectLog[i].LeaseExpiresAt
+				cloned.EffectLog[i].LeaseExpiresAt = &t
+			}
+			if cloned.EffectLog[i].CompletedAt != nil {
+				t := *cloned.EffectLog[i].CompletedAt
+				cloned.EffectLog[i].CompletedAt = &t
+			}
+		}
+	}
 	return &cloned
+}
+
+// RecordEffectIntent records that an effect is about to be applied.
+// Idempotent: a second call with the same ID is a no-op.
+// Trims EffectLog to maxEffectLog by evicting oldest entries.
+func (e *Execution) RecordEffectIntent(id EffectID, now time.Time) {
+	for i := range e.EffectLog {
+		if e.EffectLog[i].ID.Equal(id) {
+			return
+		}
+	}
+	e.EffectLog = append(e.EffectLog, EffectRecord{ID: id, IntentAt: now})
+	if len(e.EffectLog) > maxEffectLog {
+		e.EffectLog = e.EffectLog[len(e.EffectLog)-maxEffectLog:]
+	}
+}
+
+// RecordEffectCompletion marks an effect as applied.
+// No-op if the intent was never recorded or if completion is already set.
+func (e *Execution) RecordEffectCompletion(id EffectID, now time.Time) {
+	if e == nil {
+		return
+	}
+	for i := range e.EffectLog {
+		if e.EffectLog[i].ID.Equal(id) {
+			if e.EffectLog[i].CompletedAt == nil {
+				t := now
+				e.EffectLog[i].CompletedAt = &t
+			}
+			return
+		}
+	}
+}
+
+// EffectApplied reports whether the effect was both intended and completed.
+func (e *Execution) EffectApplied(id EffectID) bool {
+	for i := range e.EffectLog {
+		if e.EffectLog[i].ID.Equal(id) {
+			return e.EffectLog[i].CompletedAt != nil
+		}
+	}
+	return false
+}
+
+// EffectPending reports whether the effect was intended but not yet completed.
+func (e *Execution) EffectPending(id EffectID) bool {
+	for i := range e.EffectLog {
+		if e.EffectLog[i].ID.Equal(id) {
+			return e.EffectLog[i].CompletedAt == nil
+		}
+	}
+	return false
+}
+
+// EffectRecordForStep returns the most-recently recorded effect whose StepID
+// and Pos match the given values.
+func (e *Execution) EffectRecordForStep(stepID string, pos int) (EffectRecord, bool) {
+	for i := range slices.Backward(e.EffectLog) {
+		if e.EffectLog[i].ID.StepID == stepID && e.EffectLog[i].ID.Pos == pos {
+			return cloneEffectRecord(e.EffectLog[i]), true
+		}
+	}
+	return EffectRecord{}, false
+}
+
+// EffectIDForStep returns the most-recently recorded EffectID whose StepID and
+// Pos match the given values, so a retried effect can reuse the same key.
+func (e *Execution) EffectIDForStep(stepID string, pos int) (EffectID, bool) {
+	rec, ok := e.EffectRecordForStep(stepID, pos)
+	if !ok {
+		return EffectID{}, false
+	}
+	return rec.ID, true
 }
 
 // AllChildrenDone reports whether every child reached a terminal status.
@@ -245,6 +362,67 @@ func (e *Execution) SetVar(key, value string) {
 		e.Variables = make(map[string]string)
 	}
 	e.Variables[key] = value
+}
+
+// SetAgentRoute records which step an async agent was spawned for.
+func (e *Execution) SetAgentRoute(agentID, stepID string) {
+	if e == nil || agentID == "" || stepID == "" {
+		return
+	}
+	if e.AgentRoutes == nil {
+		e.AgentRoutes = make(map[string]string)
+	}
+	e.AgentRoutes[agentID] = stepID
+}
+
+// AgentRoute returns the step an async agent was spawned for.
+func (e *Execution) AgentRoute(agentID string) (string, bool) {
+	if e == nil || agentID == "" {
+		return "", false
+	}
+	stepID, ok := e.AgentRoutes[agentID]
+	return stepID, ok
+}
+
+// ClearAgentRoute drops one persisted async-agent route.
+func (e *Execution) ClearAgentRoute(agentID string) {
+	if e == nil || agentID == "" || e.AgentRoutes == nil {
+		return
+	}
+	delete(e.AgentRoutes, agentID)
+	if len(e.AgentRoutes) == 0 {
+		e.AgentRoutes = nil
+	}
+}
+
+// ClearAgentRoutes removes every persisted async-agent route and blanks any
+// mirrored agent IDs from in-flight fan-out state, so stopped agents cannot
+// later satisfy a superseded step.
+func (e *Execution) ClearAgentRoutes() {
+	if e == nil {
+		return
+	}
+	e.AgentRoutes = nil
+	for _, parent := range e.ParallelInflight {
+		if parent == nil {
+			continue
+		}
+		for _, child := range parent.Children {
+			if child != nil && child.Status == "pending" {
+				child.AgentID = ""
+			}
+		}
+	}
+	for _, parent := range e.BestOfNInflight {
+		if parent == nil {
+			continue
+		}
+		for _, attempt := range parent.Attempts {
+			if attempt != nil && attempt.Status == "pending" {
+				attempt.AgentID = ""
+			}
+		}
+	}
 }
 
 // RecordStep appends a step record, trims history to maxStepHistory, and
@@ -305,7 +483,9 @@ func (e *Execution) CountStep(stepID string) int {
 // its persistent count (see StepCounts), resetting CountStep(stepID) to 0.
 // Used when a step is deliberately re-armed for a fresh attempt cycle (e.g.
 // route-level auto-retry) so its own in-step max_retries budget is not seen
-// as already exhausted by prior cycles.
+// as already exhausted by prior cycles. It also drops any effect-log records
+// anchored to that step so the fresh attempt gets a fresh claim ID instead of
+// being fenced by a prior completed attempt's durable effect lease.
 func (e *Execution) ClearStepRecords(stepID string) {
 	if len(e.StepHistory) > 0 {
 		kept := e.StepHistory[:0]
@@ -317,6 +497,15 @@ func (e *Execution) ClearStepRecords(stepID string) {
 		e.StepHistory = kept
 	}
 	delete(e.StepCounts, stepID)
+	if len(e.EffectLog) > 0 {
+		kept := e.EffectLog[:0]
+		for i := range e.EffectLog {
+			if e.EffectLog[i].ID.StepID != stepID {
+				kept = append(kept, e.EffectLog[i])
+			}
+		}
+		e.EffectLog = kept
+	}
 }
 
 // RecordForStep returns the latest record for a given step ID, or nil.
@@ -393,6 +582,6 @@ type StepOutput struct {
 	// for non-retryable failures like checkpoint_failed, where Sybra must park
 	// human-required without redispatching or running downstream steps on
 	// phantom durable state.
-	TerminalStatus string
+	TerminalStatus taskstatus.Status
 	TerminalReason string
 }

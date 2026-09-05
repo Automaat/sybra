@@ -60,17 +60,17 @@ func TestOrchestratorConfig_RoleGates(t *testing.T) {
 		wantScheduler bool
 	}{
 		{
-			name:          "zero value preserves legacy behavior",
+			name:          "zero value runs the scheduler, never the brain",
 			cfg:           OrchestratorConfig{},
 			wantRole:      InstanceRoleFull,
-			wantOrch:      true,
+			wantOrch:      false,
 			wantScheduler: true,
 		},
 		{
-			name:          "default config is full",
+			name:          "default config is full, brain stays off",
 			cfg:           DefaultConfig().Orchestrator,
 			wantRole:      InstanceRoleFull,
-			wantOrch:      true,
+			wantOrch:      false,
 			wantScheduler: true,
 		},
 		{
@@ -81,10 +81,10 @@ func TestOrchestratorConfig_RoleGates(t *testing.T) {
 			wantScheduler: false,
 		},
 		{
-			name:          "invalid role falls back to full",
+			name:          "invalid role falls back to full scheduler, brain stays off",
 			cfg:           OrchestratorConfig{Role: "nonsense"},
 			wantRole:      InstanceRoleFull,
-			wantOrch:      true,
+			wantOrch:      false,
 			wantScheduler: true,
 		},
 		{
@@ -144,9 +144,72 @@ func TestOrchestratorConfig_RoleFromYAML(t *testing.T) {
 			wantScheduler: false,
 		},
 		{
-			name:          "absent block keeps full",
+			name:          "absent block keeps scheduler full, brain off",
 			yaml:          "dispatch_interval_seconds: 10\n",
+			wantOrch:      false,
+			wantScheduler: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := mustUnmarshalOrchestrator(t, tt.yaml)
+			if got := cfg.RunsOrchestrator(); got != tt.wantOrch {
+				t.Errorf("RunsOrchestrator() = %v, want %v", got, tt.wantOrch)
+			}
+			if got := cfg.RunsScheduler(); got != tt.wantScheduler {
+				t.Errorf("RunsScheduler() = %v, want %v", got, tt.wantScheduler)
+			}
+		})
+	}
+}
+
+// TestOrchestratorConfig_BrainUpgradeBehavior locks in the brain-auto-start
+// default across every config generation this instance might load: a legacy
+// pre-Role file, a v2 file that only sets the namespaced Role, and both
+// explicit overrides. In every case except an explicit `enabled: true`, the
+// brain must stay off — an omitted or role-only config must never resurrect
+// automatic orchestrator startup.
+func TestOrchestratorConfig_BrainUpgradeBehavior(t *testing.T) {
+	tests := []struct {
+		name          string
+		yaml          string
+		wantOrch      bool
+		wantScheduler bool
+	}{
+		{
+			name:          "legacy: no orchestrator block at all",
+			yaml:          "",
+			wantOrch:      false,
+			wantScheduler: true,
+		},
+		{
+			name:          "v2: role full, no enabled key",
+			yaml:          "role: full\n",
+			wantOrch:      false,
+			wantScheduler: true,
+		},
+		{
+			name:          "v2: role agent-only, no enabled key",
+			yaml:          "role: agent-only\n",
+			wantOrch:      false,
+			wantScheduler: false,
+		},
+		{
+			name:          "explicit-true: enabled true on role full",
+			yaml:          "role: full\nenabled: true\n",
 			wantOrch:      true,
+			wantScheduler: true,
+		},
+		{
+			name:          "explicit-true: enabled true on role agent-only",
+			yaml:          "role: agent-only\nenabled: true\n",
+			wantOrch:      true,
+			wantScheduler: false,
+		},
+		{
+			name:          "explicit-false: enabled false on role full",
+			yaml:          "role: full\nenabled: false\n",
+			wantOrch:      false,
 			wantScheduler: true,
 		},
 	}

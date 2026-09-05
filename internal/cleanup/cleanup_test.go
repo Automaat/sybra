@@ -68,7 +68,11 @@ func runGit(t *testing.T, dir string, args ...string) {
 }
 
 // makeGitWorktree creates a real, initialized git repo at path with one
-// committed file. dirty additionally leaves an uncommitted modification.
+// committed file, pushed to a throwaway bare "origin" so the worktree looks
+// fully delivered (matching production, where every Sybra-managed worktree
+// tracks the project's bare clone as origin) — i.e. HasUnpushedCommits is
+// false unless a caller commits further without pushing. dirty additionally
+// leaves an uncommitted modification.
 func makeGitWorktree(t *testing.T, path string, dirty bool) {
 	t.Helper()
 	mustMkdir(t, path)
@@ -78,11 +82,29 @@ func makeGitWorktree(t *testing.T, path string, dirty bool) {
 	}
 	runGit(t, path, "add", "-A")
 	runGit(t, path, "commit", "-q", "-m", "init")
+
+	originDir := t.TempDir()
+	runGit(t, originDir, "init", "-q", "--bare")
+	runGit(t, path, "remote", "add", "origin", originDir)
+	runGit(t, path, "push", "-q", "-u", "origin", "HEAD:refs/heads/main")
+
 	if dirty {
 		if err := os.WriteFile(filepath.Join(path, "f.txt"), []byte("b"), 0o644); err != nil {
 			t.Fatalf("dirty file: %v", err)
 		}
 	}
+}
+
+// makeGitWorktreeUnpushed is like makeGitWorktree but leaves an extra
+// committed change that was never pushed to origin — the scenario
+// HasUnpushedCommits must refuse to reap (#2593).
+func makeGitWorktreeUnpushed(t *testing.T, path string) {
+	t.Helper()
+	makeGitWorktree(t, path, false)
+	if err := os.WriteFile(filepath.Join(path, "f.txt"), []byte("c"), 0o644); err != nil {
+		t.Fatalf("unpushed file: %v", err)
+	}
+	runGit(t, path, "commit", "-q", "-am", "unpushed work")
 }
 
 func doneTask(id string, statusChangedAt time.Time) task.Task {
@@ -375,6 +397,36 @@ func TestScanSandboxesSkipsActiveOrphanAndTerminal(t *testing.T) {
 	}
 }
 
+// TestScanSandboxesSkipsDeletedTaskUnpushedWorktree proves a sandbox whose
+// owning task was DELETED is still preserved when that task's git worktree
+// survives on disk holding commits never pushed to origin. The task record is
+// gone, so the guard must resolve the worktree by directory name rather than a
+// live record — the exact deleted-task gap #2593 must protect.
+func TestScanSandboxesSkipsDeletedTaskUnpushedWorktree(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Sandbox.RetentionHours = 1
+	now := time.Now()
+
+	// Sandbox dir is named by the bare task ID; its owning task is absent
+	// from the store (deleted).
+	taskID := "deadface"
+	sb := filepath.Join(sandboxesDir(), taskID)
+	writeFileAt(t, filepath.Join(sb, "f"), 9, now)
+
+	// The deleted task's worktree survives under a slug-prefixed dir name and
+	// still holds an unpushed commit.
+	makeGitWorktreeUnpushed(t, filepath.Join(cfg.WorktreesDir, "feat-"+taskID))
+
+	s := NewScanner(cfg, &fakeLister{}) // no tasks: the sandbox is an orphan
+	res, err := s.Scan(Options{Only: []string{BucketSandboxes}})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if res.Buckets[0].Items != 0 {
+		t.Fatalf("deleted task's sandbox must be preserved while its worktree holds unpushed commits, got %+v", res.Buckets[0])
+	}
+}
+
 func TestScanGoBuildCacheOrphanEligible(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Sandbox.RetentionHours = 1
@@ -391,6 +443,48 @@ func TestScanGoBuildCacheOrphanEligible(t *testing.T) {
 	b := res.Buckets[0]
 	if b.Items != 1 || b.Bytes != 42 {
 		t.Fatalf("expected 1 orphaned go-build-cache dir sized 42, got %+v", b)
+	}
+}
+
+// TestScanGoBuildCacheReportsRetainedBytes pins that space a bucket holds but
+// may not delete is counted rather than dropped.
+//
+// Reported as eligible-only, a full disk looked like this from `doctor
+// cleanup`: every safe bucket at 0 items and 0 bytes, while 83 GiB of
+// per-task Go build caches sat in this very directory waiting on their owning
+// tasks. The operator's own diagnostic said there was nothing to clean.
+func TestScanGoBuildCacheReportsRetainedBytes(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Sandbox.RetentionHours = 1
+	now := time.Now()
+
+	// Active: never eligible, whatever its age.
+	activeDir := filepath.Join(goBuildCacheDir(), "aaaa1111")
+	writeFileAt(t, filepath.Join(activeDir, "cache.a"), 100, now)
+	// Terminal but still inside the retention window.
+	freshDir := filepath.Join(goBuildCacheDir(), "bbbb2222")
+	writeFileAt(t, filepath.Join(freshDir, "cache.a"), 200, now)
+	// Terminal and past retention: eligible, so it is not retained.
+	staleDir := filepath.Join(goBuildCacheDir(), "cccc3333")
+	writeFileAt(t, filepath.Join(staleDir, "cache.a"), 400, now)
+
+	lister := &fakeLister{tasks: []task.Task{
+		{ID: "aaaa1111", Status: task.StatusInProgress, StatusChangedAt: now.Add(-100 * time.Hour)},
+		doneTask("bbbb2222", now),
+		doneTask("cccc3333", now.Add(-100*time.Hour)),
+	}}
+
+	res, err := NewScanner(cfg, lister).Scan(Options{Only: []string{BucketGoBuildCache}})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	b := res.Buckets[0]
+	if b.Items != 1 || b.Bytes != 400 {
+		t.Fatalf("eligible = %d items / %d bytes, want 1 / 400: %+v", b.Items, b.Bytes, b)
+	}
+	if b.RetainedItems != 2 || b.RetainedBytes != 300 {
+		t.Fatalf("retained = %d items / %d bytes, want 2 / 300 (active + within-retention): %+v",
+			b.RetainedItems, b.RetainedBytes, b)
 	}
 }
 
@@ -448,6 +542,61 @@ func TestScanWorktreesDirtySkippedWithoutForce(t *testing.T) {
 	}
 	if res.Buckets[0].Items != 1 {
 		t.Fatalf("dirty worktree must be reported eligible with --force, got %+v", res.Buckets[0])
+	}
+}
+
+// TestScanWorktreesUnpushedSkippedEvenWithForce proves a worktree holding
+// commits that never reached origin is never reported eligible — not even
+// with --force, which only bypasses the uncommitted-changes check. Without
+// this guard a task bounced through human-required (e.g. a push failure) and
+// later reaped by a status/retention-only sweep would silently lose a
+// completed diff (#2593).
+func TestScanWorktreesUnpushedSkippedEvenWithForce(t *testing.T) {
+	cfg := testConfig(t)
+	now := time.Now()
+	unpushedPath := filepath.Join(cfg.WorktreesDir, "beefdead")
+	makeGitWorktreeUnpushed(t, unpushedPath)
+
+	lister := &fakeLister{tasks: []task.Task{doneTask("beefdead", now.Add(-100*time.Hour))}}
+	s := NewScanner(cfg, lister)
+
+	for _, opts := range []Options{
+		{Only: []string{BucketWorktrees}, Worktrees: true},
+		{Only: []string{BucketWorktrees}, Worktrees: true, Force: true},
+	} {
+		res, err := s.Scan(opts)
+		if err != nil {
+			t.Fatalf("scan (force=%v): %v", opts.Force, err)
+		}
+		if res.Buckets[0].Items != 0 {
+			t.Fatalf("worktree with unpushed commits must never be eligible (force=%v), got %+v", opts.Force, res.Buckets[0])
+		}
+	}
+}
+
+// TestApplyWorktreesRevalidatesUnpushedCommits proves Apply's revalidation
+// step also refuses a worktree with unpushed commits, even when a stale
+// Bucket (as if produced before the guard existed, or by a racing Scan)
+// claims it is eligible.
+func TestApplyWorktreesRevalidatesUnpushedCommits(t *testing.T) {
+	cfg := testConfig(t)
+	now := time.Now()
+	unpushedPath := filepath.Join(cfg.WorktreesDir, "cafebabe")
+	makeGitWorktreeUnpushed(t, unpushedPath)
+
+	lister := &fakeLister{tasks: []task.Task{doneTask("cafebabe", now.Add(-100*time.Hour))}}
+	s := NewScanner(cfg, lister)
+
+	staleBucket := Bucket{Name: BucketWorktrees, Paths: []string{unpushedPath}}
+	res, err := s.Apply([]Bucket{staleBucket}, Options{Worktrees: true, Force: true})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if len(res.Buckets) != 1 || res.Buckets[0].Removed != 0 {
+		t.Fatalf("worktree with unpushed commits must not be removed, got %+v", res.Buckets)
+	}
+	if _, err := os.Stat(unpushedPath); err != nil {
+		t.Fatalf("worktree with unpushed commits must survive apply: %v", err)
 	}
 }
 
@@ -738,5 +887,81 @@ func TestApplyForceWorktreesSurvivesActiveTask(t *testing.T) {
 	}
 	if _, err := os.Stat(doneWorktree); !os.IsNotExist(err) {
 		t.Fatalf("done task's worktree should have been removed, stat err = %v", err)
+	}
+}
+
+// TestScanGoBuildCacheReclaimsIdleCaches pins that a build cache is reclaimed
+// on how long it has gone unused, not on what its owning task is doing.
+//
+// Task status alone pinned these indefinitely: human-required is not terminal,
+// so retention never started running, and 24 parked tasks held 1-10 GiB each
+// until the disk filled. A build cache is derived data — the cost of being
+// wrong is a cold rebuild.
+func TestScanGoBuildCacheReclaimsIdleCaches(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Sandbox.RetentionHours = 1
+	cfg.Sandbox.BuildCacheIdleHours = 168
+	now := time.Now()
+
+	// Active task, cache untouched for a month: reclaimable despite the task.
+	idleDir := filepath.Join(goBuildCacheDir(), "aaaa1111")
+	writeFileAt(t, filepath.Join(idleDir, "cache.a"), 100, now)
+	mustChtimes(t, idleDir, now.Add(-30*24*time.Hour))
+
+	// Active task, cache used an hour ago: a live build must not lose it.
+	warmDir := filepath.Join(goBuildCacheDir(), "bbbb2222")
+	writeFileAt(t, filepath.Join(warmDir, "cache.a"), 200, now)
+	mustChtimes(t, warmDir, now.Add(-time.Hour))
+
+	lister := &fakeLister{tasks: []task.Task{
+		{ID: "aaaa1111", Status: task.StatusInProgress, StatusChangedAt: now},
+		{ID: "bbbb2222", Status: task.StatusInProgress, StatusChangedAt: now},
+	}}
+
+	res, err := NewScanner(cfg, lister).Scan(Options{Only: []string{BucketGoBuildCache}})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	b := res.Buckets[0]
+	if b.Items != 1 || b.Bytes != 100 {
+		t.Fatalf("eligible = %d items / %d bytes, want the idle cache only (1 / 100): %+v", b.Items, b.Bytes, b)
+	}
+	if len(b.Paths) != 1 || b.Paths[0] != idleDir {
+		t.Errorf("paths = %v, want only the idle cache %s", b.Paths, idleDir)
+	}
+	if b.RetainedItems != 1 || b.RetainedBytes != 200 {
+		t.Errorf("retained = %d items / %d bytes, want the warm cache (1 / 200)", b.RetainedItems, b.RetainedBytes)
+	}
+}
+
+// TestScanGoBuildCacheIdleReclaimDisabled pins the operator's off switch: a
+// negative window restores the task-status-only lifetime.
+func TestScanGoBuildCacheIdleReclaimDisabled(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Sandbox.RetentionHours = 1
+	cfg.Sandbox.BuildCacheIdleHours = -1
+	now := time.Now()
+
+	idleDir := filepath.Join(goBuildCacheDir(), "aaaa1111")
+	writeFileAt(t, filepath.Join(idleDir, "cache.a"), 100, now)
+	mustChtimes(t, idleDir, now.Add(-30*24*time.Hour))
+
+	lister := &fakeLister{tasks: []task.Task{
+		{ID: "aaaa1111", Status: task.StatusInProgress, StatusChangedAt: now},
+	}}
+
+	res, err := NewScanner(cfg, lister).Scan(Options{Only: []string{BucketGoBuildCache}})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if b := res.Buckets[0]; b.Items != 0 || b.RetainedItems != 1 {
+		t.Fatalf("eligible = %d, retained = %d; want 0 eligible and 1 retained with idle reclaim off", b.Items, b.RetainedItems)
+	}
+}
+
+func mustChtimes(t *testing.T, path string, when time.Time) {
+	t.Helper()
+	if err := os.Chtimes(path, when, when); err != nil {
+		t.Fatalf("chtimes %s: %v", path, err)
 	}
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildStreamTimeline, buildConvoTimeline } from './timeline.js'
+import { buildStreamTimeline } from './timeline.js'
 import type { TimestampedStreamEvent } from './timeline.js'
 
 function makeStreamEvent(type: string, overrides: Record<string, unknown> = {}): TimestampedStreamEvent {
@@ -7,17 +7,6 @@ function makeStreamEvent(type: string, overrides: Record<string, unknown> = {}):
     event: { type, content: '', ...overrides } as any,
     receivedAt: new Date('2026-01-01T00:00:00Z'),
   }
-}
-
-function makeConvoEvent(type: string, overrides: Record<string, unknown> = {}) {
-  return {
-    type,
-    text: '',
-    toolUses: [],
-    toolResults: [],
-    timestamp: '2026-01-01T00:00:00Z',
-    ...overrides,
-  } as any
 }
 
 describe('buildStreamTimeline', () => {
@@ -108,78 +97,5 @@ describe('buildStreamTimeline', () => {
     const receivedAt = new Date('2026-05-01T12:00:00Z')
     const [entry] = buildStreamTimeline([{ event: { type: 'init' } as any, receivedAt }])
     expect(entry.timestamp).toEqual(receivedAt)
-  })
-})
-
-describe('buildConvoTimeline', () => {
-  it('returns empty array for no events', () => {
-    expect(buildConvoTimeline([])).toEqual([])
-  })
-
-  it('preserves event count', () => {
-    const events = [makeConvoEvent('user_input'), makeConvoEvent('assistant'), makeConvoEvent('result')]
-    expect(buildConvoTimeline(events)).toHaveLength(3)
-  })
-
-  it('summarizes "user_input" with text', () => {
-    const [entry] = buildConvoTimeline([makeConvoEvent('user_input', { text: 'Fix the bug' })])
-    expect(entry.summary).toContain('User:')
-    expect(entry.summary).toContain('Fix the bug')
-  })
-
-  it('summarizes "user_input" without text as "User input"', () => {
-    const [entry] = buildConvoTimeline([makeConvoEvent('user_input', { text: '' })])
-    expect(entry.summary).toBe('User input')
-  })
-
-  it('summarizes "assistant" with tool uses as tool names', () => {
-    const [entry] = buildConvoTimeline([
-      makeConvoEvent('assistant', { toolUses: [{ name: 'Bash' }, { name: 'Read' }] }),
-    ])
-    expect(entry.summary).toBe('Bash, Read')
-  })
-
-  it('summarizes "assistant" with text when no tool uses', () => {
-    const [entry] = buildConvoTimeline([makeConvoEvent('assistant', { text: 'I will fix this' })])
-    expect(entry.summary).toContain('I will fix this')
-  })
-
-  it('summarizes "assistant" with no content as "Assistant"', () => {
-    const [entry] = buildConvoTimeline([makeConvoEvent('assistant', { text: '', toolUses: [] })])
-    expect(entry.summary).toBe('Assistant')
-  })
-
-  it('summarizes "user" with error as "Result (error)"', () => {
-    const [entry] = buildConvoTimeline([
-      makeConvoEvent('user', { toolResults: [{ isError: true }] }),
-    ])
-    expect(entry.summary).toBe('Result (error)')
-  })
-
-  it('summarizes "user" without error as "Result"', () => {
-    const [entry] = buildConvoTimeline([
-      makeConvoEvent('user', { toolResults: [{ isError: false }] }),
-    ])
-    expect(entry.summary).toBe('Result')
-  })
-
-  it('summarizes "result" as "Done"', () => {
-    const [entry] = buildConvoTimeline([makeConvoEvent('result', { costUsd: undefined })])
-    expect(entry.summary).toBe('Done')
-  })
-
-  it('includes cost in "result" summary when costUsd set', () => {
-    const [entry] = buildConvoTimeline([makeConvoEvent('result', { costUsd: 0.12 })])
-    expect(entry.summary).toContain('$0.12')
-  })
-
-  it('summarizes "system" as "System"', () => {
-    const [entry] = buildConvoTimeline([makeConvoEvent('system')])
-    expect(entry.summary).toBe('System')
-  })
-
-  it('parses timestamp from event timestamp string', () => {
-    const [entry] = buildConvoTimeline([makeConvoEvent('user_input', { timestamp: '2026-03-01T10:00:00Z' })])
-    expect(entry.timestamp.getFullYear()).toBe(2026)
   })
 })

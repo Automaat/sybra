@@ -1,0 +1,3 @@
+./doc.go
+./fake_autoscaling_client.go
+./fake_horizontalpodautoscaler.go

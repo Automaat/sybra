@@ -1,6 +1,8 @@
 package sybra
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -132,16 +134,24 @@ func TestRuntimeProbeTimeout(t *testing.T) {
 }
 
 func TestRuntimeProbeErrorTruncationStaysWithinByteLimit(t *testing.T) {
-	longErr := strings.Repeat("failure ", 40) + "ą"
-	got := truncateRuntimeProbeError(longErr)
-	if len(got) > runtimeProbeErrorMax {
-		t.Fatalf("truncated error length = %d, want <= %d", len(got), runtimeProbeErrorMax)
-	}
-	if !strings.HasSuffix(got, "...") {
-		t.Fatalf("truncated error = %q, want ASCII suffix", got)
-	}
-	if !utf8.ValidString(got) {
-		t.Fatalf("truncated error is not valid UTF-8: %q", got)
+	// A probe binary's stderr is whatever the binary wrote: latin-1 bytes and
+	// multibyte runes both reach this path, which is why the field is capped
+	// in bytes rather than runes.
+	for name, output := range map[string]string{
+		"multibyte at the cut": strings.Repeat("failure ", 40) + "ą",
+		"invalid latin-1 byte": strings.Repeat("failure ", 20) + " caf\xe9 \xff\xfe " + strings.Repeat("b", 60),
+		"ellipsis run":         strings.Repeat("…", 200),
+	} {
+		got := formatRuntimeProbeError(context.Background(), errors.New("probe failed"), []byte(output), time.Second)
+		if len(got) > runtimeProbeErrorMax {
+			t.Errorf("%s: length = %d, want <= %d", name, len(got), runtimeProbeErrorMax)
+		}
+		if !strings.HasSuffix(got, "...") {
+			t.Errorf("%s: got %q, want ASCII suffix", name, got)
+		}
+		if !utf8.ValidString(got) {
+			t.Errorf("%s: got %q, which is not valid UTF-8", name, got)
+		}
 	}
 }
 

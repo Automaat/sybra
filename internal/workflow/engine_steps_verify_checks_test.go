@@ -3,18 +3,24 @@ package workflow
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/Automaat/sybra/internal/buildcache"
+	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 type fakeCheckGetter struct {
@@ -24,6 +30,84 @@ type fakeCheckGetter struct {
 	setup           []string
 	focused         []project.FocusedCheck
 	worktreeBaseRef string
+}
+
+type copyingVerificationManager struct {
+	root          string
+	released      bool
+	finalized     bool
+	validateCalls int
+	finalizeErr   error
+}
+
+func (m *copyingVerificationManager) PrepareVerification(_ context.Context, _, _, canonical string) (VerificationWorkspace, error) {
+	dir := filepath.Join(m.root, "source")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return VerificationWorkspace{}, err
+	}
+	entries, err := os.ReadDir(canonical)
+	if err != nil {
+		return VerificationWorkspace{}, err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		data, readErr := os.ReadFile(filepath.Join(canonical, entry.Name()))
+		if readErr != nil {
+			return VerificationWorkspace{}, readErr
+		}
+		if writeErr := os.WriteFile(filepath.Join(dir, entry.Name()), data, 0o600); writeErr != nil {
+			return VerificationWorkspace{}, writeErr
+		}
+	}
+	return VerificationWorkspace{ID: "lease", Dir: dir, SourceSHA: "source"}, nil
+}
+
+func (m *copyingVerificationManager) FinalizeVerification(context.Context, VerificationWorkspace, []string, string) error {
+	m.finalized = true
+	return m.finalizeErr
+}
+
+func (m *copyingVerificationManager) ValidateVerification(context.Context, VerificationWorkspace) error {
+	m.validateCalls++
+	return m.finalizeErr
+}
+
+func TestValidVerificationCacheHitDoesNotRefreshBeforeFinalize(t *testing.T) {
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	recorder := newFakeEvidenceRecorder()
+	originalTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	recorder.Set("t1", evidence.CompletionEvidence{Criteria: []evidence.CriterionEvidence{{
+		Criterion:  evidenceCriterionVerifyChecks,
+		ExitStatus: 0,
+		FinalRev:   "source",
+		TreeSHA:    "tree",
+		ChecksHash: "checks",
+		StepID:     "old-step",
+		Timestamp:  originalTime,
+	}}})
+	engine.SetEvidenceRecorder(recorder)
+	mgr := &copyingVerificationManager{finalizeErr: errors.New("source moved")}
+	engine.execution.Verification = mgr
+
+	_, hit, err := engine.validVerificationCacheHit("t1", newVerifyChecksStep(), VerificationWorkspace{ID: "lease"}, "source", "tree", "checks", []string{"true"})
+	if err == nil || hit {
+		t.Fatalf("cache result hit=%v err=%v, want rejected candidate", hit, err)
+	}
+	got, loadErr := recorder.Evidence("t1")
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	entry, ok := got.ByCriterion(evidenceCriterionVerifyChecks)
+	if !ok || entry.Timestamp != originalTime || entry.StepID != "old-step" {
+		t.Fatalf("rejected candidate refreshed evidence: %+v", entry)
+	}
+}
+
+func (m *copyingVerificationManager) ReleaseVerification(VerificationWorkspace) {
+	m.released = true
+	_ = os.RemoveAll(m.root)
 }
 
 func (f *fakeCheckGetter) CodegenCommands(context.Context, string) []string { return f.codegen }
@@ -47,22 +131,22 @@ func newVerifyChecksStep() *Step { return &Step{ID: "verify_checks", Type: StepV
 
 func newVerifyChecksEngine(t *testing.T, wt string, cmds []string) (*Engine, *memTasks) {
 	t.Helper()
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wt, ok: true})
-	engine.SetCheckConfigGetter(&fakeCheckGetter{cmds: cmds})
+	engine.setCheckConfigGetterForTest(&fakeCheckGetter{cmds: cmds})
 	return engine, engine.tasks.(*memTasks)
 }
 
-func TestExecVerifyChecks_NoGetterSkips(t *testing.T) {
+func TestExecVerifyChecks_DefaultGetterSkips(t *testing.T) {
 	t.Parallel()
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: t.TempDir(), ok: true})
 
 	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if out.Output != "skipped: no check config getter" {
+	if out.Output != "skipped: no verify commands configured" {
 		t.Errorf("Output = %q, want skip", out.Output)
 	}
 }
@@ -83,7 +167,7 @@ func TestExecVerifyChecks_NoCommandsSkips(t *testing.T) {
 
 func TestVerifyTaskNow_NoGetterNotVerified(t *testing.T) {
 	t.Parallel()
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: t.TempDir(), ok: true})
 
 	verified, passed, _, _, err := engine.VerifyTaskNow(t.Context(), "t1")
@@ -110,9 +194,9 @@ func TestVerifyTaskNow_NoCommandsNotVerified(t *testing.T) {
 
 func TestVerifyTaskNow_NoWorktreeNotVerified(t *testing.T) {
 	t.Parallel()
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{ok: false})
-	engine.SetCheckConfigGetter(&fakeCheckGetter{cmds: []string{"true"}})
+	engine.setCheckConfigGetterForTest(&fakeCheckGetter{cmds: []string{"true"}})
 
 	verified, passed, _, _, err := engine.VerifyTaskNow(t.Context(), "t1")
 	if err != nil {
@@ -137,6 +221,42 @@ func TestVerifyTaskNow_CommandsPass(t *testing.T) {
 	}
 	if failedCmd != "" {
 		t.Errorf("failedCmd = %q, want empty", failedCmd)
+	}
+}
+
+func TestVerifyTaskNowUsesDisposableWorkspace(t *testing.T) {
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	engine, _ := newVerifyChecksEngine(t, wt, []string{"touch generated-by-watchdog"})
+	mgr := &copyingVerificationManager{root: filepath.Join(t.TempDir(), "verification")}
+	engine.execution.Verification = mgr
+
+	verified, passed, _, output, err := engine.VerifyTaskNow(t.Context(), "t1")
+	if err != nil || !verified || !passed {
+		t.Fatalf("VerifyTaskNow = verified %v passed %v err %v output %q", verified, passed, err, output)
+	}
+	if _, err := os.Stat(filepath.Join(wt, "generated-by-watchdog")); !os.IsNotExist(err) {
+		t.Fatalf("watchdog mutated authoritative checkout: %v", err)
+	}
+	if !mgr.finalized || !mgr.released {
+		t.Fatalf("verification lifecycle finalized=%v released=%v", mgr.finalized, mgr.released)
+	}
+}
+
+func TestVerifyTaskNowRunsSetupInsideDisposableWorkspace(t *testing.T) {
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	engine, _ := newVerifyChecksEngineWithSetup(t, wt, []string{"test -f .env"}, []string{"touch .env"})
+	mgr := &copyingVerificationManager{root: filepath.Join(t.TempDir(), "verification")}
+	engine.execution.Verification = mgr
+
+	verified, passed, failedCmd, output, err := engine.VerifyTaskNow(t.Context(), "t1")
+	if err != nil || !verified || !passed || failedCmd != "" {
+		t.Fatalf("VerifyTaskNow = verified %v passed %v failed %q err %v output %q", verified, passed, failedCmd, err, output)
+	}
+	if _, err := os.Stat(filepath.Join(wt, ".env")); !os.IsNotExist(err) {
+		t.Fatalf("setup output escaped into authoritative checkout: %v", err)
+	}
+	if !mgr.finalized || !mgr.released {
+		t.Fatalf("verification lifecycle finalized=%v released=%v", mgr.finalized, mgr.released)
 	}
 }
 
@@ -180,7 +300,14 @@ func TestVerifyTaskNow_TimeoutFailsClosed(t *testing.T) {
 
 func TestVerifyTaskNow_ScaledTimeoutAbsorbsHostOversubscription(t *testing.T) {
 	orig := workflowCheckLoadPerCPU
-	workflowCheckLoadPerCPU = func() (float64, bool) { return 3.0, true }
+	// Stubbed at the scale ceiling, not just above 1: the assertion needs the
+	// scaled budget to clear `sleep 0.2` plus real process-spawn cost on a
+	// machine already running the rest of the suite. At load 3 the budget was
+	// 300ms against a 200ms sleep, and that 100ms margin is what made this
+	// flake under `go test ./...` while passing in isolation. At the ceiling
+	// the budget is 800ms, while the unscaled 100ms still fails without
+	// scaling — so the test proves the same thing with 4x the headroom.
+	workflowCheckLoadPerCPU = func() (float64, bool) { return verifyTimeoutScaleCeilingLoad, true }
 	t.Cleanup(func() { workflowCheckLoadPerCPU = orig })
 
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
@@ -271,6 +398,274 @@ func TestExecVerifyChecks_FailureFlags(t *testing.T) {
 	}
 }
 
+// TestExecVerifyChecks_CacheHitSkipsUnchangedTree is the memoization happy
+// path: a second execVerifyChecks call against the same tree SHA and verify
+// commands must not re-run the suite at all — the counter file (written
+// outside the worktree, so it cannot itself perturb the tree SHA the second
+// call computes) proves the command executed exactly once.
+func TestExecVerifyChecks_CacheHitSkipsUnchangedTree(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	counter := filepath.Join(t.TempDir(), "count")
+	cmd := "echo run >> " + counter
+	engine, tasks := newVerifyChecksEngine(t, wt, []string{cmd})
+	engine.SetEvidenceRecorder(newFakeEvidenceRecorder())
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out1, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("first run: unexpected error: %v", err)
+	}
+	if out1.Output != "clean" {
+		t.Fatalf("first run: Output = %q, want clean", out1.Output)
+	}
+
+	out2, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("second run: unexpected error: %v", err)
+	}
+	if !strings.HasPrefix(out2.Output, "clean (cached:") {
+		t.Fatalf("second run: Output = %q, want a cache-hit output", out2.Output)
+	}
+
+	runs, err := os.ReadFile(counter)
+	if err != nil {
+		t.Fatalf("expected counter file to exist: %v", err)
+	}
+	if got := strings.Count(string(runs), "run"); got != 1 {
+		t.Fatalf("verify command ran %d times, want exactly 1 (second call should have hit the cache)", got)
+	}
+}
+
+// TestExecVerifyChecks_WorktreeEditForcesRerun proves a changed tree SHA
+// invalidates the memo: editing a tracked file between two otherwise-identical
+// execVerifyChecks calls must force the suite to run again.
+func TestExecVerifyChecks_WorktreeEditForcesRerun(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	counter := filepath.Join(t.TempDir(), "count")
+	cmd := "echo run >> " + counter
+	engine, tasks := newVerifyChecksEngine(t, wt, []string{cmd})
+	engine.SetEvidenceRecorder(newFakeEvidenceRecorder())
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	if _, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"}); err != nil {
+		t.Fatalf("first run: unexpected error: %v", err)
+	}
+
+	writeRepoFile(t, wt, "README.md", "changed\n")
+
+	out2, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("second run: unexpected error: %v", err)
+	}
+	if out2.Output != "clean" {
+		t.Fatalf("second run: Output = %q, want a fresh clean run (not cached)", out2.Output)
+	}
+
+	runs, err := os.ReadFile(counter)
+	if err != nil {
+		t.Fatalf("expected counter file to exist: %v", err)
+	}
+	if got := strings.Count(string(runs), "run"); got != 2 {
+		t.Fatalf("verify command ran %d times, want exactly 2 (tree edit should have forced a re-run)", got)
+	}
+}
+
+func TestExecVerifyChecks_EmptyCommitForcesRerun(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	counter := filepath.Join(t.TempDir(), "count")
+	cmd := "echo run >> " + counter
+	engine, tasks := newVerifyChecksEngine(t, wt, []string{cmd})
+	engine.SetEvidenceRecorder(newFakeEvidenceRecorder())
+	tasks.Put(TaskInfo{ID: "t1", Status: taskstatus.InProgress})
+
+	if _, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"}); err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	gitCmd := exec.Command("git", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "source identity changes")
+	gitCmd.Dir = wt
+	if out, err := gitCmd.CombinedOutput(); err != nil {
+		t.Fatalf("empty commit: %v: %s", err, out)
+	}
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if out.Output != "clean" {
+		t.Fatalf("second run output = %q, want uncached clean", out.Output)
+	}
+	runs, err := os.ReadFile(counter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(runs), "run"); got != 2 {
+		t.Fatalf("verify command ran %d times, want 2 after source commit changed", got)
+	}
+}
+
+// TestExecVerifyChecks_CommandChangeForcesRerun proves a changed verify
+// commands set invalidates the memo even against the identical tree SHA.
+func TestExecVerifyChecks_CommandChangeForcesRerun(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	counter := filepath.Join(t.TempDir(), "count")
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wt, ok: true})
+	getter := &fakeCheckGetter{cmds: []string{"echo run >> " + counter}}
+	engine.setCheckConfigGetterForTest(getter)
+	engine.SetEvidenceRecorder(newFakeEvidenceRecorder())
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	if _, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"}); err != nil {
+		t.Fatalf("first run: unexpected error: %v", err)
+	}
+
+	getter.cmds = []string{"echo run >> " + counter, "true"}
+
+	out2, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("second run: unexpected error: %v", err)
+	}
+	if out2.Output != "clean" {
+		t.Fatalf("second run: Output = %q, want a fresh clean run (not cached)", out2.Output)
+	}
+
+	runs, err := os.ReadFile(counter)
+	if err != nil {
+		t.Fatalf("expected counter file to exist: %v", err)
+	}
+	if got := strings.Count(string(runs), "run"); got != 2 {
+		t.Fatalf("verify command ran %d times, want exactly 2 (commands change should have forced a re-run)", got)
+	}
+}
+
+func TestBoundedTail_UnderCapKeepsEverything(t *testing.T) {
+	t.Parallel()
+	tail := &boundedTail{max: 100}
+	_, _ = io.WriteString(tail, "hello world")
+	if got := tail.String(); got != "hello world" {
+		t.Fatalf("String() = %q, want the untouched input", got)
+	}
+}
+
+// Regression: boundedTail used to keep only the last `max` bytes, so a
+// failure signal near the START of a long-running command's output (the
+// realistic shape of `go test ./internal/...`: the failing package's
+// `--- FAIL:` line, followed by many other packages' trailing `ok` lines)
+// would be evicted before it ever reached the artifact layer, independent of
+// any cap applied when persisting the artifact. Both the start and the end
+// of the stream must survive; only the middle may be elided.
+func TestBoundedTail_OverCapKeepsHeadAndTail(t *testing.T) {
+	t.Parallel()
+	tail := &boundedTail{max: 100}
+	_, _ = io.WriteString(tail, "START-MARKER "+strings.Repeat("x", 500)+" END-MARKER")
+
+	got := tail.String()
+	if !strings.Contains(got, "START-MARKER") {
+		t.Errorf("output lost the start of the stream: %q", got)
+	}
+	if !strings.Contains(got, "END-MARKER") {
+		t.Errorf("output lost the end of the stream: %q", got)
+	}
+	if !strings.Contains(got, "elided") {
+		t.Errorf("output has no elision marker despite exceeding the cap: %q", got)
+	}
+}
+
+// Regression: the artifact used to cap stored output to the last 8000 bytes
+// (tailString), which for a verbose failing command silently drops whatever
+// ran before the cut — including, in production, the actual `--- FAIL:` line
+// a human needs to diagnose the task. The stored output must never be cut.
+func TestExecVerifyChecks_LongOutputNotTruncated(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	engine, tasks := newVerifyChecksEngine(t, wt, []string{"echo MARKER_START; yes x | head -c 9000; exit 1"})
+	rec := &recordingArtifactRecorder{}
+	engine.SetArtifactRecorder(rec)
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "flagged" {
+		t.Fatalf("Output = %q, want flagged", out.Output)
+	}
+
+	var report *verifyChecksReport
+	for _, put := range rec.puts {
+		if put.name != "verify-checks.json" {
+			continue
+		}
+		var r verifyChecksReport
+		if err := json.Unmarshal([]byte(put.content), &r); err != nil {
+			t.Fatalf("unmarshal artifact: %v", err)
+		}
+		report = &r
+	}
+	if report == nil {
+		t.Fatalf("no verify-checks.json artifact recorded; puts: %+v", rec.puts)
+	}
+	if len(report.OutputTail) < 9000 {
+		t.Fatalf("OutputTail = %d bytes, want the full >9000-byte output preserved", len(report.OutputTail))
+	}
+	if !strings.Contains(report.OutputTail, "MARKER_START") {
+		t.Errorf("artifact lost the start of the output — the old tail-only truncation would have dropped it:\n%s", report.OutputTail[:min(200, len(report.OutputTail))])
+	}
+}
+
+// Regression: fixing the artifact-level 8000-byte cap is not enough on its
+// own — the upstream boundedTail streaming buffer that produces `output` in
+// the first place (verifyChecksMaxOutput, 64KB) used the same tail-only
+// eviction strategy, so a run large enough to exceed *that* cap (realistic
+// for `go test ./internal/...` across ~80 packages) would still lose the
+// failure signal before the artifact layer ever saw it. This drives output
+// past the 64KB streaming cap, not just the old 8KB artifact cap.
+func TestExecVerifyChecks_OutputPastStreamingCapKeepsStartAndEnd(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	// 100000 alone exceeds verifyChecksMaxOutput, independent of flake retries.
+	engine, tasks := newVerifyChecksEngine(t, wt,
+		[]string{"echo MARKER_START; yes x | head -c 100000; echo MARKER_END; exit 1"})
+	rec := &recordingArtifactRecorder{}
+	engine.SetArtifactRecorder(rec)
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "flagged" {
+		t.Fatalf("Output = %q, want flagged", out.Output)
+	}
+
+	var report *verifyChecksReport
+	for _, put := range rec.puts {
+		if put.name != "verify-checks.json" {
+			continue
+		}
+		var r verifyChecksReport
+		if err := json.Unmarshal([]byte(put.content), &r); err != nil {
+			t.Fatalf("unmarshal artifact: %v", err)
+		}
+		report = &r
+	}
+	if report == nil {
+		t.Fatalf("no verify-checks.json artifact recorded; puts: %+v", rec.puts)
+	}
+	if !strings.Contains(report.OutputTail, "MARKER_START") {
+		t.Errorf("artifact lost the start of a >64KB run — the streaming buffer evicted it before the artifact layer ever saw it")
+	}
+	if !strings.Contains(report.OutputTail, "MARKER_END") {
+		t.Errorf("artifact lost the end of a >64KB run")
+	}
+}
+
 func TestExecVerifyChecks_BlessedTagSkips(t *testing.T) {
 	t.Parallel()
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
@@ -321,7 +716,9 @@ func TestResolveWorkflowCheckTimeout_ScalesWithHostLoad(t *testing.T) {
 
 func TestExecVerifyChecks_ScaledTimeoutAbsorbsHostOversubscription(t *testing.T) {
 	orig := workflowCheckLoadPerCPU
-	workflowCheckLoadPerCPU = func() (float64, bool) { return 3.0, true }
+	// Ceiling load, not 3.0 — see the sibling tests: a 300ms budget against a
+	// 200ms sleep left only 100ms for process spawn and flaked under suite load.
+	workflowCheckLoadPerCPU = func() (float64, bool) { return verifyTimeoutScaleCeilingLoad, true }
 	t.Cleanup(func() { workflowCheckLoadPerCPU = orig })
 
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
@@ -377,7 +774,7 @@ func TestExecVerifyChecks_BackpressureParksWhilePeerVerifyInFlight(t *testing.T)
 		t.Fatal(err)
 	}
 	var logs bytes.Buffer
-	engine := NewEngine(store, newMemTasks(), newMockAgents(), slog.New(slog.NewTextHandler(&logs, nil)))
+	engine := NewTestEngine(store, newMemTasks(), newMockAgents(), slog.New(slog.NewTextHandler(&logs, nil)))
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{
 		ok: true,
 		paths: map[string]string{
@@ -385,7 +782,7 @@ func TestExecVerifyChecks_BackpressureParksWhilePeerVerifyInFlight(t *testing.T)
 			"t2": wt2,
 		},
 	})
-	engine.SetCheckConfigGetter(&fakeCheckGetter{cmdsByTask: map[string][]string{
+	engine.setCheckConfigGetterForTest(&fakeCheckGetter{cmdsByTask: map[string][]string{
 		"t1": {blocking},
 		"t2": {"true"},
 	}})
@@ -407,12 +804,11 @@ func TestExecVerifyChecks_BackpressureParksWhilePeerVerifyInFlight(t *testing.T)
 
 	waitForFile := func(path string) {
 		t.Helper()
-		deadline := time.Now().Add(2 * time.Second)
-		for time.Now().Before(deadline) {
-			if _, err := os.Stat(path); err == nil {
-				return
-			}
-			time.Sleep(10 * time.Millisecond)
+		if pollUntil(2*time.Second, 10*time.Millisecond, func() bool {
+			_, err := os.Stat(path)
+			return err == nil
+		}) {
+			return
 		}
 		t.Fatalf("timed out waiting for %s", path)
 	}
@@ -489,9 +885,9 @@ func TestExecVerifyChecks_BackpressureParksWhilePeerVerifyInFlight(t *testing.T)
 
 func newVerifyChecksEngineWithSetup(t *testing.T, wt string, cmds, setup []string) (*Engine, *memTasks) {
 	t.Helper()
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wt, ok: true})
-	engine.SetCheckConfigGetter(&fakeCheckGetter{cmds: cmds, setup: setup})
+	engine.setCheckConfigGetterForTest(&fakeCheckGetter{cmds: cmds, setup: setup})
 	return engine, engine.tasks.(*memTasks)
 }
 
@@ -591,7 +987,15 @@ func TestExecVerifyChecks_GoInfraFailureBlocks(t *testing.T) {
 	}
 }
 
-func TestExecVerifyChecks_UnrelatedGoPackageFailureBlocks(t *testing.T) {
+// TestExecVerifyChecks_UnrelatedGoPackageFailureOpensPR pins that a task is
+// not stopped by a break the gate has already attributed elsewhere.
+//
+// classifyUnrelatedVerifyGoFailure reads the diff, reads the failing packages,
+// and confirms they do not intersect — its own reason ends "not this diff".
+// Blocking on that asked an operator to unstick a task the evidence had just
+// cleared, and left the real break to stop the next task the same way: three
+// tasks were blocked in one day by three different pre-existing failures.
+func TestExecVerifyChecks_UnrelatedGoPackageFailureOpensPR(t *testing.T) {
 	t.Parallel()
 	wt := makeBaseRepo(t, map[string]string{
 		"go.mod":                          "module example.com/verifyrepo\n\ngo 1.26.5\n",
@@ -611,18 +1015,51 @@ func TestExecVerifyChecks_UnrelatedGoPackageFailureBlocks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if out.Output != "blocked" {
-		t.Fatalf("Output = %q, want blocked", out.Output)
+	if out.Output != "unrelated failure — opened pr" {
+		t.Fatalf("Output = %q, want the unrelated-failure PR route", out.Output)
 	}
 	ti := mustGetTaskInfo(t, tasks, "t1")
-	if ti.Status != "blocked" {
-		t.Fatalf("status = %q, want blocked", ti.Status)
+	if ti.Status != taskstatus.ReadyPR {
+		t.Fatalf("status = %q, want ready-pr", ti.Status)
 	}
+	// The break still has to be visible: nothing blocks on it now, so the
+	// reason is the only place a human learns which package is broken.
 	if !strings.Contains(ti.StatusReason, "untouched Go package(s): internal/agent") {
 		t.Fatalf("reason = %q, want untouched package classification", ti.StatusReason)
 	}
 	if wf.Variables["step.verify_checks.auto_fix"] != "" {
 		t.Fatalf("auto-fix counter = %q, want empty for unrelated failure", wf.Variables["step.verify_checks.auto_fix"])
+	}
+}
+
+// TestExecVerifyChecks_UnrelatedFailureWithoutPRRouteStopsShortOfBlocked pins
+// the legacy escalation for an operator who turned the PR route off: still not
+// blocked, because the diff is still not what failed.
+func TestExecVerifyChecks_UnrelatedFailureWithoutPRRouteStopsShortOfBlocked(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{
+		"go.mod":                          "module example.com/verifyrepo\n\ngo 1.26.5\n",
+		"internal/agent/agent.go":         "package agent\n\nfunc Ready() bool { return true }\n",
+		"internal/promptlab/promptlab.go": "package promptlab\n\nfunc Title() string { return \"a\" }\n",
+	})
+	writeRepoFile(t, wt, "internal/promptlab/promptlab.go", "package promptlab\n\nfunc Title() string { return \"b\" }\n")
+	gitRun(t, wt, "add", ".")
+	gitRun(t, wt, "commit", "-m", "feat: change promptlab")
+
+	cmd := `go test ./... >/dev/null 2>&1; printf '# example.com/verifyrepo/internal/agent\n--- FAIL: TestSomething (60.00s)\nFAIL\texample.com/verifyrepo/internal/agent\t60.064s\nFAIL\n' >&2; exit 1`
+	engine, tasks := newVerifyChecksEngine(t, wt, []string{cmd})
+	engine.SetOpenPROnUnrunnableGate(false)
+	tasks.Put(TaskInfo{ID: "t1", Status: taskstatus.InProgress})
+
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), implementedExec(), TaskInfo{ID: "t1", Status: taskstatus.InProgress})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "flagged" {
+		t.Fatalf("Output = %q, want flagged", out.Output)
+	}
+	if ti := mustGetTaskInfo(t, tasks, "t1"); ti.Status != taskstatus.HumanRequired {
+		t.Fatalf("status = %q, want human-required", ti.Status)
 	}
 }
 
@@ -688,6 +1125,9 @@ func TestExecVerifyChecks_DependentGoPackageFailureStillAutoFixes(t *testing.T) 
 	if wf.Variables["step.verify_checks.auto_fix"] != "1" {
 		t.Fatalf("auto-fix counter = %q, want 1", wf.Variables["step.verify_checks.auto_fix"])
 	}
+	if got := wf.Variables[verifyRetryModelVar]; got != "expensive" {
+		t.Fatalf("%s = %q, want expensive", verifyRetryModelVar, got)
+	}
 }
 
 func TestExecVerifyChecks_FlakeRetryPasses(t *testing.T) {
@@ -716,7 +1156,7 @@ func TestRunVerifyCommands_DeadlineReturnsCtxErr(t *testing.T) {
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	failed, _, err := engine.runVerifyCommands(ctx, "t1", wt, []string{"sleep 20"})
 	if err == nil {
 		t.Fatal("expected a context error on deadline, got nil")
@@ -732,7 +1172,7 @@ func TestRunVerifyCommands_DeadlineReturnsCtxErr(t *testing.T) {
 func TestRunVerifyCommands_GOCACHEIsPerTaskWhileGOMODCACHEStaysShared(t *testing.T) {
 	t.Setenv("SYBRA_HOME", t.TempDir())
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	ctx := context.Background()
 	cmd := `printf '%s|%s' "$GOCACHE" "$GOMODCACHE"`
 
@@ -1017,7 +1457,7 @@ func TestEnsureNodeToolchain_RepairsCorruptBin(t *testing.T) {
 
 	fakeNPM(t, "marker-npm-ci-ran")
 
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	tail := &boundedTail{max: 4096}
 	engine.ensureNodeToolchain(context.Background(), "t1", dir, "npm run build:web", tail)
 
@@ -1037,7 +1477,7 @@ func TestEnsureNodeToolchain_RepairsMissingBin(t *testing.T) {
 
 	fakeNPM(t, "marker-npm-ci-ran")
 
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	tail := &boundedTail{max: 4096}
 	engine.ensureNodeToolchain(context.Background(), "t1", dir, "npm run build:web", tail)
 
@@ -1057,12 +1497,56 @@ func TestEnsureNodeToolchain_IntactBinSkipsRepair(t *testing.T) {
 
 	fakeNPM(t, "marker-npm-ci-ran")
 
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	tail := &boundedTail{max: 4096}
 	engine.ensureNodeToolchain(context.Background(), "t1", dir, "npm run build:web", tail)
 
 	if _, err := os.Stat(filepath.Join(dir, "marker-npm-ci-ran")); err == nil {
 		t.Error("npm ci should not have run — toolchain looked intact")
+	}
+}
+
+// TestEnsureNodeToolchain_ConcurrentCallersInstallOnce covers the fan-out
+// hazard execParallelGates introduced: focused_checks and verify_checks run
+// concurrently against the SAME worktree, and an absent node_modules is left
+// alone by the pre-fan-out repair (never installed is not corruption), so both
+// gates can reach this repair path for one directory. Two `npm ci` runs each
+// delete and rewrite node_modules, tearing the install the other is about to
+// use. The repair must serialize per directory and re-check under the lock, so
+// exactly one install runs.
+func TestEnsureNodeToolchain_ConcurrentCallersInstallOnce(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "package.json"), "{}")
+	// node_modules/.bin absent: the "never installed" shape both gates see.
+
+	runLog := filepath.Join(t.TempDir(), "npm-runs.log")
+	fakeBin := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"echo run >> " + runLog + "\n" +
+		"sleep 0.2\n" +
+		"mkdir -p node_modules/.bin\n" +
+		"printf '#!/bin/sh\\n' > node_modules/.bin/vite\n"
+	if err := os.WriteFile(filepath.Join(fakeBin, "npm"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Go(func() {
+			engine.ensureNodeToolchain(context.Background(), "t1", dir, "npm run build:web", &boundedTail{max: 4096})
+		})
+	}
+	wg.Wait()
+
+	data, err := os.ReadFile(runLog)
+	if err != nil {
+		t.Fatalf("npm never ran: %v", err)
+	}
+	if runs := strings.Count(string(data), "run"); runs != 1 {
+		t.Fatalf("npm ci ran %d times, want exactly 1 — concurrent gates must not race two installs", runs)
 	}
 }
 
@@ -1081,7 +1565,7 @@ func TestEnsureNodeToolchain_ResolvesCdPrefix(t *testing.T) {
 
 	fakeNPM(t, "marker-npm-ci-ran")
 
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	tail := &boundedTail{max: 4096}
 	engine.ensureNodeToolchain(context.Background(), "t1", root, "(cd frontend && mise exec -- npm run build:web)", tail)
 
@@ -1102,7 +1586,7 @@ func TestEnsureNodeToolchain_CdSubstringIsNotAFalseMatch(t *testing.T) {
 	writeTestFile(t, filepath.Join(binDir, "vite"), "#!/bin/sh\necho vite\n") // intact
 	fakeNPM(t, "marker-npm-ci-ran")
 
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	tail := &boundedTail{max: 4096}
 	engine.ensureNodeToolchain(context.Background(), "t1", root, "npm run test:cd main", tail)
 
@@ -1125,7 +1609,7 @@ func TestEnsureNodeToolchain_QuotedDirWithSpace(t *testing.T) {
 	writeTestFile(t, filepath.Join(binDir, "vite"), "") // corrupt
 	fakeNPM(t, "marker-npm-ci-ran")
 
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	tail := &boundedTail{max: 4096}
 	engine.ensureNodeToolchain(context.Background(), "t1", root, `cd "my dir" && npm run build`, tail)
 
@@ -1147,7 +1631,7 @@ func TestEnsureNodeToolchain_ChainedCdRepairsEachLeg(t *testing.T) {
 	// Shared fake npm on PATH; it drops the marker in whichever cwd it runs.
 	fakeNPM(t, "marker-npm-ci-ran")
 
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	tail := &boundedTail{max: 4096}
 	engine.ensureNodeToolchain(context.Background(), "t1", root,
 		"(cd frontend && npm run build) && (cd backend && npm test)", tail)
@@ -1174,7 +1658,7 @@ func TestEnsureNodeToolchain_TraversalIsRejected(t *testing.T) {
 	if err := os.MkdirAll(wt, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	tail := &boundedTail{max: 4096}
 	engine.ensureNodeToolchain(context.Background(), "t1", wt, "cd ../outside && npm run build", tail)
 
@@ -1187,7 +1671,7 @@ func TestEnsureNodeToolchain_NonNodeDirSkips(t *testing.T) {
 	dir := t.TempDir() // no package.json
 	fakeNPM(t, "marker-npm-ci-ran")
 
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	tail := &boundedTail{max: 4096}
 	engine.ensureNodeToolchain(context.Background(), "t1", dir, "go test ./...", tail)
 
@@ -1400,7 +1884,7 @@ func TestRepairCorruptedNodeModules_RepairsPartialInstall(t *testing.T) {
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	engine.repairCorruptedNodeModules(context.Background(), "t1", wt)
 
 	if _, err := os.Stat(filepath.Join(nm, ".bin")); err != nil {
@@ -1504,7 +1988,7 @@ func TestRepairCorruptedNodeModules_UsesSubdirMiseConfig(t *testing.T) {
 	}
 	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	if failed := engine.repairCorruptedNodeModules(context.Background(), "t1", wt); failed {
 		t.Fatal("repairCorruptedNodeModules reported failure; want subdir mise config to drive npm repair")
 	}
@@ -1533,7 +2017,7 @@ func TestRepairCorruptedNodeModules_LeavesHealthyInstallAlone(t *testing.T) {
 	// No fake npm on PATH — if the engine tried to repair a healthy install
 	// it would fail loudly (npm ci would error or hit the network); a
 	// successful, silent no-op proves the healthy install was left alone.
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	engine.repairCorruptedNodeModules(context.Background(), "t1", wt)
 }
 
@@ -1562,7 +2046,7 @@ func TestRepairCorruptedNodeModules_SkipsPnpmWorkspace(t *testing.T) {
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	engine.repairCorruptedNodeModules(context.Background(), "t1", wt)
 
 	if _, err := os.Stat(filepath.Join(frontend, "invoked")); err == nil {
@@ -1609,6 +2093,13 @@ func TestExecVerifyChecks_RepairsCorruptedNodeModulesBeforeRunning(t *testing.T)
 	}
 }
 
+// TestBuiltinSimpleTaskImplement_VerifyChecksWiring pins verify_checks'
+// contribution to simple-task-implement now that it runs inside the
+// parallel_gates coordinator (see execParallelGates,
+// engine_steps_parallel_gates.go) alongside detect_tampering and
+// focused_checks rather than as its own serial step: a blocked or flagged
+// outcome still ends the workflow, and a clean one still proceeds to
+// set_ready_review.
 func TestBuiltinSimpleTaskImplement_VerifyChecksWiring(t *testing.T) {
 	t.Parallel()
 	defs, err := BuiltinDefinitions()
@@ -1626,27 +2117,96 @@ func TestBuiltinSimpleTaskImplement_VerifyChecksWiring(t *testing.T) {
 		t.Fatal("simple-task-implement builtin not found")
 		return
 	}
-	vc := impl.StepByID("verify_checks")
-	if vc == nil {
-		t.Fatal("verify_checks step missing from simple-task-implement")
+	gates := impl.StepByID("parallel_gates")
+	if gates == nil {
+		t.Fatal("parallel_gates step missing from simple-task-implement")
 		return
 	}
-	dt := impl.StepByID("detect_tampering")
-	if dt == nil {
-		t.Fatal("detect_tampering step missing")
+	if gates.Type != StepParallelGates {
+		t.Errorf("parallel_gates type = %q, want %q", gates.Type, StepParallelGates)
+	}
+	codegen := impl.StepByID("codegen_gate")
+	if codegen == nil {
+		t.Fatal("codegen_gate step missing")
 		return
 	}
-	if got, _ := ResolveTransition(dt.Next, map[string]string{"task.status": "in-progress"}); got != "verify_checks" {
-		t.Errorf("detect_tampering clean goto = %q, want verify_checks", got)
+	if got, _ := ResolveTransition(codegen.Next, map[string]string{"task.status": "in-progress"}); got != "parallel_gates" {
+		t.Errorf("codegen_gate clean goto = %q, want parallel_gates", got)
 	}
-	if got, _ := ResolveTransition(vc.Next, map[string]string{"task.status": "blocked"}); got != "" {
-		t.Errorf("blocked verify_checks goto = %q, want end", got)
+	if got, _ := ResolveTransition(gates.Next, map[string]string{"task.status": "blocked"}); got != "" {
+		t.Errorf("blocked parallel_gates goto = %q, want end", got)
 	}
-	if got, _ := ResolveTransition(vc.Next, map[string]string{"task.status": "human-required"}); got != "" {
-		t.Errorf("flagged verify_checks goto = %q, want end", got)
+	if got, _ := ResolveTransition(gates.Next, map[string]string{"task.status": "human-required"}); got != "" {
+		t.Errorf("flagged parallel_gates goto = %q, want end", got)
 	}
-	if got, _ := ResolveTransition(vc.Next, map[string]string{"task.status": "in-progress"}); got != "set_ready_review" {
-		t.Errorf("clean verify_checks goto = %q, want set_ready_review", got)
+	if got, _ := ResolveTransition(gates.Next, map[string]string{"task.status": string(taskstatus.ReadyPR)}); got != "" {
+		t.Errorf("unrelated-failure parallel_gates goto = %q, want end", got)
+	}
+	if got, _ := ResolveTransition(gates.Next, map[string]string{"task.status": "in-progress"}); got != "set_ready_review" {
+		t.Errorf("clean parallel_gates goto = %q, want set_ready_review", got)
+	}
+}
+
+func TestAdvanceStep_UnrelatedVerifyFailureCompletesCurrentWorkflowAtReadyPR(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		workflowID string
+		stepID     string
+	}{
+		{workflowID: "simple-task-implement", stepID: "parallel_gates"},
+		{workflowID: "prompt-lab-author", stepID: "verify_checks"},
+		{workflowID: "simple-task-best-of-n-implement", stepID: "verify_checks"},
+		{workflowID: "simple-task-review", stepID: "verify_checks"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.workflowID, func(t *testing.T) {
+			defs, err := BuiltinDefinitions()
+			if err != nil {
+				t.Fatalf("BuiltinDefinitions: %v", err)
+			}
+			store, err := NewStore(t.TempDir())
+			if err != nil {
+				t.Fatalf("NewStore: %v", err)
+			}
+			var found bool
+			for i := range defs {
+				if defs[i].ID == tc.workflowID {
+					if err := store.Save(defs[i]); err != nil {
+						t.Fatalf("Save(%s): %v", tc.workflowID, err)
+					}
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("builtin %s not found", tc.workflowID)
+			}
+
+			tasks := newMemTasks()
+			tasks.Put(TaskInfo{
+				ID:     "t1",
+				Status: taskstatus.ReadyPR,
+				Workflow: &Execution{
+					WorkflowID:  tc.workflowID,
+					CurrentStep: tc.stepID,
+					State:       ExecRunning,
+					Variables:   map[string]string{},
+				},
+			})
+			engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
+			if err := engine.AdvanceStep("t1", StepOutput{StepID: tc.stepID, Status: "completed", Output: "unrelated failure — opened pr"}); err != nil {
+				t.Fatalf("AdvanceStep: %v", err)
+			}
+
+			got := mustGetTaskInfo(t, tasks, "t1")
+			if got.Status != taskstatus.ReadyPR {
+				t.Fatalf("status = %q, want ready-pr", got.Status)
+			}
+			if got.Workflow == nil || got.Workflow.State != ExecCompleted || got.Workflow.CurrentStep != "" {
+				t.Fatalf("workflow = %+v, want completed terminal handoff", got.Workflow)
+			}
+		})
 	}
 }
 
@@ -1779,7 +2339,7 @@ func TestRepairTornNodeModules_RepairsWhenTorn(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "marker")
 	fakeNpmOnPath(t, marker)
 
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	engine.repairTornNodeModules(t.Context(), "t1", wt)
 
 	out, err := os.ReadFile(marker)
@@ -1807,7 +2367,7 @@ func TestRepairTornNodeModules_RepairsRootProject(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "marker")
 	fakeNpmOnPath(t, marker)
 
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	engine.repairTornNodeModules(t.Context(), "t1", wt)
 
 	out, err := os.ReadFile(marker)
@@ -1832,7 +2392,7 @@ func TestRepairTornNodeModules_SkipsWithoutLockfile(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "marker")
 	fakeNpmOnPath(t, marker)
 
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	engine.repairTornNodeModules(t.Context(), "t1", wt)
 
 	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
@@ -1863,7 +2423,7 @@ func TestRepairTornNodeModules_LogsRepairFailure(t *testing.T) {
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
 
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), logger)
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), logger)
 	engine.repairTornNodeModules(t.Context(), "t1", wt)
 
 	if !strings.Contains(logBuf.String(), "workflow.verify-checks.npm-repair-failed") {
@@ -1905,7 +2465,7 @@ esac
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	engine.repairTornNodeModules(t.Context(), "t1", wt)
 
 	if _, err := os.Stat(lifecycleMarker); !os.IsNotExist(err) {
@@ -1933,7 +2493,7 @@ func TestRepairTornNodeModules_SkipsWhenHealthy(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "marker")
 	fakeNpmOnPath(t, marker)
 
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	engine.repairTornNodeModules(t.Context(), "t1", wt)
 
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {

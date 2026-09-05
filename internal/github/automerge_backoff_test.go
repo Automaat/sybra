@@ -95,8 +95,13 @@ func TestAutoMergeBackoff_ExponentialGrowthAndCeiling(t *testing.T) {
 
 	// One more failure at the ceiling must not exceed it.
 	b.RecordFailure("owner/repo", 5, "sha1", "state1", MergeErrorBlocked)
-	// nextTry - now should be capped at ceiling; verify indirectly via ShouldAttempt.
-	now = now.Add(ceiling - time.Second)
+	nextDelay := b.entries[autoMergeBackoffKey("owner/repo", 5)].nextTry.Sub(now)
+	if nextDelay < ceiling/2 || nextDelay > ceiling {
+		t.Fatalf("capped jitter delay = %v, want [%v, %v]", nextDelay, ceiling/2, ceiling)
+	}
+	// Verify the actual jittered boundary rather than assuming every capped
+	// retry lands exactly on the ceiling.
+	now = now.Add(nextDelay - time.Second)
 	if b.ShouldAttempt("owner/repo", 5, "sha1", "state1") {
 		t.Fatal("expected still suppressed just before the ceiling elapses")
 	}

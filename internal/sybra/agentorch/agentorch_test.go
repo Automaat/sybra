@@ -1,7 +1,10 @@
 package agentorch
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,8 +13,12 @@ import (
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/agentqueue"
+	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/providerid"
+	"github.com/Automaat/sybra/internal/sybra/runenv"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
@@ -76,6 +83,17 @@ func TestTaskCumulativeCostUSD(t *testing.T) {
 				t.Errorf("taskCumulativeCostUSD() = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestTaskRecordedCumulativeCostUSDIncludesCompactedRuns(t *testing.T) {
+	t.Parallel()
+	record := task.Task{
+		AgentRuns:          []task.AgentRun{{CostUSD: 4.5}},
+		DocumentCompaction: &task.DocumentCompaction{DroppedRunCostUSD: 8.25},
+	}
+	if got := taskRecordedCumulativeCostUSD(record); got != 12.75 {
+		t.Fatalf("taskRecordedCumulativeCostUSD() = %.2f, want 12.75", got)
 	}
 }
 
@@ -201,6 +219,36 @@ func TestStartPRFixAgent_TaskCostExceededBlocksDispatch(t *testing.T) {
 	}
 	if !errors.Is(err, workflow.ErrTaskCostExceeded) {
 		t.Fatalf("err = %v, want wrapping workflow.ErrTaskCostExceeded", err)
+	}
+}
+
+func TestStartErrorInvalidatesRunEnvironmentCertificate(t *testing.T) {
+	t.Parallel()
+	probes := 0
+	service := runenv.New(runenv.Deps{
+		ProbeProvider: func(context.Context, string) (runenv.ProbeResult, error) {
+			probes++
+			return runenv.ProbeResult{Available: true}, nil
+		},
+	})
+	req := runenv.Request{
+		TaskID: "task", Action: "pr-fix.dispatch", WorkDir: t.TempDir(), Provider: providerid.Codex,
+		Requirements: []autonomy.CapabilityRequirement{{
+			Capability: autonomy.CapabilityProviderCapacity,
+			Action:     "pr-fix.dispatch",
+			Scope:      "provider",
+		}},
+	}
+	if _, err := service.Certify(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	o := &Orchestrator{runenv: service}
+	o.invalidateRunEnvironmentOnStartError(req.TaskID, errors.New("provider start: read-only file system"))
+	if _, err := service.Certify(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if probes != 2 {
+		t.Fatalf("provider probes = %d, want recertification after environment-shaped start error", probes)
 	}
 }
 
@@ -1100,4 +1148,110 @@ func TestAutoAssignProject(t *testing.T) {
 			t.Fatalf("stored ProjectID = %q, want empty after persist failure", stored.ProjectID)
 		}
 	})
+}
+
+// TestLogSandboxEscapeHatchRecordsReason pins the accountability half of the
+// escape hatch: disabling the sandbox hands a task's agents unrestricted
+// write access, so the audit event must carry the operator's stated reason —
+// and must flag its absence, so an unexplained bypass is greppable rather
+// than merely present.
+func TestLogSandboxEscapeHatchRecordsReason(t *testing.T) {
+	t.Parallel()
+	falseVal, trueVal := false, true
+	cases := []struct {
+		name       string
+		task       task.Task
+		wantEvents int
+		wantReason string
+	}{
+		{
+			name:       "sandbox unset logs nothing",
+			task:       task.Task{},
+			wantEvents: 0,
+		},
+		{
+			name:       "sandbox true logs nothing",
+			task:       task.Task{Sandbox: &trueVal},
+			wantEvents: 0,
+		},
+		{
+			name:       "reason is recorded",
+			task:       task.Task{Sandbox: &falseVal, SandboxOffReason: "docker-in-docker e2e needs host mounts"},
+			wantEvents: 1,
+			wantReason: "docker-in-docker e2e needs host mounts",
+		},
+		{
+			name:       "missing reason is flagged, not silently allowed",
+			task:       task.Task{Sandbox: &falseVal},
+			wantEvents: 1,
+			wantReason: "",
+		},
+		{
+			name:       "whitespace-only reason counts as missing",
+			task:       task.Task{Sandbox: &falseVal, SandboxOffReason: "   "},
+			wantEvents: 1,
+			wantReason: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			al, err := audit.NewLogger(dir)
+			if err != nil {
+				t.Fatalf("audit.NewLogger: %v", err)
+			}
+			o := New(nil, nil, nil, al, slog.New(slog.DiscardHandler), nil,
+				&config.Config{Agent: config.AgentDefaults{SandboxMode: "enforce"}})
+
+			o.logSandboxEscapeHatch("task-1", tc.task)
+
+			events := readAuditEvents(t, dir)
+			if len(events) != tc.wantEvents {
+				t.Fatalf("got %d audit events, want %d", len(events), tc.wantEvents)
+			}
+			if tc.wantEvents == 0 {
+				return
+			}
+			e := events[0]
+			if e.Type != audit.EventAgentSandboxDisabled {
+				t.Errorf("event type = %q, want %q", e.Type, audit.EventAgentSandboxDisabled)
+			}
+			if got, _ := e.Data["reason"].(string); got != tc.wantReason {
+				t.Errorf("reason = %q, want %q", got, tc.wantReason)
+			}
+			if got, _ := e.Data["configured_default"].(string); got != "enforce" {
+				t.Errorf("configured_default = %q, want %q", got, "enforce")
+			}
+		})
+	}
+}
+
+func readAuditEvents(t *testing.T, dir string) []audit.Event {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	var events []audit.Event
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			t.Fatalf("ReadFile: %v", err)
+		}
+		for line := range strings.SplitSeq(strings.TrimSpace(string(data)), "\n") {
+			if line == "" {
+				continue
+			}
+			var e audit.Event
+			if err := json.Unmarshal([]byte(line), &e); err != nil {
+				t.Fatalf("unmarshal %q: %v", line, err)
+			}
+			events = append(events, e)
+		}
+	}
+	return events
 }

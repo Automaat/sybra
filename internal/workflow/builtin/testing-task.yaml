@@ -85,7 +85,7 @@ steps:
     config:
       role: test-runner
       mode: headless
-      model: sonnet
+      model: supercheap
       provider: cross
       needs_worktree: true
       max_retries: 1
@@ -125,14 +125,14 @@ steps:
         {{range .Task.ManualTest.ProbeCommands}}    - {{.}}
         {{end}}Prefer this surface for black-box testing unless the task scope clearly makes it irrelevant.
         {{end}}
-        {{if acceptanceledger .Task.Body}}
+        {{if acceptanceledger .Task.AcceptanceLedger}}
         The task body carries a persistent acceptance ledger of distinct prior
         product bugs. Reproduce and re-verify EVERY ledger entry against the
         CURRENT worktree on every pass. PASS only if all ledger entries hold
         simultaneously, plus your normal manual-testing evidence says you could
         not break the feature.
 
-        {{acceptanceledger .Task.Body}}
+        {{acceptanceledger .Task.AcceptanceLedger}}
         {{end}}
         Before looking for defects, derive a cheap acceptance probe from the
         task when possible. For sweep/refactor wording like "everywhere",

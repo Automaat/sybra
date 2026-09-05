@@ -15,7 +15,9 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/notes"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 func TestExtractTestVerdict(t *testing.T) {
@@ -714,7 +716,7 @@ func TestCurrentTestFailuresTemplateFunc(t *testing.T) {
 		t.Fatalf("currentTestFailures = %q, want empty", got)
 	}
 
-	body := "## Problem\ntext\n\n## Test Failures\n\ndefect details\n"
+	body := "## Test Failures\n\ndefect details\n"
 	if got := currentTestFailures(body); got != "## Test Failures\n\ndefect details" {
 		t.Fatalf("currentTestFailures = %q", got)
 	}
@@ -1525,6 +1527,180 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			want:       testOutcomePass,
 			wantStatus: "completed",
 		},
+		{
+			name:       "unstartable_k8s_surface_is_an_unrunnable_gate",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"k8s","app_started":false,"start_command":"","unable_to_run_reason":"the host has no kubernetes context","readiness_probe":{"command":"kubectl config view --minify","actual":"No current context","observed":"kubectl reported that no current context exists","output":"error: current-context must exist in order to minify","status":"unavailable"},"manual_probes":[{"command":"helm package deployments/charts/app","expected":"the chart packages","actual":"the chart packaged","observed":"helm package succeeded","output":"Successfully packaged chart","status":"pass"}],"automated_checks":[{"command":"go test ./pkg/...","actual":"Exit code 0","output":"ok","status":"pass"}]}`,
+			bodySuffix: "",
+			want:       testOutcomeInfraFailure,
+			wantStatus: "failed",
+		},
+		{
+			name:       "unstartable_web_surface_is_an_unrunnable_gate_too",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web","app_started":false,"start_command":"","unable_to_run_reason":"the sandbox denies every listening port","readiness_probe":{"command":"curl -fsS http://127.0.0.1:8080/health","actual":"connection refused","output":"curl: (7) Failed to connect","status":"unavailable"},"automated_checks":[{"command":"go test ./pkg/...","actual":"Exit code 0","output":"ok","status":"pass"}]}`,
+			bodySuffix: "",
+			want:       testOutcomeInfraFailure,
+			wantStatus: "failed",
+		},
+		{
+			name:       "unstartable_surface_without_supporting_evidence_stays_missing_evidence",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"k8s","app_started":false,"start_command":"","unable_to_run_reason":"the host has no kubernetes context","readiness_probe":{"command":"kubectl config view --minify","actual":"No current context","observed":"kubectl reported that no current context exists","output":"error: current-context must exist in order to minify","status":"unavailable"},"manual_probes":[],"automated_checks":[]}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:       "unstartable_surface_with_a_throwaway_probe_stays_missing_evidence",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web","app_started":false,"start_command":"","unable_to_run_reason":"cannot start it","readiness_probe":{"command":"true","status":"unavailable"},"manual_probes":[{"command":"ls","actual":"x"}],"automated_checks":[]}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:       "unstartable_surface_without_a_declared_reason_stays_missing_evidence",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"k8s","app_started":false,"start_command":"","readiness_probe":{"command":"kubectl config view --minify","actual":"No current context","observed":"kubectl reported that no current context exists","output":"error: current-context must exist in order to minify","status":"unavailable"},"automated_checks":[{"command":"go test ./pkg/...","actual":"Exit code 0","output":"ok","status":"pass"}]}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:       "an_honest_probe_naming_a_high_port_still_routes",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"server","app_started":false,"start_command":"","unable_to_run_reason":"nothing is listening in this sandbox","readiness_probe":{"command":"curl -fsS http://127.0.0.1:9200/","actual":"connection refused","observed":"nothing answered","output":"curl: (7) Failed to connect to 127.0.0.1 port 9200 after 0 ms: Connection refused","status":"unavailable"},"automated_checks":[{"command":"go test ./pkg/...","actual":"Exit code 0","output":"ok","status":"pass"}]}`,
+			bodySuffix: "",
+			want:       testOutcomeInfraFailure,
+			wantStatus: "failed",
+		},
+		{
+			name:       "an_honest_probe_carrying_a_timestamp_still_routes",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"k8s","app_started":false,"start_command":"","unable_to_run_reason":"no cluster reachable from this host","readiness_probe":{"command":"kubectl cluster-info","actual":"fatal","observed":"the cluster did not answer","output":"time=\"2026-08-19T09:14:33Z\" level=fatal msg=\"cluster not reachable\"","status":"unavailable"},"automated_checks":[{"command":"go test ./pkg/...","actual":"Exit code 0","output":"ok","status":"pass"}]}`,
+			bodySuffix: "",
+			want:       testOutcomeInfraFailure,
+			wantStatus: "failed",
+		},
+		{
+			name:       "raw_string_evidence_arrays_still_route",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"k8s","app_started":false,"start_command":"","unable_to_run_reason":"no cluster reachable from this host","readiness_probe":{"command":"kubectl cluster-info","actual":"refused","observed":"the cluster did not answer","output":"The connection to the server localhost:8080 was refused","status":"unavailable"},"manual_probes":[],"automated_checks":"go test ./... -> ok, exit code 0"}`,
+			bodySuffix: "",
+			want:       testOutcomeInfraFailure,
+			wantStatus: "failed",
+		},
+		{
+			name:       "a_raw_string_readiness_probe_still_routes",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"k8s","app_started":false,"start_command":"","unable_to_run_reason":"no cluster reachable from this host","readiness_probe":"ran kubectl cluster-info -> The connection to the server localhost:8080 was refused","manual_probes":[],"automated_checks":[{"command":"go test ./pkg/...","actual":"Exit code 0","output":"ok","status":"pass"}]}`,
+			bodySuffix: "",
+			want:       testOutcomeInfraFailure,
+			wantStatus: "failed",
+		},
+		{
+			name:       "a_probe_that_got_an_http_status_back_stays_missing_evidence",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web","app_started":false,"start_command":"","unable_to_run_reason":"the health endpoint did not answer","readiness_probe":{"command":"curl -fsS http://127.0.0.1:5173/health","actual":"HTTP 404","observed":"the dev server answered but /health is not routed","output":"HTTP/1.1 404 Not Found","status":"unavailable"},"manual_probes":[],"automated_checks":[{"command":"go test ./pkg/...","actual":"Exit code 0","output":"ok","status":"pass"}]}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:       "readiness_probe_that_recorded_nothing_stays_missing_evidence",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web","app_started":false,"start_command":"","unable_to_run_reason":"could not start it here","readiness_probe":{"command":"curl -fsS http://127.0.0.1:8080/health","expected":"","actual":"","observed":"","output":"","status":"unavailable"},"manual_probes":[],"automated_checks":[{"command":"go test ./...","actual":"Exit code 0","output":"ok","status":"pass"}]}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:       "readiness_probe_whose_transcript_contradicts_its_status_stays_missing_evidence",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web","app_started":false,"start_command":"","unable_to_run_reason":"could not start it here","readiness_probe":{"command":"curl -fsS http://127.0.0.1:8080/health","expected":"","actual":"HTTP 200 OK","observed":"the endpoint answered","output":"{\"status\":\"ok\"}","status":"unavailable"},"manual_probes":[],"automated_checks":[{"command":"go test ./...","actual":"Exit code 0","output":"ok","status":"pass"}]}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:       "check_that_recorded_only_a_status_word_stays_missing_evidence",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"cli","app_started":false,"start_command":"","unable_to_run_reason":"could not start it here","readiness_probe":{"command":"./bin/app --version","expected":"a version","actual":"no such file","observed":"the binary is absent","output":"sh: ./bin/app: No such file or directory","status":"unavailable"},"manual_probes":[],"automated_checks":[{"command":"go test ./...","status":"pass"}]}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			// A one-shot surface leaves no process to start or poll. The probe
+			// it did run is the whole evidence a CLI-shaped change can offer,
+			// and demanding app_started of it rejected every honest report.
+			name:       "cli_pass_backed_by_an_executed_probe_needs_no_app_start",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"cli","app_started":false,"start_command":"","readiness_probe":{"command":"","expected":"","actual":"","observed":"","output":"","status":"","url":""},"manual_probes":[{"command":"make print/versions","expected":"the gate version is printed","actual":"RC=0; printed gate 2.14.0","observed":"PASS","output":"Gate version: 2.14.0\nRC=0","status":"passed"}],"automated_checks":[],"unable_to_run_reason":""}`,
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+		{
+			// The relaxed app-start rule is not a relaxed evidence rule: a
+			// probe that admits it never ran proves nothing about the change.
+			name:       "cli_pass_whose_only_probe_never_ran_stays_missing_evidence",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"cli","app_started":false,"start_command":"","readiness_probe":{"command":"","expected":"","actual":"","observed":"","output":"","status":"","url":""},"manual_probes":[{"command":"make print/versions","expected":"the gate version is printed","actual":"not run","observed":"skipped","output":"","status":"not run"}],"automated_checks":[],"unable_to_run_reason":""}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:   "plain_text_cli_pass_backed_by_an_executed_probe_needs_no_app_start",
+			status: "completed",
+			output: "Exercised the new gate flag by hand.\n\n" +
+				"surface_kind: cli\n" +
+				"manual_probes:\n" +
+				"  - command: go run ./cmd/tool --gate 2.14.0\n" +
+				"    expected: the flag is accepted and echoed\n" +
+				"    actual: exit code 0, printed gate 2.14.0\n\n" +
+				"TEST_VERDICT: PASS",
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+		{
+			// The plain-text gate must hold the same bar as the structured
+			// one: labels alone are not evidence when the result they carry
+			// says the probe never ran.
+			name:   "plain_text_cli_pass_whose_probe_never_ran_stays_missing_evidence",
+			status: "completed",
+			output: "Tried to exercise the new gate flag.\n\n" +
+				"surface_kind: cli\n" +
+				"manual_probes:\n" +
+				"  - command: go run ./cmd/tool --gate 2.14.0\n" +
+				"    expected: the flag is accepted and echoed\n" +
+				"    actual: not run\n\n" +
+				"TEST_VERDICT: PASS",
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:       "startable_surface_that_was_never_started_stays_missing_evidence",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web","app_started":false,"start_command":"","unable_to_run_reason":"the host has no kubernetes context","readiness_probe":{"command":"curl -fsS http://127.0.0.1:8080/health","actual":"HTTP 200","output":"ok","status":"pass"},"manual_probes":[{"command":"helm package deployments/charts/app","expected":"the chart packages","actual":"the chart packaged","observed":"helm package succeeded","output":"Successfully packaged chart","status":"pass"}]}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
 	}
 
 	for _, tc := range cases {
@@ -1558,6 +1734,28 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 				t.Fatal("fingerprint is empty for evidenced failure")
 			}
 		})
+	}
+}
+
+// The router can only name the rejection reason if the verdict pass recorded
+// it; without this the two halves drift and the re-ask silently falls back to
+// the FAIL-shaped note.
+func TestApplyTestVerdictCompletion_RecordsWhyAPassWasRejected(t *testing.T) {
+	t.Parallel()
+
+	wf := &Execution{Variables: map[string]string{}}
+	prepareTestVerdictAttemptVars(wf, testVerdictSourceStep, "")
+	out := StepOutput{
+		StepID: testVerdictSourceStep,
+		Status: "completed",
+		Output: `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web","app_started":false,"start_command":"","readiness_probe":{"command":"","expected":"","actual":"","observed":"","output":"","status":"","url":""},"manual_probes":[],"automated_checks":[],"unable_to_run_reason":""}`,
+	}
+	if _, outcome, _ := applyTestVerdictCompletion(wf, &out, "", TaskInfo{}); outcome != testOutcomeMissingEvidence {
+		t.Fatalf("outcome = %q, want %q", outcome, testOutcomeMissingEvidence)
+	}
+	got := wf.Variables["step."+testVerdictSourceStep+"."+testPassEvidenceReasonKey]
+	if !strings.Contains(got, "app_started") {
+		t.Errorf("recorded reason = %q, want it to name app_started", got)
 	}
 }
 
@@ -1694,7 +1892,7 @@ func makeTestEngine(t *testing.T) (*Engine, *memTasks) {
 	t.Helper()
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	engine.SetTestingMaxAttempts(3)
 	return engine, tasks
 }
@@ -1789,7 +1987,7 @@ func makeTestingTaskEngine(t *testing.T) (*Engine, *memTasks, *mockAgents) {
 	}
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	return engine, tasks, agents
 }
 
@@ -1904,8 +2102,11 @@ func TestAdvanceStep_StructuredFailureMarkdownIsAppendedAtomically(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(got.Body, "## Test Failures") || !strings.Contains(got.Body, "Observed output:") {
-		t.Fatalf("task body missing structured failure report:\n%s", got.Body)
+	if got.Body != initialBody {
+		t.Fatalf("task body should stay unchanged; got:\n%s", got.Body)
+	}
+	if !strings.Contains(got.CurrentTestFailures, "## Test Failures") || !strings.Contains(got.CurrentTestFailures, "Observed output:") {
+		t.Fatalf("current_test_failures sidecar missing structured failure report:\n%s", got.CurrentTestFailures)
 	}
 	if got.AgentRuns[0].TestOutcome != testOutcomeProductBug {
 		t.Fatalf("test outcome = %q, want %q", got.AgentRuns[0].TestOutcome, testOutcomeProductBug)
@@ -1962,11 +2163,11 @@ func TestAdvanceStep_StructuredFailureAppendsAfterUnrelatedBodyDelta(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(got.Body, "## Test Failures are stale") || !strings.Contains(got.Body, "## Test Failures") {
-		t.Fatalf("body should preserve unrelated delta and append test report:\n%s", got.Body)
+	if got.Body != currentBody {
+		t.Fatalf("body should preserve unrelated delta without appending a new report:\n%s", got.Body)
 	}
-	if strings.Count(got.Body, "\n\n## Test Failures\n") != 1 {
-		t.Fatalf("body should append exactly one test report section:\n%s", got.Body)
+	if !strings.Contains(got.CurrentTestFailures, "## Test Failures") || !strings.Contains(got.CurrentTestFailures, "HTTP/1.1 500 Internal Server Error") {
+		t.Fatalf("current_test_failures sidecar missing latest structured report:\n%s", got.CurrentTestFailures)
 	}
 	if got.Status != "in-progress" {
 		t.Fatalf("status = %q, want in-progress", got.Status)
@@ -2016,14 +2217,17 @@ func TestAdvanceStep_PlainTextFailureMarkdownIsAppendedAtomically(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(got.Body, "## Test Failures") || !strings.Contains(got.Body, "Observed output:") {
-		t.Fatalf("task body missing plain-text failure report:\n%s", got.Body)
+	if got.Body != initialBody {
+		t.Fatalf("task body should stay unchanged; got:\n%s", got.Body)
 	}
-	if !strings.Contains(got.Body, testVerdictFail) {
-		t.Fatalf("task body should preserve verdict-shaped observed output:\n%s", got.Body)
+	if !strings.Contains(got.CurrentTestFailures, "## Test Failures") || !strings.Contains(got.CurrentTestFailures, "Observed output:") {
+		t.Fatalf("current_test_failures sidecar missing plain-text failure report:\n%s", got.CurrentTestFailures)
 	}
-	if count := strings.Count(got.Body, testVerdictFail); count != 1 {
-		t.Fatalf("task body should strip only the final verdict marker, count=%d:\n%s", count, got.Body)
+	if !strings.Contains(got.CurrentTestFailures, testVerdictFail) {
+		t.Fatalf("sidecar should preserve verdict-shaped observed output:\n%s", got.CurrentTestFailures)
+	}
+	if count := strings.Count(got.CurrentTestFailures, testVerdictFail); count != 1 {
+		t.Fatalf("sidecar should strip only the final verdict marker, count=%d:\n%s", count, got.CurrentTestFailures)
 	}
 	if got.AgentRuns[0].TestOutcome != testOutcomeProductBug {
 		t.Fatalf("test outcome = %q, want %q", got.AgentRuns[0].TestOutcome, testOutcomeProductBug)
@@ -2077,20 +2281,14 @@ func TestAdvanceStep_NewFailureReportArchivesPriorTestFailuresSection(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if count := strings.Count(got.Body, "## Test Failures\n"); count != 1 {
-		t.Fatalf("body should have exactly one live '## Test Failures' section, got %d:\n%s", count, got.Body)
+	if got.Body != initialBody {
+		t.Fatalf("body should stay unchanged when failures move to sidecars:\n%s", got.Body)
 	}
-	if !strings.Contains(got.Body, "## Resolved Test Failures (historical)") {
-		t.Fatalf("body should archive the prior section under a distinct heading:\n%s", got.Body)
+	if !strings.Contains(got.CurrentTestFailures, "still-open defect") {
+		t.Fatalf("sidecar should contain the new failure report:\n%s", got.CurrentTestFailures)
 	}
-	if !strings.Contains(got.Body, "Old defect from cycle 1, already fixed.") {
-		t.Fatalf("body should preserve archived section content:\n%s", got.Body)
-	}
-	if !strings.Contains(got.Body, "still-open defect") {
-		t.Fatalf("body should contain the new failure report:\n%s", got.Body)
-	}
-	if strings.Index(got.Body, "## Resolved Test Failures") > strings.Index(got.Body, "still-open defect") {
-		t.Fatalf("archived section should precede the current failure report:\n%s", got.Body)
+	if strings.Contains(got.CurrentTestFailures, "Old defect from cycle 1") {
+		t.Fatalf("sidecar should not inherit stale body failures:\n%s", got.CurrentTestFailures)
 	}
 }
 
@@ -2139,18 +2337,12 @@ func TestAdvanceStep_BodyDeltaFailureReportArchivesPriorTestFailuresSection(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if count := strings.Count(got.Body, "## Test Failures\n"); count != 1 {
-		t.Fatalf("body should have exactly one live '## Test Failures' section, got %d:\n%s", count, got.Body)
+	if got.Body != currentBody {
+		t.Fatalf("body should preserve the runner-written delta without rewrite:\n%s", got.Body)
 	}
-	if !strings.Contains(got.Body, "## Resolved Test Failures (historical)") {
-		t.Fatalf("body should archive the prior section under a distinct heading:\n%s", got.Body)
-	}
-	if !strings.Contains(got.Body, "Old defect from cycle 1, already fixed.") {
-		t.Fatalf("body should preserve archived section content:\n%s", got.Body)
-	}
-	if current := currentTestFailures(got.Body); !strings.Contains(current, "HTTP/1.1 500 Internal Server Error") ||
+	if current := currentTestFailures(got.CurrentTestFailures); !strings.Contains(current, "HTTP/1.1 500 Internal Server Error") ||
 		strings.Contains(current, "Old defect from cycle 1") {
-		t.Fatalf("currentTestFailures should return only the current delta report, got:\n%s\n\nbody:\n%s", current, got.Body)
+		t.Fatalf("currentTestFailures should return only the current sidecar report, got:\n%s\n\nbody:\n%s", current, got.Body)
 	}
 	if got.AgentRuns[0].TestOutcome != testOutcomeProductBug {
 		t.Fatalf("test outcome = %q, want %q", got.AgentRuns[0].TestOutcome, testOutcomeProductBug)
@@ -2203,15 +2395,14 @@ func TestAdvanceStep_ArchivedFailureRewriteResetsBodyDeltaStart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	delta, ok := testFailureBodyDelta(got.Body, got.Workflow, testVerdictSourceStep)
-	if !ok {
-		t.Fatal("testFailureBodyDelta should remain available after archiving prior failures")
+	if got.Body != initialBody {
+		t.Fatalf("body should stay unchanged when the live report moves to a sidecar:\n%s", got.Body)
 	}
-	if current := currentTestFailures(delta); !strings.Contains(current, "still-open defect") {
-		t.Fatalf("delta should start at the live rewritten failure report, got:\n%s\n\nbody:\n%s", delta, got.Body)
+	if current := currentTestFailures(got.CurrentTestFailures); !strings.Contains(current, "still-open defect") {
+		t.Fatalf("sidecar should carry the live rewritten failure report, got:\n%s\n\nbody:\n%s", current, got.Body)
 	}
-	if strings.Contains(delta, "Old defect from cycle 1") {
-		t.Fatalf("delta should not include archived historical failures, got:\n%s", delta)
+	if strings.Contains(got.CurrentTestFailures, "Old defect from cycle 1") {
+		t.Fatalf("sidecar should not include archived historical failures, got:\n%s", got.CurrentTestFailures)
 	}
 }
 
@@ -2270,8 +2461,10 @@ func TestAdvanceStep_TestProtocolViolationAfterRetryStopsWithProtocolReason(t *t
 		WorkflowID:  "testing-task",
 		CurrentStep: testVerdictSourceStep,
 		State:       ExecWaiting,
-		Variables:   map[string]string{},
-		StartedAt:   time.Now().UTC(),
+		Variables: map[string]string{
+			testingAutoRetryKey(testOutcomeProtocolViolation): strconv.Itoa(testingAutoRetryCap),
+		},
+		StartedAt: time.Now().UTC(),
 		StepHistory: []StepRecord{{
 			StepID: testVerdictSourceStep,
 			Status: "failed",
@@ -2758,6 +2951,49 @@ func TestRouteTestResult_MissingEvidenceParksWithReaskThenEscalates(t *testing.T
 	}
 }
 
+// A rejected PASS used to be re-asked with the FAIL-shaped note ("for EVERY
+// claimed defect you MUST include..."), which says nothing to a tester that
+// claimed no defect — so it re-emitted the identical report until the retry
+// budget ran out and the task quarantined. The re-ask must name the evidence
+// reason instead, and must not read as an instruction to produce a FAIL.
+func TestRouteTestResult_RejectedPassReasksAboutEvidenceNotDefects(t *testing.T) {
+	t.Parallel()
+	e, tasks := makeTestEngine(t)
+	reason := "PASS report did not confirm app_started"
+	vars := map[string]string{
+		"step." + testVerdictSourceStep + "." + testVerdictTaintedKey:     testProtocolMissingEvidence,
+		"step." + testVerdictSourceStep + "." + testPassEvidenceReasonKey: reason,
+	}
+	_, ti, err := routeWithOutcome(t, e, tasks, "t-pass-evidence", testOutcomeMissingEvidence, vars)
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("err = %v, want errStepParked", err)
+	}
+	note := ti.Workflow.Variables[testingReaskNoteVar]
+	if !strings.Contains(note, reason) {
+		t.Errorf("reask note = %q, want the rejection reason %q", note, reason)
+	}
+	if strings.Contains(note, "claimed defect") {
+		t.Errorf("reask note = %q, want no FAIL-shaped defect guidance", note)
+	}
+
+	// At cap the human reason must say the verdict was never the problem, so a
+	// triaging human does not go looking for the defect the tester never found.
+	capVars := map[string]string{
+		"step." + testVerdictSourceStep + "." + testVerdictTaintedKey:     testProtocolMissingEvidence,
+		"step." + testVerdictSourceStep + "." + testPassEvidenceReasonKey: reason,
+		testingAutoRetryKey(testOutcomeMissingEvidence):                   strconv.Itoa(testingAutoRetryCap),
+	}
+	if _, ti, err = routeWithOutcome(t, e, tasks, "t-pass-evidence-cap", testOutcomeMissingEvidence, capVars); err != nil {
+		t.Fatal(err)
+	}
+	if ti.Status != taskstatus.HumanRequired {
+		t.Errorf("status = %q, want human-required", ti.Status)
+	}
+	if got := tasks.Reason("t-pass-evidence-cap"); !strings.Contains(got, "PASS report") {
+		t.Errorf("reason = %q, want it to name the rejected PASS", got)
+	}
+}
+
 func TestRouteTestResult_DuplicateFailureEscalatesWithoutAnotherRetry(t *testing.T) {
 	t.Parallel()
 	e, tasks := makeTestEngine(t)
@@ -2802,11 +3038,11 @@ func TestRouteTestResult_DuplicateFailureEscalatesWithoutAnotherRetry(t *testing
 		}
 	}
 	ti, _ = tasks.GetTask("t-dup")
-	if !strings.Contains(ti.Body, specDecisionHeading) {
-		t.Errorf("body = %q, want a spec-decision section appended", ti.Body)
+	if !strings.Contains(ti.SpecDecision, specDecisionHeading) {
+		t.Errorf("specDecision = %q, want a spec-decision section", ti.SpecDecision)
 	}
-	if !strings.Contains(ti.Body, fp) {
-		t.Errorf("body = %q, want the recurring fingerprint referenced", ti.Body)
+	if !strings.Contains(ti.SpecDecision, fp) {
+		t.Errorf("specDecision = %q, want the recurring fingerprint referenced", ti.SpecDecision)
 	}
 }
 
@@ -2849,8 +3085,8 @@ func TestRouteTestResult_DuplicateFailureEscalatesWhenSpecDecisionAppendFails(t 
 	if reason := tasks.Reason("t-dup-append-fails"); !strings.Contains(reason, "suspected acceptance-criteria conflict") {
 		t.Errorf("reason = %q, want spec-decision reframing", reason)
 	}
-	if strings.Contains(ti.Body, specDecisionHeading) {
-		t.Errorf("body = %q, want no spec-decision section when append fails", ti.Body)
+	if ti.SpecDecision != "" {
+		t.Errorf("specDecision = %q, want empty when sidecar write fails", ti.SpecDecision)
 	}
 }
 
@@ -2884,17 +3120,17 @@ func TestRouteTestResult_DuplicateFailureSpecDecisionIsIdempotent(t *testing.T) 
 	}
 	route()
 	ti := mustGetTaskInfo(t, tasks, "t-dup-idem")
-	first := ti.Body
+	first := ti.SpecDecision
 	if strings.Count(first, specDecisionHeading) != 1 {
-		t.Fatalf("body = %q, want exactly one spec-decision section", first)
+		t.Fatalf("specDecision = %q, want exactly one spec-decision section", first)
 	}
 	route()
 	ti = mustGetTaskInfo(t, tasks, "t-dup-idem")
-	if ti.Body != first {
-		t.Errorf("body changed on idempotent rerun:\nfirst: %q\nsecond: %q", first, ti.Body)
+	if ti.SpecDecision != first {
+		t.Errorf("specDecision changed on idempotent rerun:\nfirst: %q\nsecond: %q", first, ti.SpecDecision)
 	}
-	if strings.Count(ti.Body, specDecisionHeading) != 1 {
-		t.Errorf("body = %q, want exactly one spec-decision section after rerun", ti.Body)
+	if strings.Count(ti.SpecDecision, specDecisionHeading) != 1 {
+		t.Errorf("specDecision = %q, want exactly one section after rerun", ti.SpecDecision)
 	}
 }
 
@@ -2905,7 +3141,7 @@ func TestExecRouteTestResult_ReimplementSeedsNote(t *testing.T) {
 	wtPath := makeGitRepo(t, true)
 	e.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
 	appender := &recordingAttemptNoteAppender{}
-	e.SetAttemptNoteAppender(appender)
+	e.setAttemptNoteAppenderForTest(appender)
 
 	now := time.Now().UTC()
 	var report strings.Builder
@@ -2920,9 +3156,10 @@ func TestExecRouteTestResult_ReimplementSeedsNote(t *testing.T) {
 
 	taskID := "t-reimplement-note"
 	tasks.Put(TaskInfo{
-		ID:     taskID,
-		Status: "testing",
-		Body:   report.String(),
+		ID:                  taskID,
+		Status:              "testing",
+		Body:                "## Problem\nInvestigate the failing feature.\n",
+		CurrentTestFailures: report.String(),
 		AgentRuns: []AgentRunInfo{
 			{AgentID: "run-1", Role: testRunnerRole, StartedAt: now, TestOutcome: testOutcomeProductBug, TestFailureFingerprint: "fp-1"},
 		},
@@ -2999,7 +3236,7 @@ func TestExecRouteTestResult_ReimplementNoteIdempotent(t *testing.T) {
 	wtPath := makeGitRepo(t, true)
 	e.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
 	appender := &recordingAttemptNoteAppender{}
-	e.SetAttemptNoteAppender(appender)
+	e.setAttemptNoteAppenderForTest(appender)
 
 	now := time.Now().UTC()
 	taskID := "t-reimplement-idem"
@@ -3057,7 +3294,7 @@ func TestExecRouteTestResult_AppenderErrorFailsOpen(t *testing.T) {
 	e, tasks := makeTestEngine(t)
 	e.SetWorktreeGetter(&fakeWorktreeGetter{path: makeGitRepo(t, true), ok: true})
 	appender := &recordingAttemptNoteAppender{err: errors.New("disk full")}
-	e.SetAttemptNoteAppender(appender)
+	e.setAttemptNoteAppenderForTest(appender)
 
 	now := time.Now().UTC()
 	taskID := "t-reimplement-appender-error"
@@ -3106,7 +3343,7 @@ func TestExecRouteTestResult_NonReimplementRoutesDoNotSeedNote(t *testing.T) {
 		taskID string
 		task   TaskInfo
 		wf     *Execution
-		status string
+		status taskstatus.Status
 	}{
 		{
 			name:   "pass_to_ready_pr",
@@ -3140,7 +3377,7 @@ func TestExecRouteTestResult_NonReimplementRoutesDoNotSeedNote(t *testing.T) {
 			e, tasks := makeTestEngine(t)
 			e.SetWorktreeGetter(&fakeWorktreeGetter{path: makeGitRepo(t, true), ok: true})
 			appender := &recordingAttemptNoteAppender{}
-			e.SetAttemptNoteAppender(appender)
+			e.setAttemptNoteAppenderForTest(appender)
 			tasks.Put(tt.task)
 
 			out, err := e.execRouteTestResult(tt.taskID, &Step{ID: "route_test"}, tt.wf, mustGetTaskInfo(t, tasks, tt.taskID))
@@ -3225,8 +3462,8 @@ func TestRouteTestResult_FailAtCapWithRecurringClassReframesAsSpecDecision(t *te
 	if reason := tasks.Reason("t-cap-recur"); !strings.Contains(reason, "suspected acceptance-criteria conflict") {
 		t.Errorf("reason = %q, want spec-decision reframing", reason)
 	}
-	if !strings.Contains(ti.Body, specDecisionHeading) {
-		t.Errorf("body = %q, want a spec-decision section appended", ti.Body)
+	if !strings.Contains(ti.SpecDecision, specDecisionHeading) {
+		t.Errorf("specDecision = %q, want a spec-decision section", ti.SpecDecision)
 	}
 }
 
@@ -3376,12 +3613,12 @@ func TestRouteTestResult_FailAtCapWithDistinctFailuresAfterImplementationReframe
 	if strings.Contains(reason, "recurring class") || strings.Contains(reason, "recurring product-bug failure class(es)") {
 		t.Errorf("reason = %q, must not report a count of recurring classes", reason)
 	}
-	if strings.Count(ti.Body, specDecisionHeading) != 1 {
-		t.Errorf("body = %q, want exactly one spec-decision section", ti.Body)
+	if strings.Count(ti.SpecDecision, specDecisionHeading) != 1 {
+		t.Errorf("specDecision = %q, want exactly one section", ti.SpecDecision)
 	}
 }
 
-func TestRouteTestResult_DistinctFailureLoopUsesRaisedDefaultBackstop(t *testing.T) {
+func TestRouteTestResult_DistinctFailureLoopUsesBoundedDefaultBackstop(t *testing.T) {
 	t.Parallel()
 	e, tasks, _ := makeTestingTaskEngine(t)
 	now := time.Now().UTC()
@@ -3407,26 +3644,26 @@ func TestRouteTestResult_DistinctFailureLoopUsesRaisedDefaultBackstop(t *testing
 		taskID     string
 		attempts   int
 		wantOutput string
-		wantStatus string
+		wantStatus taskstatus.Status
 	}{
 		{
-			name:       "past old cap still reimplements",
-			taskID:     "t-default-cap-11",
-			attempts:   11,
+			name:       "below cap still reimplements",
+			taskID:     "t-default-cap-3",
+			attempts:   config.DefaultTestingMaxAttempts - 2,
 			wantOutput: "reimplement",
 			wantStatus: "in-progress",
 		},
 		{
-			name:       "one below new backstop still reimplements",
-			taskID:     "t-default-cap-24",
-			attempts:   24,
+			name:       "one below backstop still reimplements",
+			taskID:     "t-default-cap-4",
+			attempts:   config.DefaultTestingMaxAttempts - 1,
 			wantOutput: "reimplement",
 			wantStatus: "in-progress",
 		},
 		{
-			name:       "at new backstop escalates",
-			taskID:     "t-default-cap-25",
-			attempts:   25,
+			name:       "at backstop escalates",
+			taskID:     "t-default-cap-5",
+			attempts:   config.DefaultTestingMaxAttempts,
 			wantOutput: "escalated",
 			wantStatus: "human-required",
 		},
@@ -3480,8 +3717,8 @@ func TestRouteTestResult_FailAtCapWithoutInterveningCodeAuthorUsesGenericReason(
 	if strings.Contains(reason, "suspected acceptance-criteria conflict") {
 		t.Errorf("reason = %q, must not use spec-decision reframing without an author gap", reason)
 	}
-	if strings.Contains(ti.Body, specDecisionHeading) {
-		t.Errorf("body = %q, must not gain a spec-decision section without an author gap", ti.Body)
+	if ti.SpecDecision != "" {
+		t.Errorf("specDecision = %q, must stay empty without an author gap", ti.SpecDecision)
 	}
 }
 
@@ -3515,8 +3752,8 @@ func TestRouteTestResult_FailAtCapSpecDecisionEscalatesWhenAppendFails(t *testin
 	if reason := tasks.Reason("t-cap-append-fails"); !strings.Contains(reason, "suspected acceptance-criteria conflict") {
 		t.Errorf("reason = %q, want spec-decision reframing despite append failure", reason)
 	}
-	if strings.Contains(ti.Body, specDecisionHeading) {
-		t.Errorf("body = %q, want no spec-decision section when append fails", ti.Body)
+	if ti.SpecDecision != "" {
+		t.Errorf("specDecision = %q, want empty when sidecar write fails", ti.SpecDecision)
 	}
 }
 
@@ -3538,8 +3775,8 @@ func TestRouteTestResult_EmptyRecurringSpecDecisionSectionIsIdempotent(t *testin
 	if strings.Contains(section1, "Recurring fingerprint(s): .") || strings.Contains(section1, "Recurring fingerprint(s): \n") {
 		t.Errorf("section = %q, must not render a blank fingerprint list", section1)
 	}
-	if !strings.Contains(section1, testFailuresHeading) {
-		t.Errorf("section = %q, want a pointer to the latest %q section", section1, testFailuresHeading)
+	if !strings.Contains(section1, "current test failures sidecar") {
+		t.Errorf("section = %q, want a pointer to the current test failures sidecar", section1)
 	}
 
 	e, tasks := makeTestEngine(t)
@@ -3568,17 +3805,17 @@ func TestRouteTestResult_EmptyRecurringSpecDecisionSectionIsIdempotent(t *testin
 	}
 	route()
 	ti := mustGetTaskInfo(t, tasks, "t-cap-empty-idem")
-	first := ti.Body
+	first := ti.SpecDecision
 	if strings.Count(first, specDecisionHeading) != 1 {
-		t.Fatalf("body = %q, want exactly one spec-decision section", first)
+		t.Fatalf("specDecision = %q, want exactly one spec-decision section", first)
 	}
 	route()
 	ti = mustGetTaskInfo(t, tasks, "t-cap-empty-idem")
-	if ti.Body != first {
-		t.Errorf("body changed on idempotent rerun:\nfirst: %q\nsecond: %q", first, ti.Body)
+	if ti.SpecDecision != first {
+		t.Errorf("specDecision changed on idempotent rerun:\nfirst: %q\nsecond: %q", first, ti.SpecDecision)
 	}
-	if strings.Count(ti.Body, specDecisionHeading) != 1 {
-		t.Errorf("body = %q, want exactly one spec-decision section after rerun", ti.Body)
+	if strings.Count(ti.SpecDecision, specDecisionHeading) != 1 {
+		t.Errorf("specDecision = %q, want exactly one section after rerun", ti.SpecDecision)
 	}
 }
 
@@ -3618,8 +3855,8 @@ func TestRouteTestResult_ReDispatchDoesNotUsePriorCycleForSpecDecision(t *testin
 	if reason := tasks.Reason("t-redispatch-spec"); strings.Contains(reason, "suspected acceptance-criteria conflict") {
 		t.Errorf("reason = %q, must not reframe as spec-decision from prior-cycle evidence", reason)
 	}
-	if strings.Contains(ti.Body, specDecisionHeading) {
-		t.Errorf("body = %q, must not gain a spec-decision section from prior-cycle evidence", ti.Body)
+	if ti.SpecDecision != "" {
+		t.Errorf("specDecision = %q, must stay empty for prior-cycle evidence", ti.SpecDecision)
 	}
 }
 
@@ -3725,40 +3962,56 @@ func TestPrepareTestStepCompletionLedgerCoexistsWithTestFailures(t *testing.T) {
 
 	prepareTestVerdictAttemptVars(wfExec, testVerdictSourceStep, body)
 	output := buildOutput(report1)
-	if err := e.prepareTestStepCompletion(taskID, TaskInfo{ID: taskID}, &output, wfExec, &body); err != nil {
+	taskInfo := TaskInfo{ID: taskID}
+	if err := e.prepareTestStepCompletion(taskID, taskInfo, &output, wfExec, &body); err != nil {
 		t.Fatalf("first prepareTestStepCompletion: %v", err)
 	}
-	if current := currentTestFailures(body); current == "" || !strings.Contains(current, "threshold 3 still passes on one event") {
-		t.Fatalf("currentTestFailures = %q, want live report preserved in body:\n%s", current, body)
+	ti, err := tasks.GetTask(taskID)
+	if err != nil {
+		t.Fatalf("GetTask(%s): %v", taskID, err)
 	}
-	if strings.Count(body, acceptanceLedgerHeading) != 1 {
-		t.Fatalf("body = %q, want one acceptance ledger section", body)
+	taskInfo.CurrentTestFailures = ti.CurrentTestFailures
+	taskInfo.AcceptanceLedger = ti.AcceptanceLedger
+	if current := currentTestFailures(taskInfo.CurrentTestFailures); current == "" || !strings.Contains(current, "threshold 3 still passes on one event") {
+		t.Fatalf("currentTestFailures = %q, want live report preserved in sidecar", current)
+	}
+	if strings.Contains(body, testFailuresHeading) {
+		t.Fatalf("body still contains live test failures heading:\n%s", body)
+	}
+	if strings.Count(taskInfo.AcceptanceLedger, acceptanceLedgerHeading) != 1 {
+		t.Fatalf("acceptance ledger = %q, want one acceptance ledger section", taskInfo.AcceptanceLedger)
 	}
 	fp1 := wfExec.Variables["step."+testVerdictSourceStep+"."+testFailureFingerprintKey]
 	if fp1 == "" {
 		t.Fatalf("wfExec fingerprint empty after first completion; body:\n%s", body)
 	}
-	if strings.Count(body, ledgerEntryMarker(fp1)) != 1 {
-		t.Fatalf("body = %q, want one ledger marker for %s", body, fp1)
+	if strings.Count(taskInfo.AcceptanceLedger, ledgerEntryMarker(fp1)) != 1 {
+		t.Fatalf("acceptance ledger = %q, want one ledger marker for %s", taskInfo.AcceptanceLedger, fp1)
 	}
 
 	prepareTestVerdictAttemptVars(wfExec, testVerdictSourceStep, body)
 	output = buildOutput(report2)
-	if err := e.prepareTestStepCompletion(taskID, TaskInfo{ID: taskID}, &output, wfExec, &body); err != nil {
+	if err := e.prepareTestStepCompletion(taskID, taskInfo, &output, wfExec, &body); err != nil {
 		t.Fatalf("second prepareTestStepCompletion: %v", err)
 	}
+	ti, err = tasks.GetTask(taskID)
+	if err != nil {
+		t.Fatalf("GetTask(%s): %v", taskID, err)
+	}
+	taskInfo.CurrentTestFailures = ti.CurrentTestFailures
+	taskInfo.AcceptanceLedger = ti.AcceptanceLedger
 	fp2 := wfExec.Variables["step."+testVerdictSourceStep+"."+testFailureFingerprintKey]
 	if fp2 != fp1 {
 		t.Fatalf("fingerprint drifted across wording-only change: first=%q second=%q", fp1, fp2)
 	}
-	if current := currentTestFailures(body); current == "" || !strings.Contains(current, "every prior defect must stay fixed at once") {
-		t.Fatalf("currentTestFailures = %q, want latest live report preserved in body:\n%s", current, body)
+	if current := currentTestFailures(taskInfo.CurrentTestFailures); current == "" || !strings.Contains(current, "every prior defect must stay fixed at once") {
+		t.Fatalf("currentTestFailures = %q, want latest live report preserved in sidecar", current)
 	}
-	if strings.Count(body, acceptanceLedgerHeading) != 1 {
-		t.Fatalf("body = %q, want one acceptance ledger section after wording-drift rerun", body)
+	if body != "## Problem\nKeep all prior product-bug acceptance criteria green." {
+		t.Fatalf("body should stay unchanged after wording-drift rerun: %q", body)
 	}
-	if strings.Count(body, ledgerEntryMarker(fp1)) != 1 {
-		t.Fatalf("body = %q, want deduped acceptance ledger entry for %s", body, fp1)
+	if strings.Count(taskInfo.AcceptanceLedger, ledgerEntryMarker(fp1)) != 1 {
+		t.Fatalf("acceptance ledger = %q, want deduped acceptance ledger entry for %s", taskInfo.AcceptanceLedger, fp1)
 	}
 }
 
@@ -3829,5 +4082,264 @@ func TestRouteTestResult_ReDispatch_Escalates(t *testing.T) {
 	ti, _ := tasks.GetTask("t5")
 	if ti.Status != "human-required" {
 		t.Errorf("status = %q, want human-required", ti.Status)
+	}
+}
+
+func TestAdvanceStep_UnstartableSurfaceOpensPRWithoutRerunningTheTester(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.Save(*mustBuiltinDefinition(t, "testing-task")); err != nil {
+		t.Fatalf("save testing-task: %v", err)
+	}
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
+	tasks.Put(TaskInfo{
+		ID:        "t-advance",
+		Status:    taskstatus.Testing,
+		AgentMode: "headless",
+		Workflow: &Execution{
+			WorkflowID:  "testing-task",
+			CurrentStep: testVerdictSourceStep,
+			State:       ExecRunning,
+			Variables:   map[string]string{},
+			StartedAt:   time.Now().UTC(),
+		},
+	})
+	report := `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"k8s",` +
+		`"app_started":false,"start_command":"","unable_to_run_reason":"the host has no kubernetes context",` +
+		`"readiness_probe":{"command":"kubectl config view --minify","actual":"No current context",` +
+		`"output":"error: current-context must exist in order to minify","status":"unavailable"},` +
+		`"manual_probes":[],"automated_checks":[{"command":"go test ./pkg/...","actual":"Exit code 0","output":"ok","status":"pass"}]}`
+	if err := engine.AdvanceStep("t-advance", StepOutput{
+		StepID: testVerdictSourceStep,
+		Status: "completed",
+		Output: report,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := agents.CallCount(); got != 0 {
+		t.Fatalf("StartAgent calls = %d, want 0 — no rerun against an absent surface", got)
+	}
+	ti, _ := tasks.GetTask("t-advance")
+	if ti.Status != taskstatus.ReadyPR {
+		t.Fatalf("status = %q, want ready-pr", ti.Status)
+	}
+	if reason := tasks.Reason("t-advance"); !strings.Contains(reason, "k8s") {
+		t.Fatalf("reason = %q, want the surface named", reason)
+	}
+}
+
+func TestAdvanceStep_StaleSurfaceVarDoesNotMislabelALaterInfraFailure(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.Save(*mustBuiltinDefinition(t, "testing-task")); err != nil {
+		t.Fatalf("save testing-task: %v", err)
+	}
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
+	wf := &Execution{
+		WorkflowID:  "testing-task",
+		CurrentStep: testVerdictSourceStep,
+		State:       ExecWaiting,
+		Variables: map[string]string{
+			"step." + testVerdictSourceStep + "." + testSurfaceUnavailableKey: "k8s",
+		},
+		StartedAt: time.Now().UTC(),
+	}
+	tasks.Put(TaskInfo{ID: "t-stale", Status: taskstatus.Testing, AgentMode: "headless", Workflow: wf})
+
+	engine.ResumeStalled()
+
+	if got := agents.CallCount(); got != 1 {
+		t.Fatalf("StartAgent calls = %d, want 1 — the tester must be re-dispatched", got)
+	}
+	dispatched, _ := tasks.GetTask("t-stale")
+	if got := dispatched.Workflow.Variables["step."+testVerdictSourceStep+"."+testSurfaceUnavailableKey]; got != "" {
+		t.Errorf("surface var = %q, want the dispatch path to clear it", got)
+	}
+	if err := engine.AdvanceStep("t-stale", StepOutput{
+		StepID: testVerdictSourceStep,
+		Status: "failed",
+		Output: "provider crashed: context deadline exceeded",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ti, _ := tasks.GetTask("t-stale")
+	if ti.Status == taskstatus.ReadyPR {
+		t.Fatalf("an unrelated infra failure was routed as an unstartable surface: reason=%q", tasks.Reason("t-stale"))
+	}
+}
+
+func TestRouteTestResult_UnstartableSurfaceOpensPR(t *testing.T) {
+	t.Parallel()
+	e, tasks := makeTestEngine(t)
+	tasks.Put(TaskInfo{ID: "t-surface", Status: taskstatus.Testing})
+	wf := &Execution{
+		WorkflowID: "testing-task",
+		StartedAt:  time.Now().UTC(),
+		Variables: map[string]string{
+			"step." + testVerdictSourceStep + "." + testVerdictOutcomeKey:     testOutcomeInfraFailure,
+			"step." + testVerdictSourceStep + "." + testSurfaceUnavailableKey: "k8s",
+		},
+	}
+	out, err := e.execRouteTestResult("t-surface", &Step{ID: "route_test"}, wf, mustGetTaskInfo(t, tasks, "t-surface"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Output != "surface unavailable — opened pr" {
+		t.Errorf("output = %q, want surface unavailable — opened pr", out.Output)
+	}
+	ti, _ := tasks.GetTask("t-surface")
+	if ti.Status != taskstatus.ReadyPR {
+		t.Errorf("status = %q, want ready-pr", ti.Status)
+	}
+	if reason := tasks.Reason("t-surface"); !strings.Contains(reason, "k8s") {
+		t.Errorf("reason = %q, want the surface named", reason)
+	}
+}
+
+func TestRouteTestResult_UnstartableSurfaceEscalatesWhenOpenPRDisabled(t *testing.T) {
+	t.Parallel()
+	e, tasks := makeTestEngine(t)
+	e.SetOpenPROnUnrunnableGate(false)
+	tasks.Put(TaskInfo{ID: "t-surface-off", Status: taskstatus.Testing})
+	wf := &Execution{
+		WorkflowID: "testing-task",
+		StartedAt:  time.Now().UTC(),
+		Variables: map[string]string{
+			"step." + testVerdictSourceStep + "." + testVerdictOutcomeKey:     testOutcomeInfraFailure,
+			"step." + testVerdictSourceStep + "." + testSurfaceUnavailableKey: "k8s",
+		},
+	}
+	if _, err := e.execRouteTestResult("t-surface-off", &Step{ID: "route_test"}, wf, mustGetTaskInfo(t, tasks, "t-surface-off")); err != nil {
+		t.Fatal(err)
+	}
+	ti, _ := tasks.GetTask("t-surface-off")
+	if ti.Status != taskstatus.HumanRequired {
+		t.Errorf("status = %q, want human-required", ti.Status)
+	}
+	if reason := tasks.Reason("t-surface-off"); !strings.Contains(reason, "k8s") {
+		t.Errorf("reason = %q, want the surface named", reason)
+	}
+}
+
+func TestProseUnstartableClaim_ReadsOnlyTheStructuralFields(t *testing.T) {
+	t.Parallel()
+	full := "surface_kind: k8s\napp_started: false\nunable_to_run_reason: this host has no kubernetes cluster\n" +
+		"readiness_probe: kubectl get nodes -> The connection to the server was refused\n" +
+		"automated_checks: go test ./... -> ok, all packages pass\n\nTEST_VERDICT: PASS\n"
+	cases := []struct {
+		name   string
+		report string
+		want   bool
+	}{
+		{name: "a complete prose claim", report: full, want: true},
+		{name: "a denial that explains itself", report: strings.Replace(full, "app_started: false", "app_started: false (webkit is missing here)", 1), want: true},
+		{name: "a denial written as a sentence", report: strings.Replace(full, "app_started: false", "app_started: never started, the binary is absent", 1), want: true},
+		{name: "no surface named", report: strings.Replace(full, "surface_kind: k8s\n", "", 1)},
+		{name: "an exempt surface", report: strings.Replace(full, "surface_kind: k8s", "surface_kind: library", 1)},
+		{name: "the app was started", report: strings.Replace(full, "app_started: false", "app_started: true", 1)},
+		{name: "an unreadable app_started", report: strings.Replace(full, "app_started: false", "app_started: partially, the worker came up", 1)},
+		{name: "no reason given", report: strings.Replace(full, "unable_to_run_reason: this host has no kubernetes cluster\n", "", 1)},
+		{name: "no probe recorded", report: strings.Replace(full, "readiness_probe: kubectl get nodes -> The connection to the server was refused\n", "", 1)},
+		{name: "a failure also reported", report: full + "\n## Test Failures\n\nThe save button does nothing.\n"},
+		{name: "a structured report", report: `{"verdict":"PASS","outcome":"pass","surface_kind":"k8s","app_started":false}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := proseUnstartableClaim(tc.report, TaskInfo{}); got != tc.want {
+				t.Fatalf("proseUnstartableClaim = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestApplyTestVerdictCompletion_ProseClaimAsksForTheSchemaForm(t *testing.T) {
+	t.Parallel()
+	report := "surface_kind: k8s\napp_started: false\nunable_to_run_reason: this host has no kubernetes cluster\n" +
+		"readiness_probe: kubectl get nodes -> The connection to the server was refused\n" +
+		"automated_checks: go test ./... -> ok, all packages pass\n\nTEST_VERDICT: PASS\n"
+	wf := &Execution{Variables: map[string]string{}}
+	out := StepOutput{StepID: testVerdictSourceStep, Status: "completed", Output: report}
+
+	violation, outcome, _ := applyTestVerdictCompletion(wf, &out, "## Problem\nbody", TaskInfo{})
+
+	if outcome != testOutcomeMissingEvidence || violation != testProtocolMissingEvidence {
+		t.Fatalf("outcome/violation = %q/%q, want a prose PASS to stay unroutable", outcome, violation)
+	}
+	if wf.Variables["step."+testVerdictSourceStep+"."+testSurfaceUnavailableKey] != "" {
+		t.Fatal("a prose report routed to a PR without a schema-shaped re-emission")
+	}
+	if wf.Variables["step."+testVerdictSourceStep+"."+testSchemaReaskKey] == "" {
+		t.Fatal("the runner was not asked for the schema form, so the retry repeats the same prose")
+	}
+}
+
+func TestRouteTestResult_ProseClaimReasksForSchemaNotEvidence(t *testing.T) {
+	t.Parallel()
+	e, tasks := makeTestEngine(t)
+	tasks.Put(TaskInfo{ID: "t-prose", Status: taskstatus.Testing})
+	wf := &Execution{
+		WorkflowID: "testing-task",
+		StartedAt:  time.Now().UTC(),
+		Variables: map[string]string{
+			"step." + testVerdictSourceStep + "." + testVerdictTaintedKey: testProtocolMissingEvidence,
+			"step." + testVerdictSourceStep + "." + testSchemaReaskKey:    "1",
+		},
+	}
+	if _, err := e.execRouteTestResult("t-prose", &Step{ID: "route_test"}, wf, mustGetTaskInfo(t, tasks, "t-prose")); err != nil && !errors.Is(err, errStepParked) {
+		t.Fatal(err)
+	}
+	note := wf.Variables[testingReaskNoteVar]
+	if !strings.Contains(note, "schema") {
+		t.Fatalf("reask note = %q, want the schema-shaped re-emission asked for", note)
+	}
+	if strings.Contains(note, "lacked machine-checkable") {
+		t.Fatal("the runner was told its evidence was missing when its own fields already made the claim")
+	}
+}
+
+func TestReaskNotes_NameNoRoutingConsequence(t *testing.T) {
+	t.Parallel()
+	for name, note := range map[string]string{
+		"schema":          schemaReask,
+		"missing":         missingEvidenceReask,
+		"fix suggestions": fixSuggestionsReask,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			lower := strings.ToLower(note)
+			for _, leak := range []string{"routes the task", "opens a pr", "instead of a rerun", string(taskstatus.ReadyPR)} {
+				if strings.Contains(lower, leak) {
+					t.Fatalf("re-ask reaches the runner prompt and names a routing consequence (%q):\n%s", leak, note)
+				}
+			}
+		})
+	}
+}
+
+func TestRouteTestResult_ProseClaimEscalatesWithItsOwnReason(t *testing.T) {
+	t.Parallel()
+	e, tasks := makeTestEngine(t)
+	tasks.Put(TaskInfo{ID: "t-prose-exhausted", Status: taskstatus.Testing})
+	wf := &Execution{
+		WorkflowID: "testing-task",
+		StartedAt:  time.Now().UTC(),
+		Variables: map[string]string{
+			"step." + testVerdictSourceStep + "." + testVerdictTaintedKey: testProtocolMissingEvidence,
+			"step." + testVerdictSourceStep + "." + testSchemaReaskKey:    "1",
+			testingAutoRetryKey(testOutcomeMissingEvidence):               strconv.Itoa(testingAutoRetryCap),
+		},
+	}
+	if _, err := e.execRouteTestResult("t-prose-exhausted", &Step{ID: "route_test"}, wf, mustGetTaskInfo(t, tasks, "t-prose-exhausted")); err != nil {
+		t.Fatal(err)
+	}
+	reason := tasks.Reason("t-prose-exhausted")
+	if strings.Contains(reason, "lacked machine-checkable evidence") {
+		t.Fatalf("the operator is sent after missing evidence for a report that had it: %q", reason)
+	}
+	if !strings.Contains(reason, "schema") {
+		t.Fatalf("reason = %q, want the operator pointed at the provider's schema support", reason)
 	}
 }

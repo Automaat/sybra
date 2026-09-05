@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -14,6 +15,14 @@ const (
 	LegacySchemaVersion  = 1
 	CurrentSchemaVersion = 2
 )
+
+// ErrUnknownConfigKey marks a config.yaml that is valid YAML but names a key
+// this build does not know — typically a key removed by an upgrade, left
+// behind in an externally-rendered file. It is a statement about the schema
+// and nothing else, so callers must not read it as "the config is
+// unreadable": a diagnostic can still resolve every other value, and a client
+// can still reach the server.
+var ErrUnknownConfigKey = errors.New("unknown config key")
 
 // FileConfig preserves what the operator wrote, including whether a key was
 // omitted entirely. Resolve consumes it to produce a concrete ResolvedConfig.
@@ -119,41 +128,85 @@ func yamlNodeAt(node *yaml.Node, path ...string) (*yaml.Node, bool) {
 	return node, true
 }
 
+// ParseFileConfig parses config.yaml and fails on any unknown key.
 func ParseFileConfig(data []byte) (*FileConfig, error) {
+	cfg, schemaErr, err := parseFileConfigLenient(data)
+	switch {
+	case err != nil:
+		return nil, err
+	case schemaErr != nil:
+		return nil, schemaErr
+	case cfg == nil:
+		// parseFileConfigLenient never returns this combination. Stating it
+		// anyway is what lets the static analysis prove every caller's
+		// dereference safe, rather than leaving it to be inferred.
+		return nil, errors.New("parse config: no document")
+	}
+	return cfg, nil
+}
+
+// parseFileConfigLenient returns the parsed config and the unknown-key error
+// separately, so a diagnostic can report the bad key and still read every
+// other value. err is reserved for input this cannot parse at all.
+func parseFileConfigLenient(data []byte) (parsed *FileConfig, schemaErr, err error) {
 	var root yaml.Node
 	if err := yaml.Unmarshal(data, &root); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	cfg := &FileConfig{root: &root, data: append([]byte(nil), data...)}
 	if root.Kind == 0 {
 		cfg.schemaVersion = LegacySchemaVersion
-		return cfg, nil
+		return cfg, nil, nil
 	}
 	schemaVersion, hasVersion, err := parseSchemaVersion(&root)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	cfg.schemaVersion = schemaVersion
 	cfg.hasSchemaVersion = hasVersion
 	validateRoot := &root
+	var skipped []string
 	if cfg.schemaVersion >= CurrentSchemaVersion {
-		normalized, warnings, err := NormalizeV2Document(&root)
+		// Lenient: an unknown key at a namespace boundary is rejected here
+		// rather than by validateKnownConfigKeys below, so a strict normalizer
+		// would abort before the caller ever sees a schema error it could
+		// report. Collect and skip; the strict wrapper turns the same keys
+		// back into a hard failure.
+		normalized, warnings, unknown, err := normalizeV2Document(&root, &unknownKeySink{lenient: true})
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
+		skipped = unknown
 		cfg.normalizedRoot = normalized
 		cfg.warnings = warnings
 		cfg.normalizedData, err = marshalYAMLDocument(normalized)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		validateRoot = normalized
 		cfg.warnings = append(cfg.warnings, legacyFieldAliasWarnings(normalized)...)
 	}
-	if err := validateKnownConfigKeys(validateRoot, cfg.schemaVersion); err != nil {
-		return nil, err
+	return cfg, unknownKeyError(skipped, validateKnownConfigKeys(validateRoot, cfg.schemaVersion)), nil
+}
+
+// unknownKeyError merges the keys the normalizer skipped with the one the
+// schema walk rejected into a single sentinel-matching error. Reporting every
+// stale key at once matters for the case this exists for: a rendered config
+// left behind by an upgrade usually carries several, and one-per-run turns a
+// single fix into a sequence of them.
+func unknownKeyError(skipped []string, validateErr error) error {
+	if len(skipped) == 0 {
+		return validateErr
 	}
-	return cfg, nil
+	quoted := make([]string, 0, len(skipped))
+	for _, key := range skipped {
+		quoted = append(quoted, fmt.Sprintf("%q", key))
+	}
+	msg := strings.Join(quoted, ", ")
+	if validateErr != nil {
+		msg += ", " + strings.TrimPrefix(validateErr.Error(), ErrUnknownConfigKey.Error()+" ")
+	}
+	return fmt.Errorf("%w %s", ErrUnknownConfigKey, msg)
 }
 
 func parseSchemaVersion(root *yaml.Node) (version int, hasVersion bool, err error) {
@@ -246,10 +299,12 @@ var durationAliasSpecs = []durationAliasSpec{
 	{aliasPath: []string{"harness_evolution", "interval"}, legacyPath: []string{"harness_evolution", "interval_hours"}, fieldPath: []string{"HarnessEvolve", "IntervalHours"}, unit: unitHours, kind: kindFloat},
 	{aliasPath: []string{"routing", "interval"}, legacyPath: []string{"routing", "interval_hours"}, fieldPath: []string{"Routing", "IntervalHours"}, unit: unitHours, kind: kindFloat},
 	{aliasPath: []string{"harness_evolution", "lookback"}, legacyPath: []string{"harness_evolution", "lookback_hours"}, fieldPath: []string{"HarnessEvolve", "LookbackHours"}, unit: unitHours, kind: kindFloat},
+	{aliasPath: []string{"harness_evolution", "max_report_age"}, legacyPath: []string{"harness_evolution", "max_report_age_hours"}, fieldPath: []string{"HarnessEvolve", "MaxReportAgeHours"}, unit: unitHours, kind: kindFloat},
 	{aliasPath: []string{"auto_update", "poll"}, legacyPath: []string{"auto_update", "poll_seconds"}, fieldPath: []string{"AutoUpdate", "PollSeconds"}, unit: unitSeconds, kind: kindInt},
 	{aliasPath: []string{"auto_update", "restart_delay"}, legacyPath: []string{"auto_update", "restart_delay_seconds"}, fieldPath: []string{"AutoUpdate", "RestartDelaySeconds"}, unit: unitSeconds, kind: kindInt},
 	{aliasPath: []string{"auto_update", "coalesce"}, legacyPath: []string{"auto_update", "coalesce_seconds"}, fieldPath: []string{"AutoUpdate", "CoalesceSeconds"}, unit: unitSeconds, kind: kindInt},
 	{aliasPath: []string{"providers", "health_check", "interval"}, legacyPath: []string{"providers", "health_check", "interval_seconds"}, fieldPath: []string{"Providers", "HealthCheck", "IntervalSeconds"}, unit: unitSeconds, kind: kindInt},
+	{aliasPath: []string{"providers", "health_check", "auth_failure_cooldown"}, legacyPath: []string{"providers", "health_check", "auth_failure_cooldown_seconds"}, fieldPath: []string{"Providers", "HealthCheck", "AuthFailureCooldownSeconds"}, unit: unitSeconds, kind: kindInt},
 	{aliasPath: []string{"providers", "claude", "rate_limit_cooldown"}, legacyPath: []string{"providers", "claude", "rate_limit_cooldown_seconds"}, fieldPath: []string{"Providers", "Claude", "RateLimitCooldownSeconds"}, unit: unitSeconds, kind: kindInt},
 	{aliasPath: []string{"providers", "codex", "rate_limit_cooldown"}, legacyPath: []string{"providers", "codex", "rate_limit_cooldown_seconds"}, fieldPath: []string{"Providers", "Codex", "RateLimitCooldownSeconds"}, unit: unitSeconds, kind: kindInt},
 	{aliasPath: []string{"providers", "copilot", "rate_limit_cooldown"}, legacyPath: []string{"providers", "copilot", "rate_limit_cooldown_seconds"}, fieldPath: []string{"Providers", "Copilot", "RateLimitCooldownSeconds"}, unit: unitSeconds, kind: kindInt},
@@ -273,11 +328,24 @@ var durationAliasSpecs = []durationAliasSpec{
 }
 
 var fieldAliasSpecs = []fieldAliasSpec{
+	{aliasPath: []string{"github", "webhook", "enabled"}, legacyPath: []string{"webhook", "enabled"}, fieldPath: []string{"GitHub", "Webhook", "Enabled"}},
+	{aliasPath: []string{"github", "webhook", "port"}, legacyPath: []string{"webhook", "port"}, fieldPath: []string{"GitHub", "Webhook", "Port"}},
+	{aliasPath: []string{"github", "webhook", "task_secret"}, legacyPath: []string{"webhook", "secret"}, fieldPath: []string{"GitHub", "Webhook", "TaskSecret"}},
 	{aliasPath: []string{"agent", "post_result_cost_usd"}, legacyPath: []string{"agent", "max_cost_usd"}, fieldPath: []string{"Agent", "MaxCostUSD"}},
 	{aliasPath: []string{"agent", "max_assistant_events"}, legacyPath: []string{"agent", "max_turns"}, fieldPath: []string{"Agent", "MaxTurns"}},
 	{aliasPath: []string{"agent", "checkpoint_on_assistant_event_ceiling"}, legacyPath: []string{"agent", "checkpoint_on_turn_ceiling"}, fieldPath: []string{"Agent", "CheckpointOnTurnCeiling"}},
 	{aliasPath: []string{"agent", "assistant_event_cost_fraction"}, legacyPath: []string{"agent", "turn_cost_fraction"}, fieldPath: []string{"Agent", "TurnCostFraction"}},
 	{aliasPath: []string{"agent", "assistant_event_multiplier"}, legacyPath: []string{"agent", "turn_multiplier"}, fieldPath: []string{"Agent", "TurnMultiplier"}},
+	// review_rounds_per_hour briefly lived on GitHubConfig (schema v2, one day)
+	// before moving to AgentDefaults. Unlike every other entry in this table,
+	// aliasPath and legacyPath cross parents (agent vs github) — that's fine
+	// for validation and setFieldByPathFromNode (both are keyed off fieldPath,
+	// not the parent), but migrateNodeToCanonical only renames a leaf in
+	// place, so a raw github.review_rounds_per_hour survives migration under
+	// integrations.github rather than moving to execution.agent. Harmless
+	// (Resolve applies the same alias on the next parse) but not perfectly
+	// canonicalized.
+	{aliasPath: []string{"agent", "review_rounds_per_hour"}, legacyPath: []string{"github", "review_rounds_per_hour"}, fieldPath: []string{"Agent", "ReviewRoundsPerHour"}},
 }
 
 type aliasIndex struct {
@@ -286,6 +354,18 @@ type aliasIndex struct {
 
 type fieldAliasIndex struct {
 	byParent map[string]map[string]fieldAliasSpec
+}
+
+// removedConfigKeys lists config keys that used to exist but were deleted
+// outright (not renamed — see fieldAliasSpecs for renames). A pre-existing
+// config.yaml can still carry one of these even after the field is gone from
+// the Go struct — a full re-serialize (e.g. Settings save, or config dump)
+// writes every field including zero values, so "removed but never actually
+// read" keys like agent.mode routinely end up persisted on disk. Validation
+// must keep loading such a file instead of failing closed with "unknown
+// config key", or every operator upgrading past the removal breaks startup.
+var removedConfigKeys = map[string]map[string]bool{
+	"agent": {"mode": true},
 }
 
 func newAliasIndex(specs []durationAliasSpec) aliasIndex {
@@ -435,12 +515,21 @@ func validateNodeAgainstType(node *yaml.Node, typ reflect.Type, path []string, a
 			if _, ok := allowedFieldAliases[key]; ok {
 				continue
 			}
+			if parent == "" && key == "webhook" {
+				if err := validateNodeAgainstType(valNode, reflect.TypeFor[WebhookConfig](), []string{"webhook"}, aliases, fieldAliases); err != nil {
+					return err
+				}
+				continue
+			}
+			if removedConfigKeys[parent][key] {
+				continue
+			}
 			suggestion := nearestKey(key, knownKeys(fields, allowedAliases, allowedFieldAliases))
-			msg := fmt.Sprintf("unknown config key %q", joinPath(append(path, key)))
+			msg := fmt.Sprintf("%q", joinPath(append(path, key)))
 			if suggestion != "" {
 				msg += fmt.Sprintf(" (did you mean %q?)", suggestion)
 			}
-			return fmt.Errorf("%s", msg)
+			return fmt.Errorf("%w %s", ErrUnknownConfigKey, msg)
 		}
 	case reflect.Slice, reflect.Array:
 		if node.Kind != yaml.SequenceNode {

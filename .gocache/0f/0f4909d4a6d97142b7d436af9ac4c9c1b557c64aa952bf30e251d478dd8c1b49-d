@@ -1,0 +1,6 @@
+./csistoragecapacity.go
+./doc.go
+./generated_expansion.go
+./storage_client.go
+./volumeattachment.go
+./volumeattributesclass.go

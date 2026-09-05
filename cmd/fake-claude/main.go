@@ -76,6 +76,10 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/Automaat/sybra/internal/gitexec"
+
+	"github.com/Automaat/sybra/internal/fsutil"
 )
 
 // scenarioFileLockSuffix is appended to FAKE_CLAUDE_SCENARIO_FILE to derive a
@@ -102,58 +106,51 @@ func cleanEnvPath(p string) string {
 	return abs
 }
 
+// resolvedPrompt is the prompt text resolved once in main (argv for the
+// old positional shape, stdin for the new one) — os.Args is safe to read
+// repeatedly from any scenario handler, but stdin is a one-shot resource
+// already consumed by the time handlers run, so they must read this
+// instead of calling promptArg(os.Args) themselves.
+var resolvedPrompt string
+
 func main() {
 	// Log args for test verification.
 	if logFile := cleanEnvPath(os.Getenv("FAKE_CLAUDE_ARGS_LOG")); logFile != "" {
-		_ = writeArgsLog(logFile, []byte(strings.Join(os.Args[1:], "\n")))
+		_ = writeCaptureLog(logFile, []byte(strings.Join(os.Args[1:], "\n")))
 	}
 
 	scenario := popScenario()
 	prompt := promptArg(os.Args)
-	if prompt == "" && scenarioNeedsPromptContext(scenario) {
-		prompt = readInitialPrompt(os.Stdin)
+	if prompt == "" {
+		if steerableArgs(os.Args) {
+			// Steerable scenarios control exactly when to read a turn.
+			if scenarioNeedsPromptContext(scenario) {
+				prompt = readInitialPrompt(os.Stdin)
+			}
+		} else {
+			// Non-steerable: one write, closed right after — always safe.
+			prompt = readPlainStdinPrompt(os.Stdin)
+		}
 	}
+	if logFile := cleanEnvPath(os.Getenv("FAKE_CLAUDE_STDIN_LOG")); logFile != "" {
+		_ = writeCaptureLog(logFile, []byte(prompt))
+	}
+	resolvedPrompt = prompt
 	if !runScenario(scenario, promptTaskID(prompt)) {
 		fmt.Fprintf(os.Stderr, "unknown scenario: %s\n", scenario)
 		os.Exit(2)
 	}
 }
 
-func writeArgsLog(logFile string, data []byte) error {
-	dir := filepath.Dir(logFile)
-	tmp, err := os.CreateTemp(dir, ".claude-args-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	cleanup := true
-	defer func() {
-		if cleanup {
-			_ = os.Remove(tmpName)
-		}
-	}()
-
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Chmod(tmpName, 0o644); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpName, logFile); err != nil {
-		return err
-	}
-	cleanup = false
-	return nil
+func writeCaptureLog(logFile string, data []byte) error {
+	return fsutil.AtomicWriteMode(logFile, data, 0o644)
 }
 
 var scenarioHandlers = map[string]func(string){
 	"success":                          func(string) { runSuccess() },
 	"no_receipt":                       func(string) { runSuccessNoReceipt() },
 	"high_cost":                        func(string) { runHighCost() },
+	"high_cost_mid_stream":             func(string) { runHighCostMidStream() },
 	"write_sidecar_success":            runWriteSidecarSuccess,
 	"write_sidecar_success_no_receipt": runWriteSidecarSuccessNoReceipt,
 	"revise_plan_sidecars":             runRevisePlanSidecars,
@@ -169,6 +166,11 @@ var scenarioHandlers = map[string]func(string){
 	"test_pass":                        func(string) { runTestPass() },
 	"test_pass_verbose":                func(string) { runTestPassVerbose() },
 	"test_fail":                        func(string) { runTestFail() },
+	"test_fail_large_1":                func(string) { runTestFailLarge(1) },
+	"test_fail_large_2":                func(string) { runTestFailLarge(2) },
+	"test_fail_large_3":                func(string) { runTestFailLarge(3) },
+	"test_fail_large_4":                func(string) { runTestFailLarge(4) },
+	"test_fail_large_5":                func(string) { runTestFailLarge(5) },
 	"test_infra_failure":               func(string) { runTestInfraFailure() },
 	"tool_result_large":                func(string) { runToolResultLarge() },
 	"malformed_tool_call_once":         func(string) { runMalformedToolCallOnce() },
@@ -220,6 +222,21 @@ func scenarioNeedsPromptContext(scenario string) bool {
 	}
 }
 
+// steerableArgs reports whether this invocation used the steerable
+// stream-json stdin protocol (one JSON "user" message per line, stdin kept
+// open for further turns) rather than the non-steerable one-shot plain-text
+// delivery (see internal/agent/provider_claude.go's two BuildHeadlessInvocation
+// branches).
+func steerableArgs(args []string) bool {
+	for i, arg := range args {
+		if arg == "--input-format" && i+1 < len(args) && args[i+1] == "stream-json" {
+			return true
+		}
+	}
+	return false
+}
+
+// readInitialPrompt reads one steerable stream-json "user" message line.
 func readInitialPrompt(r io.Reader) string {
 	br := bufio.NewReader(r)
 	line, err := br.ReadBytes('\n')
@@ -227,6 +244,14 @@ func readInitialPrompt(r io.Reader) string {
 		return ""
 	}
 	return parseUserPromptLine(line)
+}
+
+// readPlainStdinPrompt reads the entire non-steerable one-shot prompt: raw
+// text, no stream-json envelope, stdin closed by the caller right after the
+// write (see writeAndCloseHeadlessPrompt).
+func readPlainStdinPrompt(r io.Reader) string {
+	data, _ := io.ReadAll(r)
+	return strings.TrimSpace(string(data))
 }
 
 func parseUserPromptLine(line []byte) string {
@@ -286,10 +311,8 @@ func runBestOfNJudge() {
 }
 
 func runGitIn(dir string, args ...string) {
-	cmd := exec.CommandContext(context.Background(), "git", args...)
-	cmd.Dir = dir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		emitResult("best_of_n_attempt: git " + strings.Join(args, " ") + " failed: " + err.Error() + ": " + string(out))
+	if _, err := gitexec.CombinedOutput(context.Background(), gitexec.Options{Dir: dir}, args...); err != nil {
+		emitResult("best_of_n_attempt: " + err.Error())
 		os.Exit(1)
 	}
 }
@@ -306,7 +329,7 @@ func runScenario(scenario, taskID string) bool {
 func runSuccess() {
 	emitSystem()
 	emitAssistant("Working on it...")
-	emitResult(withReceiptFromPrompt(promptArg(os.Args), "Task completed successfully."))
+	emitResult(withReceiptFromPrompt(resolvedPrompt, "Task completed successfully."))
 }
 
 func runSuccessNoReceipt() {
@@ -440,13 +463,7 @@ git push origin "HEAD:refs/heads/$branch" >/dev/null 2>&1
 }
 
 func gitOutput(dir string, args ...string) (string, error) {
-	cmd := exec.CommandContext(context.Background(), "git", args...)
-	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
-	}
-	return strings.TrimSpace(string(out)), nil
+	return gitexec.Output(context.Background(), gitexec.Options{Dir: dir}, args...)
 }
 
 func runEvaluate(taskID string) {
@@ -472,6 +489,12 @@ func runTestFail() {
 	emitResult(testFailureReport() + "\nTEST_VERDICT: FAIL")
 }
 
+func runTestFailLarge(n int) {
+	emitSystem()
+	emitAssistant(fmt.Sprintf("Found large defect report %d against the task.", n))
+	emitResult(testFailureReportLarge(n) + "\nTEST_VERDICT: FAIL")
+}
+
 func runTestInfraFailure() {
 	emitSystem()
 	emitAssistant("The app could not be exercised in this harness.")
@@ -486,6 +509,19 @@ func testFailureReport() string {
 		"Actual output:\n```text\nwrong output\n```\n\n" +
 		"Expected output: expected output.\n\n" +
 		"Code evidence:\n```text\ninternal/fake.go:42: return \"wrong output\"\n```"
+}
+
+func testFailureReportLarge(n int) string {
+	repro := fmt.Sprintf("variant-%d", n)
+	body := strings.Repeat("This failing path must stay fixed everywhere across the whole surface. ", 220)
+	return "## Test Failures\n\n" +
+		"Classification: product_bug\n\n" +
+		fmt.Sprintf("Requirement tested: large regression %d must not recur.\n\n", n) +
+		"Command run:\n```sh\nrg -n " + repro + " .\n```\n\n" +
+		"Actual output:\n```text\n" + repro + " wrong output\n" + body + "\n```\n\n" +
+		"Expected output: " + repro + " expected output.\n\n" +
+		"Code evidence:\n```text\ninternal/fake.go:42: return \"" + repro + " wrong output\"\n```\n\n" +
+		"Notes:\n" + body
 }
 
 func testInfraFailureReport() string {
@@ -580,7 +616,9 @@ func runSignalKill() {
 func runHang() {
 	emitSystem()
 	emitAssistant("Hanging...")
-	select {} // block until SIGTERM/SIGKILL arrives
+	for {
+		time.Sleep(time.Hour)
+	}
 }
 
 // runMalformedPROutput emits a long stream of malformed PR-URL fragments
@@ -602,16 +640,16 @@ func runMalformedPROutput() {
 func runWriteSidecarSuccess(taskID string) {
 	emitSystem()
 	emitAssistant("Writing fake sidecar...")
-	for _, path := range extractSidecarPaths(promptArg(os.Args)) {
+	for _, path := range extractSidecarPaths(resolvedPrompt) {
 		_ = os.WriteFile(path, []byte(fakeSidecarContent(path, taskID, "fake-claude")), 0o644)
 	}
-	emitResult(withReceiptFromPrompt(promptArg(os.Args), "Sidecar written."))
+	emitResult(withReceiptFromPrompt(resolvedPrompt, "Sidecar written."))
 }
 
 func runWriteSidecarSuccessNoReceipt(taskID string) {
 	emitSystem()
 	emitAssistant("Writing fake sidecar...")
-	for _, path := range extractSidecarPaths(promptArg(os.Args)) {
+	for _, path := range extractSidecarPaths(resolvedPrompt) {
 		_ = os.WriteFile(path, []byte(fakeSidecarContent(path, taskID, "fake-claude")), 0o644)
 	}
 	emitResult("Sidecar written.")
@@ -621,7 +659,7 @@ func runRevisePlanSidecars(taskID string) {
 	emitSystem()
 	emitAssistant("Revising fake plan sidecars...")
 	paths := map[string]string{}
-	for _, path := range extractSidecarPaths(promptArg(os.Args)) {
+	for _, path := range extractSidecarPaths(resolvedPrompt) {
 		_ = os.WriteFile(path, []byte(fakeSidecarContent(path, taskID, "fake-claude-revision")), 0o644)
 		base := filepath.Base(path)
 		switch {
@@ -665,7 +703,7 @@ func runRevisePlanSidecars(taskID string) {
 func runPlanCriticSuccess(taskID string) {
 	emitSystem()
 	emitAssistant("Critiquing plan...")
-	for _, path := range extractSidecarPaths(promptArg(os.Args)) {
+	for _, path := range extractSidecarPaths(resolvedPrompt) {
 		if strings.Contains(filepath.Base(path), "sybra-critique") {
 			_ = os.WriteFile(path, []byte("# Plan Critique\n\n## Verdict: REFINE\n\n- Consider edge case X.\n"), 0o644)
 		}
@@ -673,7 +711,11 @@ func runPlanCriticSuccess(taskID string) {
 	if taskID != "" {
 		runCLI("update", taskID, "--plan-critique", "# Plan Critique\n\n## Verdict: REFINE\n\n- Consider edge case X.\n")
 	}
-	emitResult("Critique saved.")
+	// The critique_plan step's output_schema forces the final message to be
+	// the bare JSON verdict object (see ExtractPlanCritiqueVerdict) — a plain
+	// prose result here reads as a malformed verdict and sends the workflow
+	// into its bounded retry/escalate path instead of review_plan.
+	emitResult(`{"verdict":"REFINE"}`)
 }
 
 func runPlanCriticNoSave() {
@@ -821,6 +863,28 @@ func runHighCost() {
 	emit(event)
 }
 
+// runHighCostMidStream emits an assistant event whose own usage block alone
+// prices well over any reasonable MaxCostUSD, with no total_cost_usd anywhere
+// — proving the mid-stream live-cost ceiling (not the terminal-result cost
+// check) is what stops the run. A trailing result line must never be reached
+// if the pre-emption works.
+func runHighCostMidStream() {
+	emitSystem()
+	emit(map[string]any{
+		"type": "assistant",
+		"message": map[string]any{
+			"content": []any{
+				map[string]any{"type": "text", "text": "working on it"},
+			},
+			"usage": map[string]any{
+				"input_tokens":  5000000,
+				"output_tokens": 0,
+			},
+		},
+	})
+	emitResult("should never complete")
+}
+
 func runMalformedToolCallOnce() {
 	_ = readInitialPrompt(os.Stdin)
 	emitSystem()
@@ -899,7 +963,7 @@ var receiptMarkerRe = regexp.MustCompile(`<!-- sybra-skill-receipt [^>]+ -->`)
 
 func promptArg(args []string) string {
 	for i, arg := range args {
-		if arg == "-p" && i+1 < len(args) {
+		if arg == "-p" && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
 			return args[i+1]
 		}
 	}

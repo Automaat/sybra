@@ -1,23 +1,16 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
-	"log/slog"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/Automaat/sybra/internal/config"
-	"github.com/Automaat/sybra/internal/project"
-	"github.com/Automaat/sybra/internal/sybra/clusterlead"
-	"github.com/Automaat/sybra/internal/task"
 )
 
-const clusterCmdTimeout = 60 * time.Second
-
-func cmdCluster(cfg *config.Config, tasks *task.Manager, projects *project.Store, args []string, jsonOut bool) int {
+func cmdCluster(cfg *config.Config, api *apiClient, args []string, jsonOut bool) int {
 	if len(args) == 0 {
 		return fatal(jsonOut, "usage: sybra-cli cluster <nodes|reassign|gen-cert> [flags]")
 	}
@@ -25,7 +18,7 @@ func cmdCluster(cfg *config.Config, tasks *task.Manager, projects *project.Store
 	case "nodes":
 		return cmdClusterNodes(cfg, jsonOut)
 	case "reassign":
-		return cmdClusterReassign(cfg, tasks, projects, args[1:], jsonOut)
+		return cmdClusterReassign(cfg, api, args[1:], jsonOut)
 	case "gen-cert":
 		return cmdClusterGenCert(args[1:], jsonOut)
 	default:
@@ -118,7 +111,7 @@ func splitLeadingID(args []string) (id string, rest []string) {
 	return "", args
 }
 
-func cmdClusterReassign(cfg *config.Config, tasks *task.Manager, projects *project.Store, args []string, jsonOut bool) int {
+func cmdClusterReassign(cfg *config.Config, api *apiClient, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("reassign", flag.ContinueOnError)
 	node := fs.String("node", "", `target node name, or "local" to bring the task back to the leader`)
 
@@ -141,37 +134,22 @@ func cmdClusterReassign(cfg *config.Config, tasks *task.Manager, projects *proje
 		return fatal(jsonOut, "this node is not a cluster leader")
 	}
 
-	logger := slog.Default()
-	roster, err := clusterlead.NewRoster(cfg, logger)
-	if err != nil {
-		return fatal(jsonOut, "build roster: %v", err)
+	// Reassignment mutates the task and pushes it to a follower, so the server
+	// owns the whole operation. gen-cert and nodes reach this file with no
+	// board at all, so this is the one subcommand that has to ask for one.
+	if api == nil {
+		return fatal(jsonOut, "cluster reassign needs a Sybra server and none is reachable; start one, or set %s", serverTargetEnv)
 	}
-	assigner := clusterlead.NewAssigner(cfg, tasks, roster, isWorkProject(projects), nil, logger)
-
-	ctx, cancel := context.WithTimeout(context.Background(), clusterCmdTimeout)
-	defer cancel()
-	if err := assigner.Reassign(ctx, taskID, *node); err != nil {
+	if _, err := callAPI[struct{}](api, "ClusterService", "ReassignTask", taskID, *node); err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
-	if jsonOut {
-		return printJSON(map[string]string{"id": taskID, "node": *node})
-	}
-	fmt.Printf("reassigned %s to %s\n", taskID, *node)
-	return 0
+	return reportReassign(jsonOut, taskID, *node)
 }
 
-func isWorkProject(projects *project.Store) func(string) bool {
-	return func(projectID string) bool {
-		if projectID == "" {
-			return false
-		}
-		if projects == nil {
-			return true
-		}
-		rawType, err := projects.RawType(projectID)
-		if err != nil {
-			return true
-		}
-		return rawType != project.ProjectTypePet
+func reportReassign(jsonOut bool, taskID, node string) int {
+	if jsonOut {
+		return printJSON(map[string]string{"id": taskID, "node": node})
 	}
+	fmt.Printf("reassigned %s to %s\n", taskID, node)
+	return 0
 }

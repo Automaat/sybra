@@ -1,15 +1,12 @@
 package bgop
 
 import (
-	"encoding/json"
-	"errors"
 	"log/slog"
-	"os"
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/clock"
 	"github.com/Automaat/sybra/internal/events"
-	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/google/uuid"
 )
 
@@ -19,25 +16,42 @@ const completionTTL = 5 * time.Minute
 // Tracker manages in-memory background operations and persists them to disk so
 // the frontend can restore state after an app restart.
 type Tracker struct {
-	mu       sync.RWMutex
-	ops      map[string]*Operation
-	emit     func(string, any)
-	diskPath string
-	logger   *slog.Logger
+	mu     sync.RWMutex
+	ops    map[string]*Operation
+	emit   func(string, any)
+	store  Persistence
+	logger *slog.Logger
+
+	// clock is read without the mutex, including from methods that already
+	// hold it. Set it once at construction time, before the tracker is
+	// shared — SetClock is for test setup, not live reconfiguration.
+	clock clock.Clock
 }
 
 // NewTracker creates a Tracker that broadcasts events via emit and persists to diskPath.
 // A nil logger falls back to slog.Default().
-func NewTracker(emit func(string, any), diskPath string, logger *slog.Logger) *Tracker {
+func NewTracker(emit func(string, any), store Persistence, logger *slog.Logger) *Tracker {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &Tracker{
-		ops:      make(map[string]*Operation),
-		emit:     emit,
-		diskPath: diskPath,
-		logger:   logger,
+		ops:    make(map[string]*Operation),
+		emit:   emit,
+		store:  store,
+		logger: logger,
+		clock:  clock.System{},
 	}
+}
+
+// SetClock injects the clock driving the completion-TTL window, so a test can
+// step past the TTL instead of sleeping. Call it during setup, before the
+// tracker is used: the field is read without the mutex.
+func (t *Tracker) SetClock(c clock.Clock) {
+	t.clock = clock.Or(c)
+}
+
+func (t *Tracker) now() time.Time {
+	return clock.Or(t.clock).Now()
 }
 
 // Start records a new running operation and returns its ID.
@@ -50,7 +64,7 @@ func (t *Tracker) Start(opType Type, label, projectID, taskID string) string {
 		Status:    StatusRunning,
 		ProjectID: projectID,
 		TaskID:    taskID,
-		StartedAt: time.Now().UTC(),
+		StartedAt: t.now().UTC(),
 	}
 	t.mu.Lock()
 	t.ops[id] = op
@@ -89,7 +103,7 @@ func (t *Tracker) Complete(id string) {
 		return
 	}
 	op.Status = StatusDone
-	op.CompletedAt = time.Now().UTC()
+	op.CompletedAt = t.now().UTC()
 	op.Phase = ""
 	snapshot := *op
 	t.mu.Unlock()
@@ -107,7 +121,7 @@ func (t *Tracker) Fail(id string, err error) {
 		return
 	}
 	op.Status = StatusFailed
-	op.CompletedAt = time.Now().UTC()
+	op.CompletedAt = t.now().UTC()
 	op.Phase = ""
 	if err != nil {
 		op.Error = err.Error()
@@ -123,7 +137,7 @@ func (t *Tracker) Fail(id string, err error) {
 func (t *Tracker) List() []Operation {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	cutoff := time.Now().Add(-completionTTL)
+	cutoff := t.now().Add(-completionTTL)
 	out := make([]Operation, 0, len(t.ops))
 	for _, op := range t.ops {
 		if op.Status != StatusRunning && op.CompletedAt.Before(cutoff) {
@@ -138,20 +152,16 @@ func (t *Tracker) List() []Operation {
 // survived a restart are marked failed (they cannot be resumed). Ops older
 // than completionTTL are discarded.
 func (t *Tracker) LoadFromDisk() {
-	data, err := os.ReadFile(t.diskPath)
+	if t.store == nil {
+		return
+	}
+	ops, err := t.store.Load()
 	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			t.logger.Error("bgop.load.read", "path", t.diskPath, "err", err)
-		}
+		t.logger.Error("bgop.load", "err", err)
 		return
 	}
-	var ops []Operation
-	if err := json.Unmarshal(data, &ops); err != nil {
-		t.logger.Error("bgop.load.unmarshal", "path", t.diskPath, "err", err)
-		return
-	}
-	cutoff := time.Now().Add(-completionTTL)
-	now := time.Now().UTC()
+	cutoff := t.now().Add(-completionTTL)
+	now := t.now().UTC()
 	changed := false
 	t.mu.Lock()
 	for i := range ops {
@@ -178,7 +188,7 @@ func (t *Tracker) LoadFromDisk() {
 }
 
 func (t *Tracker) saveToDisk() {
-	cutoff := time.Now().Add(-completionTTL)
+	cutoff := t.now().Add(-completionTTL)
 	t.mu.Lock()
 	ops := make([]Operation, 0, len(t.ops))
 	for _, op := range t.ops {
@@ -192,12 +202,10 @@ func (t *Tracker) saveToDisk() {
 	}
 	t.mu.Unlock()
 
-	data, err := json.MarshalIndent(ops, "", "  ")
-	if err != nil {
-		t.logger.Error("bgop.save.marshal", "path", t.diskPath, "err", err)
+	if t.store == nil {
 		return
 	}
-	if err := fsutil.AtomicWrite(t.diskPath, data); err != nil {
-		t.logger.Error("bgop.save.write", "path", t.diskPath, "err", err)
+	if err := t.store.Save(ops); err != nil {
+		t.logger.Error("bgop.save", "err", err)
 	}
 }

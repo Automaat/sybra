@@ -3,7 +3,6 @@ package config
 type AgentDefaults struct {
 	Provider           string `yaml:"provider" json:"provider"`
 	Model              string `yaml:"model" json:"model"`
-	Mode               string `yaml:"mode" json:"mode"`
 	MaxConcurrent      int    `yaml:"max_concurrent" json:"maxConcurrent"`
 	ResearchMachineDir string `yaml:"research_machine_dir" json:"researchMachineDir"`
 	// PostResultCostUSD is a reactive per-run USD circuit breaker: Sybra checks
@@ -39,25 +38,40 @@ type AgentDefaults struct {
 	// TurnMultiplier scales the assistant-event ceiling on each
 	// auto-continuation. Default 2 when unset.
 	TurnMultiplier float64 `yaml:"assistant_event_multiplier" json:"turnMultiplier"`
+	// MaxSubagentEvents caps forked-subagent assistant events (CLAUDE_CODE_FORK_SUBAGENT
+	// parent_tool_use_id turns) per run, independent of MaxAssistantEvents which
+	// only counts top-level turns. 0 disables the ceiling. A breach hard-stops
+	// the run outright — there is no auto-continue/human-escalation path.
+	MaxSubagentEvents int `yaml:"max_subagent_events" json:"maxSubagentEvents"`
 	// RequirePermissions sets the default permission requirement for agents.
 	// nil means not configured (falls back to true — safe default).
 	// Set to false in config to opt all tasks into skip-permissions mode.
 	RequirePermissions *bool `yaml:"require_permissions" json:"requirePermissions"`
+	// CommitSigning declares this deployment's posture on GPG-signing agent
+	// commits: "auto" (default — sign when the host resolves a signing key),
+	// "never", or "require". Empty means auto. An explicit "never" is what
+	// keeps a keyless unattended host from ever being told to pass -S, and
+	// keeps that guarantee from silently flipping if a key later appears on
+	// the host.
+	CommitSigning string `yaml:"commit_signing" json:"commitSigning"`
 	// ReviewUntilClean keeps simple-task-review cycling review→fix→review
 	// until the reviewer returns a CLEAN verdict, so the fix agent's diff is
 	// never the last word. nil means not configured (falls back to true). false
 	// falls back to a single review pass per task: cheaper and more
-	// predictable when no per-task budget is configured.
+	// predictable when no per-task budget is configured. The cycle itself is
+	// bounded by ReviewRoundsPerHour below — the same durable budget the
+	// inbound PR-review dispatcher enforces — not a separate knob here.
 	ReviewUntilClean *bool `yaml:"review_until_clean" json:"reviewUntilClean"`
-	// MaxReviewRounds bounds how many automated review rounds a single
-	// simple-task-review execution may spend before Sybra parks the task
-	// blocked. 0 means use DefaultMaxReviewRounds (3). Ignored when
-	// ReviewUntilClean is false or AllowUnboundedReviewRounds is true.
-	MaxReviewRounds int `yaml:"max_review_rounds" json:"maxReviewRounds"`
-	// AllowUnboundedReviewRounds restores the legacy "loop until CLEAN with no
-	// review-round cap" posture. nil means not configured (defaults to false).
-	// Use only with a deliberate MaxTaskCostUSD backstop.
-	AllowUnboundedReviewRounds *bool `yaml:"allow_unbounded_review_rounds" json:"allowUnboundedReviewRounds"`
+	// ReviewRoundsPerHour caps automated review-role agent dispatches one task
+	// may receive in a rolling hour before it is parked for a human. Shared by
+	// both the inbound PR-review dispatcher and simple-task-review's own
+	// review→fix loop (reviewbudget.Budget is their single owner) — it bounds
+	// "how much automated review is too much" regardless of whether a PR
+	// exists yet, which is why it lives here rather than under GitHubConfig.
+	// 0 uses the default; negative disables the hourly cap. A fixed lifetime
+	// ceiling still applies through the shared review budget so long-lived churn
+	// cannot run forever.
+	ReviewRoundsPerHour int `yaml:"review_rounds_per_hour" json:"reviewRoundsPerHour"`
 	// BashTimeoutSeconds sets the per-bash-tool-call timeout passed to
 	// claude -p via the BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS env
 	// vars (claude has no equivalent CLI flag). 0 means use
@@ -107,8 +121,8 @@ type AgentDefaults struct {
 	// ApprovalPort pins the localhost port of the PreToolUse approval
 	// server. The hook URL is baked into a permission-gated agent's
 	// --settings at spawn, so a fixed port lets a detached agent's approval
-	// requests still resolve after a restart. 0 (default) binds a random
-	// port (no cross-restart approval survival).
+	// requests still resolve after a restart. 0 (default) selects a random
+	// port once and persists it for subsequent starts.
 	ApprovalPort int `yaml:"approval_port" json:"approvalPort"`
 	// HeadlessPermissionMode sets the default permission posture for unattended
 	// headless claude runs. "bypass" (default) keeps the current
@@ -119,8 +133,7 @@ type AgentDefaults struct {
 	// DispatchJitterMs bounds a uniform random delay applied before headless
 	// agent dispatch, so a wave of concurrently ready tasks does not all
 	// probe the provider health gate in the same tick. 0 disables jitter.
-	// Never applied to interactive/chat dispatch. Default 1000 — set 0 to
-	// disable.
+	// Default 1000 — set 0 to disable.
 	DispatchJitterMs int `yaml:"dispatch_jitter_ms" json:"dispatchJitterMs"`
 	// SandboxMode sets the default OS-level process-sandbox posture for agent
 	// subprocesses (darwin: sandbox-exec seatbelt, linux: bwrap). "off"
@@ -131,8 +144,18 @@ type AgentDefaults struct {
 	// never the default rollout posture. "enforce" actually wraps the spawn
 	// and blocks writes outside that allowlist, failing the spawn closed if
 	// the wrapper is unavailable.
-	// Empty treated as "report".
+	// Empty treated as "report". Independent verifier roles always override
+	// this to "enforce" and fail closed because their evidence must not depend
+	// on the rollout posture selected for author agents.
 	SandboxMode string `yaml:"sandbox_mode" json:"sandboxMode"`
+	// SandboxReadMode layers read-visibility on top of SandboxMode: "off"
+	// (default) leaves reads unrestricted, "report" logs the resolved read
+	// allowlist without restricting the spawn, "enforce" denies reads outside
+	// it. Kept separate from sandbox_mode so upgrading a write-enforcing
+	// deployment cannot silently escalate it into the highest-breakage tier,
+	// where one missing read path fails the run closed. Consulted only when
+	// SandboxMode is "enforce". Empty treated as "off".
+	SandboxReadMode string `yaml:"sandbox_read_mode" json:"sandboxReadMode"`
 	// HeadlessSteerable controls whether headless claude runs launch with the
 	// stdin/stream-json shape that accepts mid-run steer messages (instead of
 	// the legacy one-shot `-p <prompt>` invocation). nil means not configured
@@ -165,6 +188,23 @@ type AgentDefaults struct {
 	// that a workflow implementation dispatch falls back to when the agent
 	// pool is saturated, instead of erroring or wasting a worktree prep.
 	Queue QueueConfig `yaml:"queue" json:"queue"`
+	// ClassReservations reserves a configurable minimum number of concurrent
+	// slots per workload class ("implementation", "completion", "system" —
+	// see agent.Role.WorkloadClass), so one class saturating the shared pool
+	// (e.g. a retry storm of system/monitor work) cannot starve another. Keys
+	// outside the known class set, or a sum exceeding MaxConcurrent, fail
+	// config validation. Empty/nil (the default) reproduces the pre-class-
+	// isolation single shared pool exactly — this feature is opt-in.
+	ClassReservations map[string]int `yaml:"class_reservations" json:"classReservations"`
+	// Evidence gates the workflow engine's require_evidence completion gate
+	// (agent.evidence.enabled — see config_evidence.go).
+	Evidence EvidenceConfig `yaml:"evidence" json:"evidence"`
+	// VerifyChecksMaxConcurrent bounds how many verify_checks suites (the
+	// project's `checks.verify` commands) run at once across the whole
+	// process. 0 (default) falls back to a CPU-derived value — see
+	// (*Config).VerifyChecksMaxConcurrent. Full verify suites are CPU-heavy,
+	// so this stays well below agent.max_concurrent rather than matching it.
+	VerifyChecksMaxConcurrent int `yaml:"verify_checks_max_concurrent" json:"verifyChecksMaxConcurrent"`
 }
 
 // QueueConfig configures the agent-dispatch admission queue.

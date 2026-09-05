@@ -13,6 +13,271 @@ import * as abtest$0 from "../abtest/models.js";
 import * as config$0 from "../config/models.js";
 
 /**
+ * AutonomySLOs exposes evidence-aware autonomy outcomes. Unknown legacy or
+ * unprovable records are counted explicitly and never guessed into a rate.
+ */
+export class AutonomySLOs {
+    "autonomousCompletion": RateEvidence;
+    "validHumanEscalation": RateEvidence;
+    "machineHumanRequiredInvariantViolations": number;
+    "recoverySuccess": RateEvidence;
+    "repeatRepair": RateEvidence;
+    "incidentFanout": IncidentFanout;
+    "timeToContainment": DurationEvidence;
+    "timeToRecovery": DurationEvidence;
+    "preflightDetectableWaste": PreflightWaste;
+
+    /** Creates a new AutonomySLOs instance. */
+    constructor($$source: Partial<AutonomySLOs> = {}) {
+        if (!("autonomousCompletion" in $$source)) {
+            this["autonomousCompletion"] = (new RateEvidence());
+        }
+        if (!("validHumanEscalation" in $$source)) {
+            this["validHumanEscalation"] = (new RateEvidence());
+        }
+        if (!("machineHumanRequiredInvariantViolations" in $$source)) {
+            this["machineHumanRequiredInvariantViolations"] = 0;
+        }
+        if (!("recoverySuccess" in $$source)) {
+            this["recoverySuccess"] = (new RateEvidence());
+        }
+        if (!("repeatRepair" in $$source)) {
+            this["repeatRepair"] = (new RateEvidence());
+        }
+        if (!("incidentFanout" in $$source)) {
+            this["incidentFanout"] = (new IncidentFanout());
+        }
+        if (!("timeToContainment" in $$source)) {
+            this["timeToContainment"] = (new DurationEvidence());
+        }
+        if (!("timeToRecovery" in $$source)) {
+            this["timeToRecovery"] = (new DurationEvidence());
+        }
+        if (!("preflightDetectableWaste" in $$source)) {
+            this["preflightDetectableWaste"] = (new PreflightWaste());
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new AutonomySLOs instance from a string or object.
+     */
+    static createFrom($$source: any = {}): AutonomySLOs {
+        const $$createField0_0 = $$createType0;
+        const $$createField1_0 = $$createType0;
+        const $$createField3_0 = $$createType0;
+        const $$createField4_0 = $$createType0;
+        const $$createField5_0 = $$createType1;
+        const $$createField6_0 = $$createType2;
+        const $$createField7_0 = $$createType2;
+        const $$createField8_0 = $$createType3;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("autonomousCompletion" in $$parsedSource) {
+            $$parsedSource["autonomousCompletion"] = $$createField0_0($$parsedSource["autonomousCompletion"]);
+        }
+        if ("validHumanEscalation" in $$parsedSource) {
+            $$parsedSource["validHumanEscalation"] = $$createField1_0($$parsedSource["validHumanEscalation"]);
+        }
+        if ("recoverySuccess" in $$parsedSource) {
+            $$parsedSource["recoverySuccess"] = $$createField3_0($$parsedSource["recoverySuccess"]);
+        }
+        if ("repeatRepair" in $$parsedSource) {
+            $$parsedSource["repeatRepair"] = $$createField4_0($$parsedSource["repeatRepair"]);
+        }
+        if ("incidentFanout" in $$parsedSource) {
+            $$parsedSource["incidentFanout"] = $$createField5_0($$parsedSource["incidentFanout"]);
+        }
+        if ("timeToContainment" in $$parsedSource) {
+            $$parsedSource["timeToContainment"] = $$createField6_0($$parsedSource["timeToContainment"]);
+        }
+        if ("timeToRecovery" in $$parsedSource) {
+            $$parsedSource["timeToRecovery"] = $$createField7_0($$parsedSource["timeToRecovery"]);
+        }
+        if ("preflightDetectableWaste" in $$parsedSource) {
+            $$parsedSource["preflightDetectableWaste"] = $$createField8_0($$parsedSource["preflightDetectableWaste"]);
+        }
+        return new AutonomySLOs($$parsedSource as Partial<AutonomySLOs>);
+    }
+}
+
+/**
+ * AutonomySnapshot is autonomy over one arbitrary [Since, Until] window.
+ */
+export class AutonomySnapshot {
+    "since": string;
+    "until": string;
+    "tasksLanded": number;
+    "autonomousLandings": number;
+    "autonomyRate": number;
+
+    /**
+     * MergedPRs, CostPerMergedUSD, and TokensPerMergedPR mirror Scorecard's
+     * cost-efficiency north star for this window.
+     */
+    "mergedPrs": number;
+    "costPerMergedUsd": number;
+    "tokensPerMergedPr": number;
+
+    /** Creates a new AutonomySnapshot instance. */
+    constructor($$source: Partial<AutonomySnapshot> = {}) {
+        if (!("since" in $$source)) {
+            this["since"] = "0001-01-01T00:00:00.000Z";
+        }
+        if (!("until" in $$source)) {
+            this["until"] = "0001-01-01T00:00:00.000Z";
+        }
+        if (!("tasksLanded" in $$source)) {
+            this["tasksLanded"] = 0;
+        }
+        if (!("autonomousLandings" in $$source)) {
+            this["autonomousLandings"] = 0;
+        }
+        if (!("autonomyRate" in $$source)) {
+            this["autonomyRate"] = 0;
+        }
+        if (!("mergedPrs" in $$source)) {
+            this["mergedPrs"] = 0;
+        }
+        if (!("costPerMergedUsd" in $$source)) {
+            this["costPerMergedUsd"] = 0;
+        }
+        if (!("tokensPerMergedPr" in $$source)) {
+            this["tokensPerMergedPr"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new AutonomySnapshot instance from a string or object.
+     */
+    static createFrom($$source: any = {}): AutonomySnapshot {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new AutonomySnapshot($$parsedSource as Partial<AutonomySnapshot>);
+    }
+}
+
+/**
+ * AutonomyTrend holds all-time / last-week / last-month autonomy snapshots
+ * plus a week-by-week series, so the Evaluation tab can show how autonomy has
+ * moved over time instead of only the current rolling scorecard window.
+ */
+export class AutonomyTrend {
+    "generatedAt": string;
+    "overall": AutonomySnapshot;
+    "lastWeek": AutonomySnapshot;
+    "lastMonth": AutonomySnapshot;
+    "weekly": AutonomyWeekPoint[];
+
+    /** Creates a new AutonomyTrend instance. */
+    constructor($$source: Partial<AutonomyTrend> = {}) {
+        if (!("generatedAt" in $$source)) {
+            this["generatedAt"] = "0001-01-01T00:00:00.000Z";
+        }
+        if (!("overall" in $$source)) {
+            this["overall"] = (new AutonomySnapshot());
+        }
+        if (!("lastWeek" in $$source)) {
+            this["lastWeek"] = (new AutonomySnapshot());
+        }
+        if (!("lastMonth" in $$source)) {
+            this["lastMonth"] = (new AutonomySnapshot());
+        }
+        if (!("weekly" in $$source)) {
+            this["weekly"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new AutonomyTrend instance from a string or object.
+     */
+    static createFrom($$source: any = {}): AutonomyTrend {
+        const $$createField1_0 = $$createType4;
+        const $$createField2_0 = $$createType4;
+        const $$createField3_0 = $$createType4;
+        const $$createField4_0 = $$createType6;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("overall" in $$parsedSource) {
+            $$parsedSource["overall"] = $$createField1_0($$parsedSource["overall"]);
+        }
+        if ("lastWeek" in $$parsedSource) {
+            $$parsedSource["lastWeek"] = $$createField2_0($$parsedSource["lastWeek"]);
+        }
+        if ("lastMonth" in $$parsedSource) {
+            $$parsedSource["lastMonth"] = $$createField3_0($$parsedSource["lastMonth"]);
+        }
+        if ("weekly" in $$parsedSource) {
+            $$parsedSource["weekly"] = $$createField4_0($$parsedSource["weekly"]);
+        }
+        return new AutonomyTrend($$parsedSource as Partial<AutonomyTrend>);
+    }
+}
+
+/**
+ * AutonomyWeekPoint is autonomy over one 7-day bucket. WeekEnd is exclusive
+ * for every bucket except the newest (the one ending at "now"): consecutive
+ * buckets share a boundary instant, so treat [WeekStart, WeekEnd) as the
+ * bucket's true range rather than reading WeekEnd as an inclusive endpoint —
+ * see ComputeAutonomyTrend's nanosecond trim.
+ */
+export class AutonomyWeekPoint {
+    "weekStart": string;
+    "weekEnd": string;
+    "tasksLanded": number;
+    "autonomousLandings": number;
+    "autonomyRate": number;
+
+    /**
+     * MergedPRs, CostPerMergedUSD, and TokensPerMergedPR mirror Scorecard's
+     * cost-efficiency north star for this bucket.
+     */
+    "mergedPrs": number;
+    "costPerMergedUsd": number;
+    "tokensPerMergedPr": number;
+
+    /** Creates a new AutonomyWeekPoint instance. */
+    constructor($$source: Partial<AutonomyWeekPoint> = {}) {
+        if (!("weekStart" in $$source)) {
+            this["weekStart"] = "0001-01-01T00:00:00.000Z";
+        }
+        if (!("weekEnd" in $$source)) {
+            this["weekEnd"] = "0001-01-01T00:00:00.000Z";
+        }
+        if (!("tasksLanded" in $$source)) {
+            this["tasksLanded"] = 0;
+        }
+        if (!("autonomousLandings" in $$source)) {
+            this["autonomousLandings"] = 0;
+        }
+        if (!("autonomyRate" in $$source)) {
+            this["autonomyRate"] = 0;
+        }
+        if (!("mergedPrs" in $$source)) {
+            this["mergedPrs"] = 0;
+        }
+        if (!("costPerMergedUsd" in $$source)) {
+            this["costPerMergedUsd"] = 0;
+        }
+        if (!("tokensPerMergedPr" in $$source)) {
+            this["tokensPerMergedPr"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new AutonomyWeekPoint instance from a string or object.
+     */
+    static createFrom($$source: any = {}): AutonomyWeekPoint {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new AutonomyWeekPoint($$parsedSource as Partial<AutonomyWeekPoint>);
+    }
+}
+
+/**
  * Breakdown is the per-dimension (provider, role) slice of the effort and
  * reliability metrics derivable from stats run records. Landing-derived metrics
  * (autonomy, throughput) are not broken down because task.landed events don't
@@ -116,6 +381,21 @@ export class ComparisonBreakdown {
     "durationP90S": number;
     "totalCostUsd": number;
     "costPerLanded": number;
+
+    /**
+     * Tier is modeltier.InferTier(Model)'s result, when the row's model
+     * resolves to a known cost/capability class ("" otherwise) — lets a
+     * consumer segment cost-per-merged by tier without re-inferring it.
+     */
+    "tier"?: string;
+
+    /**
+     * CostPerMergedUSD and TokensPerMergedPR mirror Scorecard's north-star
+     * metric at this row's granularity (provider/model/role/tier), dividing by
+     * Merged+MergedWithEdits rather than Landed.
+     */
+    "costPerMergedUsd": number;
+    "tokensPerMergedPr": number;
     "premiumRequests": number;
     "premiumRequestsPerLanded": number;
     "turnsPerLanded": number;
@@ -230,6 +510,12 @@ export class ComparisonBreakdown {
         if (!("costPerLanded" in $$source)) {
             this["costPerLanded"] = 0;
         }
+        if (!("costPerMergedUsd" in $$source)) {
+            this["costPerMergedUsd"] = 0;
+        }
+        if (!("tokensPerMergedPr" in $$source)) {
+            this["tokensPerMergedPr"] = 0;
+        }
         if (!("premiumRequests" in $$source)) {
             this["premiumRequests"] = 0;
         }
@@ -259,15 +545,15 @@ export class ComparisonBreakdown {
      * Creates a new ComparisonBreakdown instance from a string or object.
      */
     static createFrom($$source: any = {}): ComparisonBreakdown {
-        const $$createField9_0 = $$createType1;
-        const $$createField15_0 = $$createType2;
-        const $$createField17_0 = $$createType2;
-        const $$createField26_0 = $$createType2;
-        const $$createField27_0 = $$createType2;
-        const $$createField28_0 = $$createType2;
-        const $$createField29_0 = $$createType2;
-        const $$createField30_0 = $$createType2;
-        const $$createField47_0 = $$createType4;
+        const $$createField9_0 = $$createType8;
+        const $$createField15_0 = $$createType9;
+        const $$createField17_0 = $$createType9;
+        const $$createField26_0 = $$createType9;
+        const $$createField27_0 = $$createType9;
+        const $$createField28_0 = $$createType9;
+        const $$createField29_0 = $$createType9;
+        const $$createField30_0 = $$createType9;
+        const $$createField50_0 = $$createType11;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("subject" in $$parsedSource) {
             $$parsedSource["subject"] = $$createField9_0($$parsedSource["subject"]);
@@ -294,11 +580,92 @@ export class ComparisonBreakdown {
             $$parsedSource["revertEstimate"] = $$createField30_0($$parsedSource["revertEstimate"]);
         }
         if ("roleBreakdowns" in $$parsedSource) {
-            $$parsedSource["roleBreakdowns"] = $$createField47_0($$parsedSource["roleBreakdowns"]);
+            $$parsedSource["roleBreakdowns"] = $$createField50_0($$parsedSource["roleBreakdowns"]);
         }
         return new ComparisonBreakdown($$parsedSource as Partial<ComparisonBreakdown>);
     }
 }
+
+/**
+ * CostBaseline is the prior-window figures for the cost-efficiency north
+ * star, computed over the equal-length window immediately preceding the
+ * report's own [Since, Until].
+ */
+export class CostBaseline {
+    "costPerMergedUsd": number;
+    "tokensPerMergedPr": number;
+    "mergedPrs": number;
+
+    /** Creates a new CostBaseline instance. */
+    constructor($$source: Partial<CostBaseline> = {}) {
+        if (!("costPerMergedUsd" in $$source)) {
+            this["costPerMergedUsd"] = 0;
+        }
+        if (!("tokensPerMergedPr" in $$source)) {
+            this["tokensPerMergedPr"] = 0;
+        }
+        if (!("mergedPrs" in $$source)) {
+            this["mergedPrs"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CostBaseline instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CostBaseline {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new CostBaseline($$parsedSource as Partial<CostBaseline>);
+    }
+}
+
+export class DurationEvidence {
+    "state": EvidenceState;
+    "samples": number;
+    "meanSec": number;
+    "p90Sec": number;
+    "unknown": number;
+
+    /** Creates a new DurationEvidence instance. */
+    constructor($$source: Partial<DurationEvidence> = {}) {
+        if (!("state" in $$source)) {
+            this["state"] = EvidenceState.$zero;
+        }
+        if (!("samples" in $$source)) {
+            this["samples"] = 0;
+        }
+        if (!("meanSec" in $$source)) {
+            this["meanSec"] = 0;
+        }
+        if (!("p90Sec" in $$source)) {
+            this["p90Sec"] = 0;
+        }
+        if (!("unknown" in $$source)) {
+            this["unknown"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new DurationEvidence instance from a string or object.
+     */
+    static createFrom($$source: any = {}): DurationEvidence {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new DurationEvidence($$parsedSource as Partial<DurationEvidence>);
+    }
+}
+
+export enum EvidenceState {
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero = "",
+
+    EvidenceKnown = "known",
+    EvidenceUnknown = "unknown",
+};
 
 /**
  * ExperimentGroup is the comparison table for a single experiment: every row
@@ -325,10 +692,10 @@ export class ExperimentGroup {
      * Creates a new ExperimentGroup instance from a string or object.
      */
     static createFrom($$source: any = {}): ExperimentGroup {
-        const $$createField1_0 = $$createType1;
-        const $$createField2_0 = $$createType4;
-        const $$createField3_0 = $$createType4;
-        const $$createField4_0 = $$createType6;
+        const $$createField1_0 = $$createType8;
+        const $$createField2_0 = $$createType11;
+        const $$createField3_0 = $$createType11;
+        const $$createField4_0 = $$createType13;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("subject" in $$parsedSource) {
             $$parsedSource["subject"] = $$createField1_0($$parsedSource["subject"]);
@@ -375,7 +742,7 @@ export class ExperimentKindBreakdown {
      * Creates a new ExperimentKindBreakdown instance from a string or object.
      */
     static createFrom($$source: any = {}): ExperimentKindBreakdown {
-        const $$createField1_0 = $$createType8;
+        const $$createField1_0 = $$createType15;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("groups" in $$parsedSource) {
             $$parsedSource["groups"] = $$createField1_0($$parsedSource["groups"]);
@@ -436,12 +803,53 @@ export class ExperimentSampleStatus {
      * Creates a new ExperimentSampleStatus instance from a string or object.
      */
     static createFrom($$source: any = {}): ExperimentSampleStatus {
-        const $$createField5_0 = $$createType10;
+        const $$createField5_0 = $$createType17;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("variants" in $$parsedSource) {
             $$parsedSource["variants"] = $$createField5_0($$parsedSource["variants"]);
         }
         return new ExperimentSampleStatus($$parsedSource as Partial<ExperimentSampleStatus>);
+    }
+}
+
+export class IncidentFanout {
+    "state": EvidenceState;
+    "count": number;
+    "unknown": number;
+    "mean": number;
+    "p90": number;
+    "max": number;
+
+    /** Creates a new IncidentFanout instance. */
+    constructor($$source: Partial<IncidentFanout> = {}) {
+        if (!("state" in $$source)) {
+            this["state"] = EvidenceState.$zero;
+        }
+        if (!("count" in $$source)) {
+            this["count"] = 0;
+        }
+        if (!("unknown" in $$source)) {
+            this["unknown"] = 0;
+        }
+        if (!("mean" in $$source)) {
+            this["mean"] = 0;
+        }
+        if (!("p90" in $$source)) {
+            this["p90"] = 0;
+        }
+        if (!("max" in $$source)) {
+            this["max"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new IncidentFanout instance from a string or object.
+     */
+    static createFrom($$source: any = {}): IncidentFanout {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new IncidentFanout($$parsedSource as Partial<IncidentFanout>);
     }
 }
 
@@ -481,8 +889,8 @@ export class PhaseReport {
      * Creates a new PhaseReport instance from a string or object.
      */
     static createFrom($$source: any = {}): PhaseReport {
-        const $$createField3_0 = $$createType12;
-        const $$createField4_0 = $$createType14;
+        const $$createField3_0 = $$createType19;
+        const $$createField4_0 = $$createType21;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("phases" in $$parsedSource) {
             $$parsedSource["phases"] = $$createField3_0($$parsedSource["phases"]);
@@ -541,6 +949,47 @@ export class PhaseStat {
     }
 }
 
+export class PreflightWaste {
+    "state": EvidenceState;
+    "failures": number;
+    "costUsd": number;
+    "tokens": number;
+    "unknownUsage": number;
+    "unknownLegacy": number;
+
+    /** Creates a new PreflightWaste instance. */
+    constructor($$source: Partial<PreflightWaste> = {}) {
+        if (!("state" in $$source)) {
+            this["state"] = EvidenceState.$zero;
+        }
+        if (!("failures" in $$source)) {
+            this["failures"] = 0;
+        }
+        if (!("costUsd" in $$source)) {
+            this["costUsd"] = 0;
+        }
+        if (!("tokens" in $$source)) {
+            this["tokens"] = 0;
+        }
+        if (!("unknownUsage" in $$source)) {
+            this["unknownUsage"] = 0;
+        }
+        if (!("unknownLegacy" in $$source)) {
+            this["unknownLegacy"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PreflightWaste instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PreflightWaste {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PreflightWaste($$parsedSource as Partial<PreflightWaste>);
+    }
+}
+
 /**
  * RateEstimate is a binomial rate with fixed 95% Wilson uncertainty and an
  * optional effect delta relative to an A/B baseline row.
@@ -594,10 +1043,53 @@ export class RateEstimate {
     }
 }
 
+export class RateEvidence {
+    "state": EvidenceState;
+    "rate": number;
+    "success": number;
+    "known": number;
+    "unknown": number;
+
+    /** Creates a new RateEvidence instance. */
+    constructor($$source: Partial<RateEvidence> = {}) {
+        if (!("state" in $$source)) {
+            this["state"] = EvidenceState.$zero;
+        }
+        if (!("rate" in $$source)) {
+            this["rate"] = 0;
+        }
+        if (!("success" in $$source)) {
+            this["success"] = 0;
+        }
+        if (!("known" in $$source)) {
+            this["known"] = 0;
+        }
+        if (!("unknown" in $$source)) {
+            this["unknown"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new RateEvidence instance from a string or object.
+     */
+    static createFrom($$source: any = {}): RateEvidence {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new RateEvidence($$parsedSource as Partial<RateEvidence>);
+    }
+}
+
 /**
  * Report is the persisted, emitted, and CLI-printed output of one evaluation tick.
  */
 export class Report {
+    /**
+     * SchemaVersion is ScorecardSchemaVersion at generation time — see its
+     * doc comment for what changes across a version bump and how a cohort
+     * straddling one should be read.
+     */
+    "schemaVersion": number;
     "generatedAt": string;
     "since": string;
     "until": string;
@@ -607,6 +1099,13 @@ export class Report {
     "bySkillExecutionMode"?: Breakdown[];
     "byAgentModel"?: ComparisonBreakdown[];
     "byAgentModelContribution"?: ComparisonBreakdown[];
+
+    /**
+     * ByCostTier segments the cost-per-merged-PR north star by
+     * provider:role:tier (see costTierCohortKey) — the granularity the
+     * tier-cascade rollout is judged against.
+     */
+    "byCostTier"?: ComparisonBreakdown[];
     "byExperimentKind"?: ExperimentKindBreakdown[];
     "weaknesses"?: Weakness[];
     "notes"?: string[];
@@ -619,8 +1118,25 @@ export class Report {
      */
     "slo": SLOReport;
 
+    /**
+     * AutonomySLOs are evidence-aware typed operational metrics. Unknown
+     * legacy/unprovable cohorts are explicit rather than guessed.
+     */
+    "autonomySlos": AutonomySLOs;
+
+    /**
+     * CostPerMergedBaseline is the prior equal-length window's cost/merged
+     * figures, used to detect a cost regression (see Weaknesses'
+     * cost_per_merge check) — nil when the prior window landed too few merges
+     * to trust (< minMergedForSignal).
+     */
+    "costPerMergedBaseline"?: CostBaseline | null;
+
     /** Creates a new Report instance. */
     constructor($$source: Partial<Report> = {}) {
+        if (!("schemaVersion" in $$source)) {
+            this["schemaVersion"] = 0;
+        }
         if (!("generatedAt" in $$source)) {
             this["generatedAt"] = "0001-01-01T00:00:00.000Z";
         }
@@ -636,6 +1152,9 @@ export class Report {
         if (!("slo" in $$source)) {
             this["slo"] = (new SLOReport());
         }
+        if (!("autonomySlos" in $$source)) {
+            this["autonomySlos"] = (new AutonomySLOs());
+        }
 
         Object.assign(this, $$source);
     }
@@ -644,46 +1163,58 @@ export class Report {
      * Creates a new Report instance from a string or object.
      */
     static createFrom($$source: any = {}): Report {
-        const $$createField3_0 = $$createType15;
-        const $$createField4_0 = $$createType17;
-        const $$createField5_0 = $$createType17;
-        const $$createField6_0 = $$createType17;
-        const $$createField7_0 = $$createType4;
-        const $$createField8_0 = $$createType4;
-        const $$createField9_0 = $$createType19;
-        const $$createField10_0 = $$createType21;
-        const $$createField11_0 = $$createType22;
-        const $$createField12_0 = $$createType23;
+        const $$createField4_0 = $$createType22;
+        const $$createField5_0 = $$createType24;
+        const $$createField6_0 = $$createType24;
+        const $$createField7_0 = $$createType24;
+        const $$createField8_0 = $$createType11;
+        const $$createField9_0 = $$createType11;
+        const $$createField10_0 = $$createType11;
+        const $$createField11_0 = $$createType26;
+        const $$createField12_0 = $$createType28;
+        const $$createField13_0 = $$createType29;
+        const $$createField14_0 = $$createType30;
+        const $$createField15_0 = $$createType31;
+        const $$createField16_0 = $$createType33;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("overall" in $$parsedSource) {
-            $$parsedSource["overall"] = $$createField3_0($$parsedSource["overall"]);
+            $$parsedSource["overall"] = $$createField4_0($$parsedSource["overall"]);
         }
         if ("byProvider" in $$parsedSource) {
-            $$parsedSource["byProvider"] = $$createField4_0($$parsedSource["byProvider"]);
+            $$parsedSource["byProvider"] = $$createField5_0($$parsedSource["byProvider"]);
         }
         if ("byRole" in $$parsedSource) {
-            $$parsedSource["byRole"] = $$createField5_0($$parsedSource["byRole"]);
+            $$parsedSource["byRole"] = $$createField6_0($$parsedSource["byRole"]);
         }
         if ("bySkillExecutionMode" in $$parsedSource) {
-            $$parsedSource["bySkillExecutionMode"] = $$createField6_0($$parsedSource["bySkillExecutionMode"]);
+            $$parsedSource["bySkillExecutionMode"] = $$createField7_0($$parsedSource["bySkillExecutionMode"]);
         }
         if ("byAgentModel" in $$parsedSource) {
-            $$parsedSource["byAgentModel"] = $$createField7_0($$parsedSource["byAgentModel"]);
+            $$parsedSource["byAgentModel"] = $$createField8_0($$parsedSource["byAgentModel"]);
         }
         if ("byAgentModelContribution" in $$parsedSource) {
-            $$parsedSource["byAgentModelContribution"] = $$createField8_0($$parsedSource["byAgentModelContribution"]);
+            $$parsedSource["byAgentModelContribution"] = $$createField9_0($$parsedSource["byAgentModelContribution"]);
+        }
+        if ("byCostTier" in $$parsedSource) {
+            $$parsedSource["byCostTier"] = $$createField10_0($$parsedSource["byCostTier"]);
         }
         if ("byExperimentKind" in $$parsedSource) {
-            $$parsedSource["byExperimentKind"] = $$createField9_0($$parsedSource["byExperimentKind"]);
+            $$parsedSource["byExperimentKind"] = $$createField11_0($$parsedSource["byExperimentKind"]);
         }
         if ("weaknesses" in $$parsedSource) {
-            $$parsedSource["weaknesses"] = $$createField10_0($$parsedSource["weaknesses"]);
+            $$parsedSource["weaknesses"] = $$createField12_0($$parsedSource["weaknesses"]);
         }
         if ("notes" in $$parsedSource) {
-            $$parsedSource["notes"] = $$createField11_0($$parsedSource["notes"]);
+            $$parsedSource["notes"] = $$createField13_0($$parsedSource["notes"]);
         }
         if ("slo" in $$parsedSource) {
-            $$parsedSource["slo"] = $$createField12_0($$parsedSource["slo"]);
+            $$parsedSource["slo"] = $$createField14_0($$parsedSource["slo"]);
+        }
+        if ("autonomySlos" in $$parsedSource) {
+            $$parsedSource["autonomySlos"] = $$createField15_0($$parsedSource["autonomySlos"]);
+        }
+        if ("costPerMergedBaseline" in $$parsedSource) {
+            $$parsedSource["costPerMergedBaseline"] = $$createField16_0($$parsedSource["costPerMergedBaseline"]);
         }
         return new Report($$parsedSource as Partial<Report>);
     }
@@ -733,9 +1264,9 @@ export class SLOReport {
      * Creates a new SLOReport instance from a string or object.
      */
     static createFrom($$source: any = {}): SLOReport {
-        const $$createField0_0 = $$createType24;
-        const $$createField1_0 = $$createType26;
-        const $$createField4_0 = $$createType22;
+        const $$createField0_0 = $$createType34;
+        const $$createField1_0 = $$createType36;
+        const $$createField4_0 = $$createType29;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("targets" in $$parsedSource) {
             $$parsedSource["targets"] = $$createField0_0($$parsedSource["targets"]);
@@ -754,6 +1285,7 @@ export class SLOReport {
  * SLOStatus is one target's compliance verdict.
  */
 export class SLOStatus {
+    "evidence": EvidenceState;
     "name": string;
     "actual": number;
     "target": number;
@@ -769,6 +1301,9 @@ export class SLOStatus {
 
     /** Creates a new SLOStatus instance. */
     constructor($$source: Partial<SLOStatus> = {}) {
+        if (!("evidence" in $$source)) {
+            this["evidence"] = EvidenceState.$zero;
+        }
         if (!("name" in $$source)) {
             this["name"] = "";
         }
@@ -859,14 +1394,33 @@ export class Scorecard {
 
     /**
      * Autonomy: did landed work reach done without a human in the loop?
+     * human-required is a request for intervention, not evidence one
+     * happened — HumanTouchedLandings only counts a landing whose resolution
+     * carries a durably-attributed operator action (an explicit approve/
+     * reject, a dispatch/edit out of human-required, or a human PR edit).
+     * A landing that asked for intervention but whose resolution carries no
+     * such provenance (typically event history predating this
+     * classification, see ScorecardSchemaVersion) is neither autonomous nor
+     * human-touched — it lands in AutonomyUnknownLandings instead of being
+     * forced into one bucket on a guess (issue #2727).
      */
     "autonomousLandings": number;
     "humanTouchedLandings": number;
+    "autonomyUnknownLandings": number;
 
     /**
-     * autonomous / landed
+     * autonomous / (autonomous + humanTouched); unknown landings excluded from both numerator and denominator
      */
     "autonomyRate": number;
+
+    /**
+     * Typed autonomy control-plane signals. These maps preserve stable codes
+     * from task.status_changed audit events; display text is intentionally not
+     * copied into evaluation output or parsed for policy.
+     */
+    "autonomyOutcomes"?: { [_ in string]?: number };
+    "failureOwners"?: { [_ in string]?: number };
+    "escalationCodes"?: { [_ in string]?: number };
 
     /**
      * Reliability (from stats run outcomes). AgentRuns counts every run;
@@ -909,6 +1463,22 @@ export class Scorecard {
      */
     "reworkTasks": number;
 
+    /**
+     * TotalTokens sums every token category (input, output, cache
+     * creation/read, reasoning) across in-window runs.
+     */
+    "totalTokens": number;
+
+    /**
+     * CostPerMergedUSD and TokensPerMergedPR are the fleet's cost-efficiency
+     * north star: unlike CostPerLanded (denominator includes closed-without-
+     * merging landings), these divide by Merged+MergedWithEdits — a run that
+     * never merges is 100% waste, and this is the metric a tier-cascade or
+     * guardrail/parallelism change should be judged against.
+     */
+    "costPerMergedUsd": number;
+    "tokensPerMergedPr": number;
+
     /** Creates a new Scorecard instance. */
     constructor($$source: Partial<Scorecard> = {}) {
         if (!("windowDays" in $$source)) {
@@ -946,6 +1516,9 @@ export class Scorecard {
         }
         if (!("humanTouchedLandings" in $$source)) {
             this["humanTouchedLandings"] = 0;
+        }
+        if (!("autonomyUnknownLandings" in $$source)) {
+            this["autonomyUnknownLandings"] = 0;
         }
         if (!("autonomyRate" in $$source)) {
             this["autonomyRate"] = 0;
@@ -989,6 +1562,15 @@ export class Scorecard {
         if (!("reworkTasks" in $$source)) {
             this["reworkTasks"] = 0;
         }
+        if (!("totalTokens" in $$source)) {
+            this["totalTokens"] = 0;
+        }
+        if (!("costPerMergedUsd" in $$source)) {
+            this["costPerMergedUsd"] = 0;
+        }
+        if (!("tokensPerMergedPr" in $$source)) {
+            this["tokensPerMergedPr"] = 0;
+        }
 
         Object.assign(this, $$source);
     }
@@ -997,7 +1579,19 @@ export class Scorecard {
      * Creates a new Scorecard instance from a string or object.
      */
     static createFrom($$source: any = {}): Scorecard {
+        const $$createField14_0 = $$createType37;
+        const $$createField15_0 = $$createType37;
+        const $$createField16_0 = $$createType37;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("autonomyOutcomes" in $$parsedSource) {
+            $$parsedSource["autonomyOutcomes"] = $$createField14_0($$parsedSource["autonomyOutcomes"]);
+        }
+        if ("failureOwners" in $$parsedSource) {
+            $$parsedSource["failureOwners"] = $$createField15_0($$parsedSource["failureOwners"]);
+        }
+        if ("escalationCodes" in $$parsedSource) {
+            $$parsedSource["escalationCodes"] = $$createField16_0($$parsedSource["escalationCodes"]);
+        }
         return new Scorecard($$parsedSource as Partial<Scorecard>);
     }
 }
@@ -1030,7 +1624,7 @@ export class TaskPhases {
      * Creates a new TaskPhases instance from a string or object.
      */
     static createFrom($$source: any = {}): TaskPhases {
-        const $$createField2_0 = $$createType27;
+        const $$createField2_0 = $$createType38;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("byPhase" in $$parsedSource) {
             $$parsedSource["byPhase"] = $$createField2_0($$parsedSource["byPhase"]);
@@ -1134,31 +1728,42 @@ export class Weakness {
 }
 
 // Private type creation functions
-const $$createType0 = abtest$0.Subject.createFrom;
-const $$createType1 = $Create.Nullable($$createType0);
-const $$createType2 = RateEstimate.createFrom;
-const $$createType3 = ComparisonBreakdown.createFrom;
-const $$createType4 = $Create.Array($$createType3);
-const $$createType5 = ExperimentSampleStatus.createFrom;
+const $$createType0 = RateEvidence.createFrom;
+const $$createType1 = IncidentFanout.createFrom;
+const $$createType2 = DurationEvidence.createFrom;
+const $$createType3 = PreflightWaste.createFrom;
+const $$createType4 = AutonomySnapshot.createFrom;
+const $$createType5 = AutonomyWeekPoint.createFrom;
 const $$createType6 = $Create.Array($$createType5);
-const $$createType7 = ExperimentGroup.createFrom;
-const $$createType8 = $Create.Array($$createType7);
-const $$createType9 = VariantSampleStatus.createFrom;
-const $$createType10 = $Create.Array($$createType9);
-const $$createType11 = PhaseStat.createFrom;
-const $$createType12 = $Create.Array($$createType11);
-const $$createType13 = TaskPhases.createFrom;
-const $$createType14 = $Create.Array($$createType13);
-const $$createType15 = Scorecard.createFrom;
-const $$createType16 = Breakdown.createFrom;
+const $$createType7 = abtest$0.Subject.createFrom;
+const $$createType8 = $Create.Nullable($$createType7);
+const $$createType9 = RateEstimate.createFrom;
+const $$createType10 = ComparisonBreakdown.createFrom;
+const $$createType11 = $Create.Array($$createType10);
+const $$createType12 = ExperimentSampleStatus.createFrom;
+const $$createType13 = $Create.Array($$createType12);
+const $$createType14 = ExperimentGroup.createFrom;
+const $$createType15 = $Create.Array($$createType14);
+const $$createType16 = VariantSampleStatus.createFrom;
 const $$createType17 = $Create.Array($$createType16);
-const $$createType18 = ExperimentKindBreakdown.createFrom;
+const $$createType18 = PhaseStat.createFrom;
 const $$createType19 = $Create.Array($$createType18);
-const $$createType20 = Weakness.createFrom;
+const $$createType20 = TaskPhases.createFrom;
 const $$createType21 = $Create.Array($$createType20);
-const $$createType22 = $Create.Array($Create.Any);
-const $$createType23 = SLOReport.createFrom;
-const $$createType24 = config$0.SLOTargets.createFrom;
-const $$createType25 = SLOStatus.createFrom;
+const $$createType22 = Scorecard.createFrom;
+const $$createType23 = Breakdown.createFrom;
+const $$createType24 = $Create.Array($$createType23);
+const $$createType25 = ExperimentKindBreakdown.createFrom;
 const $$createType26 = $Create.Array($$createType25);
-const $$createType27 = $Create.Map($Create.Any, $Create.Any);
+const $$createType27 = Weakness.createFrom;
+const $$createType28 = $Create.Array($$createType27);
+const $$createType29 = $Create.Array($Create.Any);
+const $$createType30 = SLOReport.createFrom;
+const $$createType31 = AutonomySLOs.createFrom;
+const $$createType32 = CostBaseline.createFrom;
+const $$createType33 = $Create.Nullable($$createType32);
+const $$createType34 = config$0.SLOTargets.createFrom;
+const $$createType35 = SLOStatus.createFrom;
+const $$createType36 = $Create.Array($$createType35);
+const $$createType37 = $Create.Map($Create.Any, $Create.Any);
+const $$createType38 = $Create.Map($Create.Any, $Create.Any);

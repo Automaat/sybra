@@ -1,7 +1,6 @@
 package worktree
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -17,8 +16,10 @@ import (
 
 	"github.com/Automaat/sybra/internal/buildcache"
 	"github.com/Automaat/sybra/internal/notes"
+	"github.com/Automaat/sybra/internal/prepstate"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 // initBareWithCommit creates a bare repo containing a single commit on
@@ -300,6 +301,29 @@ func TestPathFor_TraversalSlugWouldEscape(t *testing.T) {
 	}
 }
 
+// makePushedGitDir creates a real git repo at dir with one committed file,
+// pushed to a throwaway bare "origin" — HasUnpushedCommits reports false for
+// it, matching a normal Sybra-managed worktree that has landed its work.
+func makePushedGitDir(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, dir, "git", "init", "-q")
+	mustRunInDir(t, dir, "git", "config", "user.email", "test@test.com")
+	mustRunInDir(t, dir, "git", "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, dir, "git", "add", "-A")
+	mustRunInDir(t, dir, "git", "commit", "-q", "-m", "init")
+
+	origin := t.TempDir()
+	mustRunInDir(t, origin, "git", "init", "-q", "--bare")
+	mustRunInDir(t, dir, "git", "remote", "add", "origin", origin)
+	mustRunInDir(t, dir, "git", "push", "-q", "-u", "origin", "HEAD:refs/heads/main")
+}
+
 func TestCleanupOrphaned(t *testing.T) {
 	dir := t.TempDir()
 	tasksDir := t.TempDir()
@@ -315,14 +339,11 @@ func TestCleanupOrphaned(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Create worktree dirs: one matching task (not done), one orphaned
-	if err := os.MkdirAll(filepath.Join(dir, tk.DirName()), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	// Create worktree dirs: one matching task (not done), one orphaned —
+	// both fully pushed, so the unpushed-commits guard does not interfere.
+	makePushedGitDir(t, filepath.Join(dir, tk.DirName()))
 	orphanDir := filepath.Join(dir, "orphan-12345678")
-	if err := os.MkdirAll(orphanDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	makePushedGitDir(t, orphanDir)
 
 	m := New(Config{
 		WorktreesDir: dir,
@@ -339,6 +360,308 @@ func TestCleanupOrphaned(t *testing.T) {
 	// Active task's dir should remain
 	if _, err := os.Stat(filepath.Join(dir, tk.DirName())); err != nil {
 		t.Error("active task dir should remain")
+	}
+}
+
+func TestCleanupOrphaned_PreservesInflightAttemptAndReapsFinishedAttempt(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := t.TempDir()
+
+	store, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskMgr := task.NewManager(store, nil)
+	tk, err := store.Create("best of n task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wf := &workflow.Execution{BestOfNInflight: map[string]*workflow.BestOfNInflight{
+		"attempts": {
+			ParentStepID: "attempts",
+			Attempts: map[string]*workflow.AttemptStatus{
+				"attempt_1": {AttemptID: "attempt_1", Status: "pending"},
+			},
+		},
+	}}
+	if _, err := store.Update(tk.ID, task.Update{Workflow: &wf}); err != nil {
+		t.Fatal(err)
+	}
+
+	inflightDir := filepath.Join(dir, attemptDirName(tk, "attempt_1"))
+	finishedDir := filepath.Join(dir, attemptDirName(tk, "attempt_2"))
+	makePushedGitDir(t, inflightDir)
+	makePushedGitDir(t, finishedDir)
+
+	m := New(Config{WorktreesDir: dir, Tasks: taskMgr, Logger: discardLogger()})
+	m.CleanupOrphaned(context.Background())
+
+	if _, err := os.Stat(inflightDir); err != nil {
+		t.Fatalf("in-flight attempt removed unexpectedly: %v", err)
+	}
+	if _, err := os.Stat(finishedDir); !os.IsNotExist(err) {
+		t.Fatalf("finished attempt still exists after cleanup: %v", err)
+	}
+}
+
+func TestCleanupOrphaned_PreservesDeletedTaskAttemptWithLiveAgent(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := t.TempDir()
+
+	store, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskMgr := task.NewManager(store, nil)
+	tk, err := store.Create("deleted best of n task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	attemptDir := filepath.Join(dir, attemptDirName(tk, "attempt_1"))
+	makePushedGitDir(t, attemptDir)
+	if err := taskMgr.Delete(tk.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	live := true
+	m := New(Config{
+		WorktreesDir: dir,
+		Tasks:        taskMgr,
+		Logger:       discardLogger(),
+		AgentChecker: func(taskID string) bool { return live && taskID == tk.ID },
+	})
+	m.CleanupOrphaned(context.Background())
+	if _, err := os.Stat(attemptDir); err != nil {
+		t.Fatalf("deleted task's live attempt removed unexpectedly: %v", err)
+	}
+
+	live = false
+	m.CleanupOrphaned(context.Background())
+	if _, err := os.Stat(attemptDir); !os.IsNotExist(err) {
+		t.Fatalf("deleted task's finished attempt still exists after cleanup: %v", err)
+	}
+}
+
+func TestCleanupOrphaned_ReapsTerminalTaskAttemptWithStaleInflightRecord(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := t.TempDir()
+
+	store, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskMgr := task.NewManager(store, nil)
+	tk, err := store.Create("terminal best of n task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wf := &workflow.Execution{BestOfNInflight: map[string]*workflow.BestOfNInflight{
+		"attempts": {
+			ParentStepID: "attempts",
+			Attempts: map[string]*workflow.AttemptStatus{
+				"attempt_1": {AttemptID: "attempt_1", Status: "completed"},
+			},
+		},
+	}}
+	done := task.StatusDone
+	if _, err := store.Update(tk.ID, task.Update{Workflow: &wf, Status: &done}); err != nil {
+		t.Fatal(err)
+	}
+	attemptDir := filepath.Join(dir, attemptDirName(tk, "attempt_1"))
+	makePushedGitDir(t, attemptDir)
+
+	m := New(Config{WorktreesDir: dir, Tasks: taskMgr, Logger: discardLogger()})
+	m.CleanupOrphaned(context.Background())
+
+	if _, err := os.Stat(attemptDir); !os.IsNotExist(err) {
+		t.Fatalf("terminal task's stale attempt still exists after cleanup: %v", err)
+	}
+}
+
+func TestCleanupOrphaned_PreservesInflightAttemptAfterSlugChange(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := t.TempDir()
+
+	store, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskMgr := task.NewManager(store, nil)
+	tk, err := store.Create("old slug", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	attemptDir := filepath.Join(dir, attemptDirName(tk, "attempt_1"))
+	wf := &workflow.Execution{BestOfNInflight: map[string]*workflow.BestOfNInflight{
+		"attempts": {
+			ParentStepID: "attempts",
+			Attempts: map[string]*workflow.AttemptStatus{
+				"attempt_1": {AttemptID: "attempt_1", Dir: attemptDir, Status: "pending"},
+			},
+		},
+	}}
+	newSlug := "new-slug"
+	if _, err := store.Update(tk.ID, task.Update{Workflow: &wf, Slug: &newSlug}); err != nil {
+		t.Fatal(err)
+	}
+	makePushedGitDir(t, attemptDir)
+
+	m := New(Config{WorktreesDir: dir, Tasks: taskMgr, Logger: discardLogger()})
+	m.CleanupOrphaned(context.Background())
+
+	if _, err := os.Stat(attemptDir); err != nil {
+		t.Fatalf("renamed task's in-flight attempt removed unexpectedly: %v", err)
+	}
+}
+
+// TestManager_HasUnpushedCommits proves the resolver sandbox cleanup relies
+// on (#2593): it locates taskID's own worktree by ID and reports whether it
+// holds commits not on origin, and fails safe (false — nothing to protect)
+// when the task, its worktree, or an external adoption makes that check
+// inapplicable.
+func TestManager_HasUnpushedCommits(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := t.TempDir()
+
+	store, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskMgr := task.NewManager(store, nil)
+	m := New(Config{WorktreesDir: dir, Tasks: taskMgr, Logger: discardLogger()})
+
+	pushedTask, err := store.Create("pushed task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Update(pushedTask.ID, task.Update{ProjectID: task.Ptr("owner/repo")}); err != nil {
+		t.Fatal(err)
+	}
+	makePushedGitDir(t, filepath.Join(dir, pushedTask.DirName()))
+
+	unpushedTask, err := store.Create("unpushed task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Update(unpushedTask.ID, task.Update{ProjectID: task.Ptr("owner/repo")}); err != nil {
+		t.Fatal(err)
+	}
+	unpushedDir := filepath.Join(dir, unpushedTask.DirName())
+	makePushedGitDir(t, unpushedDir)
+	if err := os.WriteFile(filepath.Join(unpushedDir, "f.txt"), []byte("b"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, unpushedDir, "git", "commit", "-q", "-am", "unpushed work")
+
+	adoptedTask, err := store.Create("adopted task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Update(adoptedTask.ID, task.Update{
+		ProjectID:   task.Ptr("owner/repo"),
+		WorktreeDir: task.Ptr("/some/externally/owned/checkout"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	if got := m.HasUnpushedCommits(ctx, pushedTask.ID); got {
+		t.Error("fully pushed worktree reported as having unpushed commits")
+	}
+	if got := m.HasUnpushedCommits(ctx, unpushedTask.ID); !got {
+		t.Error("worktree with an unpushed commit reported as clean")
+	}
+	if got := m.HasUnpushedCommits(ctx, adoptedTask.ID); got {
+		t.Error("externally-adopted worktree must never be inspected")
+	}
+	if got := m.HasUnpushedCommits(ctx, "no-such-task"); got {
+		t.Error("missing task must report false (nothing to protect)")
+	}
+
+	// A deleted task's record is gone, but its worktree dir survives on disk
+	// still holding unpushed work — the exact case the guard must protect
+	// (#2593). Resolve it by directory name, not a live record.
+	deletedID := "aabbccdd"
+	deletedDir := filepath.Join(dir, "deleted-task-"+deletedID)
+	makePushedGitDir(t, deletedDir)
+	if err := os.WriteFile(filepath.Join(deletedDir, "f.txt"), []byte("c"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, deletedDir, "git", "commit", "-q", "-am", "unpushed work")
+	if got := m.HasUnpushedCommits(ctx, deletedID); !got {
+		t.Error("deleted task's worktree with an unpushed commit must be protected")
+	}
+}
+
+// TestCleanupOrphaned_PreservesUnpushedCommits proves an orphaned worktree
+// holding commits that never reached origin survives the sweep — the
+// guard added for #2593 must block deletion/reuse regardless of the
+// existing status/no-live-agent eligibility check.
+func TestCleanupOrphaned_PreservesUnpushedCommits(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := t.TempDir()
+
+	store, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskMgr := task.NewManager(store, nil)
+
+	orphanDir := filepath.Join(dir, "orphan-deadbeef")
+	makePushedGitDir(t, orphanDir)
+	if err := os.WriteFile(filepath.Join(orphanDir, "f.txt"), []byte("b"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, orphanDir, "git", "commit", "-q", "-am", "unpushed work")
+
+	m := New(Config{
+		WorktreesDir: dir,
+		Tasks:        taskMgr,
+		Logger:       discardLogger(),
+	})
+
+	m.CleanupOrphaned(context.Background())
+
+	if _, err := os.Stat(orphanDir); err != nil {
+		t.Errorf("orphaned worktree with unpushed commits removed unexpectedly: %v", err)
+	}
+}
+
+// TestRemove_PreservesUnpushedCommits proves the per-task cleanup chokepoint
+// (fired on task completion, manual terminal transitions, and explicit
+// deletes) refuses to delete a worktree whose completed work never reached
+// origin — the #2593 scenario where a terminal-status task's finished-but-
+// unpushed diff would otherwise be destroyed before the periodic orphan sweep
+// with its identical guard ever runs.
+func TestRemove_PreservesUnpushedCommits(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := t.TempDir()
+
+	store, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskMgr := task.NewManager(store, nil)
+	m := New(Config{WorktreesDir: dir, Tasks: taskMgr, Logger: discardLogger()})
+
+	tk, err := store.Create("unpushed task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Update(tk.ID, task.Update{ProjectID: task.Ptr("owner/repo")}); err != nil {
+		t.Fatal(err)
+	}
+	wtDir := filepath.Join(dir, tk.DirName())
+	makePushedGitDir(t, wtDir)
+	if err := os.WriteFile(filepath.Join(wtDir, "f.txt"), []byte("b"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, wtDir, "git", "commit", "-q", "-am", "unpushed work")
+
+	m.Remove(context.Background(), tk.ID)
+
+	if _, err := os.Stat(wtDir); err != nil {
+		t.Errorf("worktree with unpushed commits removed unexpectedly: %v", err)
 	}
 }
 
@@ -426,6 +749,161 @@ func TestRunSetup_FailureBlocks(t *testing.T) {
 	data, _ := os.ReadFile(logPath)
 	if !strings.Contains(string(data), "exit err=") {
 		t.Errorf("setup log missing failure record; got:\n%s", string(data))
+	}
+}
+
+// TestRunSetup_CacheHitSkipsRerun proves a reused worktree whose commands
+// and lockfiles are unchanged since the last successful setup run skips
+// re-running setup entirely (issue #2505), and that the skip is recorded in
+// the setup log so a stale-cache suspicion is diagnosable.
+func TestRunSetup_CacheHitSkipsRerun(t *testing.T) {
+	t.Parallel()
+	logsDir := t.TempDir()
+	wtDir := t.TempDir()
+	mustRunInDir(t, wtDir, "git", "init", "-b", "main")
+	m := New(Config{WorktreesDir: wtDir, LogsDir: logsDir, Logger: discardLogger()})
+
+	marker := filepath.Join(wtDir, "ran-count")
+	cmds := []string{"printf x >> " + marker}
+
+	if err := m.runSetup(context.Background(), "task-cache", wtDir, cmds); err != nil {
+		t.Fatalf("first runSetup: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(wtDir, setupCacheMarkerName)); err != nil {
+		t.Fatalf("expected cache marker after successful run: %v", err)
+	}
+
+	if err := m.runSetup(context.Background(), "task-cache", wtDir, cmds); err != nil {
+		t.Fatalf("second runSetup: %v", err)
+	}
+
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("read marker: %v", err)
+	}
+	if got := string(data); got != "x" {
+		t.Errorf("setup command ran again on an unchanged reuse (want cache hit); marker=%q", got)
+	}
+
+	setupLog, err := os.ReadFile(filepath.Join(logsDir, "worktrees", "task-cache-setup.log"))
+	if err != nil {
+		t.Fatalf("read setup log: %v", err)
+	}
+	if !strings.Contains(string(setupLog), "reason=cache-hit") {
+		t.Errorf("setup log missing cache-hit record:\n%s", setupLog)
+	}
+}
+
+// TestRunSetup_LockfileChangeForcesRerun proves editing a lockfile
+// invalidates the cache even though the setup command list itself is
+// unchanged — a dependency bump must always re-run setup.
+func TestRunSetup_LockfileChangeForcesRerun(t *testing.T) {
+	t.Parallel()
+	logsDir := t.TempDir()
+	wtDir := t.TempDir()
+	mustRunInDir(t, wtDir, "git", "init", "-b", "main")
+	m := New(Config{WorktreesDir: wtDir, LogsDir: logsDir, Logger: discardLogger()})
+
+	lockfile := filepath.Join(wtDir, "go.sum")
+	if err := os.WriteFile(lockfile, []byte("v1\n"), 0o644); err != nil {
+		t.Fatalf("seed go.sum: %v", err)
+	}
+	marker := filepath.Join(wtDir, "ran-count")
+	cmds := []string{"printf x >> " + marker}
+
+	if err := m.runSetup(context.Background(), "task-lock", wtDir, cmds); err != nil {
+		t.Fatalf("first runSetup: %v", err)
+	}
+
+	if err := os.WriteFile(lockfile, []byte("v2\n"), 0o644); err != nil {
+		t.Fatalf("edit go.sum: %v", err)
+	}
+
+	if err := m.runSetup(context.Background(), "task-lock", wtDir, cmds); err != nil {
+		t.Fatalf("second runSetup: %v", err)
+	}
+
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("read marker: %v", err)
+	}
+	if got := string(data); got != "xx" {
+		t.Errorf("lockfile edit did not force a rerun; marker=%q, want \"xx\"", got)
+	}
+}
+
+// TestRunSetup_SubdirLockfileChangeForcesRerun proves a lockfile living in a
+// subdirectory a setup command `cd`s into (e.g. `frontend/package-lock.json`,
+// this repo's own frontend bootstrap) invalidates the cache — the root-only
+// hash would miss it and wrongly report a cache hit after a dependency bump
+// lands on that subdirectory lockfile.
+func TestRunSetup_SubdirLockfileChangeForcesRerun(t *testing.T) {
+	t.Parallel()
+	logsDir := t.TempDir()
+	wtDir := t.TempDir()
+	mustRunInDir(t, wtDir, "git", "init", "-b", "main")
+	m := New(Config{WorktreesDir: wtDir, LogsDir: logsDir, Logger: discardLogger()})
+
+	if err := os.MkdirAll(filepath.Join(wtDir, "frontend"), 0o755); err != nil {
+		t.Fatalf("mkdir frontend: %v", err)
+	}
+	lockfile := filepath.Join(wtDir, "frontend", "package-lock.json")
+	if err := os.WriteFile(lockfile, []byte(`{"v":1}`), 0o644); err != nil {
+		t.Fatalf("seed package-lock.json: %v", err)
+	}
+	marker := filepath.Join(wtDir, "ran-count")
+	cmds := []string{"(cd frontend && printf x >> ../ran-count)"}
+
+	if err := m.runSetup(context.Background(), "task-subdir-lock", wtDir, cmds); err != nil {
+		t.Fatalf("first runSetup: %v", err)
+	}
+
+	if err := os.WriteFile(lockfile, []byte(`{"v":2}`), 0o644); err != nil {
+		t.Fatalf("edit package-lock.json: %v", err)
+	}
+
+	if err := m.runSetup(context.Background(), "task-subdir-lock", wtDir, cmds); err != nil {
+		t.Fatalf("second runSetup: %v", err)
+	}
+
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("read marker: %v", err)
+	}
+	if got := string(data); got != "xx" {
+		t.Errorf("subdir lockfile edit did not force a rerun; marker=%q, want \"xx\"", got)
+	}
+}
+
+// TestRunSetup_FailedRunNeverRecordsCacheKey proves a failed setup run never
+// writes a cache marker, so the identical (still-failing) command set is
+// retried on the next attempt rather than being treated as a cache hit.
+func TestRunSetup_FailedRunNeverRecordsCacheKey(t *testing.T) {
+	t.Parallel()
+	logsDir := t.TempDir()
+	wtDir := t.TempDir()
+	mustRunInDir(t, wtDir, "git", "init", "-b", "main")
+	m := New(Config{WorktreesDir: wtDir, LogsDir: logsDir, Logger: discardLogger()})
+
+	marker := filepath.Join(wtDir, "ran-count")
+	cmds := []string{"printf x >> " + marker, "exit 1"}
+
+	if err := m.runSetup(context.Background(), "task-fail-cache", wtDir, cmds); err == nil {
+		t.Fatal("expected error from failing command")
+	}
+	if _, statErr := os.Stat(filepath.Join(wtDir, setupCacheMarkerName)); !os.IsNotExist(statErr) {
+		t.Fatalf("expected no cache marker after a failed run, stat err: %v", statErr)
+	}
+
+	if err := m.runSetup(context.Background(), "task-fail-cache", wtDir, cmds); err == nil {
+		t.Fatal("expected second run with the same failing command to fail too")
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("read marker: %v", err)
+	}
+	if got := string(data); got != "xx" {
+		t.Errorf("a failed run was treated as a cache hit; marker=%q, want \"xx\" (ran twice)", got)
 	}
 }
 
@@ -971,7 +1449,13 @@ func TestPrepareForTask_RebranchesOnBranchCollision(t *testing.T) {
 	}
 }
 
-func TestPrepareForTask_RerunsBootstrapOnExistingWorktreeReuse(t *testing.T) {
+// TestPrepareForTask_SkipsBootstrapOnUnchangedWorktreeReuse proves that
+// reusing an existing task worktree with unchanged setup commands and
+// lockfiles skips re-running setup (issue #2505) rather than re-running the
+// full bootstrap on every reuse — restart churn and fix/review/conflict
+// worktree reuse otherwise burn minutes of redundant toolchain work per
+// cycle for no reason.
+func TestPrepareForTask_SkipsBootstrapOnUnchangedWorktreeReuse(t *testing.T) {
 	counterPath := filepath.Join(t.TempDir(), "setup-count")
 	h := prepareHarness(t, []string{fmt.Sprintf("printf x >> %s", strconv.Quote(counterPath))}, 30*time.Second)
 
@@ -1003,8 +1487,51 @@ func TestPrepareForTask_RerunsBootstrapOnExistingWorktreeReuse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read setup counter: %v", err)
 	}
-	if got, want := string(count), "xx"; got != want {
-		t.Fatalf("setup command ran %d times, want 2 (counter %q)", len(got), got)
+	if got, want := string(count), "x"; got != want {
+		t.Fatalf("setup command ran %d times, want 1 (unchanged reuse should be a cache hit): counter %q", len(got), got)
+	}
+}
+
+// TestPrepareForTask_RerunsBootstrapWhenSetupCommandsChange proves the
+// reuse-path cache (issue #2505) is not a blanket skip: changing the
+// project's setup commands between two PrepareForTask calls on the same
+// worktree still forces a full rerun.
+func TestPrepareForTask_RerunsBootstrapWhenSetupCommandsChange(t *testing.T) {
+	counterPath := filepath.Join(t.TempDir(), "setup-count")
+	h := prepareHarness(t, []string{fmt.Sprintf("printf x >> %s", strconv.Quote(counterPath))}, 30*time.Second)
+
+	tk, err := h.tasks.Store().Create("reuse bootstrap task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
+		t.Fatal(err)
+	}
+	tk, err = h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := h.m.PrepareForTask(context.Background(), tk, nil); err != nil {
+		t.Fatalf("initial PrepareForTask: %v", err)
+	}
+
+	if _, err := h.store.SetSetupCommands(h.proj.ID, []string{
+		fmt.Sprintf("printf xx >> %s", strconv.Quote(counterPath)),
+	}); err != nil {
+		t.Fatalf("update project setup commands: %v", err)
+	}
+
+	if _, err := h.m.PrepareForTask(context.Background(), tk, nil); err != nil {
+		t.Fatalf("reused PrepareForTask: %v", err)
+	}
+
+	count, err := os.ReadFile(counterPath)
+	if err != nil {
+		t.Fatalf("read setup counter: %v", err)
+	}
+	if got, want := string(count), "xxx"; got != want {
+		t.Fatalf("setup counter = %q, want %q (changed setup commands must force a rerun)", got, want)
 	}
 }
 
@@ -1138,6 +1665,9 @@ func TestPrepareForTask_RebaseConflictFailsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("initial PrepareForTask: %v", err)
 	}
+	branch := strings.TrimSpace(mustOutputInDir(t, wtPath, "git", "branch", "--show-current"))
+	mustRunInDir(t, wtPath, "git", "push", "origin", "--delete", branch)
+	mustRunInDir(t, wtPath, "git", "update-ref", "-d", "refs/remotes/origin/"+branch)
 
 	mustRunInDir(t, wtPath, "git", "config", "user.email", "test@test.com")
 	mustRunInDir(t, wtPath, "git", "config", "user.name", "Test")
@@ -1207,12 +1737,6 @@ func TestPrepareForTask_RebaseSkipsWhenBaseAlreadyMerged(t *testing.T) {
 	mustRunInDir(t, h.src, "git", "add", "README.md")
 	mustRunInDir(t, h.src, "git", "commit", "-m", "upstream edit")
 
-	// First re-prepare hits the genuine, unresolvable-via-rebase conflict —
-	// same as TestPrepareForTask_RebaseConflictFailsClosed.
-	if _, err := h.m.PrepareForTask(context.Background(), tk, nil); !errors.Is(err, ErrRebaseFailed) {
-		t.Fatalf("PrepareForTask error = %v, want ErrRebaseFailed", err)
-	}
-
 	// Simulate recoverBranchConflictNoPR: fetch base, merge it into the
 	// branch (never a rebase), resolve the conflict, commit, and push — this
 	// is exactly what dispatchBranchConflictRecovery's pr-fix agent does.
@@ -1246,6 +1770,119 @@ func TestPrepareForTask_RebaseSkipsWhenBaseAlreadyMerged(t *testing.T) {
 	}
 	if want := "branch edit\nupstream edit\n"; string(got) != want {
 		t.Fatalf("README.md = %q, want %q (the merge-resolved content, untouched by a skipped rebase)", got, want)
+	}
+}
+
+func TestPrepareForTask_ReusesVerifiedPreparedWorktreeAfterConflictRecovery(t *testing.T) {
+	h := prepareHarness(t, []string{"printf x >> ran-count"}, 30*time.Second)
+
+	tk, err := h.tasks.Store().Create("reuse prepared recovery worktree", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
+		t.Fatal(err)
+	}
+	tk, err = h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wtPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("initial PrepareForTask: %v", err)
+	}
+	mustRunInDir(t, wtPath, "git", "config", "user.email", "test@test.com")
+	mustRunInDir(t, wtPath, "git", "config", "user.name", "Test")
+
+	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("branch edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, wtPath, "git", "add", "README.md")
+	mustRunInDir(t, wtPath, "git", "commit", "-m", "branch edit")
+
+	if err := os.WriteFile(filepath.Join(h.src, "README.md"), []byte("upstream edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, h.src, "git", "add", "README.md")
+	mustRunInDir(t, h.src, "git", "commit", "-m", "upstream edit")
+
+	mustRunInDir(t, wtPath, "git", "fetch", "origin")
+	if err := exec.Command("git", "-C", wtPath, "merge", "--no-edit", "origin/main").Run(); err == nil {
+		t.Fatal("expected conflict merge during simulated recovery")
+	}
+	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("branch edit\nupstream edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, wtPath, "git", "add", "README.md")
+	mustRunInDir(t, wtPath, "git", "commit", "--no-edit")
+	branch := strings.TrimSpace(mustOutputInDir(t, wtPath, "git", "branch", "--show-current"))
+	mustRunInDir(t, wtPath, "git", "push", "origin", "HEAD:"+branch)
+
+	wrote, err := prepstate.WriteVerified(context.Background(), wtPath, branch)
+	if err != nil {
+		t.Fatalf("WriteVerified: %v", err)
+	}
+	if !wrote {
+		t.Fatal("WriteVerified = false, want published prepared state")
+	}
+
+	gotPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("PrepareForTask after recovery: %v", err)
+	}
+	if gotPath != wtPath {
+		t.Fatalf("reused path = %q, want %q", gotPath, wtPath)
+	}
+
+	data, err := os.ReadFile(filepath.Join(wtPath, "ran-count"))
+	if err != nil {
+		t.Fatalf("read setup counter: %v", err)
+	}
+	if got := string(data); got != "x" {
+		t.Fatalf("setup reran after verified prep reuse; counter=%q, want \"x\"", got)
+	}
+}
+
+func TestRecordPreparedStateRequiresPublishedRemoteHead(t *testing.T) {
+	h := prepareHarness(t, nil, 30*time.Second)
+
+	tk, err := h.tasks.Store().Create("unpublished prep state", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
+		t.Fatal(err)
+	}
+	tk, err = h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wtPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("initial PrepareForTask: %v", err)
+	}
+	mustRunInDir(t, wtPath, "git", "config", "user.email", "test@test.com")
+	mustRunInDir(t, wtPath, "git", "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(wtPath, "local-only.txt"), []byte("not pushed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, wtPath, "git", "add", "local-only.txt")
+	mustRunInDir(t, wtPath, "git", "commit", "-m", "local only")
+
+	branch := strings.TrimSpace(mustOutputInDir(t, wtPath, "git", "branch", "--show-current"))
+	wrote, err := prepstate.WriteVerified(context.Background(), wtPath, branch)
+	if err != nil {
+		t.Fatalf("WriteVerified: %v", err)
+	}
+	if wrote {
+		t.Fatal("WriteVerified = true for an unpublished head, want false")
+	}
+	if _, ok, err := prepstate.Read(wtPath); err != nil {
+		t.Fatalf("Read prep state: %v", err)
+	} else if ok {
+		t.Fatal("prep state marker exists for an unpublished head")
 	}
 }
 
@@ -1439,16 +2076,11 @@ func TestPrepareForTask_TransientFetchFailureIsNotRebaseFailed(t *testing.T) {
 	}
 }
 
-// TestPrepareForTask_RebaseFailureRecoversViaMerge proves the merge fallback
-// in reconcileAndRebase: a task branch whose commits, replayed individually,
-// hit an intermediate patch-apply conflict against the new base — even though
-// the branch's *net* content change doesn't actually overlap with upstream's
-// edit — fails a plain rebase but succeeds via merge. The branch adds then
-// reverts a line (net no-op) while upstream edits a different line the
-// now-stale intermediate commit's patch context no longer matches; rebasing
-// commit-by-commit conflicts on that mismatched context, but a single
-// three-way merge of final states has nothing to reconcile.
-func TestPrepareForTask_RebaseFailureRecoversViaMerge(t *testing.T) {
+// TestPrepareForTask_RebaseFailureFailsClosedWithoutMerge proves Sybra's
+// no-proactive-base-merge policy: even when a task branch's final tree could be
+// merged cleanly, a rebase failure must not be silently converted into a merge
+// commit. Conflict recovery owns merge commits.
+func TestPrepareForTask_RebaseFailureFailsClosedWithoutMerge(t *testing.T) {
 	h := prepareHarness(t, nil, 30*time.Second)
 
 	tk, err := h.tasks.Store().Create("recoverable task", "", "headless")
@@ -1467,6 +2099,9 @@ func TestPrepareForTask_RebaseFailureRecoversViaMerge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("initial PrepareForTask: %v", err)
 	}
+	branch := strings.TrimSpace(mustOutputInDir(t, wtPath, "git", "branch", "--show-current"))
+	mustRunInDir(t, wtPath, "git", "push", "origin", "--delete", branch)
+	mustRunInDir(t, wtPath, "git", "update-ref", "-d", "refs/remotes/origin/"+branch)
 
 	mustRunInDir(t, wtPath, "git", "config", "user.email", "test@test.com")
 	mustRunInDir(t, wtPath, "git", "config", "user.name", "Test")
@@ -1506,29 +2141,18 @@ func TestPrepareForTask_RebaseFailureRecoversViaMerge(t *testing.T) {
 	mustRunInDir(t, h.src, "git", "commit", "-m", "upstream edit")
 
 	gotPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
-	if err != nil {
-		t.Fatalf("PrepareForTask should recover via merge fallback, got err: %v", err)
+	if !errors.Is(err, ErrRebaseFailed) {
+		t.Fatalf("PrepareForTask error = %v, want ErrRebaseFailed", err)
 	}
-	if gotPath == "" {
-		t.Fatal("PrepareForTask path is empty, want a recovered worktree path")
+	if gotPath != "" {
+		t.Fatal("PrepareForTask path is non-empty after failed rebase")
 	}
-
-	got, err := os.ReadFile(filepath.Join(gotPath, "README.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(got, upstream) {
-		t.Fatalf("README.md = %q, want upstream's content %q (branch's net change was a no-op)", got, upstream)
-	}
-
-	// The recovery must be a real merge commit, not a rebase — a subsequent
-	// push must never need to force.
-	out, err := exec.Command("git", "-C", gotPath, "log", "--merges", "-1", "--format=%H").Output()
+	out, err := exec.Command("git", "-C", wtPath, "log", "--merges", "-1", "--format=%H").Output()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(strings.TrimSpace(string(out))) == 0 {
-		t.Fatal("expected a merge commit on the recovered branch, found none")
+	if len(strings.TrimSpace(string(out))) != 0 {
+		t.Fatalf("unexpected merge commit after failed rebase: %s", out)
 	}
 }
 
@@ -1719,4 +2343,372 @@ func TestPrepareForTask_BootstrapFailureBlocks(t *testing.T) {
 	if !strings.Contains(err.Error(), "exit 42") {
 		t.Errorf("error does not carry bootstrap command text: %v", err)
 	}
+}
+
+// healOrRecreate wipes a worktree it considers unusable. Remove and
+// CleanupOrphaned already refuse when the worktree holds commits origin has
+// never seen (#2593); the branch-mismatch recreate path used to delete
+// regardless, which is what this pins. A worktree can be healthy yet on an
+// unexpected branch — exactly the state a merge or conflict resolution leaves
+// behind — so its commits are readable and worth preserving.
+//
+// The unrepairable recreate path is still unguarded, by design: broken linked
+// worktree metadata cannot distinguish local work from a clean orphan.
+func TestManager_RefuseRecreateWithUnpushedWork(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := t.TempDir()
+	store, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(Config{WorktreesDir: dir, Tasks: task.NewManager(store, nil), Logger: discardLogger()})
+
+	wt := filepath.Join(dir, "unpushed-work")
+	makePushedGitDir(t, wt)
+	if err := os.WriteFile(filepath.Join(wt, "f.txt"), []byte("merge resolution"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, wt, "git", "add", "-A")
+	mustRunInDir(t, wt, "git", "commit", "-q", "-m", "resolve conflict")
+
+	// branch-mismatch only: the unrepairable path stays unguarded by design,
+	// since a broken worktree has no dependably-readable state to preserve.
+	err = m.refuseRecreateWithLocalWork(context.Background(), "t1", wt, "branch-mismatch")
+
+	if err == nil {
+		t.Fatal("recreate allowed on a worktree holding commits origin never saw; that discards the agent's work")
+	}
+	if _, statErr := os.Stat(filepath.Join(wt, "f.txt")); statErr != nil {
+		t.Fatalf("worktree contents gone: %v", statErr)
+	}
+}
+
+// A worktree whose work already reached origin is safe to recreate — the
+// guard must not block ordinary recovery.
+func TestManager_AllowsRecreateWhenPushed(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := t.TempDir()
+	store, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(Config{WorktreesDir: dir, Tasks: task.NewManager(store, nil), Logger: discardLogger()})
+
+	wt := filepath.Join(dir, "pushed-work")
+	makePushedGitDir(t, wt)
+
+	if err := m.refuseRecreateWithLocalWork(context.Background(), "t1", wt, "branch-mismatch"); err != nil {
+		t.Fatalf("guard blocked recreate of a fully-pushed worktree: %v", err)
+	}
+}
+
+func TestManager_RefuseRecreateWithUncommittedWork(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := t.TempDir()
+	store, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(Config{WorktreesDir: dir, Tasks: task.NewManager(store, nil), Logger: discardLogger()})
+
+	wt := filepath.Join(dir, "dirty-work")
+	makePushedGitDir(t, wt)
+	if err := os.WriteFile(filepath.Join(wt, "uncommitted.txt"), []byte("local recovery state"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err = m.refuseRecreateWithLocalWork(context.Background(), "t1", wt, "branch-mismatch")
+	if err == nil {
+		t.Fatal("recreate allowed on a worktree holding uncommitted work")
+	}
+	if _, statErr := os.Stat(filepath.Join(wt, "uncommitted.txt")); statErr != nil {
+		t.Fatalf("uncommitted worktree contents gone: %v", statErr)
+	}
+}
+
+// ResolveExisting is the recovery path's answer to #3073, so what it must not
+// do is the whole point: a recovery agent re-running the failing command has
+// to see the working tree, HEAD, and branch that produced the failure.
+func TestManager_ResolveExistingLeavesTheTreeUntouched(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := t.TempDir()
+	store, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(Config{WorktreesDir: dir, Tasks: task.NewManager(store, nil), Logger: discardLogger()})
+
+	tk := task.Task{ID: "t1"}
+	wt := filepath.Join(dir, tk.DirName())
+	makePushedGitDir(t, wt)
+	// The implementer's uncommitted edits are the evidence, and SanitizeWorktree
+	// would auto-commit then reset them away.
+	if err := os.WriteFile(filepath.Join(wt, "uncommitted.txt"), []byte("the state that failed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	headBefore := gitOut(t, wt, "rev-parse", "HEAD")
+	statusBefore := gitOut(t, wt, "status", "--porcelain")
+
+	got, err := m.ResolveExisting(context.Background(), tk)
+	if err != nil {
+		t.Fatalf("healthy worktree not resolved: %v", err)
+	}
+	if got != wt {
+		t.Errorf("resolved %q, want %q", got, wt)
+	}
+	if after := gitOut(t, wt, "rev-parse", "HEAD"); after != headBefore {
+		t.Errorf("HEAD moved: %q -> %q", headBefore, after)
+	}
+	if after := gitOut(t, wt, "status", "--porcelain"); after != statusBefore {
+		t.Errorf("working tree changed: %q -> %q", statusBefore, after)
+	}
+	if _, statErr := os.Stat(filepath.Join(wt, "uncommitted.txt")); statErr != nil {
+		t.Errorf("uncommitted evidence gone: %v", statErr)
+	}
+}
+
+func TestManager_ResolveExistingRejectsMissingAndNonGit(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := t.TempDir()
+	store, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(Config{WorktreesDir: dir, Tasks: task.NewManager(store, nil), Logger: discardLogger()})
+
+	if got, err := m.ResolveExisting(context.Background(), task.Task{ID: "absent"}); err == nil {
+		t.Errorf("resolved a worktree that does not exist: %q", got)
+	}
+
+	bare := task.Task{ID: "not-a-repo"}
+	notRepo := filepath.Join(dir, bare.DirName())
+	if err := os.MkdirAll(notRepo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := m.ResolveExisting(context.Background(), bare); err == nil {
+		t.Errorf("resolved a directory git cannot resolve: %q", got)
+	}
+}
+
+// Reuse skips PrepareForTask, and with it the ErrAgentRunning guard that is the
+// only thing stopping a second agent from editing a checkout the first is still
+// committing into.
+func TestManager_ResolveExistingRefusesLiveAgent(t *testing.T) {
+	dir := t.TempDir()
+	store, err := task.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(Config{
+		WorktreesDir:     dir,
+		Tasks:            task.NewManager(store, nil),
+		Logger:           discardLogger(),
+		LiveAgentChecker: func(string) bool { return true },
+	})
+
+	tk := task.Task{ID: "busy"}
+	makePushedGitDir(t, filepath.Join(dir, tk.DirName()))
+
+	got, err := m.ResolveExisting(context.Background(), tk)
+	if !errors.Is(err, ErrWorktreeBusy) {
+		t.Fatalf("ResolveExisting = %q, %v; want ErrWorktreeBusy", got, err)
+	}
+}
+
+// A recovery agent is ordered to fix, commit and push. Each of these passes
+// WorktreeHealthy and then either cannot be pushed from at all — the commit
+// lands unreferenced and the next Prepare* drops the verified fix — or pushes
+// somewhere catastrophic.
+func TestManager_ResolveExistingRefusesUnpushableCheckout(t *testing.T) {
+	cases := []struct {
+		name    string
+		breakWT func(t *testing.T, wt string)
+	}{
+		{
+			name: "detached HEAD",
+			breakWT: func(t *testing.T, wt string) {
+				t.Helper()
+				mustRunInDir(t, wt, "git", "checkout", "--detach")
+			},
+		},
+		{
+			name: "conflicted merge",
+			breakWT: func(t *testing.T, wt string) {
+				t.Helper()
+				forkConflict(t, wt, "merge")
+			},
+		},
+		{
+			name: "conflicted cherry-pick",
+			breakWT: func(t *testing.T, wt string) {
+				t.Helper()
+				forkConflict(t, wt, "cherry-pick")
+			},
+		},
+		{
+			name: "conflicted rebase",
+			breakWT: func(t *testing.T, wt string) {
+				t.Helper()
+				forkConflict(t, wt, "rebase")
+			},
+		},
+		{
+			name: "half-applied revert",
+			breakWT: func(t *testing.T, wt string) {
+				t.Helper()
+				runInDirAllowFail(wt, "git", "revert", "--no-commit", "HEAD")
+			},
+		},
+		{
+			// The only marker not already subsumed by the detached-HEAD check:
+			// a conflicted `git am` stays on the branch and writes rebase-apply.
+			name: "conflicted git am",
+			breakWT: func(t *testing.T, wt string) {
+				t.Helper()
+				conflictedAm(t, wt)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			store, err := task.NewStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			m := New(Config{WorktreesDir: dir, Tasks: task.NewManager(store, nil), Logger: discardLogger()})
+
+			tk := task.Task{ID: "unpushable"}
+			wt := filepath.Join(dir, tk.DirName())
+			makePushedGitDir(t, wt)
+			mustRunInDir(t, wt, "git", "checkout", "-q", "-b", "feature")
+			if _, err := m.ResolveExisting(context.Background(), tk); err != nil {
+				t.Fatalf("healthy worktree refused before the break: %v", err)
+			}
+			tc.breakWT(t, wt)
+
+			got, err := m.ResolveExisting(context.Background(), tk)
+			if err == nil {
+				t.Fatalf("ResolveExisting returned %q for a checkout that cannot be pushed from", got)
+			}
+		})
+	}
+}
+
+// forkConflict leaves op half-applied against a conflicting sibling commit, so
+// git writes the real in-progress marker rather than a hand-made directory.
+func forkConflict(t *testing.T, wt, op string) {
+	t.Helper()
+	base := gitOut(t, wt, "rev-parse", "HEAD")
+	mustRunInDir(t, wt, "git", "checkout", "-q", "-b", "other", base)
+	writeFileT(t, filepath.Join(wt, "f.txt"), "other side")
+	mustRunInDir(t, wt, "git", "commit", "-q", "-am", "other")
+	other := gitOut(t, wt, "rev-parse", "HEAD")
+
+	mustRunInDir(t, wt, "git", "checkout", "-q", "feature")
+	writeFileT(t, filepath.Join(wt, "f.txt"), "feature side")
+	mustRunInDir(t, wt, "git", "commit", "-q", "-am", "feature")
+
+	switch op {
+	case "merge":
+		runInDirAllowFail(wt, "git", "merge", other)
+	case "cherry-pick":
+		runInDirAllowFail(wt, "git", "cherry-pick", other)
+	case "rebase":
+		runInDirAllowFail(wt, "git", "rebase", other)
+	}
+}
+
+// conflictedAm leaves `git am` half-applied. Unlike a conflicted rebase (which
+// detaches HEAD and is caught by the earlier check), am stays on the branch, so
+// rebase-apply is the only thing that can refuse this checkout.
+func conflictedAm(t *testing.T, wt string) {
+	t.Helper()
+	base := gitOut(t, wt, "rev-parse", "HEAD")
+	mustRunInDir(t, wt, "git", "checkout", "-q", "-b", "patchsrc", base)
+	writeFileT(t, filepath.Join(wt, "f.txt"), "patched")
+	mustRunInDir(t, wt, "git", "commit", "-q", "-am", "patch")
+	patch := gitOut(t, wt, "format-patch", "-1", "--stdout")
+
+	mustRunInDir(t, wt, "git", "checkout", "-q", "feature")
+	writeFileT(t, filepath.Join(wt, "f.txt"), "conflicting")
+	mustRunInDir(t, wt, "git", "commit", "-q", "-am", "conflicting")
+
+	cmd := exec.Command("git", "am")
+	cmd.Dir = wt
+	cmd.Stdin = strings.NewReader(patch + "\n")
+	_, _ = cmd.CombinedOutput()
+
+	if branch := gitOut(t, wt, "branch", "--show-current"); branch == "" {
+		t.Fatal("git am detached HEAD; this case no longer isolates rebase-apply")
+	}
+}
+
+func writeFileT(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// runInDirAllowFail runs a command expected to exit non-zero (a deliberate
+// conflict), so only the resulting repository state matters.
+func runInDirAllowFail(dir, name string, args ...string) {
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	_, _ = cmd.CombinedOutput()
+}
+
+// The recovery mandate orders the agent to commit and push, and origin's push
+// URL is only neutered for fork remotes. Reusing a checkout sitting on the
+// default branch would put agent commits straight onto main with no PR —
+// which is why adoptWorktree already refuses it.
+func TestManager_ResolveExistingRefusesDefaultBranch(t *testing.T) {
+	h := prepareHarness(t, nil, 30*time.Second)
+
+	tk, err := h.tasks.Store().Create("default branch reuse", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
+		t.Fatal(err)
+	}
+	tk, err = h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wt := h.m.PathFor(tk)
+	mustRunInDir(t, "", "git", "clone", "-q", h.proj.ClonePath, wt)
+	branch := gitOut(t, wt, "rev-parse", "--abbrev-ref", "HEAD")
+	def, err := project.DefaultBranch(context.Background(), h.proj.ClonePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if branch != def {
+		t.Fatalf("clone landed on %q, want the default branch %q", branch, def)
+	}
+
+	got, err := h.m.ResolveExisting(context.Background(), tk)
+	if err == nil {
+		t.Fatalf("ResolveExisting returned %q for a checkout on the default branch", got)
+	}
+
+	// A feature branch in the same worktree is still fine.
+	mustRunInDir(t, wt, "git", "checkout", "-q", "-b", "feature")
+	if _, err := h.m.ResolveExisting(context.Background(), tk); err != nil {
+		t.Errorf("feature branch refused: %v", err)
+	}
+}
+
+func gitOut(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
 }

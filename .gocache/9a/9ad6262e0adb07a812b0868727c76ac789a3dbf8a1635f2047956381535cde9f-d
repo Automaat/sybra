@@ -1,0 +1,11 @@
+./condition.go
+./deleteoptions.go
+./groupresource.go
+./labelselector.go
+./labelselectorrequirement.go
+./managedfieldsentry.go
+./objectmeta.go
+./ownerreference.go
+./preconditions.go
+./typemeta.go
+./unstructured.go

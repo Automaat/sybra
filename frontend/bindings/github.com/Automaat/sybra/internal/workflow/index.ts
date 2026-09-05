@@ -7,6 +7,8 @@ export {
     ChildStatus,
     Condition,
     Definition,
+    EffectID,
+    EffectRecord,
     ExecState,
     Execution,
     ImportSidecar,

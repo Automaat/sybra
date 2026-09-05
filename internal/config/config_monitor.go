@@ -18,4 +18,20 @@ type MonitorConfig struct {
 	BottleneckHours      map[string]float64 `yaml:"bottleneck_hours" json:"bottleneckHours"`
 	IssueLabel           string             `yaml:"issue_label" json:"issueLabel"`
 	IssueRepo            string             `yaml:"issue_repo" json:"issueRepo"`
+	// LostAgentIssueAfterOccurrences is how many consecutive ticks a
+	// lost_agent anomaly must be detected for the same task before an issue
+	// is filed. The deterministic remediation (resetLostAgent) runs every
+	// tick regardless; a single recurrence just means recovery hasn't taken
+	// effect yet, not that it failed.
+	LostAgentIssueAfterOccurrences int `yaml:"lost_agent_issue_after_occurrences" json:"lostAgentIssueAfterOccurrences"`
+	// LostAgentAutoCloseAfterClears is how many consecutive ticks a
+	// previously-filed lost_agent issue's task must stay clear (no longer
+	// detected as lost) before the issue is auto-closed.
+	LostAgentAutoCloseAfterClears int `yaml:"lost_agent_auto_close_after_clears" json:"lostAgentAutoCloseAfterClears"`
+	// IncidentResolveGraceMinutes requires a successfully observed healthy
+	// detector result to remain stable before an incident is resolved.
+	IncidentResolveGraceMinutes int `yaml:"incident_resolve_grace_minutes" json:"incidentResolveGraceMinutes"`
+	// IncidentReopenGraceMinutes suppresses noisy external updates immediately
+	// after resolution while retaining recurrence history in the same incident.
+	IncidentReopenGraceMinutes int `yaml:"incident_reopen_grace_minutes" json:"incidentReopenGraceMinutes"`
 }

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -45,6 +46,12 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.ABTesting.EnabledValue() {
 		t.Fatal("ABTesting.EnabledValue() = true, want false until explicitly opted in")
 	}
+	if cfg.Agent.MaxTaskCostUSD <= 0 {
+		t.Errorf("Agent.MaxTaskCostUSD = %v, want a positive default so the cumulative-per-task cost gate is enabled out of the box", cfg.Agent.MaxTaskCostUSD)
+	}
+	if cfg.Agent.MaxSubagentEvents <= 0 {
+		t.Errorf("Agent.MaxSubagentEvents = %d, want a positive default so a runaway forked-subagent fan-out is bounded out of the box", cfg.Agent.MaxSubagentEvents)
+	}
 }
 
 func TestDefaultConfigMatchesEmptyFileResolution(t *testing.T) {
@@ -75,6 +82,18 @@ func TestParseFileConfigRejectsUnknownKeyWithFullPathAndSuggestion(t *testing.T)
 	}
 	if !strings.Contains(msg, `did you mean "issue_repo"?`) {
 		t.Fatalf("error = %q, want suggestion", msg)
+	}
+}
+
+func TestParseFileConfigToleratesRemovedAgentModeKey(t *testing.T) {
+	// A full re-serialize (Settings save, config dump) writes every field
+	// including zero values, so pre-existing config.yaml files commonly still
+	// carry agent.mode even though AgentDefaults.Mode was deleted (the
+	// interactive runner it selected no longer exists). Loading must not
+	// fail closed with "unknown config key" on upgrade.
+	_, err := ParseFileConfig([]byte("agent:\n  mode: ''\n  provider: claude\n"))
+	if err != nil {
+		t.Fatalf("ParseFileConfig with legacy agent.mode key: %v", err)
 	}
 }
 
@@ -394,7 +413,6 @@ func TestResolveLoadsHonestGuardrailKeys(t *testing.T) {
 		"    checkpoint_on_assistant_event_ceiling: false",
 		"    assistant_event_cost_fraction: 0.6",
 		"    assistant_event_multiplier: 3",
-		"    max_review_rounds: 4",
 		"",
 	}, "\n")))
 	if err != nil {
@@ -415,9 +433,6 @@ func TestResolveLoadsHonestGuardrailKeys(t *testing.T) {
 	}
 	if got := resolved.Config.Agent.TurnMultiplier; got != 3 {
 		t.Fatalf("Agent.TurnMultiplier = %v, want 3", got)
-	}
-	if got := resolved.Config.MaxReviewRounds(); got != 4 {
-		t.Fatalf("MaxReviewRounds() = %d, want 4", got)
 	}
 	if resolved.Config.CheckpointOnTurnCeilingEnabled() {
 		t.Fatal("CheckpointOnTurnCeilingEnabled() = true, want false")
@@ -469,8 +484,8 @@ func TestResolveV2GuardrailAliasesWarnAndKeepBoundedReviewLoop(t *testing.T) {
 	if !resolved.Config.ReviewUntilClean() {
 		t.Fatal("ReviewUntilClean() = false, want true")
 	}
-	if resolved.Config.AllowUnboundedReviewRounds() {
-		t.Fatal("AllowUnboundedReviewRounds() = true, want false for schema-v2 review_until_clean=true")
+	if got := resolved.Config.Agent.ReviewRoundsPerHourLimit(); got <= 0 {
+		t.Fatalf("ReviewRoundsPerHourLimit() = %d, want the positive default for schema-v2 review_until_clean=true", got)
 	}
 }
 
@@ -487,8 +502,150 @@ func TestResolveLegacyReviewUntilCleanPreservesUnboundedLoop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !resolved.Config.AllowUnboundedReviewRounds() {
-		t.Fatal("AllowUnboundedReviewRounds() = false, want true for schema-v1 review_until_clean=true")
+	if got := resolved.Config.Agent.ReviewRoundsPerHourLimit(); got > 0 {
+		t.Fatalf("ReviewRoundsPerHourLimit() = %d, want disabled (<=0) for schema-v1 review_until_clean=true", got)
+	}
+}
+
+// github.review_rounds_per_hour was the field's home for one day (schema v2,
+// before it moved to agent). A config that already adopted it during that
+// window must keep parsing and resolving instead of hitting "unknown config
+// key" on the next upgrade.
+func TestParseFileConfig_AcceptsLegacyGitHubReviewRoundsPerHour(t *testing.T) {
+	fileCfg, err := ParseFileConfig([]byte(strings.Join([]string{
+		"schema_version: 2",
+		"github:",
+		"  review_rounds_per_hour: 5",
+		"",
+	}, "\n")))
+	if err != nil {
+		t.Fatalf("ParseFileConfig() error = %v, want the legacy key accepted as an alias", err)
+	}
+	resolved, err := Resolve(fileCfg, Environment{}, ResolveOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resolved.Config.Agent.ReviewRoundsPerHour; got != 5 {
+		t.Fatalf("Agent.ReviewRoundsPerHour = %d, want 5 from the legacy github key", got)
+	}
+}
+
+func TestResolve_ConflictingReviewRoundsPerHourKeysError(t *testing.T) {
+	fileCfg, err := ParseFileConfig([]byte(strings.Join([]string{
+		"schema_version: 2",
+		"agent:",
+		"  review_rounds_per_hour: 3",
+		"github:",
+		"  review_rounds_per_hour: 5",
+		"",
+	}, "\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Resolve(fileCfg, Environment{}, ResolveOptions{}); err == nil {
+		t.Fatal("Resolve() error = nil, want a conflict error for mismatched agent/github values")
+	}
+}
+
+func TestResolveLegacyReviewUntilCleanKeepsExplicitGitHubReviewRoundsPerHour(t *testing.T) {
+	fileCfg, err := ParseFileConfig([]byte(strings.Join([]string{
+		"agent:",
+		"  review_until_clean: true",
+		"github:",
+		"  review_rounds_per_hour: 5",
+		"",
+	}, "\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := Resolve(fileCfg, Environment{}, ResolveOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resolved.Config.Agent.ReviewRoundsPerHour; got != 5 {
+		t.Fatalf("Agent.ReviewRoundsPerHour = %d, want the explicit legacy github value 5 preserved, not clobbered to -1", got)
+	}
+}
+
+func TestMigrateRawConfig_RelocatesLegacyGitHubReviewRoundsPerHour(t *testing.T) {
+	raw := []byte(strings.Join([]string{
+		"agent:",
+		"  review_until_clean: true",
+		"github:",
+		"  review_rounds_per_hour: 5",
+		"",
+	}, "\n"))
+
+	result, err := MigrateRawConfig(raw, CurrentSchemaVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(result.MigratedRaw)
+	if !strings.Contains(text, "review_rounds_per_hour: 5") {
+		t.Fatalf("migrated config missing the preserved value:\n%s", text)
+	}
+	if strings.Contains(text, "integrations:\n  github:\n    review_rounds_per_hour") {
+		t.Fatalf("migrated config kept review_rounds_per_hour under integrations.github:\n%s", text)
+	}
+
+	fileCfg, err := ParseFileConfig(result.MigratedRaw)
+	if err != nil {
+		t.Fatalf("re-parse migrated output: %v", err)
+	}
+	resolved, err := Resolve(fileCfg, Environment{}, ResolveOptions{})
+	if err != nil {
+		t.Fatalf("re-resolve migrated output: %v", err)
+	}
+	if got := resolved.Config.Agent.ReviewRoundsPerHour; got != 5 {
+		t.Fatalf("Agent.ReviewRoundsPerHour = %d, want 5 preserved through migration", got)
+	}
+}
+
+func TestMigrateRawConfigMovesWebhookUnderGitHub(t *testing.T) {
+	raw := []byte(strings.Join([]string{
+		"webhook:",
+		"  enabled: true",
+		"  port: 9093",
+		"  secret: task-secret",
+		"",
+	}, "\n"))
+
+	result, err := MigrateRawConfig(raw, CurrentSchemaVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(result.MigratedRaw)
+	for _, want := range []string{
+		"integrations:",
+		"  github:",
+		"    webhook:",
+		"      enabled: true",
+		"      port: 9093",
+		"      task_enabled: true",
+		"      task_secret: task-secret",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("migrated config missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "\nwebhook:") {
+		t.Fatalf("migrated config retained top-level webhook:\n%s", text)
+	}
+	var foundSecretMove bool
+	for _, move := range result.Moves {
+		if move.From != "webhook.secret" {
+			continue
+		}
+		foundSecretMove = true
+		if move.To != "integrations.github.webhook.task_secret" {
+			t.Fatalf("webhook secret move target = %q", move.To)
+		}
+		if move.ValueFrom != RedactedPlaceholder || move.ValueTo != RedactedPlaceholder {
+			t.Fatalf("webhook secret move leaked value: %#v", move)
+		}
+	}
+	if !foundSecretMove {
+		t.Fatalf("migration moves missing webhook.secret: %#v", result.Moves)
 	}
 }
 
@@ -510,7 +667,7 @@ func TestMigrateRawConfigRewritesGuardrailAliasesAndPreservesExplicitReviewLoop(
 		"post_result_cost_usd: 9",
 		"max_assistant_events: 60",
 		"review_until_clean: true",
-		"allow_unbounded_review_rounds: true",
+		"review_rounds_per_hour: -1",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("migrated config missing %q:\n%s", want, text)
@@ -537,7 +694,7 @@ func TestMigrateRawConfigKeepsV2ReviewUntilCleanBounded(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(result.MigratedRaw)
-	if strings.Contains(text, "allow_unbounded_review_rounds") {
+	if strings.Contains(text, "review_rounds_per_hour") {
 		t.Fatalf("migration opted v2 config into unbounded review rounds:\n%s", text)
 	}
 	if result.Changed {
@@ -546,7 +703,7 @@ func TestMigrateRawConfigKeepsV2ReviewUntilCleanBounded(t *testing.T) {
 }
 
 func TestMigrateNodeToCanonicalPreservesNilAsYAMLNull(t *testing.T) {
-	got, err := migrateNodeToCanonical([]string{"agent", "model"}, nil, false)
+	got, err := migrateNodeToCanonical([]string{"agent", "model"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -863,6 +1020,9 @@ func TestLoadPressureDefaults(t *testing.T) {
 	if p.MinDiskFreePercent != 5 {
 		t.Fatalf("pressure.min_disk_free_percent = %v, want 5", p.MinDiskFreePercent)
 	}
+	if p.RemoteMinDiskFreeBytes != 2<<30 {
+		t.Fatalf("pressure.remote_min_disk_free_bytes = %d, want %d", p.RemoteMinDiskFreeBytes, int64(2<<30))
+	}
 	if p.MinMemAvailablePercent != 8 {
 		t.Fatalf("pressure.min_mem_available_percent = %v, want 8", p.MinMemAvailablePercent)
 	}
@@ -1029,6 +1189,24 @@ func TestLoadMonitorPRGapGraceDefaults(t *testing.T) {
 	}
 	if cfg.Monitor.PRGapGraceMinutes != 15 {
 		t.Fatalf("PRGapGraceMinutes = %d, want 15", cfg.Monitor.PRGapGraceMinutes)
+	}
+}
+
+func TestLoadMonitorIncidentGracePreservesExplicitZero(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+
+	yaml := []byte("monitor:\n  incident_resolve_grace_minutes: 0\n  incident_reopen_grace_minutes: 0\n")
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yaml, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Monitor.IncidentResolveGraceMinutes != 0 || cfg.Monitor.IncidentReopenGraceMinutes != 0 {
+		t.Fatalf("explicit zero incident grace overwritten: resolve=%d reopen=%d", cfg.Monitor.IncidentResolveGraceMinutes, cfg.Monitor.IncidentReopenGraceMinutes)
 	}
 }
 
@@ -1908,6 +2086,28 @@ func TestLoadGitHubFlakyDetection(t *testing.T) {
 	}
 	if got := cfg.GitHub.FlakyThreshold(); got != 0.6 {
 		t.Errorf("FlakyThreshold() = %v, want 0.6", got)
+	}
+}
+
+func TestGitHubConfig_PRFixRetries(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		cfg  GitHubConfig
+		want int
+	}{
+		{"unset falls back to default", GitHubConfig{}, DefaultPRFixMaxRetries},
+		{"zero falls back to default", GitHubConfig{PRFixMaxRetries: 0}, DefaultPRFixMaxRetries},
+		{"explicit override", GitHubConfig{PRFixMaxRetries: 10}, 10},
+		{"negative disables cap", GitHubConfig{PRFixMaxRetries: -1}, -1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tt.cfg.PRFixRetries(); got != tt.want {
+				t.Errorf("PRFixRetries() = %d, want %d", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -2929,13 +3129,18 @@ func TestTestingMaxAttemptsDefault(t *testing.T) {
 	if got := cfg.TestingMaxAttempts(); got != DefaultTestingMaxAttempts {
 		t.Errorf("zero-value TestingMaxAttempts() = %d, want %d", got, DefaultTestingMaxAttempts)
 	}
-	if DefaultTestingMaxAttempts != 25 {
-		t.Errorf("DefaultTestingMaxAttempts = %d, want 25", DefaultTestingMaxAttempts)
+	if DefaultTestingMaxAttempts != 5 {
+		t.Errorf("DefaultTestingMaxAttempts = %d, want 5", DefaultTestingMaxAttempts)
+	}
+
+	cfg.Testing.MaxAttempts = 3
+	if got := cfg.TestingMaxAttempts(); got != 3 {
+		t.Errorf("configured TestingMaxAttempts() = %d, want 3", got)
 	}
 
 	cfg.Testing.MaxAttempts = 10
-	if got := cfg.TestingMaxAttempts(); got != 10 {
-		t.Errorf("configured TestingMaxAttempts() = %d, want 10", got)
+	if got := cfg.TestingMaxAttempts(); got != DefaultTestingMaxAttempts {
+		t.Errorf("configured TestingMaxAttempts() above safety ceiling = %d, want %d", got, DefaultTestingMaxAttempts)
 	}
 }
 
@@ -2994,11 +3199,37 @@ func TestCheckpointDefaults(t *testing.T) {
 	}
 }
 
+func TestConfig_VerifyChecksMaxConcurrent(t *testing.T) {
+	t.Parallel()
+
+	var nilCfg *Config
+	if got := nilCfg.VerifyChecksMaxConcurrent(); got < 1 {
+		t.Errorf("nil config VerifyChecksMaxConcurrent() = %d, want >= 1", got)
+	}
+
+	cfg := &Config{}
+	derived := cfg.VerifyChecksMaxConcurrent()
+	if derived < 1 {
+		t.Errorf("zero-value VerifyChecksMaxConcurrent() = %d, want >= 1", derived)
+	}
+	wantDerived := runtime.NumCPU() / 4
+	wantDerived = max(wantDerived, 1)
+	wantDerived = min(wantDerived, 8)
+	if derived != wantDerived {
+		t.Errorf("zero-value VerifyChecksMaxConcurrent() = %d, want CPU-derived %d", derived, wantDerived)
+	}
+
+	cfg.Agent.VerifyChecksMaxConcurrent = 5
+	if got := cfg.VerifyChecksMaxConcurrent(); got != 5 {
+		t.Errorf("configured VerifyChecksMaxConcurrent() = %d, want 5", got)
+	}
+}
+
 // The resolver's three branches are the PR's headline claim ("config-backed,
 // default 3, negative disables"), and every dispatcher test runs with a nil cfg
 // — so without this table the production path is exercised by nothing, and a
 // regression that silently disables the cap fleet-wide ships green.
-func TestGitHubConfig_ReviewRoundsPerHourLimit(t *testing.T) {
+func TestAgentDefaults_ReviewRoundsPerHourLimit(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name string
@@ -3015,7 +3246,7 @@ func TestGitHubConfig_ReviewRoundsPerHourLimit(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := GitHubConfig{ReviewRoundsPerHour: tt.set}.ReviewRoundsPerHourLimit()
+			got := AgentDefaults{ReviewRoundsPerHour: tt.set}.ReviewRoundsPerHourLimit()
 			if got != tt.want {
 				t.Errorf("ReviewRoundsPerHourLimit(%d) = %d, want %d", tt.set, got, tt.want)
 			}

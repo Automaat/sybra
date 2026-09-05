@@ -1,0 +1,7 @@
+./doc.go
+./generated.pb.go
+./register.go
+./types.go
+./zz_generated.deepcopy.go
+./zz_generated.model_name.go
+./zz_generated.prerelease-lifecycle.go

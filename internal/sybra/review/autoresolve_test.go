@@ -117,7 +117,7 @@ func newAutoResolveHarness(t *testing.T, autoResolveEnabled bool) *autoResolveHa
 		t.Fatal(err)
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, filepath.Join(tmp, "logs"))
-	engine := workflow.NewEngine(
+	engine := workflow.NewTestEngine(
 		wfStore,
 		&taskAdapter{tasks: tasks},
 		&agentAdapter{agents: agentMgr, tasks: tasks},
@@ -558,8 +558,11 @@ func TestPrepareWorktree_SameBranchConflictUsesForkRemote(t *testing.T) {
 	if strings.Contains(prompt, "git merge refs/remotes/origin/"+h.branch) {
 		t.Fatalf("prompt merges origin instead of fork:\n%s", prompt)
 	}
-	if !strings.Contains(prompt, "PUSH_REMOTE=fork") {
-		t.Fatalf("prompt does not push fork-backed PR to fork:\n%s", prompt)
+	if got.Workflow.Variables[workflow.WorkflowVarBranchConflictPushRemote] != "" || got.Workflow.Variables[workflow.WorkflowVarBranchConflictPushURL] != "" {
+		t.Fatalf("fork recovery unexpectedly received trusted origin push variables: %+v", got.Workflow.Variables)
+	}
+	if strings.Contains(prompt, "git push ") {
+		t.Fatalf("prompt still permits fork-backed recovery agent to push:\n%s", prompt)
 	}
 }
 
@@ -648,8 +651,14 @@ func TestPrepareWorktree_SameBranchConflictKeepsOriginBackedPR(t *testing.T) {
 	if strings.Contains(prompt, "refs/remotes/fork/"+h.branch) {
 		t.Fatalf("prompt uses stale fork branch for origin-backed PR:\n%s", prompt)
 	}
-	if strings.Contains(prompt, "PUSH_REMOTE=fork") {
-		t.Fatalf("prompt pushes origin-backed PR to fork:\n%s", prompt)
+	if got.Workflow.Variables[workflow.WorkflowVarBranchConflictPushRemote] != "origin" {
+		t.Fatalf("trusted recovery push remote = %q, want origin", got.Workflow.Variables[workflow.WorkflowVarBranchConflictPushRemote])
+	}
+	if got.Workflow.Variables[workflow.WorkflowVarBranchConflictPushURL] == "" {
+		t.Fatal("origin-backed recovery did not pin its source URL before agent dispatch")
+	}
+	if strings.Contains(prompt, "git push ") {
+		t.Fatalf("prompt still permits origin-backed recovery agent to push:\n%s", prompt)
 	}
 }
 
@@ -744,19 +753,23 @@ func TestAutoResolveConflict_ActiveWorkflowSkipsFastPath(t *testing.T) {
 	}
 }
 
-// TestAutoResolveConflict_CoalescedIssuesSkipFastPath verifies the fast-path
-// only ever applies to a single, conflict-only issue: a coalesced
-// conflict+comments dispatch must always go through the normal agent path,
-// regardless of what the merge would have done.
-func TestAutoResolveConflict_CoalescedIssuesSkipFastPath(t *testing.T) {
+// TestAutoResolveConflict_CoalescedIssuesSkipMerge verifies the clean-merge
+// fast-path only ever applies to a single, conflict-only issue: a coalesced
+// conflict+comments dispatch must always go through the normal agent path
+// without merging base just to refresh the branch.
+func TestAutoResolveConflict_CoalescedIssuesSkipMerge(t *testing.T) {
 	h := newAutoResolveHarness(t, true)
 	tk, pr := h.newConflictTask(t)
 	mergeCalled := false
-	h.r.tryCleanMergeFn = func(context.Context, string, string) (project.CleanMergeResult, error) {
+	h.r.tryCleanMergeFn = func(_ context.Context, dir, _ string) (project.CleanMergeResult, error) {
 		mergeCalled = true
 		return project.CleanMergeCreated, nil
 	}
-	h.r.pushSyncFn = stubPush(nil)
+	pushCalled := false
+	h.r.pushSyncFn = func(context.Context, string, string) error {
+		pushCalled = true
+		return nil
+	}
 
 	commentsPR := pr
 	ok := h.r.dispatchFixIssues(context.Background(), tk.ID, []github.PRIssue{
@@ -767,14 +780,17 @@ func TestAutoResolveConflict_CoalescedIssuesSkipFastPath(t *testing.T) {
 		t.Fatal("dispatchFixIssues = false, want true (agent dispatched)")
 	}
 	if mergeCalled {
-		t.Error("tryCleanMergeFn invoked for a coalesced (non-single) issue set")
+		t.Error("tryCleanMergeFn invoked for a coalesced issue set")
+	}
+	if pushCalled {
+		t.Error("pushSyncFn invoked for a coalesced issue set")
 	}
 	got, err := h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.Workflow == nil {
-		t.Fatal("no workflow dispatched for the coalesced issue set")
+		t.Fatal("no workflow dispatched for the coalesced issue set — sync must never skip the round")
 	}
 }
 
@@ -1029,5 +1045,193 @@ func TestRollbackAutoResolvedMerge_SurvivesCancelledContext(t *testing.T) {
 
 	if got := currentHEAD(t, worktreeDir); got != preMergeHead {
 		t.Fatalf("HEAD after rollback = %s, want %s", got, preMergeHead)
+	}
+}
+
+// TestNonConflictPRIssueSkipsStaleBranchMerge asserts the global policy:
+// comments/CI failures dispatch fix agents as-is and never merge base just to
+// refresh a stale branch.
+func TestNonConflictPRIssueSkipsStaleBranchMerge(t *testing.T) {
+	h := newAutoResolveHarness(t, true)
+	tk, pr := h.newConflictTask(t)
+	mergeCalled := false
+	h.r.tryCleanMergeFn = func(_ context.Context, dir, _ string) (project.CleanMergeResult, error) {
+		mergeCalled = true
+		return project.CleanMergeCreated, nil
+	}
+	pushCalled := false
+	h.r.pushSyncFn = func(context.Context, string, string) error {
+		pushCalled = true
+		return nil
+	}
+
+	ok := h.r.dispatchFixIssues(context.Background(), tk.ID, []github.PRIssue{
+		{Kind: github.PRIssueComments, TaskID: tk.ID, PR: pr},
+	})
+	if !ok {
+		t.Fatal("dispatchFixIssues = false, want true (agent dispatched)")
+	}
+	if mergeCalled {
+		t.Fatal("tryCleanMergeFn invoked for a non-conflict issue")
+	}
+	if pushCalled {
+		t.Fatal("pushSyncFn invoked for a non-conflict issue")
+	}
+	got, err := h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow == nil {
+		t.Fatal("no workflow dispatched for non-conflict issue")
+	}
+}
+
+// TestNonConflictPRIssueSkipsMergeEvenWhenNoop proves non-conflict issue
+// dispatch does not call the merge helper even if the helper would no-op.
+func TestNonConflictPRIssueSkipsMergeEvenWhenNoop(t *testing.T) {
+	h := newAutoResolveHarness(t, true)
+	tk, pr := h.newConflictTask(t)
+	mergeCalled := false
+	h.r.tryCleanMergeFn = func(context.Context, string, string) (project.CleanMergeResult, error) {
+		mergeCalled = true
+		return project.CleanMergeNoop, nil
+	}
+	pushCalled := false
+	h.r.pushSyncFn = func(context.Context, string, string) error {
+		pushCalled = true
+		return nil
+	}
+
+	ok := h.r.dispatchFixIssues(context.Background(), tk.ID, []github.PRIssue{
+		{Kind: github.PRIssueComments, TaskID: tk.ID, PR: pr},
+	})
+	if !ok {
+		t.Fatal("dispatchFixIssues = false, want true (agent dispatched)")
+	}
+	if mergeCalled {
+		t.Error("tryCleanMergeFn invoked for a non-conflict issue")
+	}
+	if pushCalled {
+		t.Error("pushSyncFn invoked for a no-op merge")
+	}
+	got, err := h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow == nil {
+		t.Fatal("no workflow dispatched for a no-op sync")
+	}
+}
+
+// TestNonConflictPRIssueSkipsConflictingMergeAttempt proves non-conflict issue
+// dispatch does not even probe a potential base conflict by merging.
+func TestNonConflictPRIssueSkipsConflictingMergeAttempt(t *testing.T) {
+	h := newAutoResolveHarness(t, true)
+	tk, pr := h.newConflictTask(t)
+	mergeCalled := false
+	h.r.tryCleanMergeFn = func(context.Context, string, string) (project.CleanMergeResult, error) {
+		mergeCalled = true
+		return project.CleanMergeConflict, nil
+	}
+	pushCalled := false
+	h.r.pushSyncFn = func(context.Context, string, string) error {
+		pushCalled = true
+		return nil
+	}
+
+	ok := h.r.dispatchFixIssues(context.Background(), tk.ID, []github.PRIssue{
+		{Kind: github.PRIssueComments, TaskID: tk.ID, PR: pr},
+	})
+	if !ok {
+		t.Fatal("dispatchFixIssues = false, want true (agent dispatched)")
+	}
+	if mergeCalled {
+		t.Error("tryCleanMergeFn invoked for a non-conflict issue")
+	}
+	if pushCalled {
+		t.Error("pushSyncFn invoked for a conflicting merge")
+	}
+	got, err := h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow == nil {
+		t.Fatal("no workflow dispatched after a sync conflict")
+	}
+}
+
+// TestNonConflictPRIssue_ApprovedPRSkipsMerge mirrors
+// TestAutoResolveConflict_ApprovedPRSkipsCleanMergeAndDispatchesAgent: merging
+// base in changes the merge-base and can dismiss an existing GitHub approval,
+// so an approved PR must never be auto-merged, regardless of issue kind.
+func TestNonConflictPRIssue_ApprovedPRSkipsMerge(t *testing.T) {
+	h := newAutoResolveHarness(t, true)
+	tk, pr := h.newConflictTask(t)
+	pr.ReviewDecision = "APPROVED"
+	mergeCalled := false
+	h.r.tryCleanMergeFn = func(context.Context, string, string) (project.CleanMergeResult, error) {
+		mergeCalled = true
+		return project.CleanMergeCreated, nil
+	}
+	h.r.pushSyncFn = stubPush(nil)
+
+	ok := h.r.dispatchFixIssues(context.Background(), tk.ID, []github.PRIssue{
+		{Kind: github.PRIssueComments, TaskID: tk.ID, PR: pr},
+	})
+	if !ok {
+		t.Fatal("dispatchFixIssues = false, want true (agent dispatched)")
+	}
+	if mergeCalled {
+		t.Fatal("tryCleanMergeFn called; approved non-conflict PR issue must not merge base")
+	}
+}
+
+// TestNonConflictPRIssue_ToggleOffSkipsMerge verifies the default-off
+// AutoResolveCleanMerges setting still dispatches without trying to merge.
+func TestNonConflictPRIssue_ToggleOffSkipsMerge(t *testing.T) {
+	h := newAutoResolveHarness(t, false)
+	tk, pr := h.newConflictTask(t)
+	mergeCalled := false
+	h.r.tryCleanMergeFn = func(context.Context, string, string) (project.CleanMergeResult, error) {
+		mergeCalled = true
+		return project.CleanMergeCreated, nil
+	}
+	h.r.pushSyncFn = stubPush(nil)
+
+	ok := h.r.dispatchFixIssues(context.Background(), tk.ID, []github.PRIssue{
+		{Kind: github.PRIssueComments, TaskID: tk.ID, PR: pr},
+	})
+	if !ok {
+		t.Fatal("dispatchFixIssues = false, want true (agent dispatched)")
+	}
+	if mergeCalled {
+		t.Error("tryCleanMergeFn invoked while AutoResolveCleanMerges is disabled")
+	}
+}
+
+// TestNonConflictPRIssue_WorkProjectSkipsMerge verifies work-typed projects
+// dispatch without trying to merge.
+func TestNonConflictPRIssue_WorkProjectSkipsMerge(t *testing.T) {
+	h := newAutoResolveHarness(t, true)
+	if _, err := h.projects.Update(h.proj.ID, project.ProjectTypeWork); err != nil {
+		t.Fatal(err)
+	}
+
+	tk, pr := h.newConflictTask(t)
+	mergeCalled := false
+	h.r.tryCleanMergeFn = func(context.Context, string, string) (project.CleanMergeResult, error) {
+		mergeCalled = true
+		return project.CleanMergeCreated, nil
+	}
+	h.r.pushSyncFn = stubPush(nil)
+
+	ok := h.r.dispatchFixIssues(context.Background(), tk.ID, []github.PRIssue{
+		{Kind: github.PRIssueComments, TaskID: tk.ID, PR: pr},
+	})
+	if !ok {
+		t.Fatal("dispatchFixIssues = false, want true (agent dispatched)")
+	}
+	if mergeCalled {
+		t.Error("tryCleanMergeFn invoked for a work-typed project")
 	}
 }

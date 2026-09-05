@@ -5,6 +5,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Automaat/sybra/internal/fsutil"
 )
 
 // bareRepoLocks serializes git mutations against a single bare clone within
@@ -13,12 +15,12 @@ import (
 // repo's shared lock files (e.g. .git/index.lock, ref locks). Keyed by the
 // cleaned clone path so callers passing equivalent-but-differently-formatted
 // paths still serialize against each other.
-var bareRepoLocks sync.Map // map[string]*sync.Mutex
+var bareRepoLocks fsutil.KeyedLocker
 
 // bareRepoPushLocks serializes `git push` invocations for worktrees sharing a
 // bare clone. Unlike bareRepoLocks, this lock may be held while pre-push hooks
 // run, so it must not gate fetch/worktree/ref plumbing for other agents.
-var bareRepoPushLocks sync.Map // map[string]*sync.Mutex
+var bareRepoPushLocks fsutil.KeyedLocker
 
 // withBareRepoLock runs fn while holding the mutex for barePath, blocking
 // concurrent git mutations against the same bare clone from other goroutines
@@ -36,16 +38,18 @@ func withBareRepoPushLock(barePath string, fn func() error) error {
 	return withPathLock(&bareRepoPushLocks, barePath, fn)
 }
 
-func withPathLock(locks *sync.Map, path string, fn func() error) error {
+func withPathLock(locks *fsutil.KeyedLocker, path string, fn func() error) error {
 	key := filepath.Clean(path)
-	v, _ := locks.LoadOrStore(key, &sync.Mutex{})
-	mu, ok := v.(*sync.Mutex)
-	if !ok {
-		// Unreachable: these maps only ever store *sync.Mutex values.
-		mu = &sync.Mutex{}
+	// Git resolves macOS /var paths through the /private/var symlink when it
+	// reports a linked worktree's common directory. Canonicalize existing
+	// paths so that representation shares the lock with callers using /var.
+	// Keep the cleaned input when it does not exist yet; callers may lock a
+	// destination before creating the bare clone.
+	if resolved, err := filepath.EvalSymlinks(key); err == nil {
+		key = filepath.Clean(resolved)
 	}
-	mu.Lock()
-	defer mu.Unlock()
+	unlock := locks.LockLocal(key)
+	defer unlock()
 	return fn()
 }
 
@@ -102,6 +106,20 @@ var FetchTTL time.Duration
 // for the network round trip.
 var lastFetchAt sync.Map // map[string]time.Time
 
+// CloneHealthTTL bounds how long a successful ref-reachable object check can
+// be reused. Worktree preparation and run-environment admission happen back to
+// back and both need the same proof; without this cache they each run a full
+// fsck over the same clone before one agent can start. Production wiring sets
+// this alongside FetchTTL. Zero keeps tests and standalone callers uncached.
+var CloneHealthTTL time.Duration
+
+type cloneHealthEntry struct {
+	checkedAt  time.Time
+	generation string
+}
+
+var lastCloneHealthAt sync.Map // map[string]cloneHealthEntry
+
 // fetchTTLNow is indirected so tests can control freshness without sleeping.
 var fetchTTLNow = time.Now
 
@@ -119,4 +137,30 @@ func fetchIsFresh(barePath string) bool {
 
 func markFetched(barePath string) {
 	lastFetchAt.Store(filepath.Clean(barePath), fetchTTLNow())
+}
+
+func cloneHealthIsFresh(barePath, generation string) bool {
+	if CloneHealthTTL <= 0 {
+		return false
+	}
+	v, ok := lastCloneHealthAt.Load(filepath.Clean(barePath))
+	if !ok {
+		return false
+	}
+	entry, ok := v.(cloneHealthEntry)
+	return ok && entry.generation == generation && fetchTTLNow().Sub(entry.checkedAt) < CloneHealthTTL
+}
+
+func markCloneHealthy(barePath, generation string) {
+	if CloneHealthTTL <= 0 {
+		return
+	}
+	lastCloneHealthAt.Store(filepath.Clean(barePath), cloneHealthEntry{
+		checkedAt:  fetchTTLNow(),
+		generation: generation,
+	})
+}
+
+func invalidateCloneHealth(barePath string) {
+	lastCloneHealthAt.Delete(filepath.Clean(barePath))
 }

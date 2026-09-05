@@ -3,6 +3,7 @@ package limits
 import (
 	"cmp"
 	"encoding/json"
+	"errors"
 	"math/rand/v2"
 	"os"
 	"slices"
@@ -10,10 +11,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/clock"
 	"github.com/Automaat/sybra/internal/fsutil"
 )
 
-const exactSnapshotMaxAge = 30 * time.Minute
+const (
+	exactSnapshotMaxAge = 30 * time.Minute
+	storeLockTimeout    = 2 * time.Second
+)
 
 // eventMaxAge bounds how long a UsageEvent survives in limits.json.
 // Summary never looks back further than the weekly window (7d, see
@@ -32,7 +37,13 @@ type persisted struct {
 // Store persists provider quota snapshots and local usage events.
 type Store struct {
 	path string
-	now  func() time.Time
+	// persistence replaces the JSON document when a database backend is
+	// configured. The file lock below exists to serialize two OS processes
+	// over one file; a database serializes them itself, so it is skipped.
+	persistence Persistence
+	// clock drives the event-retention and cycle windows. Read without a
+	// lock; set once at construction or during test setup.
+	clock clock.Clock
 
 	mu        sync.Mutex
 	snapshots map[string]Snapshot
@@ -41,11 +52,24 @@ type Store struct {
 }
 
 func NewStore(path string) (*Store, error) {
+	return newStore(path, nil)
+}
+
+// NewStoreWith returns a store persisting through p rather than to a file.
+func NewStoreWith(p Persistence) (*Store, error) {
+	if p == nil {
+		return nil, errors.New("quota store needs a persistence")
+	}
+	return newStore("", p)
+}
+
+func newStore(path string, p Persistence) (*Store, error) {
 	s := &Store{
-		path:      path,
-		now:       time.Now,
-		snapshots: map[string]Snapshot{},
-		seen:      map[string]struct{}{},
+		path:        path,
+		persistence: p,
+		clock:       clock.System{},
+		snapshots:   map[string]Snapshot{},
+		seen:        map[string]struct{}{},
 	}
 	if err := s.reloadLocked(); err != nil {
 		return nil, err
@@ -53,102 +77,134 @@ func NewStore(path string) (*Store, error) {
 	return s, nil
 }
 
+// lock serializes two OS processes over the JSON document. With a database
+// backend there is no document and the engine serializes writers itself, so it
+// returns a no-op rather than locking a path that does not exist.
+func (s *Store) lock() (func() error, error) {
+	if s.persistence != nil {
+		// Serialized by critical() instead, which is a database transaction:
+		// there is no document to flock, and returning a no-op here on its own
+		// would leave load/mutate/save interleaving between two instances and
+		// silently dropping one's snapshot.
+		return func() error { return nil }, nil
+	}
+	return fsutil.LockFileWithin(s.path, storeLockTimeout)
+}
+
+// critical runs a read-modify-write as one atomic unit.
+//
+// With a database backend that is a transaction holding an advisory lock, so
+// two instances sharing a board serialize; with the file backend the caller's
+// flock already did it and this only runs fn.
+func (s *Store) critical(fn func() error) error {
+	if s.persistence != nil {
+		return s.persistence.Critical(fn)
+	}
+	return fn()
+}
+
 // UpdateSnapshot, RecordUsage, and Import are read-modify-write against the
 // on-disk file: s.snapshots/s.events are populated once at NewStore time and
 // otherwise never re-read, but sybra-cli and the GUI server each hold a
 // separate Store over the same path in separate OS processes. Reloading
-// under the cross-process flock immediately before mutating resyncs this
+// after the bounded cross-process flock immediately before mutating resyncs this
 // process's view to the authoritative on-disk state, so a write from the
-// other process in the gap since this process last loaded isn't clobbered.
+// other process in the gap since this process last loaded isn't clobbered. The
+// flock is acquired before s.mu so a wedged peer process cannot stall provider
+// selection or availability reads behind that mutex.
 
 func (s *Store) UpdateSnapshot(snapshot Snapshot) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	unlock, err := fsutil.LockFile(s.path)
+	unlock, err := s.lock()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = unlock() }()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	if err := s.reloadLocked(); err != nil {
-		return err
-	}
-	if !s.updateSnapshotLocked(snapshot) {
-		return nil
-	}
-	return s.flushLocked()
+	return s.critical(func() error {
+		if err := s.reloadLocked(); err != nil {
+			return err
+		}
+		if !s.updateSnapshotLocked(snapshot) {
+			return nil
+		}
+		return s.flushLocked()
+	})
 }
 
 func (s *Store) RecordUsage(e UsageEvent) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	unlock, err := fsutil.LockFile(s.path)
+	unlock, err := s.lock()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = unlock() }()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	if err := s.reloadLocked(); err != nil {
-		return err
-	}
-	if !s.recordUsageLocked(e) {
-		return nil
-	}
-	return s.flushLocked()
+	return s.critical(func() error {
+		if err := s.reloadLocked(); err != nil {
+			return err
+		}
+		if !s.recordUsageLocked(e) {
+			return nil
+		}
+		return s.flushLocked()
+	})
 }
 
 // Import records a batch of parsed session-file data and flushes at most once.
 func (s *Store) Import(events []UsageEvent, snapshots []Snapshot) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	unlock, err := fsutil.LockFile(s.path)
+	unlock, err := s.lock()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = unlock() }()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	if err := s.reloadLocked(); err != nil {
-		return err
-	}
-	changed := false
-	for i := range snapshots {
-		changed = s.updateSnapshotLocked(snapshots[i]) || changed
-	}
-	for i := range events {
-		changed = s.recordUsageLocked(events[i]) || changed
-	}
-	if !changed {
-		return nil
-	}
-	return s.flushLocked()
+	return s.critical(func() error {
+		if err := s.reloadLocked(); err != nil {
+			return err
+		}
+		changed := false
+		for i := range snapshots {
+			changed = s.updateSnapshotLocked(snapshots[i]) || changed
+		}
+		for i := range events {
+			changed = s.recordUsageLocked(events[i]) || changed
+		}
+		if !changed {
+			return nil
+		}
+		return s.flushLocked()
+	})
 }
 
 // InvalidateLiveExactSnapshot demotes a current live-poll snapshot to
 // estimated confidence so routing falls back to event-based usage counters
 // instead of trusting a now-unreadable exact quota sample.
 func (s *Store) InvalidateLiveExactSnapshot(provider string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	unlock, err := fsutil.LockFile(s.path)
+	unlock, err := s.lock()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = unlock() }()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	if err := s.reloadLocked(); err != nil {
-		return err
-	}
-	snap, ok := s.snapshots[provider]
-	if !ok || snap.Source != SourceLivePoll || snap.Confidence != ConfidenceExact {
-		return nil
-	}
-	snap.Confidence = ConfidenceEstimated
-	s.snapshots[provider] = snap
-	return s.flushLocked()
+	return s.critical(func() error {
+		if err := s.reloadLocked(); err != nil {
+			return err
+		}
+		snap, ok := s.snapshots[provider]
+		if !ok || snap.Source != SourceLivePoll || snap.Confidence != ConfidenceExact {
+			return nil
+		}
+		snap.Confidence = ConfidenceEstimated
+		s.snapshots[provider] = snap
+		return s.flushLocked()
+	})
 }
 
 // reloadLocked re-reads s.path into s.snapshots/s.events/s.seen.
@@ -157,6 +213,14 @@ func (s *Store) InvalidateLiveExactSnapshot(provider string) error {
 // section; NewStore calls it unlocked because it runs before s is returned
 // to any caller, so nothing else can observe or race it yet.
 func (s *Store) reloadLocked() error {
+	if s.persistence != nil {
+		snapshots, events, err := s.persistence.Load()
+		if err != nil {
+			return err
+		}
+		s.applyLoaded(snapshots, events)
+		return nil
+	}
 	data, err := os.ReadFile(s.path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -183,7 +247,7 @@ func (s *Store) reloadLocked() error {
 	}
 	s.events = nil
 	s.seen = map[string]struct{}{}
-	cutoff := s.now().UTC().Add(-eventMaxAge)
+	cutoff := s.nowTime().UTC().Add(-eventMaxAge)
 	for i := range p.Events {
 		e := p.Events[i]
 		if e.ID == "" {
@@ -206,7 +270,7 @@ func (s *Store) updateSnapshotLocked(snapshot Snapshot) bool {
 		return false
 	}
 	if snapshot.CapturedAt.IsZero() {
-		snapshot.CapturedAt = s.now().UTC()
+		snapshot.CapturedAt = s.nowTime().UTC()
 	}
 	if snapshot.Source == "" {
 		snapshot.Source = SourceStream
@@ -227,7 +291,7 @@ func (s *Store) recordUsageLocked(e UsageEvent) bool {
 		return false
 	}
 	if e.Timestamp.IsZero() {
-		e.Timestamp = s.now().UTC()
+		e.Timestamp = s.nowTime().UTC()
 	}
 	if _, ok := s.seen[e.ID]; ok {
 		return false
@@ -255,7 +319,7 @@ func (s *Store) Summary(policy Policy) Summary {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	now := s.now().UTC()
+	now := s.nowTime().UTC()
 	providers := []string{ProviderClaude, ProviderCodex, ProviderCopilot, ProviderOpenCode}
 	out := make([]ProviderSummary, 0, len(providers))
 	for _, provider := range providers {
@@ -453,6 +517,9 @@ func (s *Store) ChooseSoftLimitedPeer(requested string, candidates []string, hea
 }
 
 func (s *Store) flushLocked() error {
+	if s.persistence != nil {
+		return s.persistence.Save(s.snapshots, s.events)
+	}
 	data, err := json.Marshal(persisted{Snapshots: s.snapshots, Events: s.events})
 	if err != nil {
 		return err
@@ -564,4 +631,30 @@ func maxFloat(a, b float64) float64 {
 		return a
 	}
 	return b
+}
+
+func (s *Store) nowTime() time.Time { return clock.Or(s.clock).Now() }
+
+// applyLoaded installs a loaded set, dropping events past retention and
+// duplicate ids exactly as the file path does, so both backends start from the
+// same in-memory state.
+func (s *Store) applyLoaded(snapshots map[string]Snapshot, events []UsageEvent) {
+	s.snapshots = map[string]Snapshot{}
+	for k := range snapshots {
+		s.snapshots[k] = snapshots[k]
+	}
+	s.events = nil
+	s.seen = map[string]struct{}{}
+	cutoff := s.nowTime().UTC().Add(-eventMaxAge)
+	for i := range events {
+		e := events[i]
+		if e.ID == "" || e.Timestamp.Before(cutoff) {
+			continue
+		}
+		if _, ok := s.seen[e.ID]; ok {
+			continue
+		}
+		s.events = append(s.events, e)
+		s.seen[e.ID] = struct{}{}
+	}
 }

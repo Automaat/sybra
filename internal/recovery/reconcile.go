@@ -19,7 +19,7 @@ func (r *Recovery) ReconcileLostPRNumber(ctx context.Context) {
 	if r.PRs == nil {
 		return
 	}
-	tasks, err := r.Tasks.List()
+	tasks, err := r.Tasks.ListActive()
 	if err != nil {
 		return
 	}
@@ -50,12 +50,16 @@ func (r *Recovery) ReconcileLostPRNumber(ctx context.Context) {
 
 func (r *Recovery) reconcileLandedTask(t *task.Task, prNumber int) {
 	var clearWorkflow *workflow.Execution
-	if _, err := r.Tasks.Update(t.ID, task.Update{
-		PRNumber:     task.Ptr(prNumber),
-		Status:       task.Ptr(task.StatusDone),
-		Outcome:      task.Ptr("merged"),
-		StatusReason: task.Ptr(""),
-		Workflow:     &clearWorkflow,
+	if _, err := r.Tasks.ApplyStatusEffect(t.ID, task.StatusEffect{
+		Source:         "recovery.reconcile-lost-pr.landed",
+		ToStatus:       task.StatusDone,
+		ExpectedStatus: t.Status,
+		Extra: task.Update{
+			PRNumber:     task.Ptr(prNumber),
+			Outcome:      task.Ptr("merged"),
+			StatusReason: task.Ptr(""),
+			Workflow:     &clearWorkflow,
+		},
 	}); err != nil {
 		r.Logger.Error("reconcile-lost-pr.landed", "task_id", t.ID, "pr", prNumber, "err", err)
 		return
@@ -64,7 +68,7 @@ func (r *Recovery) reconcileLandedTask(t *task.Task, prNumber int) {
 }
 
 func (r *Recovery) reconcileBackfillPR(t *task.Task, prNumber int) {
-	if _, err := r.Tasks.Update(t.ID, task.Update{PRNumber: task.Ptr(prNumber)}); err != nil {
+	if _, err := r.Tasks.UpdateBy(t.ID, "recovery.reconcile_lost_pr.backfill", task.Update{PRNumber: task.Ptr(prNumber)}); err != nil {
 		r.Logger.Error("reconcile-lost-pr.backfill", "task_id", t.ID, "pr", prNumber, "err", err)
 		return
 	}

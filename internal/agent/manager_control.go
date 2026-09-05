@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"time"
-
-	"github.com/Automaat/sybra/internal/events"
 )
 
 // SendPromptToAgent delivers a follow-up prompt to a steerable headless
@@ -19,6 +17,9 @@ func (m *Manager) SendPromptToAgent(agentID, text string) error {
 		return conflictError(fmt.Sprintf("agent %s is stopped", agentID))
 	}
 
+	if _, execErr := m.executionForAgent(agentID); execErr == nil {
+		return m.SendMessage(agentID, text)
+	}
 	if a.convo.hasStdinPipe() {
 		return m.SendMessage(agentID, text)
 	}
@@ -38,13 +39,63 @@ func (m *Manager) SendMessage(agentID, text string) error {
 	if err != nil {
 		return err
 	}
-	if !a.convo.hasStdinPipe() {
-		return conflictError(fmt.Sprintf("agent %s has no stdin transport for follow-up messages", agentID))
-	}
 	if a.Mode != "headless" {
 		return conflictError(fmt.Sprintf("agent %s is not in headless steerable mode", agentID))
 	}
+	if execution, execErr := m.executionForAgent(agentID); execErr == nil {
+		return execution.backend.Steer(m.ctx, execution.handle, text)
+	}
+	if !a.convo.hasStdinPipe() {
+		return conflictError(fmt.Sprintf("agent %s has no stdin transport for follow-up messages", agentID))
+	}
+	// Restart-adopted legacy executions predate backend handles.
 	return m.sendHeadlessSteerMessage(a, text)
+}
+
+// SendMessageOnce durably queues one remotely identified steer command. The
+// command identity and prompt are committed to the restart registry under the
+// same Agent lock before a result boundary can pop the prompt, so replay after
+// daemon failure neither loses nor duplicates the effect.
+func (m *Manager) SendMessageOnce(ctx context.Context, agentID, commandID, text string) error {
+	a, err := m.GetAgent(agentID)
+	if err != nil {
+		return err
+	}
+	reg := m.registry()
+	if reg == nil {
+		return fmt.Errorf("agent %s has no durable steer registry", agentID)
+	}
+	a.mu.Lock()
+	if a.Mode != "headless" || a.finalizing || !a.convo.hasPipe.Load() {
+		a.mu.Unlock()
+		return conflictError(fmt.Sprintf("agent %s has no active steer transport", agentID))
+	}
+	if _, duplicate := a.steerCommandIDs[commandID]; duplicate {
+		a.mu.Unlock()
+		return nil
+	}
+	if len(a.convo.pendingPrompts) >= MaxPendingHeadlessSteerPrompts {
+		a.mu.Unlock()
+		return conflictError(fmt.Sprintf("agent %s has too many pending steer messages (%d max)", agentID, MaxPendingHeadlessSteerPrompts))
+	}
+	if a.steerCommandIDs == nil {
+		a.steerCommandIDs = make(map[string]struct{})
+	}
+	a.steerCommandIDs[commandID] = struct{}{}
+	a.convo.pendingPrompts = append(a.convo.pendingPrompts, text)
+	rec := a.toRecordLocked()
+	rec.ProcStartedAt = processStartString(ctx, rec.PID)
+	if err := reg.Save(rec); err != nil {
+		delete(a.steerCommandIDs, commandID)
+		a.convo.pendingPrompts = a.convo.pendingPrompts[:len(a.convo.pendingPrompts)-1]
+		a.mu.Unlock()
+		return fmt.Errorf("persist steer command: %w", err)
+	}
+	queueLen := len(a.convo.pendingPrompts)
+	a.mu.Unlock()
+
+	m.logger.Info("agent.headless.message_queued", "id", a.ID, "queue_len", queueLen)
+	return nil
 }
 
 // GetConvoOutput returns the full conversation event buffer for an agent.
@@ -151,27 +202,61 @@ func (m *Manager) ReleaseStaleStoppedAgentsForTask(ctx context.Context, taskID s
 	return len(stale)
 }
 
+// ReleaseDeadAgentsForTask releases manager liveness for task-scoped agents
+// whose recorded PID is already gone. Unlike ReleaseStaleStoppedAgentsForTask
+// this only fires when the OS confirms the process is dead, so recovery can
+// safely clear a wedged "running" gate without cancelling a healthy agent.
+func (m *Manager) ReleaseDeadAgentsForTask(ctx context.Context, taskID string) int {
+	var dead []*Agent
+	m.mu.RLock()
+	for _, a := range m.agents {
+		if a.TaskID != taskID || a.External {
+			continue
+		}
+		pid := a.GetPID()
+		if pid <= 0 || processAlive(pid) {
+			continue
+		}
+		if a.done != nil {
+			select {
+			case <-a.done:
+				continue
+			default:
+			}
+		} else if !isLive(a.GetState()) {
+			continue
+		}
+		dead = append(dead, a)
+	}
+	m.mu.RUnlock()
+
+	for _, a := range dead {
+		a.MarkStopped()
+		if m.logger != nil {
+			m.logger.Warn("agent.dead.release", "agent_id", a.ID, "task_id", taskID, "pid", a.GetPID())
+		}
+		m.markAgentDone(ctx, a)
+	}
+	return len(dead)
+}
+
 // StopAgents stops the provided agents without waiting for their goroutines to
 // exit. Callers that need deterministic teardown (task delete/worktree
 // cleanup) should use KillAgentsForTask instead.
 func (m *Manager) StopAgents(agents []*Agent) {
 	for _, a := range agents {
-		if a == nil {
+		if a == nil || a.GetState().IsTerminal() {
 			continue
 		}
 		m.logger.Info("agent.stop-for-task", "agent_id", a.ID, "task_id", a.TaskID)
-		// Detached children do not observe stdin EOF or parent ctx cancel, so
-		// signal them directly before canceling to actually free the pool slot.
-		a.MarkStopped()
-		if a.isDetached() {
-			m.signalKill(a)
+		if execution, err := m.executionForAgent(a.ID); err == nil {
+			if err := execution.backend.Stop(m.ctx, execution.handle); err != nil {
+				m.logger.Warn("agent.stop-for-task.backend", "agent_id", a.ID, "task_id", a.TaskID, "err", err)
+			}
+			continue
 		}
-		if a.cancel != nil {
-			a.cancel()
-		}
-		a.SetState(StateStopped)
-		a.convo.closeStdinPipe()
-		m.emit(events.AgentState(a.ID), a)
+		// Restart-adopted legacy executions have no backend handle yet.
+		m.stopLocalAgent(a)
 	}
 }
 
@@ -227,25 +312,20 @@ func (m *Manager) StopAgent(agentID string) error {
 	if !ok {
 		return fmt.Errorf("agent %s not found", agentID)
 	}
+	if a.GetState().IsTerminal() {
+		// Already stopped: no signal, log, or state-change event to repeat.
+		// A caller that stops the same agent twice (e.g. reconciliation
+		// re-selecting a not-yet-evicted terminal registry entry) must not
+		// turn history into recurring control-plane work.
+		return nil
+	}
 
 	m.logger.Info("agent.stop", "id", agentID)
-
-	a.MarkStopped()
-	// Send SIGINT first so CC can restore terminal modes and persist the
-	// session ID for --resume. Escalate to SIGKILL only after the grace
-	// window. Detached agents (headless, or interactive whose stdin is a
-	// never-EOF O_RDWR FIFO) cannot be stopped by closing stdin, so they
-	// must be signalled by PID/handle.
-	if a.Mode == "headless" || a.isDetached() {
-		m.signalKill(a)
+	if execution, execErr := m.executionForAgent(agentID); execErr == nil {
+		return execution.backend.Stop(m.ctx, execution.handle)
 	}
-	if a.cancel != nil {
-		a.cancel()
-	}
-	a.SetState(StateStopped)
-	// Close stdin to signal the claude process to exit.
-	a.convo.closeStdinPipe()
-	m.emit(events.AgentState(agentID), a)
+	// Restart-adopted legacy executions have no backend handle yet.
+	m.stopLocalAgent(a)
 	return nil
 }
 
@@ -285,6 +365,28 @@ func (m *Manager) ListAgents() []*Agent {
 	defer m.mu.RUnlock()
 	agents := make([]*Agent, 0, len(m.agents))
 	for _, a := range m.agents {
+		agents = append(agents, a)
+	}
+	return agents
+}
+
+// ListLiveAgents returns only agents that are still live (isLive: running,
+// or paused between conversational turns). A stopped agent's registry entry
+// is retained after termination (see deadAgentRetention) purely so a caller
+// polling right after a stop still observes its final state — that retained
+// entry is history, not something still running. Callers that pick a live
+// singleton or otherwise decide what needs stopping (e.g. orchestrator
+// reconciliation) must use this instead of ListAgents, or they will keep
+// re-selecting an already-terminal entry for as long as it sits in the
+// retention window.
+func (m *Manager) ListLiveAgents() []*Agent {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	agents := make([]*Agent, 0, len(m.agents))
+	for _, a := range m.agents {
+		if !isLive(a.GetState()) {
+			continue
+		}
 		agents = append(agents, a)
 	}
 	return agents
@@ -490,7 +592,7 @@ func (m *Manager) ShutdownWithGrace(grace time.Duration) {
 		case <-deadline:
 			m.logger.Warn("agent.shutdown.timeout",
 				"exited", i, "remaining", len(cancelled)-i, "grace", grace)
-			m.evictShutdownAgents(cancelled[:i])
+			m.evictShutdownAgents(firstAgents(cancelled, i))
 			return
 		}
 	}
@@ -502,6 +604,17 @@ func (m *Manager) ShutdownWithGrace(grace time.Duration) {
 	// synchronously rather than leaking every agent that ever ran into a
 	// registry no one will read again.
 	m.evictShutdownAgents(cancelled)
+}
+
+func firstAgents(agents []*Agent, count int) []*Agent {
+	first := make([]*Agent, 0, count)
+	for i, agent := range agents {
+		if i == count {
+			break
+		}
+		first = append(first, agent)
+	}
+	return first
 }
 
 // evictShutdownAgents removes the given agents from the live registry,

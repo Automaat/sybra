@@ -11,6 +11,7 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/metrics"
+	"github.com/Automaat/sybra/internal/reconcile"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 )
@@ -20,13 +21,35 @@ import (
 // dev-mode hot-reload loops spawning parallel agents onto the same task.
 const restartStaleMinAge = 5 * time.Minute
 
+const (
+	verifyAutoFixRunIDVar = "verify_auto_fix.rewound_run_agent_id"
+	workflowRetryAfterVar = "workflow.retry_after"
+	verifyAutoFixWorkflow = "simple-task-implement"
+	verifyAutoFixStepID   = "implement"
+)
+
 // RestartStaleInProgress recovers in-progress tasks that lost their agent
 // due to a crash or restart. Headless tasks are re-dispatched; interactive
 // tasks drive the workflow engine forward via recoverStaleInteractive.
 // Safe to call concurrently with the startup pass — each re-dispatch is
 // guarded by HasRunningAgentForTask + the recent-run debounce.
 func (r *Recovery) RestartStaleInProgress(ctx context.Context) {
-	tasks, err := r.Tasks.List()
+	if r.Agents.NeedsAttemptReconciliation(ctx) {
+		reaped, dedicatedConfirmed := r.Agents.ReapOrphanProviderProcessesConfirmed(ctx, r.OrphanRoots)
+		ownedReaped, ownedConfirmed := r.Agents.ReapOwnedOrphanProviderProcessesConfirmed(ctx, r.OwnedOrphanRoots)
+		if reaped += ownedReaped; reaped > 0 {
+			r.Logger.Info("recovery.orphan_reap", "count", reaped)
+		}
+		if r.Worktrees != nil {
+			r.Worktrees.RepairAll(ctx)
+		}
+		if dedicatedConfirmed && ownedConfirmed {
+			r.Agents.ReconcileAttemptLeases(ctx)
+		} else {
+			r.Logger.Error("recovery.attempt_reconcile.deferred", "reason", "orphan termination unconfirmed")
+		}
+	}
+	tasks, err := r.Tasks.ListActive()
 	if err != nil {
 		return
 	}
@@ -58,8 +81,25 @@ func (r *Recovery) restartTaskIfStale(ctx context.Context, t task.Task) {
 	if t.Status != task.StatusInProgress {
 		return
 	}
+	if released := r.Agents.ReleaseDeadAgentsForTask(ctx, t.ID); released > 0 {
+		r.Logger.Warn("restart-stale.released-dead-agents", "task_id", t.ID, "count", released)
+	}
 	if r.Agents.HasRunningAgentForTask(t.ID) {
-		return
+		// HasRunningAgentForTask trusts the manager's own bookkeeping (the
+		// registered agent's done channel), not real process liveness. A
+		// registry entry can be left marked StateStopped by an earlier
+		// interrupted flow while its runner goroutine never closed that
+		// channel — HasRunningAgentForTask still reports it as running, so
+		// this bail-out never clears on its own. That is exactly the shape
+		// the lost_agent monitor detector catches (it keys off State !=
+		// Running, so it fires) while every remediation tick still no-ops
+		// here: the task is left in-progress indefinitely with a misleading
+		// "recovery will resume" status reason. Release any such stale
+		// record before giving up — see lost_agent investigation 9ca699e8.
+		r.Agents.ReleaseStaleStoppedAgentsForTask(ctx, t.ID, restartStaleMinAge)
+		if r.Agents.HasRunningAgentForTask(t.ID) {
+			return
+		}
 	}
 	if r.Agents.IsDispatching(t.ID) {
 		return
@@ -86,7 +126,7 @@ func (r *Recovery) restartTaskIfStale(ctx context.Context, t task.Task) {
 			"task_id", t.ID, "reason", "provider_rate_limited", "provider", lr.Provider)
 		return
 	}
-	if r.recoverCompletedHeadlessRun(&t) {
+	if r.recoverCompletedHeadlessRun(ctx, &t) {
 		// recoverCompletedHeadlessRun handled this task (last headless run
 		// completed but workflow step was never recorded). Skip the generic
 		// stale-restart path only when it actually fired HandleAgentComplete;
@@ -103,6 +143,9 @@ func (r *Recovery) restartTaskIfStale(ctx context.Context, t task.Task) {
 	// workflow), but restarting the workflow gives the callback a live
 	// execution to advance.
 	if r.handleTerminalWorkflow(&t) {
+		return
+	}
+	if r.WorkflowEngine != nil && r.WorkflowEngine.ReplayPersistedEffectsForTask(t.ID) {
 		return
 	}
 	// Debounce respawn when a previous run started recently. Covers
@@ -126,7 +169,11 @@ func (r *Recovery) restartTaskIfStale(ctx context.Context, t task.Task) {
 	// itself.
 	if lastRun := lastAgentRun(&t); lastRun != nil && (lastRun.Role == "pr-fix" || lastRun.Role == "test-fix") {
 		r.Logger.Info("restart-stale.revert-to-review", "task_id", t.ID)
-		if _, updErr := r.Tasks.Update(t.ID, task.Update{Status: task.Ptr(task.StatusInReview)}); updErr != nil {
+		if _, updErr := r.Tasks.ApplyStatusEffect(t.ID, task.StatusEffect{
+			Source:         "recovery.restart-stale.pr-fix-run",
+			ToStatus:       task.StatusInReview,
+			ExpectedStatus: t.Status,
+		}); updErr != nil {
 			r.Logger.Error("restart-stale.revert", "task_id", t.ID, "err", updErr)
 		}
 		return
@@ -137,11 +184,15 @@ func (r *Recovery) restartTaskIfStale(ctx context.Context, t task.Task) {
 	oneShot := false
 	if t.AgentMode != "headless" {
 		var handled bool
-		oneShot, handled = r.resolveInteractiveStaleRestart(&t)
+		oneShot, handled = r.resolveInteractiveStaleRestart(ctx, &t)
 		if handled {
 			return
 		}
 	}
+	r.startStaleRestart(ctx, t, oneShot)
+}
+
+func (r *Recovery) startStaleRestart(ctx context.Context, t task.Task, oneShot bool) {
 	if t.ProjectID == "" {
 		err := fmt.Errorf("task %s has no project_id: refusing to restart stale agent without isolated worktree: %w", t.ID, workflow.ErrNoProjectAssigned)
 		r.Logger.Warn("restart-stale.skip", "task_id", t.ID, "reason", "no project_id")
@@ -154,6 +205,13 @@ func (r *Recovery) restartTaskIfStale(ctx context.Context, t task.Task) {
 		})
 		return
 	}
+	r.dispatchStaleRestart(ctx, t, oneShot)
+}
+
+// dispatchStaleRestart re-spawns the agent for a task that restartTaskIfStale
+// has already decided is genuinely stale (past every bail-out and recovery
+// path above). Split out to keep restartTaskIfStale under the funlen limit.
+func (r *Recovery) dispatchStaleRestart(ctx context.Context, t task.Task, oneShot bool) {
 	r.Logger.Info("restart.stale-in-progress", "task_id", t.ID, "run_role", t.RunRole)
 	taskID := t.ID
 	runRole := t.RunRole
@@ -270,9 +328,13 @@ func (r *Recovery) handleTerminalWorkflow(t *task.Task) bool {
 		r.Logger.Info("restart-stale.revert-to-review",
 			"task_id", t.ID, "reason", "pr_fix_workflow_not_restartable")
 		reason := "pr-fix terminal workflow is not restartable without PR-event context"
-		if _, updErr := r.Tasks.Update(t.ID, task.Update{
-			Status:       task.Ptr(task.StatusInReview),
-			StatusReason: &reason,
+		if _, updErr := r.Tasks.ApplyStatusEffect(t.ID, task.StatusEffect{
+			Source:         "recovery.restart-stale.pr-fix-workflow",
+			ToStatus:       task.StatusInReview,
+			ExpectedStatus: t.Status,
+			Extra: task.Update{
+				StatusReason: &reason,
+			},
 		}); updErr != nil {
 			r.Logger.Error("restart-stale.revert", "task_id", t.ID, "err", updErr)
 		}
@@ -349,9 +411,15 @@ func (r *Recovery) convergeReviewOnPlanWorkflow(t *task.Task) bool {
 	if t.ProjectID == "" || t.PRNumber == 0 {
 		reason := "review task stranded on a terminal plan workflow with no project/PR context to resume pr-review"
 		r.Logger.Warn("restart-stale.review-on-plan.no-context", "task_id", t.ID)
-		if _, updErr := r.Tasks.Update(t.ID, task.Update{
-			Status:       task.Ptr(task.StatusHumanRequired),
-			StatusReason: task.Ptr(reason),
+		if _, updErr := r.Tasks.ApplyStatusEffect(t.ID, task.StatusEffect{
+			Source:         "recovery.restart-stale.review-on-plan-no-context",
+			ToStatus:       task.StatusBlocked,
+			ExpectedStatus: t.Status,
+			Extra: task.Update{
+				StatusReason:    task.Ptr(reason),
+				Escalation:      task.MachineFailure("recovery.review_context_missing", reason),
+				AutonomyOutcome: task.QuarantinedOutcome(),
+			},
 		}); updErr != nil {
 			r.Logger.Error("restart-stale.review-on-plan.park-failed", "task_id", t.ID, "err", updErr)
 		}
@@ -390,7 +458,7 @@ func (r *Recovery) convergeReviewOnPlanWorkflow(t *task.Task) bool {
 		// happened, so the marker that triggered this tick's rediscovery
 		// doesn't linger and mislead the next one.
 		reason := "recovered: converged review task from stale plan workflow to pr-review"
-		if _, updErr := r.Tasks.Update(taskID, task.Update{StatusReason: task.Ptr(reason)}); updErr != nil {
+		if _, updErr := r.Tasks.UpdateBy(taskID, "recovery.restart_stale.review_on_plan_converged", task.Update{StatusReason: task.Ptr(reason)}); updErr != nil {
 			r.Logger.Error("restart-stale.review-on-plan.reason-failed", "task_id", taskID, "err", updErr)
 		}
 	})
@@ -407,12 +475,15 @@ func (r *Recovery) recoverCancelledPRFix(t *task.Task) bool {
 	if !strings.HasPrefix(cancelReason, "pr-monitor: ") {
 		return false
 	}
-	status := task.StatusInReview
 	reason := "pr-fix cancelled: " + strings.TrimPrefix(cancelReason, "pr-monitor: ")
 	r.Logger.Info("restart-stale.revert-cancelled-pr-fix", "task_id", t.ID, "reason", reason)
-	if _, updErr := r.Tasks.Update(t.ID, task.Update{
-		Status:       &status,
-		StatusReason: &reason,
+	if _, updErr := r.Tasks.ApplyStatusEffect(t.ID, task.StatusEffect{
+		Source:         "recovery.restart-stale.cancelled-pr-fix",
+		ToStatus:       task.StatusInReview,
+		ExpectedStatus: t.Status,
+		Extra: task.Update{
+			StatusReason: &reason,
+		},
 	}); updErr != nil {
 		r.Logger.Error("restart-stale.revert-cancelled-pr-fix.failed", "task_id", t.ID, "err", updErr)
 		return false
@@ -449,13 +520,25 @@ func (r *Recovery) surfaceStartFailure(ctx context.Context, taskID string, curre
 		}
 	}
 	update := task.Update{
-		Status:       task.Ptr(target),
 		StatusReason: task.Ptr(failure.Reason),
+	}
+	switch target {
+	case task.StatusHumanRequired:
+		update.Escalation = task.ControlPlaneFailure("run.start_operator_action_required", blocker.FailureOwner(failure.Blocker.Kind), failure.Reason)
+		update.AutonomyOutcome = task.HumanRequiredOutcome()
+	case task.StatusBlocked:
+		update.Escalation = task.MachineFailure("run.start_failure_quarantined", failure.Reason)
+		update.AutonomyOutcome = task.QuarantinedOutcome()
 	}
 	if !failure.Blocker.IsZero() {
 		update.Blocker = &failure.Blocker
 	}
-	if _, uErr := r.Tasks.Update(taskID, update); uErr != nil {
+	if _, uErr := r.Tasks.ApplyStatusEffect(taskID, task.StatusEffect{
+		Source:         "recovery.restart-stale.start-failure",
+		ToStatus:       target,
+		ExpectedStatus: currentStatus,
+		Extra:          update,
+	}); uErr != nil {
 		r.Logger.Error("restart-stale.surface", "task_id", taskID, "err", uErr)
 	}
 }
@@ -465,7 +548,7 @@ func (r *Recovery) surfaceStartFailure(ctx context.Context, taskID string, curre
 // recoverStaleInteractive (handled=true, caller should skip re-dispatch), or
 // fallen through to the normal restart/escalation path below with the
 // resolved oneShot flag.
-func (r *Recovery) resolveInteractiveStaleRestart(t *task.Task) (oneShot, handled bool) {
+func (r *Recovery) resolveInteractiveStaleRestart(ctx context.Context, t *task.Task) (oneShot, handled bool) {
 	lr := lastAgentRun(t)
 	switch {
 	case lr == nil:
@@ -493,7 +576,7 @@ func (r *Recovery) resolveInteractiveStaleRestart(t *task.Task) (oneShot, handle
 			r.Logger.Info("restart-stale.no-workflow-fallthrough", "task_id", t.ID)
 			return false, false
 		}
-		r.recoverStaleInteractive(t)
+		r.recoverStaleInteractive(ctx, t)
 		return false, true
 	default:
 		r.Logger.Info("restart-stale.interactive-oneshot", "task_id", t.ID)
@@ -506,7 +589,7 @@ func (r *Recovery) resolveInteractiveStaleRestart(t *task.Task) (oneShot, handle
 // stopped (if still claiming running) and drives the workflow engine to
 // advance the current step using the stored result — mirroring the
 // normal onAgentComplete callback so evaluate/next steps fire.
-func (r *Recovery) recoverStaleInteractive(t *task.Task) {
+func (r *Recovery) recoverStaleInteractive(ctx context.Context, t *task.Task) {
 	lr := lastAgentRun(t)
 	if lr == nil {
 		r.Logger.Info("recover-stale.skip", "task_id", t.ID, "reason", "no_agent_runs")
@@ -520,7 +603,7 @@ func (r *Recovery) recoverStaleInteractive(t *task.Task) {
 		return
 	}
 	if lr.State == string(agent.StateRunning) {
-		if err := r.Tasks.UpdateRun(t.ID, lr.AgentID, task.RunPatch{
+		if err := r.Tasks.UpdateRunBy(t.ID, "recovery.stale.recover_stale_interactive", lr.AgentID, task.RunPatch{
 			State:  task.Ptr(string(agent.StateStopped)),
 			Result: task.Ptr("stale: agent gone, auto-recovered"),
 		}); err != nil {
@@ -529,6 +612,9 @@ func (r *Recovery) recoverStaleInteractive(t *task.Task) {
 	}
 	if r.WorkflowEngine == nil || t.Workflow == nil {
 		r.Logger.Info("recover-stale.no-workflow", "task_id", t.ID)
+		return
+	}
+	if !r.reconcileBeforeAdvance(ctx, t.ID, lr.AgentID, reconcile.IntentRestart) {
 		return
 	}
 	if t.Workflow.State == workflow.ExecCompleted || t.Workflow.State == workflow.ExecFailed {
@@ -542,7 +628,13 @@ func (r *Recovery) recoverStaleInteractive(t *task.Task) {
 	// flag.
 	t.Workflow.Recovered = true
 	wf := t.Workflow
-	if _, err := r.Tasks.Update(t.ID, task.Update{Workflow: &wf}); err != nil {
+	if _, err := r.Tasks.ApplyFn(t.ID, func(cur task.Task) (task.TransitionIntent, error) {
+		return task.TransitionIntent{
+			ToStatus: cur.Status,
+			Actor:    "recovery.mark-recovered",
+			Extra:    task.Update{Workflow: &wf},
+		}, nil
+	}); err != nil {
 		r.Logger.Error("recover-stale.set-recovered", "task_id", t.ID, "err", err)
 		return
 	}
@@ -574,8 +666,13 @@ func (r *Recovery) recoverStaleInteractive(t *task.Task) {
 // recoverCompletedHeadlessRun returns true when it fires HandleAgentComplete,
 // false when the task does not match the "completed but callback lost" shape.
 // Callers should only skip generic stale-restart logic on a true return.
-func (r *Recovery) recoverCompletedHeadlessRun(t *task.Task) bool {
-	lr := lastAgentRun(t)
+func (r *Recovery) recoverCompletedHeadlessRun(ctx context.Context, t *task.Task) bool {
+	currentStepRole := ""
+	if r.WorkflowEngine != nil && t != nil && t.Workflow != nil && t.Workflow.CurrentStep != "" &&
+		t.Workflow.RecordForStep(t.Workflow.CurrentStep) == nil {
+		currentStepRole = strings.TrimSpace(r.WorkflowEngine.CurrentStepRunRole(t.ID))
+	}
+	lr := latestTrackedCurrentStepRun(t, currentStepRole)
 	if lr == nil {
 		return false
 	}
@@ -594,6 +691,12 @@ func (r *Recovery) recoverCompletedHeadlessRun(t *task.Task) bool {
 	if t.Workflow.CurrentStep == "" {
 		return false
 	}
+	if recoverySkippedForVerifyAutoFixRewind(t, lr) {
+		r.Logger.Info("recover-completed-headless-run.skip",
+			"task_id", t.ID, "agent_id", lr.AgentID, "step", t.Workflow.CurrentStep,
+			"reason", "verify_auto_fix_rewind_pending")
+		return true
+	}
 	// Skip if the current step already has a history record — it was processed
 	// (completed or failed) and any stall belongs to a downstream step.
 	if t.Workflow.RecordForStep(t.Workflow.CurrentStep) != nil {
@@ -601,6 +704,10 @@ func (r *Recovery) recoverCompletedHeadlessRun(t *task.Task) bool {
 	}
 	if r.Agents.HasRunningAgentForTask(t.ID) {
 		return false
+	}
+	legacyVerifierWithoutRoute := legacyVerifierRunWithoutRoute(t, lr, currentStepRole)
+	if !legacyVerifierWithoutRoute && !r.reconcileBeforeAdvance(ctx, t.ID, lr.AgentID, reconcile.IntentStaleRun) {
+		return true
 	}
 	success := lr.Outcome == task.RunOutcomeSuccess
 	r.Logger.Info("recover-completed-headless-run",
@@ -610,7 +717,13 @@ func (r *Recovery) recoverCompletedHeadlessRun(t *task.Task) bool {
 	// result, not a freshly produced one — same contract as recoverStaleInteractive.
 	wf := t.Workflow
 	wf.Recovered = true
-	if _, err := r.Tasks.Update(t.ID, task.Update{Workflow: &wf}); err != nil {
+	if _, err := r.Tasks.ApplyFn(t.ID, func(cur task.Task) (task.TransitionIntent, error) {
+		return task.TransitionIntent{
+			ToStatus: cur.Status,
+			Actor:    "recovery.mark-recovered",
+			Extra:    task.Update{Workflow: &wf},
+		}, nil
+	}); err != nil {
 		r.Logger.Error("recover-completed-headless.set-recovered", "task_id", t.ID, "err", err)
 		return false
 	}
@@ -623,9 +736,97 @@ func (r *Recovery) recoverCompletedHeadlessRun(t *task.Task) bool {
 	return true
 }
 
+func (r *Recovery) reconcileBeforeAdvance(ctx context.Context, taskID, runID string, intent reconcile.Intent) bool {
+	if r.Reconciler == nil {
+		return true
+	}
+	plan, err := r.Reconciler.Reconcile(ctx, reconcile.Request{TaskID: taskID, RunID: runID, Intent: intent})
+	if err != nil {
+		r.Logger.Error("post-run.reconcile.recovery", "task_id", taskID, "run_id", runID, "err", err)
+		return false
+	}
+	switch plan.Action {
+	case reconcile.ActionAdvance, reconcile.ActionResumeMergeablePR:
+		return plan.DeliverRunOutcome
+	case reconcile.ActionRepair:
+		if plan.DeliverRunOutcome {
+			return true
+		}
+		if r.ConflictRecovery != nil && r.ConflictRecovery(taskID) {
+			r.Logger.Info("post-run.reconcile.recovery.repair-started", "task_id", taskID, "run_id", runID, "reason", plan.Reason)
+		} else {
+			r.Logger.Warn("post-run.reconcile.recovery.repair-held", "task_id", taskID, "run_id", runID, "reason", plan.Reason)
+		}
+		return false
+	case reconcile.ActionWait, reconcile.ActionQuarantine, reconcile.ActionHumanDecision:
+		r.Logger.Warn("post-run.reconcile.recovery.held", "task_id", taskID, "run_id", runID, "action", plan.Action, "reason", plan.Reason)
+		return false
+	default:
+		r.Logger.Warn("post-run.reconcile.recovery.effect-incomplete", "task_id", taskID, "run_id", runID, "action", plan.Action, "reason", plan.Reason)
+		return false
+	}
+}
+
 func lastAgentRun(t *task.Task) *task.AgentRun {
 	if len(t.AgentRuns) == 0 {
 		return nil
 	}
 	return &t.AgentRuns[len(t.AgentRuns)-1]
+}
+
+func latestTrackedCurrentStepRun(t *task.Task, currentStepRole string) *task.AgentRun {
+	if t == nil || t.Workflow == nil || t.Workflow.CurrentStep == "" {
+		return nil
+	}
+	currentStepRole = strings.TrimSpace(currentStepRole)
+	for i := range slices.Backward(t.AgentRuns) {
+		run := &t.AgentRuns[i]
+		if run.AgentID == "" {
+			continue
+		}
+		stepID, ok := t.Workflow.AgentRoute(run.AgentID)
+		if ok && stepID == t.Workflow.CurrentStep {
+			return run
+		}
+		if currentStepRole == "" || strings.TrimSpace(run.Role) != currentStepRole ||
+			!agent.Role(run.Role).IsVerifier() {
+			continue
+		}
+		return run
+	}
+	return nil
+}
+
+func legacyVerifierRunWithoutRoute(t *task.Task, run *task.AgentRun, currentStepRole string) bool {
+	if t == nil || t.Workflow == nil || run == nil {
+		return false
+	}
+	if currentStepRole == "" || strings.TrimSpace(run.Role) != currentStepRole ||
+		!agent.Role(run.Role).IsVerifier() {
+		return false
+	}
+	_, tracked := t.Workflow.AgentRoute(run.AgentID)
+	return !tracked
+}
+
+func recoverySkippedForVerifyAutoFixRewind(t *task.Task, lr *task.AgentRun) bool {
+	if t == nil || lr == nil || t.Workflow == nil {
+		return false
+	}
+	if t.Workflow.WorkflowID != verifyAutoFixWorkflow || t.Workflow.CurrentStep != verifyAutoFixStepID {
+		return false
+	}
+	rewoundRunID := strings.TrimSpace(t.Workflow.Variables[verifyAutoFixRunIDVar])
+	if rewoundRunID == "" || rewoundRunID != strings.TrimSpace(lr.AgentID) {
+		return false
+	}
+	rawRetryAfter := strings.TrimSpace(t.Workflow.Variables[workflowRetryAfterVar])
+	if rawRetryAfter == "" {
+		return false
+	}
+	retryAfter, err := time.Parse(time.RFC3339, rawRetryAfter)
+	if err != nil {
+		return false
+	}
+	return time.Now().Before(retryAfter)
 }

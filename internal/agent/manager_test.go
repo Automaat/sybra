@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/provider"
+
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/limits"
 )
@@ -34,6 +36,34 @@ func (r *eventRecorder) add(event string) {
 	r.mu.Lock()
 	r.events = append(r.events, event)
 	r.mu.Unlock()
+}
+
+// settle waits until the recorder stops growing and returns the count it
+// settled at.
+//
+// A started agent owns a runner goroutine that emits on its own — a state
+// change or a completion can land at any point after setup. Snapshotting the
+// count straight away makes a test that means "these calls emit nothing" fail
+// whenever an unrelated emission happens to fall inside its window, which is
+// what a loaded CI runner does and a local run almost never does.
+func (r *eventRecorder) settle(t *testing.T) int {
+	t.Helper()
+	const quiet = 100 * time.Millisecond
+	deadline := time.Now().Add(5 * time.Second)
+	last := r.Len()
+	stableSince := time.Now()
+	for time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+		if now := r.Len(); now != last {
+			last, stableSince = now, time.Now()
+			continue
+		}
+		if time.Since(stableSince) >= quiet {
+			return last
+		}
+	}
+	t.Fatalf("agent events never settled; last count %d", last)
+	return last
 }
 
 // Len returns the current number of recorded events.
@@ -290,6 +320,95 @@ func TestStopAgent(t *testing.T) {
 	}
 }
 
+// TestStopAgent_IdempotentAcrossTerminalPaths guards the fix for repeated
+// control-plane work over an unchanged terminal agent (#2725): whatever path
+// an agent took to reach StateStopped — a clean completion, a failed run, an
+// explicit cancellation, a watchdog/reattach path that marks it lost without
+// going through StopAgent, or simply being stopped already — a caller that
+// stops it again (e.g. reconciliation re-selecting a not-yet-evicted
+// registry entry) must observe zero further side effects rather than
+// re-signalling and re-emitting on every call.
+func TestStopAgent_IdempotentAcrossTerminalPaths(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, m *Manager, a *Agent)
+	}{
+		{
+			name: "already stopped",
+			setup: func(t *testing.T, m *Manager, a *Agent) {
+				t.Helper()
+				if err := m.StopAgent(a.ID); err != nil {
+					t.Fatalf("StopAgent: %v", err)
+				}
+			},
+		},
+		{
+			name: "completed via StopCompletedAgent",
+			setup: func(t *testing.T, m *Manager, a *Agent) {
+				t.Helper()
+				a.AppendOutput(StreamEvent{Type: "result", Subtype: "success"})
+				if err := m.StopCompletedAgent(a.ID); err != nil {
+					t.Fatalf("StopCompletedAgent: %v", err)
+				}
+			},
+		},
+		{
+			name: "failed run left the agent stopped",
+			setup: func(t *testing.T, m *Manager, a *Agent) {
+				t.Helper()
+				a.AppendOutput(StreamEvent{Type: "result", Subtype: "error"})
+				if err := m.StopAgent(a.ID); err != nil {
+					t.Fatalf("StopAgent: %v", err)
+				}
+			},
+		},
+		{
+			name: "cancelled",
+			setup: func(t *testing.T, m *Manager, a *Agent) {
+				t.Helper()
+				// StopAgent is the cancellation mechanism (cancels a.cancel()).
+				if err := m.StopAgent(a.ID); err != nil {
+					t.Fatalf("StopAgent: %v", err)
+				}
+			},
+		},
+		{
+			name: "lost agent marked stopped out-of-band (e.g. reattach/watchdog)",
+			setup: func(t *testing.T, m *Manager, a *Agent) {
+				t.Helper()
+				a.SetState(StateStopped)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m, emitted := newTestManager(t)
+
+			a, err := startTestAgent(t, m, "task-1", "Test Task", "headless", "test", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			tt.setup(t, m, a)
+			before := emitted.settle(t)
+
+			for i := range 3 {
+				if err := m.StopAgent(a.ID); err != nil {
+					t.Fatalf("repeat StopAgent[%d]: %v", i, err)
+				}
+			}
+
+			if got := emitted.Len(); got != before {
+				t.Errorf("emitted event count = %d after 3 repeat StopAgent calls, want unchanged %d", got, before)
+			}
+			if got := a.GetState(); got != StateStopped {
+				t.Errorf("State = %q, want %q", got, StateStopped)
+			}
+		})
+	}
+}
+
 // TestStopCompletedAgent_MarksCompletedByResult covers the watchdog's
 // completed-hang backstop: it must mark the agent completed-by-result before
 // stopping it, so the runner's exit-status handling finalizes it as a success
@@ -509,6 +628,43 @@ func TestListAgentsMultiple(t *testing.T) {
 	}
 }
 
+// TestListLiveAgents_ExcludesStopped guards the separation between live
+// discovery and retained history (#2725): ListAgents keeps a stopped agent
+// around for deadAgentRetention so a caller polling right after a stop still
+// sees its final state, but a caller deciding what still needs stopping
+// (e.g. orchestrator singleton reconciliation) must use ListLiveAgents and
+// never see that terminal entry.
+//
+// Agents are registered directly (like TestHasRunningAgentForTask /
+// TestStopInteractiveAgent) rather than via startTestAgent: startTestAgent
+// spawns a real headless run whose provider process can exit and flip the
+// "live" agent's state before this test gets to assert on it, which would
+// make the assertion race the runner goroutine instead of exercising
+// ListLiveAgents deterministically.
+func TestListLiveAgents_ExcludesStopped(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	live := &Agent{ID: "live", TaskID: "task-live", Mode: "headless", State: StateRunning, cancel: func() {}}
+	stopped := &Agent{ID: "stopped", TaskID: "task-stopped", Mode: "headless", State: StateRunning, cancel: func() {}}
+	m.mu.Lock()
+	m.agents[live.ID] = live
+	m.agents[stopped.ID] = stopped
+	m.mu.Unlock()
+
+	if err := m.StopAgent(stopped.ID); err != nil {
+		t.Fatalf("StopAgent: %v", err)
+	}
+
+	if got := len(m.ListAgents()); got != 2 {
+		t.Fatalf("ListAgents() len = %d, want 2 (retains the stopped entry)", got)
+	}
+
+	liveAgents := m.ListLiveAgents()
+	if len(liveAgents) != 1 || liveAgents[0].ID != live.ID {
+		t.Errorf("ListLiveAgents() = %v, want only %q", liveAgents, live.ID)
+	}
+}
+
 func TestAgentOutput(t *testing.T) {
 	m, _ := newTestManager(t)
 
@@ -578,12 +734,12 @@ func TestHasRunningAgentForTask(t *testing.T) {
 
 type stubGate struct{ rateLimited bool }
 
-func (s stubGate) IsHealthy(string) bool                         { return !s.rateLimited }
-func (s stubGate) RateLimited(string) bool                       { return s.rateLimited }
-func (s stubGate) Failover(string) string                        { return "" }
-func (s stubGate) Reason(string) string                          { return "" }
-func (s stubGate) ReportAuthFailure(string, string)              {}
-func (s stubGate) ReportRateLimit(string, time.Duration, string) {}
+func (s stubGate) IsHealthy(string) bool                                                  { return !s.rateLimited }
+func (s stubGate) RateLimited(string) bool                                                { return s.rateLimited }
+func (s stubGate) Failover(string) string                                                 { return "" }
+func (s stubGate) Reason(string) string                                                   { return "" }
+func (s stubGate) ReportAuthFailure(string, string)                                       {}
+func (s stubGate) ReportRateLimit(string, time.Duration, string, provider.CooldownSource) {}
 
 func TestProviderRateLimited(t *testing.T) {
 	m, _ := newTestManager(t)
@@ -726,7 +882,7 @@ func TestHasRunningAgentForTask_ExpiresStaleDispatchClaim(t *testing.T) {
 	m, _ := newTestManager(t)
 
 	m.mu.Lock()
-	m.dispatchClaims["t1"] = time.Now().Add(-staleDispatchClaimAge - time.Minute)
+	m.dispatchClaims["t1"] = time.Now().Add(-StaleDispatchClaimAge - time.Minute)
 	m.mu.Unlock()
 
 	if m.HasRunningAgentForTask("t1") {
@@ -908,7 +1064,7 @@ func TestHasOtherRunningAgentForTask_ExpiresStaleDispatchClaim(t *testing.T) {
 	running := &Agent{ID: "a1", TaskID: "t1", State: StateRunning, cancel: func() {}}
 	m.mu.Lock()
 	m.agents["a1"] = running
-	m.dispatchClaims["t1"] = time.Now().Add(-staleDispatchClaimAge - time.Minute)
+	m.dispatchClaims["t1"] = time.Now().Add(-StaleDispatchClaimAge - time.Minute)
 	m.mu.Unlock()
 
 	if m.HasOtherRunningAgentForTask("t1", "a1") {
@@ -966,22 +1122,22 @@ func TestBuildCommand(t *testing.T) {
 		{
 			name:    "no model no tools",
 			cfg:     RunConfig{},
-			wantCmd: "claude --dangerously-skip-permissions --disallowedTools ScheduleWakeup --model sonnet",
+			wantCmd: "claude --dangerously-skip-permissions --disallowedTools " + deniedToolsArg() + " --model sonnet",
 		},
 		{
 			name:    "valid model",
 			cfg:     RunConfig{Model: "claude-opus-4-6"},
-			wantCmd: "claude --dangerously-skip-permissions --disallowedTools ScheduleWakeup --model claude-opus-4-6",
+			wantCmd: "claude --dangerously-skip-permissions --disallowedTools " + deniedToolsArg() + " --model claude-opus-4-6",
 		},
 		{
 			name:    "valid tools",
 			cfg:     RunConfig{AllowedTools: []string{"Read", "Write", "Bash"}},
-			wantCmd: "claude --allowedTools Read,Write,Bash --disallowedTools ScheduleWakeup --model sonnet",
+			wantCmd: "claude --allowedTools Read,Write,Bash --disallowedTools " + deniedToolsArg() + " --model sonnet",
 		},
 		{
 			name:    "valid model and tools",
 			cfg:     RunConfig{Model: "claude-sonnet-4-6", AllowedTools: []string{"Read"}},
-			wantCmd: "claude --allowedTools Read --disallowedTools ScheduleWakeup --model claude-sonnet-4-6",
+			wantCmd: "claude --allowedTools Read --disallowedTools " + deniedToolsArg() + " --model claude-sonnet-4-6",
 		},
 		{
 			name:    "model with shell metachar semicolon",
@@ -1026,42 +1182,42 @@ func TestBuildCommand(t *testing.T) {
 		{
 			name:    "valid model with slash and dot",
 			cfg:     RunConfig{Model: "anthropic/claude-3.5-sonnet"},
-			wantCmd: "claude --dangerously-skip-permissions --disallowedTools ScheduleWakeup --model anthropic/claude-3.5-sonnet",
+			wantCmd: "claude --dangerously-skip-permissions --disallowedTools " + deniedToolsArg() + " --model anthropic/claude-3.5-sonnet",
 		},
 		{
 			name:    "codex default model mapping",
 			cfg:     RunConfig{Provider: "codex"},
-			wantCmd: "codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --dangerously-bypass-approvals-and-sandbox --model gpt-5.4",
+			wantCmd: "codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --dangerously-bypass-approvals-and-sandbox --model gpt-5.6-terra",
 		},
 		{
 			name:    "codex maps haiku to mini",
 			cfg:     RunConfig{Provider: "codex", Model: "haiku"},
-			wantCmd: "codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --dangerously-bypass-approvals-and-sandbox --model gpt-5.4-mini",
+			wantCmd: "codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --dangerously-bypass-approvals-and-sandbox --model gpt-5.6-luna",
 		},
 		{
 			name:    "codex with RequirePermissions uses workspace-write sandbox",
 			cfg:     RunConfig{Provider: "codex", RequirePermissions: true},
-			wantCmd: "codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --sandbox workspace-write --model gpt-5.4",
+			wantCmd: "codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --sandbox workspace-write --model gpt-5.6-terra",
 		},
 		{
 			name:    "fable alias",
 			cfg:     RunConfig{Model: "fable"},
-			wantCmd: "claude --dangerously-skip-permissions --disallowedTools ScheduleWakeup --model fable",
+			wantCmd: "claude --dangerously-skip-permissions --disallowedTools " + deniedToolsArg() + " --model fable",
 		},
 		{
 			name:    "fable with 1m suffix stripped",
 			cfg:     RunConfig{Model: "fable[1m]"},
-			wantCmd: "claude --dangerously-skip-permissions --disallowedTools ScheduleWakeup --model fable",
+			wantCmd: "claude --dangerously-skip-permissions --disallowedTools " + deniedToolsArg() + " --model fable",
 		},
 		{
 			name:    "claude-fable-5 with 1m suffix stripped",
 			cfg:     RunConfig{Model: "claude-fable-5[1m]"},
-			wantCmd: "claude --dangerously-skip-permissions --disallowedTools ScheduleWakeup --model claude-fable-5",
+			wantCmd: "claude --dangerously-skip-permissions --disallowedTools " + deniedToolsArg() + " --model claude-fable-5",
 		},
 		{
 			name:    "sonnet with 1m suffix stripped",
 			cfg:     RunConfig{Model: "sonnet[1m]"},
-			wantCmd: "claude --dangerously-skip-permissions --disallowedTools ScheduleWakeup --model sonnet",
+			wantCmd: "claude --dangerously-skip-permissions --disallowedTools " + deniedToolsArg() + " --model sonnet",
 		},
 		{
 			name:    "codex fable passes through as explicit model",
@@ -1076,7 +1232,7 @@ func TestBuildCommand(t *testing.T) {
 		{
 			name:    "codex with reasoning effort high",
 			cfg:     RunConfig{Provider: "codex", ReasoningEffort: "high"},
-			wantCmd: "codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --dangerously-bypass-approvals-and-sandbox --model gpt-5.4 -c model_reasoning_effort=high",
+			wantCmd: "codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --dangerously-bypass-approvals-and-sandbox --model gpt-5.6-terra -c model_reasoning_effort=high",
 		},
 	}
 
@@ -1115,12 +1271,19 @@ func TestNormalizeModel(t *testing.T) {
 		{prov: "claude", model: "fable[1m] ", want: "fable"},      // trailing whitespace stripped first
 		{prov: "claude", model: "foo[1m]bar", want: "foo[1m]bar"}, // only trailing stripped
 		// Codex path — no [1m] stripping
-		{prov: "codex", model: "", want: "gpt-5.4"},
-		{prov: "codex", model: "sonnet", want: "gpt-5.4"},
+		{prov: "codex", model: "", want: "gpt-5.6-terra"},
+		{prov: "codex", model: "sonnet", want: "gpt-5.6-terra"},
 		{prov: "codex", model: "fable", want: "fable"},
-		{prov: "codex", model: "opus", want: "gpt-5.5"},
-		{prov: "codex", model: "haiku", want: "gpt-5.4-mini"},
+		{prov: "codex", model: "opus", want: "gpt-5.6-sol"},
+		{prov: "codex", model: "haiku", want: "gpt-5.6-luna"},
 		{prov: "codex", model: "gpt-5.4[1m]", want: "gpt-5.4[1m]"}, // unchanged on codex path
+		// Foreign vendor literals: codex is not a multi-vendor gateway, so a
+		// Claude model ID reaching it directly (e.g. a role default set
+		// before failover ever triggers, see #2639) must still resolve to a
+		// codex-native model instead of being rejected by the CLI.
+		{prov: "codex", model: "claude-haiku-4-5-20251001", want: "gpt-5.6-luna"},
+		{prov: "codex", model: "claude-sonnet-4-6", want: "gpt-5.6-terra"},
+		{prov: "codex", model: "claude-opus-4-20250514", want: "gpt-5.6-sol"},
 	}
 
 	for _, tt := range tests {
@@ -1145,12 +1308,12 @@ func TestCodexSandboxDisabledViaEnv(t *testing.T) {
 		{
 			name:    "codex default with sandbox disabled",
 			cfg:     RunConfig{Provider: "codex"},
-			wantCmd: "codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --sandbox danger-full-access --model gpt-5.4",
+			wantCmd: "codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --sandbox danger-full-access --model gpt-5.6-terra",
 		},
 		{
 			name:    "codex RequirePermissions honored as danger-full-access when sandbox disabled",
 			cfg:     RunConfig{Provider: "codex", RequirePermissions: true},
-			wantCmd: "codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --sandbox danger-full-access --model gpt-5.4",
+			wantCmd: "codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --sandbox danger-full-access --model gpt-5.6-terra",
 		},
 	}
 
@@ -1474,7 +1637,7 @@ func TestSendMessage_HeadlessRejectsQueueOverflow(t *testing.T) {
 	if err := a.convo.installStdinPipe(w); err != nil {
 		t.Fatalf("installStdinPipe: %v", err)
 	}
-	for range maxPendingHeadlessSteerPrompts {
+	for range MaxPendingHeadlessSteerPrompts {
 		a.EnqueuePrompt("queued")
 	}
 	putAgent(t, m, a)
@@ -1485,8 +1648,8 @@ func TestSendMessage_HeadlessRejectsQueueOverflow(t *testing.T) {
 		t.Fatal("expected queue overflow error")
 	}
 	assertConflictClientError(t, err)
-	if got := a.PendingPromptCount(); got != maxPendingHeadlessSteerPrompts {
-		t.Fatalf("PendingPromptCount = %d, want %d", got, maxPendingHeadlessSteerPrompts)
+	if got := a.PendingPromptCount(); got != MaxPendingHeadlessSteerPrompts {
+		t.Fatalf("PendingPromptCount = %d, want %d", got, MaxPendingHeadlessSteerPrompts)
 	}
 }
 
@@ -1513,6 +1676,52 @@ func TestSendMessage_HeadlessRejectsWhenFinalizing(t *testing.T) {
 	assertConflictClientError(t, err)
 	if got := a.PendingPromptCount(); got != 0 {
 		t.Errorf("PendingPromptCount = %d, want 0 (message must not be queued)", got)
+	}
+}
+
+// TestSendMessage_HeadlessRejectsAfterEmptyBoundary proves that the terminal
+// boundary atomically commits finalization before a later steer can enqueue.
+// This is the former pop-empty / set-finalizing TOCTOU window.
+func TestSendMessage_HeadlessRejectsAfterEmptyBoundary(t *testing.T) {
+	m, _ := newTestManager(t)
+	r, w := io.Pipe()
+	a := &Agent{ID: "h-empty-boundary", TaskID: "task-1", Mode: "headless", Provider: "claude", State: StateRunning}
+	if err := a.convo.installStdinPipe(w); err != nil {
+		t.Fatalf("installStdinPipe: %v", err)
+	}
+	putAgent(t, m, a)
+	t.Cleanup(func() { _ = r.Close() })
+
+	if _, ok := a.PopPendingPromptOrBeginFinalizing(); ok {
+		t.Fatal("empty queue unexpectedly yielded a prompt")
+	}
+	err := m.SendMessage(a.ID, "too late")
+	if err == nil {
+		t.Fatal("expected finalizing conflict after empty terminal boundary")
+	}
+	assertConflictClientError(t, err)
+	if got := a.PendingPromptCount(); got != 0 {
+		t.Errorf("PendingPromptCount = %d, want 0", got)
+	}
+}
+
+func TestPendingSteerDispatchIsCrashVisibleUntilCommitted(t *testing.T) {
+	a := &Agent{ID: "steer-crash"}
+	a.EnqueuePrompt("once")
+	next, ok := a.BeginPendingPromptDispatch()
+	if !ok || next != "once" {
+		t.Fatalf("dispatch = %q, %v", next, ok)
+	}
+	if !a.HasAmbiguousSteerDispatch() || a.PendingPromptCount() != 1 {
+		t.Fatal("dispatch intent must retain the prompt and mark restart ambiguity")
+	}
+	restored := fromRecord(a.toRecord())
+	if !restored.HasAmbiguousSteerDispatch() || restored.PendingPromptCount() != 1 {
+		t.Fatal("registry round-trip lost ambiguous steer state")
+	}
+	a.CommitPendingPromptDispatch()
+	if a.HasAmbiguousSteerDispatch() || a.PendingPromptCount() != 0 {
+		t.Fatal("committed dispatch must clear ambiguity and consume one prompt")
 	}
 }
 

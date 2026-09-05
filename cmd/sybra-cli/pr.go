@@ -11,26 +11,20 @@ import (
 )
 
 // cmdPR routes the `pr` subcommands.
-func cmdPR(s *task.Manager, api *apiClient, args []string, jsonOut bool) int {
+func cmdPR(s taskBoard, args []string, jsonOut bool) int {
 	if len(args) == 0 {
 		return fatal(jsonOut, "usage: pr create <task-id> --repo owner/name --head branch [--title T] [--body B] [--dir D] [--draft]")
 	}
 	switch args[0] {
 	case "create":
-		return cmdPRCreate(s, api, args[1:], jsonOut)
+		return cmdPRCreate(s, args[1:], jsonOut)
 	default:
 		return fatal(jsonOut, "unknown pr subcommand %q (valid: create)", args[0])
 	}
 }
 
-// getTaskViaAPIOrFS reads a task through the server when the API is reachable,
-// falling back to the local store. Mirrors updateTaskViaAPIOrFS: a Job that has
-// only the HTTP endpoint and no mounted tasks dir must still be able to read the
-// task it is opening a PR for.
-func getTaskViaAPIOrFS(s *task.Manager, api *apiClient, id string) (task.Task, error) {
-	if got, handled, apiErr := viaAPI[task.Task](api, "TaskService", "GetTask", id); handled {
-		return got, apiErr
-	}
+// getTask reads through the board, which is server-backed whenever one answers. Retrying here on a transport error would only re-send the request to the same dead endpoint, and a Job holding the HTTP endpoint with no mounted tasks dir reads the task it is opening a PR for through that same board.
+func getTask(s taskBoard, id string) (task.Task, error) {
 	return s.Get(id)
 }
 
@@ -44,7 +38,7 @@ func getTaskViaAPIOrFS(s *task.Manager, api *apiClient, id string) (task.Task, e
 // repo operation happens in the Job that already has the clone and the token.
 // The task update goes through the same API-or-filesystem path as link-pr, so a
 // Job that only has the HTTP endpoint (no shared task dir) still reports back.
-func cmdPRCreate(s *task.Manager, api *apiClient, args []string, jsonOut bool) int {
+func cmdPRCreate(s taskBoard, args []string, jsonOut bool) int {
 	// Pull the task id off before parsing, matching cmdUpdate: flag.Parse stops
 	// at the first non-flag argument, so `pr create <id> --repo ...` would
 	// otherwise silently ignore every flag after the id.
@@ -67,7 +61,7 @@ func cmdPRCreate(s *task.Manager, api *apiClient, args []string, jsonOut bool) i
 		return fatal(jsonOut, "--repo and --head are required")
 	}
 
-	t, err := getTaskViaAPIOrFS(s, api, id)
+	t, err := getTask(s, id)
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
@@ -94,7 +88,7 @@ func cmdPRCreate(s *task.Manager, api *apiClient, args []string, jsonOut bool) i
 	// status: simple-task-pr's maybe_create_pr guard already routes to
 	// push_existing_pr once pr_number exists, then advances. Flipping status
 	// here would jump the task past the step that is still running.
-	updated, err := updateTaskViaAPIOrFS(s, api, id, map[string]any{"pr_number": float64(num)})
+	updated, err := updateTask(s, id, map[string]any{"pr_number": float64(num)})
 	if err != nil {
 		// The PR is already open; failing silently here would strand it
 		// unlinked and invisible to the monitor loop.

@@ -46,7 +46,7 @@ Edit `~/.sybra/config.yaml`:
 ```yaml
 agent:
   provider: codex
-  model: gpt-5.4   # optional; gpt-5.4 is the cheap/sonnet-class default
+  model: gpt-5.6-terra   # optional; gpt-5.6-terra is the cheap/sonnet-class default
 ```
 
 To revert to Claude:
@@ -62,10 +62,14 @@ Sybra maps generic aliases to provider-specific model IDs at runtime:
 
 | Sybra alias | Codex model |
 |---------------|-------------|
-| `sonnet` (default) | `gpt-5.4` |
-| `opus` | `gpt-5.5` |
-| `haiku` | `gpt-5.4-mini` |
+| `sonnet` (default) | `gpt-5.6-terra` |
+| `opus` | `gpt-5.6-sol` |
+| `haiku` | `gpt-5.6-luna` |
 | any other string | passed through verbatim |
+
+Requires codex CLI 0.145.0+. `gpt-5.4` and `gpt-5.4-mini` — the previous
+`sonnet`/`haiku` mappings — retire in Codex on 2026-08-31 for ChatGPT-signed-in
+accounts, which is why all three tiers moved to the gpt-5.6 family at once.
 
 ## How Codex Runs in Sybra
 
@@ -75,18 +79,12 @@ Sybra spawns a `codex exec` subprocess per task:
 
 ```bash
 # Headless mode always uses bypass (regardless of RequirePermissions)
-codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --dangerously-bypass-approvals-and-sandbox --model gpt-5.4 -C <worktree> "<prompt>"
+codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --dangerously-bypass-approvals-and-sandbox --model gpt-5.6-terra -C <worktree> "<prompt>"
 ```
 
 `--sandbox workspace-write` is intentionally not used in headless mode. That mode requests user approval for writes outside the workspace; in a headless run there is no TTY or UI to serve the approval prompt, so every such request is auto-rejected and the agent run fails. The worktree directory itself provides task isolation.
 
-`RequirePermissions=true` only affects sandbox selection in **interactive (conversational)** mode, where a human can approve sandbox prompts.
-
 Stdout is read as NDJSON. Sybra parses Codex event types (`agent_message`, `command_execution`, `task_complete`, etc.) and maps them to its unified `StreamEvent` format for display.
-
-### Interactive (conversational) mode
-
-Sybra spawns a new `codex exec --json` process for each user turn. Unlike Claude conversational mode (which keeps a single process alive on stdin), each Codex turn is a discrete subprocess invocation. This means there is **no persistent stdin pipe** — the UI sends messages by launching a new process with the follow-up prompt.
 
 ## Differences vs Claude Code
 
@@ -98,11 +96,14 @@ Sybra spawns a new `codex exec --json` process for each user turn. Unlike Claude
 | Session files | `~/.claude/projects/<key>/<id>.jsonl` | `~/.codex/sessions/rollout-<id>.jsonl` |
 | External discovery | Claude process detection via session files | Codex process detection via `pgrep -f codex` + session JSONL |
 | Cost reporting | Reported in `result` event (`cost_usd`) | Not reported in stream; billed on OpenAI dashboard |
-| Conversational model | Single long-lived process with stdin pipe | New subprocess per turn |
 
 ## Commit Requirements
 
-Codex agents must commit their work before finishing — the same requirement as Claude agents. Git commit flags (`-s` for sign-off, `-S` for GPG signing) work normally inside Sybra-managed worktrees. See the orchestrator's "Agent Commit Requirement" section for the required commit block to include in every headless prompt.
+Codex agents must commit their work before finishing — the same requirement as Claude agents. See the orchestrator's "Agent Commit Requirement" section for the required commit block to include in every headless prompt.
+
+Sign-off (`-s`) always works, and is guaranteed independently by the `prepare-commit-msg` hook Sybra installs in every worktree. GPG signing (`-S`) is **host-dependent**: on a keyless host such as the Linux deploy server it fails with `gpg failed to sign the data` and parks the task. Never hardcode `-S` in a prompt — workflow prompts template `{{commitsignflags .Vars}}`, which resolves from `agent.commit_signing` (`auto` | `never` | `require`, default `auto`) and falls back to `-s`.
+
+Note that `git commit -S` on the command line overrides the `commit.gpgsign=false` Sybra pins on each clone; config is a floor for plain commits, not a way to neutralize an explicit flag.
 
 ## Skill and Prompt Compatibility
 

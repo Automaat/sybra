@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/abtest"
@@ -17,6 +18,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/notification"
+	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/routing"
 	"github.com/Automaat/sybra/internal/workflow"
 	"gopkg.in/yaml.v3"
@@ -41,6 +43,13 @@ func setupConfigSvc(t *testing.T) (svc *ConfigService, cfgPath string) {
 
 	cfgPath = filepath.Join(home, "config.yaml")
 	writeConfigYAML(t, cfgPath, seed)
+	rawSeed, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read seed config: %v", err)
+	}
+	if err := os.WriteFile(config.LastKnownGoodConfigPath(), rawSeed, 0o600); err != nil {
+		t.Fatalf("write last-known-good seed: %v", err)
+	}
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -186,15 +195,12 @@ func TestReloadFromDisk_Guardrails(t *testing.T) {
 
 func TestReloadFromDisk_WorkflowReviewGuardrails(t *testing.T) {
 	svc, cfgPath := setupConfigSvc(t)
-	svc.workflowEngine = workflow.NewEngine(nil, nil, nil, slog.New(slog.DiscardHandler))
+	svc.workflowEngine = workflow.NewTestEngine(nil, nil, nil, slog.New(slog.DiscardHandler))
 	svc.applyWorkflowGuardrails(*svc.cfg)
 
 	next := *svc.cfg
 	disabled := false
 	next.Agent.ReviewUntilClean = &disabled
-	next.Agent.MaxReviewRounds = 1
-	unbounded := true
-	next.Agent.AllowUnboundedReviewRounds = &unbounded
 	next.Agent.MaxCheckpoints = 9
 	writeConfigYAML(t, cfgPath, &next)
 
@@ -205,27 +211,33 @@ func TestReloadFromDisk_WorkflowReviewGuardrails(t *testing.T) {
 	if !slices.Contains(result.Applied, "agent") {
 		t.Errorf("expected agent in applied, got %+v", result)
 	}
-	if !workflowBoolField(t, svc.workflowEngine, "reviewLoopDisabled") {
+	if svc.workflowEngine.ReviewUntilClean() {
 		t.Error("workflow reviewLoopDisabled = false, want true")
-	}
-	if got := workflowIntField(t, svc.workflowEngine, "maxReviewRounds"); got != 1 {
-		t.Errorf("workflow maxReviewRounds = %d, want 1", got)
-	}
-	if !workflowBoolField(t, svc.workflowEngine, "allowUnboundedReviewRounds") {
-		t.Error("workflow allowUnboundedReviewRounds = false, want true")
 	}
 	if got := workflowIntField(t, svc.workflowEngine, "maxCheckpoints"); got != 9 {
 		t.Errorf("workflow maxCheckpoints = %d, want 9", got)
 	}
 }
 
-func workflowBoolField(t *testing.T, e *workflow.Engine, name string) bool {
-	t.Helper()
-	v := reflect.ValueOf(e).Elem().FieldByName(name)
-	if !v.IsValid() {
-		t.Fatalf("workflow.Engine field %q not found", name)
+// TestApplyWorkflowGuardrails_WiresReviewRoundsPerHour locks in that the
+// engine's rolling-hour review budget is wired from
+// Agent.ReviewRoundsPerHourLimit. Agent.* is a hot-reload field
+// (configApplyAgentRuntime), so ReloadFromDisk already exercises this path
+// via the "agent" special case in applyHotChangesLocked; this test pins the
+// wiring directly against applyWorkflowGuardrails so it fails on the exact
+// function that dropped the value, rather than only on the reload plumbing
+// around it.
+func TestApplyWorkflowGuardrails_WiresReviewRoundsPerHour(t *testing.T) {
+	svc, _ := setupConfigSvc(t)
+	svc.workflowEngine = workflow.NewTestEngine(nil, nil, nil, slog.New(slog.DiscardHandler))
+
+	cfg := *svc.cfg
+	cfg.Agent.ReviewRoundsPerHour = 7
+	svc.applyWorkflowGuardrails(cfg)
+
+	if got := svc.workflowEngine.ReviewRoundsPerHour(); got != 7 {
+		t.Errorf("workflow reviewRoundsPerHour = %d, want 7", got)
 	}
-	return v.Bool()
 }
 
 func workflowIntField(t *testing.T, e *workflow.Engine, name string) int {
@@ -277,35 +289,92 @@ func TestReloadFromDisk_LogLevel(t *testing.T) {
 
 func TestReloadFromDisk_InvalidYAML(t *testing.T) {
 	svc, cfgPath := setupConfigSvc(t)
+	before, err := os.ReadFile(config.LastKnownGoodConfigPath())
+	if err != nil {
+		t.Fatalf("read last-known-good: %v", err)
+	}
 
 	if err := os.WriteFile(cfgPath, []byte(":::invalid yaml{{{\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	origMax := svc.cfg.Agent.MaxConcurrent
-	_, err := svc.ReloadFromDisk()
+	result, err := svc.ReloadFromDisk()
 	if err == nil {
 		t.Fatal("expected error for invalid YAML, got nil")
 	}
+	if result.Recovery == nil || !result.Recovery.RestoredLastKnownGood {
+		t.Fatalf("expected last-known-good recovery on invalid YAML, got %+v", result.Recovery)
+	}
 	if svc.cfg.Agent.MaxConcurrent != origMax {
 		t.Errorf("cfg mutated on error: got %d, want %d", svc.cfg.Agent.MaxConcurrent, origMax)
+	}
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read restored config: %v", err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatalf("config.yaml not restored after invalid YAML\nbefore:\n%s\nafter:\n%s", before, after)
 	}
 }
 
 func TestReloadFromDisk_ValidationError(t *testing.T) {
 	svc, cfgPath := setupConfigSvc(t)
+	before, err := os.ReadFile(config.LastKnownGoodConfigPath())
+	if err != nil {
+		t.Fatalf("read last-known-good: %v", err)
+	}
 
 	next := *svc.cfg
 	next.Logging.Level = "verbose" // invalid
 	writeConfigYAML(t, cfgPath, &next)
 
 	origLevel := svc.cfg.Logging.Level
-	_, err := svc.ReloadFromDisk()
+	result, err := svc.ReloadFromDisk()
 	if err == nil {
 		t.Fatal("expected validation error, got nil")
 	}
+	if result.Recovery == nil || !result.Recovery.RestoredLastKnownGood {
+		t.Fatalf("expected last-known-good recovery on validation error, got %+v", result.Recovery)
+	}
 	if svc.cfg.Logging.Level != origLevel {
 		t.Errorf("cfg.Logging.Level mutated on validation error")
+	}
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read restored config: %v", err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatalf("config.yaml not restored after validation error\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+func TestReloadFromDisk_UnknownLegacyKeyRestoresLastKnownGood(t *testing.T) {
+	svc, cfgPath := setupConfigSvc(t)
+	before, err := os.ReadFile(config.LastKnownGoodConfigPath())
+	if err != nil {
+		t.Fatalf("read last-known-good: %v", err)
+	}
+	if err := os.WriteFile(cfgPath, append(before, []byte("\ntodoist:\n  enabled: true\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := svc.ReloadFromDisk()
+	if err == nil {
+		t.Fatal("expected unknown key error, got nil")
+	}
+	if !strings.Contains(err.Error(), "todoist") {
+		t.Fatalf("error = %v, want todoist unknown-key context", err)
+	}
+	if result.Recovery == nil || !result.Recovery.RestoredLastKnownGood {
+		t.Fatalf("expected last-known-good recovery on unknown key, got %+v", result.Recovery)
+	}
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read restored config: %v", err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatalf("config.yaml not restored after unknown legacy key\nbefore:\n%s\nafter:\n%s", before, after)
 	}
 }
 
@@ -547,6 +616,65 @@ func TestReloadFromDisk_RefreshesLimitPolicyForProviderChanges(t *testing.T) {
 	}
 }
 
+func TestReloadFromDisk_RefreshesProviderHealthRuntimeFlags(t *testing.T) {
+	svc, cfgPath := setupConfigSvc(t)
+	svc.providerHealth = provider.New(provider.Config{
+		ClaudeEnabled:   svc.cfg.Providers.Claude.Enabled,
+		CodexEnabled:    svc.cfg.Providers.Codex.Enabled,
+		CopilotEnabled:  svc.cfg.Providers.Copilot.Enabled,
+		OpenCodeEnabled: svc.cfg.Providers.OpenCode.Enabled,
+		AutoFailover:    svc.cfg.Providers.AutoFailover,
+	}, nil, slog.New(slog.DiscardHandler))
+
+	next := *svc.cfg
+	next.Providers.AutoFailover = false
+	next.Providers.Codex.Enabled = false
+	writeConfigYAML(t, cfgPath, &next)
+
+	if _, err := svc.ReloadFromDisk(); err != nil {
+		t.Fatalf("ReloadFromDisk: %v", err)
+	}
+	if svc.providerHealth.AutoFailover() {
+		t.Fatal("provider health auto-failover flag stayed stale after provider reload")
+	}
+	if got := svc.providerHealth.Snapshot()["codex"]; got.Reason != "disabled" {
+		t.Fatalf("codex health reason = %q, want disabled", got.Reason)
+	}
+}
+
+// TestReloadFromDisk_EvidenceStaysPendingUntilRestart is the regression for the
+// silent-override bug: agent.evidence is restart-policy because the workflow
+// engine caches it once at init. A hot reload of only that flag must NOT copy
+// the new value into the live cfg (that would desync the engine from the store),
+// only surface it as pending until restart.
+func TestReloadFromDisk_EvidenceStaysPendingUntilRestart(t *testing.T) {
+	svc, cfgPath := setupConfigSvc(t)
+	origEvidence := svc.cfg.Agent.Evidence.Enabled
+
+	next := *svc.cfg
+	next.Agent.Evidence.Enabled = !origEvidence
+	writeConfigYAML(t, cfgPath, &next)
+
+	result, err := svc.ReloadFromDisk()
+	if err != nil {
+		t.Fatalf("ReloadFromDisk: %v", err)
+	}
+	if !slices.Contains(result.RestartRequired, "agent.evidence") {
+		t.Errorf("expected agent.evidence in restartRequired, got %+v", result)
+	}
+	if slices.Contains(result.Applied, "agent") {
+		t.Errorf("agent must not be applied for an evidence-only change, got %+v", result)
+	}
+	if svc.cfg.Agent.Evidence.Enabled != origEvidence {
+		t.Errorf("active cfg evidence flag updated without restart: got %v, want %v",
+			svc.cfg.Agent.Evidence.Enabled, origEvidence)
+	}
+	if svc.persisted == nil || svc.persisted.Agent.Evidence.Enabled != !origEvidence {
+		t.Errorf("persisted evidence flag = %v, want pending %v",
+			svc.persisted.Agent.Evidence.Enabled, !origEvidence)
+	}
+}
+
 func TestReloadFromDisk_NoFeedbackLoop(t *testing.T) {
 	// UpdateSettings saves to disk; watcher fires ReloadFromDisk; diff should
 	// be empty since disk now matches in-memory cfg.
@@ -643,6 +771,48 @@ func TestReloadFromDisk_ReadersSeeWholePersistedSnapshots(t *testing.T) {
 	}
 }
 
+func TestMutateLocked_PublishesImmutableAppSnapshot(t *testing.T) {
+	initial := config.DefaultConfig()
+	app := NewApp(slog.New(slog.DiscardHandler), new(slog.LevelVar), initial)
+	svc := &ConfigService{
+		cfg:       initial,
+		persisted: cloneConfig(initial),
+		publishConfig: func(next *config.Config) {
+			app.activeCfg.Store(next)
+		},
+	}
+
+	var readers sync.WaitGroup
+	done := make(chan struct{})
+	readers.Go(func() {
+		for {
+			select {
+			case <-done:
+				return
+			default:
+				_ = app.currentConfig().Cluster.Followers
+			}
+		}
+	})
+
+	next := cloneConfig(initial)
+	next.Logging.Level = "debug"
+	svc.mu.Lock()
+	_, _, err := svc.mutateLocked(next, nil)
+	svc.mu.Unlock()
+	close(done)
+	readers.Wait()
+	if err != nil {
+		t.Fatalf("mutateLocked: %v", err)
+	}
+	if got := app.currentConfig(); got != svc.cfg {
+		t.Fatal("App did not receive the published config snapshot")
+	}
+	if app.cfg == svc.cfg {
+		t.Fatal("hot reload mutated the construction-time config snapshot")
+	}
+}
+
 func TestSaveRawConfig_RestoresLastKnownGoodOnHotApplyFailure(t *testing.T) {
 	svc, cfgPath := setupConfigSvc(t)
 	writeConfigYAML(t, cfgPath, svc.cfg)
@@ -691,9 +861,12 @@ func TestReloadFromDisk_ABTestingPreservesRoutingOverlay(t *testing.T) {
 		MinSamplesPerVariant: 20,
 		Experiments: []abtest.Experiment{{
 			ID: "exp",
+			// Model is required by variant validation; config.Load drops
+			// experiments that would fail selection-time validation, so an
+			// underspecified fixture would not survive the reload.
 			Variants: []abtest.Variant{
-				{ID: "v1", Provider: "claude", Weight: 1},
-				{ID: "v2", Provider: "codex", Weight: 1},
+				{ID: "v1", Provider: "claude", Model: "opus", Weight: 1},
+				{ID: "v2", Provider: "codex", Model: "gpt-5.5", Weight: 1},
 			},
 		}},
 	}
@@ -766,14 +939,41 @@ func TestReloadFromDisk_ABTestingPreservesRoutingOverlay(t *testing.T) {
 
 // recordHandler captures log records for assertion in tests.
 type recordHandler struct {
+	mu      sync.Mutex
 	records *[]slog.Record
 	slog.Handler
 }
 
 func (h *recordHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
 func (h *recordHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	*h.records = append(*h.records, r)
 	return nil
+}
+func (h *recordHandler) Len() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(*h.records)
+}
+
+// CountPrefix returns how many records carry a message with this prefix.
+//
+// A test that shares its logger with the agent manager cannot use Len as a
+// measurement: the manager writes from goroutines that outlive an agent's
+// exit, so an unrelated record landing mid-measurement reads as output from
+// the code under test (#3384).
+func (h *recordHandler) CountPrefix(prefix string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	n := 0
+	records := *h.records
+	for i := range records {
+		if strings.HasPrefix(records[i].Message, prefix) {
+			n++
+		}
+	}
+	return n
 }
 func (h *recordHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
 func (h *recordHandler) WithGroup(_ string) slog.Handler      { return h }

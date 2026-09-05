@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/Automaat/sybra/internal/attachment"
 	"github.com/Automaat/sybra/internal/cluster"
@@ -31,6 +32,27 @@ type Assigner struct {
 	attachments   *attachment.Store
 
 	stopLocalAgents func(taskID string)
+}
+
+func (a *Assigner) lockOwnership(taskID string) func() {
+	return lockTaskOwnership(taskID)
+}
+
+func (a *Assigner) freshOwnership(snapshot task.Task) (task.Task, error) {
+	// Small unit-test and no-store construction paths use Assigner only as a
+	// follower RPC adapter. Production leader routing always has a manager;
+	// without one there is no canonical generation to refresh or fence.
+	if a.tasks == nil {
+		return snapshot, nil
+	}
+	current, err := a.tasks.Get(snapshot.ID)
+	if err != nil {
+		return task.Task{}, err
+	}
+	if current.AssignedNode != snapshot.AssignedNode || current.AssignmentRev != snapshot.AssignmentRev {
+		return task.Task{}, fmt.Errorf("ownership changed for %s", snapshot.ID)
+	}
+	return current, nil
 }
 
 // SetStopLocalAgents supplies the hook Reassign uses to stop the leader's own
@@ -68,14 +90,14 @@ func (a *Assigner) Tick(ctx context.Context) {
 	if a.cfg == nil || !a.cfg.IsLeader() || a.tasks == nil || a.roster == nil {
 		return
 	}
-	tasks, err := a.tasks.List()
+	tasks, err := a.tasks.ListActive()
 	if err != nil {
 		a.logger.Warn("cluster.assign.list.failed", "err", err)
 		return
 	}
 	for i := range tasks {
 		t := tasks[i]
-		if task.IsTerminalStatus(t.Status) || t.Status == task.StatusBlocked {
+		if t.Degraded || task.IsTerminalStatus(t.Status) || t.Status == task.StatusBlocked {
 			continue
 		}
 		home := a.cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride)
@@ -115,10 +137,136 @@ func (a *Assigner) PushUpdate(ctx context.Context, t task.Task) (pushed bool, er
 	return a.route(ctx, t, true)
 }
 
+// PushFieldUpdate forwards a leader-side Tags/DependsOn edit to a task's home
+// follower without touching any other field — the write-time counterpart to
+// mirror.Mirror's detect-and-repair backstop, called on every leader-side
+// Tags/DependsOn edit (see TaskService.UpdateTask) so that backstop mostly
+// has nothing left to do.
+//
+// Unlike PushUpdate/Route, which push the leader's whole task snapshot and
+// are documented safe only for a task that hasn't started executing anywhere
+// (AssignTask writes verbatim, and the leader's snapshot can already be
+// stale), this re-fetches the follower's own current live state via GetTask
+// and patches only Tags/DependsOn onto it before pushing back — identical to
+// mirror.Mirror's repairDrift repair pattern. That makes it safe to call
+// regardless of the task's execution state: it can never roll back the
+// follower's own Status/Workflow/AgentRuns progress.
+//
+// Returns pushed=false, err=nil when the task doesn't home on a follower, or
+// isn't assigned to one yet — Route/Tick's own first push already carries
+// the task's current Tags/DependsOn, so there is nothing to forward.
+func (a *Assigner) PushFieldUpdate(ctx context.Context, t task.Task) (pushed bool, err error) {
+	unlock := a.lockOwnership(t.ID)
+	defer unlock()
+	if t, err = a.freshOwnership(t); err != nil {
+		return false, err
+	}
+	home := a.cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride)
+	if home.Local || t.AssignedNode != home.Name {
+		return false, nil
+	}
+	client, ok := a.roster.Client(home.Name)
+	if !ok || client == nil {
+		return false, fmt.Errorf("clusterlead: no follower client for node %q", home.Name)
+	}
+	live, err := client.GetTask(ctx, t.ID)
+	if err != nil {
+		return false, fmt.Errorf("clusterlead: refetch %s from %s: %w", t.ID, home.Name, err)
+	}
+	live.Tags = t.Tags
+	live.DependsOn = t.DependsOn
+	live.DependsOnConditions = t.DependsOnConditions
+	live.AssignedNode = home.Name
+	if err := client.AssignTask(ctx, live); err != nil {
+		return false, fmt.Errorf("clusterlead: push field update for %s to %s: %w", t.ID, home.Name, err)
+	}
+	return true, nil
+}
+
+// BlessTampering forwards a human tamper blessing to the follower that owns
+// execution. The follower must perform the transition itself so its workflow
+// can resume from the same authoritative state the leader displays.
+func (a *Assigner) BlessTampering(ctx context.Context, t task.Task) (task.Task, bool, error) {
+	unlock := a.lockOwnership(t.ID)
+	defer unlock()
+	var err error
+	if t, err = a.freshOwnership(t); err != nil {
+		return task.Task{}, false, err
+	}
+	home := a.cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride)
+	if home.Local || t.AssignedNode != home.Name {
+		return task.Task{}, false, nil
+	}
+	client, ok := a.roster.Client(home.Name)
+	if !ok || client == nil {
+		return task.Task{}, false, fmt.Errorf("clusterlead: no follower client for node %q", home.Name)
+	}
+	updated, err := client.BlessTampering(ctx, t.ID)
+	if err != nil {
+		return task.Task{}, false, fmt.Errorf("clusterlead: bless tampering for %s on %s: %w", t.ID, home.Name, err)
+	}
+	return updated, true, nil
+}
+
+// UpdateTaskStatus forwards a status transition to the follower that owns
+// execution. A leader's mirror cannot know whether that node has a live agent,
+// so callers must wait for this before updating their local mirror.
+func (a *Assigner) UpdateTaskStatus(ctx context.Context, t task.Task, updates map[string]any) (task.Task, bool, error) {
+	unlock := a.lockOwnership(t.ID)
+	defer unlock()
+	var err error
+	if t, err = a.freshOwnership(t); err != nil {
+		return task.Task{}, false, err
+	}
+	home := a.cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride)
+	if home.Local || t.AssignedNode != home.Name {
+		return task.Task{}, false, nil
+	}
+	client, ok := a.roster.Client(home.Name)
+	if !ok || client == nil {
+		return task.Task{}, false, fmt.Errorf("clusterlead: no follower client for node %q", home.Name)
+	}
+	updated, err := client.UpdateTask(ctx, t.ID, updates)
+	if err != nil {
+		return task.Task{}, false, fmt.Errorf("clusterlead: update status for %s on %s: %w", t.ID, home.Name, err)
+	}
+	return updated, true, nil
+}
+
+func (a *Assigner) DispatchFromHumanRequired(ctx context.Context, t task.Task, target, reason string) (task.Task, bool, error) {
+	unlock := a.lockOwnership(t.ID)
+	defer unlock()
+	var err error
+	if t, err = a.freshOwnership(t); err != nil {
+		return task.Task{}, false, err
+	}
+	home := a.cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride)
+	if home.Local || t.AssignedNode != home.Name {
+		return task.Task{}, false, nil
+	}
+	client, ok := a.roster.Client(home.Name)
+	if !ok || client == nil {
+		return task.Task{}, false, fmt.Errorf("clusterlead: no follower client for node %q", home.Name)
+	}
+	updated, err := client.DispatchFromHumanRequired(ctx, t.ID, target, reason)
+	if err != nil {
+		return task.Task{}, false, fmt.Errorf("clusterlead: dispatch human-required %s on %s: %w", t.ID, home.Name, err)
+	}
+	return updated, true, nil
+}
+
 func (a *Assigner) route(ctx context.Context, t task.Task, force bool) (routed bool, err error) {
+	if t.Degraded {
+		return false, nil
+	}
+	unlock := a.lockOwnership(t.ID)
+	defer unlock()
 	home := a.cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride)
 	if home.Local {
 		return false, nil
+	}
+	if t, err = a.freshOwnership(t); err != nil {
+		return false, err
 	}
 	if !force && t.AssignedNode == home.Name {
 		return false, nil
@@ -139,12 +287,18 @@ func (a *Assigner) route(ctx context.Context, t task.Task, force bool) (routed b
 	if err := client.AssignTask(ctx, push); err != nil {
 		return false, fmt.Errorf("clusterlead: assign %s to %s: %w", t.ID, home.Name, err)
 	}
-	cur, err := a.tasks.Get(t.ID)
+	_, _, err = a.tasks.PutFnBy(t.ID, "clusterlead.assigner.route", func(cur task.Task) (task.Task, error) {
+		// The push may take seconds. Do not let a route planned from an old
+		// snapshot overwrite an intervening operator reassignment.
+		if cur.AssignedNode != t.AssignedNode || cur.AssignmentRev != t.AssignmentRev {
+			return task.Task{}, fmt.Errorf("ownership changed while routing %s", t.ID)
+		}
+		cur.AssignedNode = home.Name
+		cur.AssignmentRev++
+		cur.UpdatedAt = time.Now().UTC()
+		return cur, nil
+	})
 	if err != nil {
-		return true, fmt.Errorf("clusterlead: reload %s after assign: %w", t.ID, err)
-	}
-	cur.AssignedNode = home.Name
-	if _, _, err := a.tasks.Put(cur); err != nil {
 		return true, fmt.Errorf("clusterlead: stamp assigned_node on %s: %w", t.ID, err)
 	}
 	return true, nil
@@ -183,8 +337,14 @@ func (a *Assigner) blockForConfidentiality(t task.Task, home config.HomeNode) er
 	if t.Status == task.StatusBlocked && t.StatusReason == reason {
 		return nil
 	}
-	blocked := task.StatusBlocked
-	if _, err := a.tasks.Update(t.ID, task.Update{Status: &blocked, StatusReason: &reason}); err != nil {
+	if _, err := a.tasks.Apply(task.TransitionIntent{
+		TaskID:   t.ID,
+		ToStatus: task.StatusBlocked,
+		Actor:    "clusterlead.block_for_confidentiality",
+		Extra: task.Update{
+			StatusReason: &reason,
+		},
+	}); err != nil {
 		return fmt.Errorf("clusterlead: block work task %s: %w", t.ID, err)
 	}
 	if a.auditBlock != nil {

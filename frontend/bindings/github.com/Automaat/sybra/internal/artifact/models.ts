@@ -31,6 +31,63 @@ export enum Kind {
     KindGeneric = "generic",
 };
 
+/**
+ * Meta is the per-artifact metadata stored alongside the raw bytes.
+ * It is the source of truth for List; index.json is a derived cache.
+ */
+export class Meta {
+    "name": string;
+    "kind": Kind;
+    "producerRole"?: string;
+
+    /**
+     * TaskID is the containing task's ID (redundant with the dir name, kept for AC).
+     */
+    "taskId": string;
+    "stepId"?: string;
+    "createdAt": string;
+
+    /**
+     * SourcePath is the agent-output file that was imported (forensic only).
+     */
+    "sourcePath"?: string;
+    "size": number;
+
+    /**
+     * Stream is true for append-only artifacts (trace.jsonl).
+     */
+    "stream"?: boolean;
+
+    /** Creates a new Meta instance. */
+    constructor($$source: Partial<Meta> = {}) {
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("kind" in $$source)) {
+            this["kind"] = Kind.$zero;
+        }
+        if (!("taskId" in $$source)) {
+            this["taskId"] = "";
+        }
+        if (!("createdAt" in $$source)) {
+            this["createdAt"] = "0001-01-01T00:00:00.000Z";
+        }
+        if (!("size" in $$source)) {
+            this["size"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new Meta instance from a string or object.
+     */
+    static createFrom($$source: any = {}): Meta {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new Meta($$parsedSource as Partial<Meta>);
+    }
+}
+
 export class ProgressEntry {
     "ts": string;
     "kind": string;

@@ -15,9 +15,10 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"strings"
 	"sync"
 	"time"
+
+	"github.com/Automaat/sybra/internal/errclass"
 )
 
 // AppCredentials identifies a GitHub App installation. The private key stays on
@@ -37,10 +38,12 @@ type appTokenSource struct {
 	key    *rsa.PrivateKey
 	client *http.Client
 
-	mu      sync.RWMutex
-	token   string
-	expires time.Time
-	slug    string
+	mu              sync.RWMutex
+	token           string
+	expires         time.Time
+	verifierToken   string
+	verifierExpires time.Time
+	slug            string
 
 	// refreshMu/refreshing/refreshErr collapse concurrent mint attempts into
 	// one HTTP call. Without this, N goroutines that each observe a 401 at
@@ -48,9 +51,10 @@ type appTokenSource struct {
 	// preflights across worktrees) would each mint their own installation
 	// token — wasteful, and it defeats "force-refresh once" as a signal of
 	// what actually happened. See #2453.
-	refreshMu  sync.Mutex
-	refreshing chan struct{}
-	refreshErr error
+	refreshMu         sync.Mutex
+	refreshing        chan struct{}
+	refreshErr        error
+	verifierRefreshMu sync.Mutex
 }
 
 const appTokenRenewBefore = 5 * time.Minute
@@ -64,7 +68,29 @@ var appAPIBaseURL = "https://api.github.com"
 var (
 	appSourceMu sync.RWMutex
 	appSource   *appTokenSource
+
+	appTokenChangeMu   sync.RWMutex
+	appTokenChangeHook func()
 )
+
+// SetAppTokenChangeHook registers a process-local observer for changes to the
+// cached author token. The server uses it to republish credentials to helpers
+// immediately after both scheduled and forced refreshes. Passing nil clears
+// the observer.
+func SetAppTokenChangeHook(hook func()) {
+	appTokenChangeMu.Lock()
+	appTokenChangeHook = hook
+	appTokenChangeMu.Unlock()
+}
+
+func notifyAppTokenChange() {
+	appTokenChangeMu.RLock()
+	hook := appTokenChangeHook
+	appTokenChangeMu.RUnlock()
+	if hook != nil {
+		hook()
+	}
+}
 
 // EnableAppAuth configures GitHub App installation-token auth. It loads and
 // validates the private key so a misconfiguration fails loudly at startup
@@ -86,6 +112,7 @@ func EnableAppAuth(creds AppCredentials) error {
 	appSourceMu.Lock()
 	appSource = src
 	appSourceMu.Unlock()
+	notifyAppTokenChange()
 	// The viewer identity is auth-mode-dependent (<slug>[bot] under App auth,
 	// the /user login otherwise), so a mode switch must not inherit the
 	// previous mode's cached login.
@@ -99,6 +126,7 @@ func DisableAppAuth() {
 	appSourceMu.Lock()
 	appSource = nil
 	appSourceMu.Unlock()
+	notifyAppTokenChange()
 	resetCachedViewer()
 }
 
@@ -118,19 +146,6 @@ func RefreshAppToken(ctx context.Context) error {
 	}
 	_, err := src.refresh(ctx, false)
 	return err
-}
-
-// RefreshAppTokenEnv mints or renews the installation token, then exports it
-// for gh subprocesses spawned outside this package.
-func RefreshAppTokenEnv(ctx context.Context) error {
-	if err := RefreshAppToken(ctx); err != nil {
-		return err
-	}
-	if tok := CurrentAppToken(); tok != "" {
-		_ = os.Setenv("GH_TOKEN", tok)
-		_ = os.Setenv("GITHUB_TOKEN", tok)
-	}
-	return nil
 }
 
 // ForceRefreshAppToken always mints a new installation token when App auth is
@@ -158,37 +173,35 @@ func forceRefreshAppTokenLeader(ctx context.Context) (leader bool, err error) {
 	return src.refresh(ctx, true)
 }
 
-// ForceRefreshAppTokenEnv force-refreshes the installation token and
-// re-exports it for gh subprocesses spawned outside this package, mirroring
-// RefreshAppTokenEnv but always minting. Used when a live 401/403 already
-// proved the cached token is dead, so the corrected token reaches provider
-// subprocess env in the same step as this package's own cache — not only on
-// the next 30-minute ticker pass.
-func ForceRefreshAppTokenEnv(ctx context.Context) error {
-	_, err := forceRefreshAppTokenEnvLeader(ctx)
-	return err
-}
-
-// forceRefreshAppTokenEnvLeader is ForceRefreshAppTokenEnv's core, propagating
-// the mint-leader signal (see forceRefreshAppTokenLeader) so the auth-health
-// observer counts a shared, singleflight-collapsed failure once.
-func forceRefreshAppTokenEnvLeader(ctx context.Context) (leader bool, err error) {
-	leader, err = forceRefreshAppTokenLeader(ctx)
-	if err != nil {
-		return leader, err
-	}
-	if tok := CurrentAppToken(); tok != "" {
-		_ = os.Setenv("GH_TOKEN", tok)
-		_ = os.Setenv("GITHUB_TOKEN", tok)
-	}
-	return leader, nil
-}
-
 // cachedAppToken returns the current installation token, or "" when App auth is
 // disabled or no token has been minted yet. Non-blocking — never performs I/O —
 // so the request gate is never stalled on a token mint.
 func CurrentAppToken() string {
 	return cachedAppToken()
+}
+
+// RefreshVerifierAppToken mints the least-privilege installation token used by
+// independent review agents. It can publish PR feedback but has read-only
+// repository contents, so possessing it cannot promote a verifier commit.
+func RefreshVerifierAppToken(ctx context.Context) error {
+	src := currentAppSource()
+	if src == nil {
+		return nil
+	}
+	return src.refreshVerifier(ctx)
+}
+
+func CurrentVerifierAppToken() string {
+	src := currentAppSource()
+	if src == nil {
+		return ""
+	}
+	src.mu.RLock()
+	defer src.mu.RUnlock()
+	if src.verifierToken == "" || time.Now().After(src.verifierExpires) {
+		return ""
+	}
+	return src.verifierToken
 }
 
 // AppAuthEnabled reports whether GitHub App credentials are configured.
@@ -264,12 +277,38 @@ func (s *appTokenSource) doRefresh(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	token, expires, err := s.mintInstallationToken(ctx, jwt)
+	token, expires, err := s.mintInstallationToken(ctx, jwt, nil)
 	if err != nil {
 		return err
 	}
 	s.mu.Lock()
 	s.token, s.expires = token, expires
+	s.mu.Unlock()
+	notifyAppTokenChange()
+	return nil
+}
+
+func (s *appTokenSource) refreshVerifier(ctx context.Context) error {
+	s.verifierRefreshMu.Lock()
+	defer s.verifierRefreshMu.Unlock()
+	s.mu.RLock()
+	fresh := s.verifierToken != "" && time.Until(s.verifierExpires) > appTokenRenewBefore
+	s.mu.RUnlock()
+	if fresh {
+		return nil
+	}
+	jwt, err := s.signJWT(time.Now())
+	if err != nil {
+		return err
+	}
+	token, expires, err := s.mintInstallationToken(ctx, jwt, map[string]string{
+		"contents": "read", "pull_requests": "write",
+	})
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.verifierToken, s.verifierExpires = token, expires
 	s.mu.Unlock()
 	return nil
 }
@@ -293,15 +332,26 @@ func (s *appTokenSource) signJWT(now time.Time) (string, error) {
 	return signingInput + "." + base64.RawURLEncoding.EncodeToString(sig), nil
 }
 
-func (s *appTokenSource) mintInstallationToken(ctx context.Context, jwt string) (string, time.Time, error) {
+func (s *appTokenSource) mintInstallationToken(ctx context.Context, jwt string, permissions map[string]string) (string, time.Time, error) {
 	url := fmt.Sprintf("%s/app/installations/%d/access_tokens", appAPIBaseURL, s.creds.InstallationID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(nil))
+	var payload []byte
+	var err error
+	if len(permissions) > 0 {
+		payload, err = json.Marshal(map[string]any{"permissions": permissions})
+		if err != nil {
+			return "", time.Time{}, err
+		}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
 		return "", time.Time{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+jwt)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	if len(payload) > 0 {
+		req.Header.Set("Content-Type", "application/json")
+	}
 
 	resp, err := s.client.Do(req)
 	if err != nil {
@@ -333,11 +383,10 @@ func (s *appTokenSource) mintInstallationToken(ctx context.Context, jwt string) 
 }
 
 // appLogin returns the App's bot login as it appears on GitHub artifacts —
-// "<slug>[bot]", e.g. "sybra-app[bot]". This is the App-auth answer to "who am
-// I?": /user (see ViewerLogin) is a user-to-server endpoint and always 403s for
-// installation tokens, so it can never identify an App. GET /app is JWT-authed
-// and returns the slug, which is immutable for the lifetime of the App and so
-// is cached indefinitely.
+// "<slug>[bot]", e.g. "sybra-app[bot]". This is the App-auth branch viewerLoginE
+// (client.go) delegates to for "who am I?" — see that function's doc for why
+// /user can never answer this. GET /app is JWT-authed and returns the slug,
+// which is immutable for the lifetime of the App and so is cached indefinitely.
 func (s *appTokenSource) appLogin(ctx context.Context) (string, error) {
 	if s == nil {
 		return "", fmt.Errorf("app login: app auth is disabled")
@@ -443,7 +492,7 @@ func classifyMintError(err error) AuthState {
 	case http.StatusUnauthorized, http.StatusNotFound, http.StatusUnprocessableEntity:
 		return AuthMisconfigured
 	case http.StatusForbidden:
-		if strings.Contains(strings.ToLower(me.message), "rate limit") {
+		if errclass.Classify(me.message, errclass.GitHubTokenMintCooldownBiased) == errclass.RateLimited {
 			return AuthRateLimited
 		}
 		return AuthMisconfigured
@@ -482,12 +531,11 @@ func GHEnv() []string {
 // ambient GH_TOKEN carrying one, or ambient user gh auth. Performs a live
 // lookup, so it's meant for a startup/periodic preflight, not a hot path.
 //
-// Deliberately does NOT use ViewerLogin()/gh api user: /user is a
-// user-to-server endpoint that always 403s for GitHub App installation
-// tokens even when they're fully functional for issue filing, which made
-// the preflight false-positive on exactly the credential type it exists to
-// support (see #2032). /rate_limit is reachable by every credential type gh
-// supports, so probe that instead.
+// Deliberately does NOT use ViewerLogin()/gh api user — see viewerLoginE's
+// doc (client.go) for why /user 403s under App auth (#2032) and made this
+// preflight false-positive on exactly the credential type it exists to
+// support. /rate_limit is reachable by every credential type gh supports, so
+// probe that instead.
 func Authenticated() bool {
 	return authenticated(defaultExecer)
 }

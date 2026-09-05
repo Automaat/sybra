@@ -10,7 +10,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/executioncontract"
+	"github.com/Automaat/sybra/internal/providerid"
+	"github.com/Automaat/sybra/internal/roleeffort"
 	"github.com/Automaat/sybra/internal/stats"
+	"github.com/Automaat/sybra/internal/toolledger"
 )
 
 // NOTE on concurrency: Agent has distinct mutexes.
@@ -30,6 +34,19 @@ import (
 type State string
 
 const (
+	ErrorKindToolUseAborted  = "tool_use_aborted"
+	ErrorKindUserInterrupted = "user_interrupted"
+	// ErrorKindPromptUndelivered: the child never received the prompt, so the run
+	// carries no verdict and must be re-dispatched instead of counted as a try.
+	ErrorKindPromptUndelivered = "prompt_undelivered"
+	// ErrorKindSilentHang: the child produced no output at all before the
+	// watchdog's startup timeout. Distinct from "rate_limit", which this case
+	// borrowed until the borrowed kind started parking healthy providers and
+	// telling operators to go check a quota that was fine.
+	ErrorKindSilentHang = "silent_hang"
+)
+
+const (
 	StateIdle    State = "idle"
 	StateQueued  State = "queued"
 	StateRunning State = "running"
@@ -37,7 +54,22 @@ const (
 	StateStopped State = "stopped"
 )
 
-const DefaultReasoningEffort = "medium"
+// IsTerminal reports whether an agent in this state has finished its
+// lifecycle and cannot transition further. StateStopped is the only such
+// state today; callers that decide whether an agent still needs to be
+// stopped/signalled should key off this rather than re-deriving it, so a
+// second terminal state added later only needs to change this one place.
+func (s State) IsTerminal() bool {
+	return s == StateStopped
+}
+
+// DefaultReasoningEffort is the level a run dispatches with when neither the
+// caller, the operator's agent.role_effort override, nor the role's own
+// baseline pins one. Defined as roleeffort.Global rather than a literal so it
+// cannot drift from the copy internal/abtest resolves omitted variant efforts
+// against (that package cannot import this one — the dependency cycles through
+// internal/config).
+const DefaultReasoningEffort = roleeffort.Global
 
 type Agent struct {
 	ID                       string  `json:"id"`
@@ -51,6 +83,7 @@ type Agent struct {
 	CacheCreationInputTokens int     `json:"cacheCreationInputTokens,omitempty"`
 	CacheReadInputTokens     int     `json:"cacheReadInputTokens,omitempty"`
 	ReasoningTokens          int     `json:"reasoningTokens,omitempty"`
+	ToolFailures             int     `json:"toolFailures,omitempty"`
 	// PremiumRequests is Copilot's billing unit (AI credits). Sybra keeps the
 	// raw count alongside the estimated USD equivalent persisted on task runs.
 	PremiumRequests float64   `json:"premiumRequests,omitempty"`
@@ -74,7 +107,11 @@ type Agent struct {
 	AssignmentKey   string    `json:"assignmentKey,omitempty"`
 	// DecisionVersion is the routing-overlay generation (internal/routing)
 	// that set this run's variant weight, 0 when none applied.
-	DecisionVersion         int    `json:"decisionVersion,omitempty"`
+	DecisionVersion         int `json:"decisionVersion,omitempty"`
+	attemptIntent           AttemptIntent
+	attemptTaskGenKnown     bool
+	attemptLease            AttemptLease
+	attemptCompleteOnce     sync.Once
 	ReasoningEffort         string `json:"reasoningEffort,omitempty"`
 	RequestedSkill          string `json:"requestedSkill,omitempty"`
 	SkillExecutionMode      string `json:"skillExecutionMode,omitempty"`
@@ -129,6 +166,26 @@ type Agent struct {
 	// observed during the run.
 	SubagentCallCount int `json:"subagentCallCount,omitempty"`
 	loops             loopDetector
+
+	// live* accumulate this turn's token usage from assistant-event `usage`
+	// blocks (see ClaudeMessage.InputTokens etc), reset by ResetLiveUsage at
+	// every terminal result. They exist so a mid-stream cost ceiling
+	// (maybeEnforceLiveCostCeiling) can bank an estimate before the terminal
+	// result event reports the provider's own cumulative usage/cost — without
+	// them the live estimate would stay at the last banked result for the
+	// whole in-flight turn, blind to a turn that alone blows the ceiling.
+	liveInputTokens              int
+	liveOutputTokens             int
+	liveCacheCreationInputTokens int
+	liveCacheReadInputTokens     int
+	// subagentTurnCount counts assistant events with a non-empty
+	// parent_tool_use_id (forked subagent turns), independent of TurnCount
+	// which only counts top-level turns.
+	subagentTurnCount int
+	// budgetSteerSent latches once maybeEnforceLiveCostCeiling has queued its
+	// one-shot converge-and-wrap-up steer message, so a run sitting at or
+	// above the steer threshold for many turns is only nudged once.
+	budgetSteerSent bool
 	// MaxTurns is the per-agent turn limit override; zero means use global guardrail.
 	MaxTurns int `json:"maxTurns,omitempty"`
 	// oneShot marks workflow-owned interactive runs that must complete after
@@ -155,12 +212,16 @@ type Agent struct {
 	// live computation, so it is never stale on the wire.
 	CanSteer bool `json:"canSteer"`
 
-	ExitErr         error `json:"-"`
-	outputBuffer    []StreamEvent
-	convoBuffer     []ConvoEvent
-	cmd             *exec.Cmd
-	cancel          context.CancelFunc
-	sessionCWD      string
+	ExitErr      error `json:"-"`
+	outputBuffer []StreamEvent
+	convoBuffer  []ConvoEvent
+	cmd          *exec.Cmd
+	cancel       context.CancelFunc
+	sessionCWD   string
+	// sessionReadOnly mirrors RunConfig.ReadOnlyDir. checkpointAndHandoff
+	// commits into sessionCWD from the host process, outside the sandbox, so
+	// the sandbox cannot be what keeps a read-only dispatch dir read-only.
+	sessionReadOnly bool
 	sandboxHomeDir  string
 	sessionFilePath string // path to provider session file (Codex JSONL)
 	// done is closed when the headless/conversational goroutine has fully exited.
@@ -173,7 +234,8 @@ type Agent struct {
 	// goroutines reaching their terminal sites for the same agent (e.g.
 	// runner_convo and runner_convo_survive both firing when the process exits
 	// while a reattach tail is still live) only advance the workflow once.
-	completedOnce sync.Once
+	completedOnce    sync.Once
+	remotelyExecuted bool
 	// costSessionID and costBaseUSD back AddResultStats' per-session cost
 	// bookkeeping. Providers report CostUSD as a cumulative total for the
 	// current session (not a per-turn delta), so a repeated session id must
@@ -241,6 +303,13 @@ type Agent struct {
 	// cancelling them. Guarded by mu.
 	detached bool
 
+	// adoptedParkedStatus is the task status a reattached survivor was adopted
+	// over: the process was alive and progressing, but its task had been
+	// parked (or finished) while the app was down. Set by ReattachAll only,
+	// and read by completion routing to keep the run's result while
+	// suppressing workflow advancement. Guarded by mu.
+	adoptedParkedStatus string
+
 	// requirePermissions mirrors RunConfig.RequirePermissions. Persisted to
 	// the registry so a recreated codex chat keeps its sandbox/approval
 	// choice across a restart instead of silently becoming permissive.
@@ -260,6 +329,11 @@ type Agent struct {
 	// permissionDenials accumulates auto-mode classifier denial records
 	// observed during the run. Flushed to audit in OnComplete.
 	permissionDenials []PermissionDenial
+	// recordToolCall receives every tool call this agent makes, whatever the
+	// permission posture. Late-bound by the Manager; nil in tests and on
+	// agents constructed without a ledger, which the nil-receiver Log
+	// tolerates.
+	recordToolCall func(toolledger.Record)
 	// toolUsesByID keeps recent tool_use metadata long enough to correlate a
 	// malformed tool_result back to the original tool name + input.
 	toolUsesByID map[string]trackedToolUse
@@ -271,10 +345,44 @@ type Agent struct {
 	malformedToolCalls []MalformedToolCall
 	// malformedToolCorrectionAttempts bounds in-session recovery prompts.
 	malformedToolCorrectionAttempts int
+	// executionSink/Handle are manager-owned local-adapter wiring. Provider
+	// output uses them to traverse the same recoverable event boundary as
+	// portable backends without exposing this canonical Agent to a backend.
+	executionSink           ExecutionEventSink
+	executionHandle         ExecutionHandle
+	backendOwnsCompletion   bool
+	unthrottledOutputEvents bool
+	steerCommandIDs         map[string]struct{}
+	steerDispatching        bool
 
 	// mu guards mutable fields touched from multiple goroutines. See the
 	// package-level note above the Agent type.
 	mu sync.RWMutex
+}
+
+func (a *Agent) setExecutionSink(sink ExecutionEventSink, handle ExecutionHandle) {
+	a.mu.Lock()
+	a.executionSink = sink
+	a.executionHandle = handle
+	a.mu.Unlock()
+}
+
+func (a *Agent) executionEventTarget() (ExecutionEventSink, ExecutionHandle) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.executionSink, a.executionHandle
+}
+
+func (a *Agent) setBackendOwnsCompletion(value bool) {
+	a.mu.Lock()
+	a.backendOwnsCompletion = value
+	a.mu.Unlock()
+}
+
+func (a *Agent) completionOwnedByBackend() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.backendOwnsCompletion
 }
 
 type foregroundCommand struct {
@@ -354,6 +462,16 @@ func (a *Agent) View() View {
 	return a.viewLocked(hasStdinPipe)
 }
 
+// ListView omits fields that are large and only useful after an agent is
+// opened. AgentService.GetAgent returns the complete View on demand.
+func (a *Agent) ListView() View {
+	v := a.View()
+	v.Prompt = ""
+	v.Command = ""
+	v.LogPath = ""
+	return v
+}
+
 func (a *Agent) viewLocked(hasStdinPipe bool) View {
 	return View{
 		ID:                       a.ID,
@@ -419,7 +537,16 @@ func (a *Agent) MarshalJSON() ([]byte, error) {
 func (a *Agent) toRecord() Record {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
+	return a.toRecordLocked()
+}
+
+func (a *Agent) toRecordLocked() Record {
 	pendingPrompts := slices.Clone(a.convo.pendingPrompts)
+	steerCommandIDs := make([]string, 0, len(a.steerCommandIDs))
+	for id := range a.steerCommandIDs {
+		steerCommandIDs = append(steerCommandIDs, id)
+	}
+	slices.Sort(steerCommandIDs)
 	return Record{
 		ID:                      a.ID,
 		TaskID:                  a.TaskID,
@@ -435,6 +562,14 @@ func (a *Agent) toRecord() Record {
 		AssignmentUnit:          a.AssignmentUnit,
 		AssignmentKey:           a.AssignmentKey,
 		DecisionVersion:         a.DecisionVersion,
+		AttemptIntentID:         a.attemptIntent.IntentID,
+		AttemptTaskKey:          a.attemptIntent.TaskID,
+		AttemptTaskGen:          a.attemptIntent.TaskGeneration,
+		AttemptWorktree:         a.attemptIntent.Worktree,
+		AttemptWorkGen:          a.attemptIntent.WorktreeGeneration,
+		AttemptAccess:           a.attemptIntent.Access,
+		AttemptLeaseID:          a.attemptLease.ID,
+		AttemptVersion:          a.attemptLease.Version,
 		PID:                     a.PID,
 		SessionID:               a.SessionID,
 		LogPath:                 a.LogPath,
@@ -443,6 +578,9 @@ func (a *Agent) toRecord() Record {
 		StartedAt:               a.StartedAt,
 		StdinPath:               a.convo.stdinPath,
 		PendingPrompts:          pendingPrompts,
+		SteerCommandIDs:         steerCommandIDs,
+		SteerDispatching:        a.steerDispatching,
+		UnthrottledOutputEvents: a.unthrottledOutputEvents,
 		OneShot:                 a.oneShot,
 		MaxTurns:                a.MaxTurns,
 		RequirePermissions:      a.requirePermissions,
@@ -472,21 +610,29 @@ func fromRecord(r Record) *Agent {
 	if requestedModel == "" {
 		requestedModel = r.Model
 	}
-	return &Agent{
-		ID:                      r.ID,
-		TaskID:                  r.TaskID,
-		Name:                    r.Name,
-		Role:                    r.Role,
-		Mode:                    r.Mode,
-		Provider:                r.Provider,
-		Model:                   r.Model,
-		RequestedModel:          requestedModel,
-		ExperimentID:            r.ExperimentID,
-		VariantID:               r.VariantID,
-		RoutingReason:           r.RoutingReason,
-		AssignmentUnit:          r.AssignmentUnit,
-		AssignmentKey:           r.AssignmentKey,
-		DecisionVersion:         r.DecisionVersion,
+	a := &Agent{
+		ID:              r.ID,
+		TaskID:          r.TaskID,
+		Name:            r.Name,
+		Role:            r.Role,
+		Mode:            r.Mode,
+		Provider:        r.Provider,
+		Model:           r.Model,
+		RequestedModel:  requestedModel,
+		ExperimentID:    r.ExperimentID,
+		VariantID:       r.VariantID,
+		RoutingReason:   r.RoutingReason,
+		AssignmentUnit:  r.AssignmentUnit,
+		AssignmentKey:   r.AssignmentKey,
+		DecisionVersion: r.DecisionVersion,
+		attemptIntent: AttemptIntent{
+			IntentID: r.AttemptIntentID, TaskID: firstNonEmpty(r.AttemptTaskKey, r.TaskID),
+			TaskGeneration: r.AttemptTaskGen, Worktree: firstNonEmpty(r.AttemptWorktree, r.CWD),
+			WorktreeGeneration: r.AttemptWorkGen, Access: r.AttemptAccess,
+			Role: r.Role, Provider: r.Provider, CapabilityCertified: true,
+		},
+		attemptTaskGenKnown:     r.AttemptTaskKey != "",
+		attemptLease:            AttemptLease{ID: r.AttemptLeaseID, Version: r.AttemptVersion},
 		PID:                     r.PID,
 		SessionID:               r.SessionID,
 		LogPath:                 r.LogPath,
@@ -498,6 +644,8 @@ func fromRecord(r Record) *Agent {
 		MaxTurns:                r.MaxTurns,
 		oneShot:                 r.OneShot,
 		convo:                   convoIO{stdinPath: r.StdinPath, pendingPrompts: slices.Clone(r.PendingPrompts)},
+		unthrottledOutputEvents: r.UnthrottledOutputEvents,
+		steerDispatching:        r.SteerDispatching,
 		requirePermissions:      r.RequirePermissions,
 		sandboxMode:             r.SandboxMode,
 		ReasoningEffort:         r.ReasoningEffort,
@@ -517,6 +665,16 @@ func fromRecord(r Record) *Agent {
 		unrenderedSkills:        slices.Clone(r.UnrenderedSkills),
 		detached:                true,
 	}
+	if len(r.SteerCommandIDs) > 0 {
+		a.steerCommandIDs = make(map[string]struct{}, len(r.SteerCommandIDs))
+		for _, id := range r.SteerCommandIDs {
+			a.steerCommandIDs[id] = struct{}{}
+		}
+	}
+	if r.Mode == "headless" {
+		a.escalationCh = make(chan bool, 1)
+	}
+	return a
 }
 
 // SetState atomically updates the agent state.
@@ -552,6 +710,15 @@ func (a *Agent) EffectiveRole() Role {
 		return role
 	}
 	return RoleFromName(name)
+}
+
+// SandboxHomeDir returns the trusted sandbox home resolved before this agent
+// started. Completion uses it to revoke the corresponding verifier grant
+// without trusting any verifier-writable credential file.
+func (a *Agent) SandboxHomeDir() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.sandboxHomeDir
 }
 
 // MarkStopped records that the agent was stopped intentionally via StopAgent.
@@ -638,6 +805,13 @@ func (a *Agent) SetLogPath(p string) {
 	a.mu.Unlock()
 }
 
+// SetCommand records the command used to run the agent.
+func (a *Agent) SetCommand(command string) {
+	a.mu.Lock()
+	a.Command = command
+	a.mu.Unlock()
+}
+
 // SetSessionID records the provider session ID.
 func (a *Agent) SetSessionID(id string) {
 	a.mu.Lock()
@@ -646,6 +820,23 @@ func (a *Agent) SetSessionID(id string) {
 }
 
 // GetSessionID returns the current provider session ID.
+// SetRemotelyExecuted marks a run whose provider process lives on another
+// host, so effects describing this host's provider state are not taken from
+// it.
+func (a *Agent) SetRemotelyExecuted() {
+	a.mu.Lock()
+	a.remotelyExecuted = true
+	a.mu.Unlock()
+}
+
+// RemotelyExecuted reports whether this run's provider process ran on another
+// host.
+func (a *Agent) RemotelyExecuted() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.remotelyExecuted
+}
+
 func (a *Agent) GetSessionID() string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -832,6 +1023,7 @@ func (a *Agent) BankEstimatedCost() float64 {
 		CostUSD:         a.CostUSD,
 		InputTokens:     a.InputTokens,
 		OutputTokens:    a.OutputTokens,
+		CacheCreate:     a.CacheCreationInputTokens,
 		CacheRead:       a.CacheReadInputTokens,
 		ReasoningTokens: a.ReasoningTokens,
 		PremiumRequests: a.PremiumRequests,
@@ -839,6 +1031,76 @@ func (a *Agent) BankEstimatedCost() float64 {
 	})
 	a.CostUSD = max(a.CostUSD, estimated)
 	return a.CostUSD
+}
+
+// AddLiveUsage accumulates one assistant event's own token usage into the
+// in-flight-turn counters LiveCostEstimateUSD reads. No-op-equivalent for a
+// provider/event that reports no per-event usage (all args 0).
+func (a *Agent) AddLiveUsage(input, output, cacheCreate, cacheRead int) {
+	a.mu.Lock()
+	a.liveInputTokens += input
+	a.liveOutputTokens += output
+	a.liveCacheCreationInputTokens += cacheCreate
+	a.liveCacheReadInputTokens += cacheRead
+	a.mu.Unlock()
+}
+
+// ResetLiveUsage clears the in-flight-turn usage counters. Call once a
+// terminal result event has banked its own totals into CostUSD/InputTokens/
+// etc (AddResultStats/AddCacheStats/BankEstimatedCost), so the live estimate
+// tracks only the next turn's usage rather than double-counting a turn
+// already reflected in the banked totals.
+func (a *Agent) ResetLiveUsage() {
+	a.mu.Lock()
+	a.liveInputTokens = 0
+	a.liveOutputTokens = 0
+	a.liveCacheCreationInputTokens = 0
+	a.liveCacheReadInputTokens = 0
+	a.mu.Unlock()
+}
+
+// LiveCostEstimateUSD returns the run's last-banked cost plus an estimate of
+// the current in-flight turn's usage — a mid-stream approximation of what the
+// next terminal result would report, used to pre-empt a run before it lands a
+// breach that is already paid for (see BankEstimatedCost's own doc for why
+// providers can't report cost mid-turn).
+func (a *Agent) LiveCostEstimateUSD() float64 {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	liveEstimate := stats.EstimateAgentCost(stats.AgentUsage{
+		Provider:        a.Provider,
+		Model:           a.Model,
+		CostUSD:         0,
+		InputTokens:     a.liveInputTokens,
+		OutputTokens:    a.liveOutputTokens,
+		CacheCreate:     a.liveCacheCreationInputTokens,
+		CacheRead:       a.liveCacheReadInputTokens,
+		ReasoningTokens: 0,
+		StartedAt:       a.StartedAt,
+	})
+	return a.CostUSD + liveEstimate
+}
+
+// IncSubagentTurnCount increments the forked-subagent turn counter and
+// returns the new value. Counts assistant events carrying a non-empty
+// parent_tool_use_id, independent of the top-level TurnCount guardrail.
+func (a *Agent) IncSubagentTurnCount() int {
+	a.mu.Lock()
+	a.subagentTurnCount++
+	n := a.subagentTurnCount
+	a.mu.Unlock()
+	return n
+}
+
+// MarkBudgetSteerSent latches the one-shot converge steer sent and reports
+// whether it had already been sent before this call — callers send the steer
+// message only when this returns false.
+func (a *Agent) MarkBudgetSteerSent() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	already := a.budgetSteerSent
+	a.budgetSteerSent = true
+	return already
 }
 
 // AddPremiumRequests merges Copilot premium-request usage into the totals.
@@ -874,6 +1136,29 @@ func (a *Agent) EnqueuePrompt(text string) {
 	a.mu.Unlock()
 }
 
+// TryEnqueuePrompt appends text to the pending queue iff the run has not begun
+// finalizing and its current queue length is below max. All three checks and
+// the append share one lock acquisition, so a steer accepted by this method
+// cannot race a terminal boundary into a queue that will never be drained.
+// Callers that check PendingPromptCount() and then call EnqueuePrompt() as
+// two separate steps leave a TOCTOU window: concurrent callers can each pass
+// the check while the queue is below max and all append, overshooting the
+// cap the check was meant to enforce. Returns the queue length after the
+// call, whether the prompt was enqueued, and whether finalization caused a
+// rejection (rather than the queue limit).
+func (a *Agent) TryEnqueuePrompt(text string, limit int) (queueLen int, enqueued, finalizing bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.finalizing {
+		return len(a.convo.pendingPrompts), false, true
+	}
+	if len(a.convo.pendingPrompts) >= limit {
+		return len(a.convo.pendingPrompts), false, false
+	}
+	a.convo.pendingPrompts = append(a.convo.pendingPrompts, text)
+	return len(a.convo.pendingPrompts), true, false
+}
+
 // PopPendingPrompt returns the next queued prompt and a flag indicating
 // whether a value was popped.
 func (a *Agent) PopPendingPrompt() (string, bool) {
@@ -885,6 +1170,53 @@ func (a *Agent) PopPendingPrompt() (string, bool) {
 	next := a.convo.pendingPrompts[0]
 	a.convo.pendingPrompts = a.convo.pendingPrompts[1:]
 	return next, true
+}
+
+// PopPendingPromptOrBeginFinalizing atomically reserves the next pending
+// prompt or, when there is none, permanently prevents any later enqueue. The
+// latter transition must share the queue lock with TryEnqueuePrompt: otherwise
+// a message can be accepted after the empty-pop check but before stdin closes.
+func (a *Agent) PopPendingPromptOrBeginFinalizing() (string, bool) {
+	a.mu.Lock()
+	if len(a.convo.pendingPrompts) > 0 {
+		next := a.convo.pendingPrompts[0]
+		a.convo.pendingPrompts = a.convo.pendingPrompts[1:]
+		a.mu.Unlock()
+		return next, true
+	}
+	a.finalizing = true
+	a.mu.Unlock()
+	a.refreshCanSteer()
+	return "", false
+}
+
+// BeginPendingPromptDispatch marks the next steer as durably ambiguous before
+// it crosses the FIFO boundary. Recovery fails such a run explicitly instead
+// of silently delivering the same command twice.
+func (a *Agent) BeginPendingPromptDispatch() (string, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.convo.pendingPrompts) == 0 {
+		a.finalizing = true
+		return "", false
+	}
+	a.steerDispatching = true
+	return a.convo.pendingPrompts[0], true
+}
+
+func (a *Agent) CommitPendingPromptDispatch() {
+	a.mu.Lock()
+	if len(a.convo.pendingPrompts) > 0 {
+		a.convo.pendingPrompts = slices.Delete(a.convo.pendingPrompts, 0, 1)
+	}
+	a.steerDispatching = false
+	a.mu.Unlock()
+}
+
+func (a *Agent) HasAmbiguousSteerDispatch() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.steerDispatching
 }
 
 // PendingPromptCount returns the size of the pending prompt queue.
@@ -964,6 +1296,18 @@ func (a *Agent) GetSubagentCallCount() int {
 	return a.SubagentCallCount
 }
 
+// GetAttemptTaskGeneration returns the generation fenced into this run's
+// durable admission intent. Every newly launched task run has known=true,
+// including the valid zero generation; legacy reattached records do not.
+func (a *Agent) GetAttemptTaskGeneration() (generation uint64, known bool) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if !a.attemptTaskGenKnown {
+		return 0, false
+	}
+	return a.attemptIntent.TaskGeneration, true
+}
+
 // NoteToolSignature feeds the next assistant event's tool-call signature into
 // the loop detector and returns the resulting low-progress repeat score. An
 // empty signature (an assistant turn with no tool calls — pure text/thinking)
@@ -1015,6 +1359,12 @@ const EscalationReasonCost = "cost"
 // EscalationReasonTurns marks a run stopped at the turn ceiling awaiting a human.
 const EscalationReasonTurns = "turns"
 
+// EscalationReasonSubagentTurns marks a run hard-stopped for breaching the
+// separate forked-subagent turn ceiling (MaxSubagentEvents). Unlike
+// EscalationReasonTurns this never waits on a human decision — a fork
+// subagent fan-out that runs away is stopped outright.
+const EscalationReasonSubagentTurns = "subagent_turns"
+
 // EscalationReasonCheckpoint marks a run whose work was committed at the turn
 // ceiling and which must be rescheduled onto a fresh agent. Never overwrite it:
 // the handoff is routed off this exact value.
@@ -1022,6 +1372,11 @@ const EscalationReasonCheckpoint = "checkpoint"
 
 // EscalationReasonCheckpointFailed marks a turn-ceiling run whose checkpoint commit failed.
 const EscalationReasonCheckpointFailed = "checkpoint_failed"
+
+// EscalationReasonPermanentExecution marks a backend rejection which cannot
+// heal by rerunning the same workflow effect (for example a corrupt immutable
+// workspace input). The workflow parks instead of creating a retry storm.
+const EscalationReasonPermanentExecution = "permanent_execution_failure"
 
 // IsCheckpointEscalation reports whether reason records a turn-ceiling
 // checkpoint outcome. Both values steer terminal handling — one reschedules the
@@ -1230,6 +1585,20 @@ func (a *Agent) GetReasoningTokens() int {
 }
 
 // GetLogPath returns the current output log path.
+// CountToolFailure records one failed tool call on the run.
+func (a *Agent) CountToolFailure() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.ToolFailures++
+}
+
+// GetToolFailures reports how many tool calls failed during the run.
+func (a *Agent) GetToolFailures() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.ToolFailures
+}
+
 func (a *Agent) GetLogPath() string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -1292,7 +1661,7 @@ func (a *Agent) computeCanSteerLocked(hasStdinPipe bool) bool {
 	}
 	switch a.Mode {
 	case "headless":
-		return a.Provider == "claude"
+		return a.Provider == providerid.Claude
 	default:
 		return false
 	}
@@ -1325,10 +1694,29 @@ func (a *Agent) isDetached() bool {
 	return a.detached
 }
 
-// lastHeadlessResult reports whether the output buffer contains a terminal
-// result event and whether that result was a provider error. Used by reattach
-// completion to distinguish a clean finish from an error result or a process
-// that vanished mid-run.
+// SetAdoptedParkedStatus records the task status this survivor was adopted
+// over at reattach (see ParksLiveAgent). Empty for every agent Sybra itself
+// dispatched.
+func (a *Agent) SetAdoptedParkedStatus(status string) {
+	a.mu.Lock()
+	a.adoptedParkedStatus = status
+	a.mu.Unlock()
+}
+
+// AdoptedParkedStatus returns the task status this survivor was adopted over
+// at reattach, or "" when it was not a parked adoption.
+func (a *Agent) AdoptedParkedStatus() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.adoptedParkedStatus
+}
+
+// lastHeadlessResult reports whether the output buffer's latest top-level
+// event is a terminal result and whether that result was a provider error.
+// Used by reattach completion to distinguish a clean finish from an error
+// result or a process that vanished mid-run: unlike bufferedResultEvent it
+// rejects a result that a later top-level event (a retry attempt, a steer
+// turn) has superseded.
 func (a *Agent) lastHeadlessResult() (found, isError bool) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -1336,15 +1724,33 @@ func (a *Agent) lastHeadlessResult() (found, isError bool) {
 }
 
 func lastHeadlessResultEvent(events []StreamEvent) (found, isError bool) {
-	if len(events) == 0 {
-		return false, false
+	for i := range slices.Backward(events) {
+		ev := &events[i]
+		if isPostResultBookkeepingEvent(*ev) {
+			continue
+		}
+		if ev.Type != "result" {
+			// A top-level event after the last result means a new attempt (or
+			// steer turn) began, so the buffered result no longer describes
+			// the run's current state.
+			return false, false
+		}
+		return true, resultSubtypeIsError(ev.Subtype) || ev.ErrorType != "" || ev.ErrorStatus != 0
 	}
-	last := events[len(events)-1]
-	found = last.Type == "result"
-	if !found {
-		return false, false
+	return false, false
+}
+
+// isPostResultBookkeepingEvent reports whether ev is CLI bookkeeping that can
+// legitimately trail a terminal result without meaning the run started new
+// top-level work: a forked subagent's own event (parent_tool_use_id set, see
+// CLAUDE_CODE_FORK_SUBAGENT — children can outlive the parent's result) or a
+// background_tasks_changed snapshot emitted as CLI background bash tasks
+// drain. Anything else is a genuine new top-level event.
+func isPostResultBookkeepingEvent(ev StreamEvent) bool {
+	if ev.parentToolUseID != "" {
+		return true
 	}
-	return true, resultSubtypeIsError(last.Subtype) || last.ErrorType != "" || last.ErrorStatus != 0
+	return ev.Type == "system" && ev.Subtype == "background_tasks_changed"
 }
 
 // CompletedSuccessfully reports whether the headless agent's stream buffer
@@ -1391,8 +1797,8 @@ func (a *Agent) HadTerminalError() bool {
 }
 
 // bufferedResultEvent scans the full event slice for the last "result" event,
-// regardless of whether it is the final element — unlike
-// lastHeadlessResultEvent, which requires the result to be strictly last.
+// regardless of what follows it — unlike lastHeadlessResultEvent, which
+// requires the result to be the latest top-level event.
 // Mirrors completion.terminalResultContent's own forward scan: a skill that
 // spawns subagents (CLAUDE_CODE_FORK_SUBAGENT) can append further NDJSON
 // lines onto the stream after CC's own terminal result, so "the last event
@@ -1407,6 +1813,27 @@ func bufferedResultEvent(events []StreamEvent) (found, isError bool) {
 		isError = resultSubtypeIsError(events[i].Subtype) || events[i].ErrorType != "" || events[i].ErrorStatus != 0
 	}
 	return found, isError
+}
+
+// resultBeforeOnlyForkOutput accepts a terminal result followed only by forked
+// child events or background-task bookkeeping. Top-level events after a result
+// otherwise delimit a new retry attempt and must not let reattach finalize the
+// prior attempt.
+func resultBeforeOnlyForkOutput(events []StreamEvent) (found, isError bool) {
+	for i := range slices.Backward(events) {
+		e := events[i]
+		if e.parentToolUseID != "" {
+			continue
+		}
+		if e.Type == "system" && e.Subtype == "background_tasks_changed" {
+			continue
+		}
+		if e.Type == "result" {
+			return true, resultSubtypeIsError(e.Subtype) || e.ErrorType != "" || e.ErrorStatus != 0
+		}
+		return false, false
+	}
+	return false, false
 }
 
 // backgroundTaskGrace is the extra idle time granted to a post-result-hang
@@ -1596,6 +2023,7 @@ func (a *Agent) applyStreamEventState(ev StreamEvent) {
 	}
 	for i := range ev.toolUses {
 		a.RememberToolUse(ev.toolUses[i].ID, ev.toolUses[i].Name, ev.toolUses[i].Input)
+		a.ledgerToolCall(ev.toolUses[i].ID, ev.toolUses[i].Name, ev.toolUses[i].Input, ev.Timestamp)
 		if ev.toolUses[i].Name != "Bash" {
 			continue
 		}
@@ -1691,6 +2119,10 @@ type RunConfig struct {
 	Role   Role
 	Mode   string // "headless", "interactive", or "conversational"
 	Prompt string
+	// BeforeStart runs after the agent identity is allocated but before it is
+	// registered or any provider goroutine can emit completion. Lifecycle
+	// owners use it to durably bind resources to the exact agent ID.
+	BeforeStart func(agentID string) error
 	// AllowedTools is honoured only by providers whose HonorsAllowedTools()
 	// reports true — claude alone today. Elsewhere it is silently ignored, and
 	// warnUnenforceableAllowedTools says so at dispatch, since ab/cross choose
@@ -1698,6 +2130,20 @@ type RunConfig struct {
 	// only the OS-level sandbox binds a run on every provider.
 	AllowedTools []string
 	Dir          string
+	// IntentID makes a dispatch replay idempotent. TaskGeneration and
+	// WorktreeGeneration fence stale schedulers/recovery workers; zero is a
+	// valid legacy generation. AttemptAccess selects mutation or observation;
+	// ReadOnlyDir also forces observation so a sandbox-read-only run can never
+	// acquire mutation ownership.
+	IntentID         string
+	AdmissionTaskKey string
+	// AdmissionWorktree is the stable logical worktree used for durable
+	// attempt identity. It can differ from Dir when a verifier executes in a
+	// disposable clone of the canonical task worktree.
+	AdmissionWorktree  string
+	AttemptAccess      AttemptAccess
+	TaskGeneration     uint64
+	WorktreeGeneration uint64
 	// ReadOnlyDir, when true, tells injectProcessSandbox to never add Dir (or
 	// its git metadata) to the sandbox's writable roots under enforce, and to
 	// additionally re-bind Dir read-only as the last bind in the sandbox
@@ -1708,7 +2154,13 @@ type RunConfig struct {
 	// source checkout when the task has no worktree of its own) so a live
 	// deploy/build checkout can never be written to by that run. Ignored
 	// outside sandbox enforce mode.
-	ReadOnlyDir        bool
+	ReadOnlyDir bool
+	// ReadOnlyPaths are explicit additional inspection roots for a read-only
+	// role (for example, the candidate worktrees a best-of-N judge compares).
+	ReadOnlyPaths []string
+	// GitRoots identifies explicit checkout roots within ReadOnlyPaths. When
+	// empty, preflight certifies Dir as the run's checkout.
+	GitRoots           []string
 	Provider           string // "claude", "codex", or "copilot"
 	Model              string // requested model: tier alias or full provider model ID
 	ExperimentID       string
@@ -1717,30 +2169,46 @@ type RunConfig struct {
 	AssignmentUnit     string
 	AssignmentKey      string
 	DecisionVersion    int
-	RequirePermissions bool   // when true, suppress --dangerously-skip-permissions
-	PermissionMode     string // "default", "acceptEdits", "bypassPermissions" (conversational mode)
+	RequirePermissions bool // when true, suppress --dangerously-skip-permissions
 	// OneShot closes stdin after the first `result` event in conversational
 	// mode so the claude process exits naturally. Without this, interactive
 	// agents sit in StatePaused forever and onComplete never fires, stranding
 	// any workflow that expects the agent to "finish". Ignored in headless mode.
 	OneShot bool
-	// IgnoreConcurrencyLimit lets an agent start even when MaxConcurrent is
-	// saturated. Reserved for operator-present interactive/chat sessions and
-	// system-level runs that must never sit behind the headless swarm queue.
+	// IgnoreConcurrencyLimit is retained only for decoding legacy callers.
+	// Admission intentionally ignores it: every provider attempt, including
+	// system work, participates in the same hard global/provider limits.
+	//
+	// Deprecated: no production caller may set this field.
 	IgnoreConcurrencyLimit bool
 	// IgnoreHealthGate lets an agent start even when the provider health gate
 	// marks the requested provider as unhealthy. Reserved for internal probes
 	// and system-critical sessions; user-initiated runs leave this false so
 	// they surface a clear error instead of wasting a hopeless request.
 	IgnoreHealthGate bool
-	// DisableProviderFailover keeps provider selection fixed for A/B variants:
-	// an unhealthy/limited provider fails the run instead of silently becoming a
-	// different provider while retaining stale variant attribution.
+	// SkipDispatchJitter starts an explicit operator-requested run immediately.
+	// Automated dispatches leave this false so synchronized waves are still
+	// spread before they probe provider health.
+	SkipDispatchJitter bool
+	// IsolateHome routes SYBRA_HOME through a sandbox home even when TaskID is
+	// empty. Use this for taskless system agents that may run sybra-cli or old
+	// Sybra source checkouts: they still need to read the operator board via
+	// SYBRA_CONTROL_HOME, but must never be able to rewrite the operator's real
+	// config.yaml by inheriting ~/.sybra as their default home.
+	IsolateHome bool
+	// DisableProviderFailover keeps provider selection fixed when the provider
+	// is part of an external execution contract (for example an agentd RunSpec).
+	// Local workflow and A/B-attributed runs leave this false: attribution records
+	// the original assignment while runtime routing separately records failover.
 	DisableProviderFailover bool
 	// ResumeSessionID, when set, passes --resume to the claude CLI so the
 	// agent continues a prior conversation instead of starting from scratch.
 	// Populated from the task's last AgentRun.SessionID on restart.
 	ResumeSessionID string
+	// ResumeSessionProvider names the provider whose local session store owns
+	// ResumeSessionID. Final dispatch drops the ID if health/limit routing picks
+	// a different provider after the session was selected.
+	ResumeSessionProvider string
 	// ExtraEnv is a list of "KEY=VALUE" strings appended to the subprocess
 	// environment. Used to inject sandbox credentials (SANDBOX_URL, KUBECONFIG)
 	// and, for every task-scoped run, the trusted SYBRA_HOME/SYBRA_CONTROL_HOME
@@ -1748,6 +2216,32 @@ type RunConfig struct {
 	// any caller-supplied entry for those two keys is stripped before the
 	// trusted values are appended, so it cannot override them.
 	ExtraEnv []string
+	// StripEnvKeys removes daemon/control-plane credentials from the ambient
+	// process environment before provider-specific and run-scoped values are
+	// appended. It is a denylist at the shared provider spawn seam, so every
+	// headless launch shape (pipe and restart-surviving) applies it equally.
+	StripEnvKeys []string
+	// UnthrottledOutputEvents disables the UI-oriented 100ms event coalescing
+	// for execution owners that durably persist every provider observation.
+	UnthrottledOutputEvents bool
+	// EphemeralSandboxHome overrides the ordinary per-task sandbox home for a
+	// disposable local verification command. The verification lease owns it.
+	EphemeralSandboxHome string
+	// SidecarDir grants one additional task-scoped writable directory for
+	// workflow artifacts. Disposable verifier runs use an ephemeral sandbox
+	// home, while their prompts and the host-side importer intentionally share
+	// the durable per-task sidecar directory. Empty grants nothing.
+	SidecarDir string
+	// RemoteExpectedOutputs declares the bounded logical outputs a daemon may
+	// return. Local runners ignore it; the remote execution contract validates
+	// every path, kind, size, and sensitivity before delivery.
+	RemoteExpectedOutputs []executioncontract.ExpectedOutput
+	// RemoteDiscardWorkspaceChanges validates daemon Git output without
+	// publishing it, matching local disposable verifier-clone behavior.
+	RemoteDiscardWorkspaceChanges bool
+	// DisableVerifierControl withholds the task mutation credential from local
+	// deterministic checks, whose admission certificate has no such capability.
+	DisableVerifierControl bool
 	// MaxTurns overrides the global guardrail for this specific agent run.
 	// Zero means "use the manager's global guardrail".
 	MaxTurns int
@@ -1770,12 +2264,15 @@ type RunConfig struct {
 	// model when the primary is overloaded. Empty means inherit the manager's
 	// default; the flag is omitted only when the manager default is also empty.
 	FallbackModel string
-	// ReasoningEffort sets the agent's reasoning effort for this run
-	// (low/medium/high/xhigh). Empty is resolved to DefaultReasoningEffort by
-	// Manager.Run for every provider before command construction. Lower-level
-	// command builders still omit the provider flag when handed an empty value
-	// directly. Codex uses `-c model_reasoning_effort=`; claude and copilot use
-	// `--effort`.
+	// ReasoningEffort pins the agent's reasoning effort for this run
+	// (low/medium/high/xhigh), overriding every baseline. Empty is the normal
+	// case: Manager.Run resolves it for every provider before command
+	// construction, preferring the operator's agent.role_effort override, then
+	// the role's built-in baseline (Role.DefaultReasoningEffort), then
+	// DefaultReasoningEffort. Set it only for an effort an experiment
+	// assignment or the task itself pinned. Lower-level command builders still
+	// omit the provider flag when handed an empty value directly. Codex uses
+	// `-c model_reasoning_effort=`; claude and copilot use `--effort`.
 	ReasoningEffort string
 	// RequestedSkill names a workflow-owned skill invocation the dispatcher
 	// expects to run. Empty leaves ad-hoc prompt skill mentions untouched; set
@@ -1818,6 +2315,11 @@ type RunConfig struct {
 	// intra-package before buildHeadlessInvocation; cleared by defer after the
 	// subprocess exits. Never set by callers.
 	outputSchemaPath string
+	// promptFallback marks the one-shot retry after stream-json prompt
+	// delivery failed. Unlike ordinary one-shot runs, its prompt write must
+	// succeed: this is the recovery attempt's only way to deliver the task.
+	// It is runner-private and never set by callers.
+	promptFallback bool
 	// HeadlessSteerable, when true, launches a claude headless run with the
 	// stdin/stream-json shape (mirroring the conversational invocation)
 	// instead of the legacy one-shot `-p <prompt>` invocation, so the running
@@ -1836,7 +2338,12 @@ type RunConfig struct {
 	// (agentorch.ResolveSandboxMode) from the task's Sandbox toggle merged
 	// with config.DefaultSandboxMode(). Empty is treated as "report" by
 	// Manager.injectProcessSandbox.
-	SandboxMode           string
+	SandboxMode string
+	// SandboxReadMode overrides the read-visibility posture for this run.
+	// Empty falls back to the manager default, which is "off" unless an
+	// operator opted in. Honoured only when SandboxMode resolves to
+	// "enforce" — an unwrapped spawn has nothing to restrict reads on.
+	SandboxReadMode       string
 	PlaywrightMCPEligible bool
 	// PlaywrightMCPOutputDir is the per-task directory the Playwright MCP
 	// server writes screenshots/console logs to. Set by the workflow
@@ -1855,6 +2362,9 @@ type RunConfig struct {
 	// injectSandboxHome, reused by injectProcessSandbox as one of the
 	// sandbox's allowed write roots. Never set by callers.
 	resolvedSandboxHome string
+	// sandboxKey is the task id or synthetic system-run id used for per-run
+	// sandbox/cache directories. Never set by callers.
+	sandboxKey string
 	// sandbox is the resolved OS-level process-sandbox spec for this run,
 	// computed once by injectProcessSandbox and consumed by wrapInvocation
 	// at each provider spawn site. Never set by callers.
@@ -1874,14 +2384,9 @@ type RunConfig struct {
 }
 
 // needsApprovalHook reports whether a run should wire the PreToolUse approval
-// hook. True when permissions are required or an interactive permission-mode is
-// set. Both the headless (provider_claude.go) and conversational
-// (runner_convo.go) call sites gate on this so a future change can't silently
-// desync them: headless runs never set PermissionMode (they use
-// HeadlessPermissionMode for the auto classifier), so for them it collapses to
-// RequirePermissions alone.
+// hook.
 func (cfg RunConfig) needsApprovalHook() bool {
-	return cfg.RequirePermissions || cfg.PermissionMode != ""
+	return cfg.RequirePermissions
 }
 
 // ConvoOutput returns a snapshot of the conversation event buffer.
@@ -1902,9 +2407,10 @@ func (a *Agent) SetError(kind, msg string) {
 }
 
 // GetErrorKind returns the classified error kind recorded on the agent
-// ("rate_limit", "auth", or ""). The runner sets it when a run is classified
-// against the provider health gate, letting the completion handler tell a
-// transient provider limit apart from a real crash.
+// ("rate_limit", "auth", "silent_hang", or ""). The runner sets the first two
+// when a run is classified against the provider health gate; the watchdog sets
+// silent_hang without consulting the gate at all. Either way the completion
+// handler uses it to tell a run worth re-dispatching from a real crash.
 func (a *Agent) GetErrorKind() string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -1913,7 +2419,7 @@ func (a *Agent) GetErrorKind() string {
 
 // GetErrorMsg returns the classified error message recorded alongside
 // GetErrorKind, e.g. watchdogreason.ZeroOutputBeforeStartup for a zero-output
-// stall reported via RecordProviderSignal.
+// stall recorded by the watchdog.
 func (a *Agent) GetErrorMsg() string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -1929,4 +2435,48 @@ func (a *Agent) GetError() (kind, msg string) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.ErrorKind, a.ErrorMsg
+}
+
+// SetToolCallRecorder late-binds the ledger sink. Called by the Manager once
+// per agent; a nil sink leaves recording off.
+func (a *Agent) SetToolCallRecorder(fn func(toolledger.Record)) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.recordToolCall = fn
+	a.mu.Unlock()
+}
+
+// ledgerToolCall records one observed tool call. Reads the identity fields
+// under the same lock the rest of the stream path uses, so a concurrent
+// role/provider update cannot tear the record.
+func (a *Agent) ledgerToolCall(toolUseID, name string, input map[string]any, ts time.Time) {
+	if a == nil {
+		return
+	}
+	a.mu.RLock()
+	fn := a.recordToolCall
+	rec := toolledger.Record{
+		Timestamp: ts,
+		AgentID:   a.ID,
+		TaskID:    a.TaskID,
+		Role:      string(a.Role),
+		Provider:  a.Provider,
+		Tool:      name,
+		ToolUseID: toolUseID,
+		Input:     input,
+	}
+	a.mu.RUnlock()
+	if fn == nil {
+		return
+	}
+	// Resolve the role only after unlocking: EffectiveRole takes the same
+	// lock, and a legacy agent carries no Role field — it is derived from the
+	// agent name — so reading the field alone silently drops the role from
+	// exactly the records where it is least obvious.
+	if rec.Role == "" {
+		rec.Role = string(a.EffectiveRole())
+	}
+	fn(rec)
 }

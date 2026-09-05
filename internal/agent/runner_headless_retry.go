@@ -4,13 +4,17 @@ import (
 	"errors"
 	"log/slog"
 	"slices"
-	"strings"
-	"time"
 
+	"github.com/Automaat/sybra/internal/errclass"
 	"github.com/Automaat/sybra/internal/provider"
 )
 
 var errProviderRateLimited = errors.New("provider rate-limited")
+
+// errPromptUndelivered tags an attempt that died before the child could read
+// its prompt, so classifyAgentError can keep it out of the "crash" bucket that
+// completion counts as a real verdict.
+var errPromptUndelivered = errors.New("prompt undelivered")
 
 // reportProviderHealthSignal classifies the final error surface of a failed
 // run and forwards rate-limit / auth failures to the provider health gate so
@@ -27,31 +31,31 @@ func (m *Manager) reportCleanProviderHealthSignal(a *Agent, stderrOut string, at
 }
 
 func (m *Manager) reportProviderHealthSample(a *Agent, sample provider.ErrorSample) provider.Signal {
-	sig, reason, retryAfter := classifyProviderError(a.Provider, sample)
-	if sig == provider.SignalNone {
+	c := classifyProviderError(a.Provider, sample)
+	if c.Signal == provider.SignalNone {
 		if sample.ErrorType != "" || sample.ErrorStatus != 0 {
 			m.logger.Info("agent.provider.signal.unknown",
 				"provider", a.Provider,
 				"errorType", sample.ErrorType,
 				"errorStatus", sample.ErrorStatus)
 		}
-		return sig
+		return c.Signal
 	}
-	m.RecordProviderSignal(a, sig, reason, retryAfter)
-	return sig
+	m.RecordProviderSignal(a, c)
+	return c.Signal
 }
 
 // RecordProviderSignal stores a provider-health classification on the agent
 // and forwards it to the shared health gate so all recovery paths maintain the
 // same "agent error kind + gate signal" invariant.
-func (m *Manager) RecordProviderSignal(a *Agent, sig provider.Signal, reason string, retryAfter time.Duration) {
+func (m *Manager) RecordProviderSignal(a *Agent, c provider.Classification) {
 	if a == nil {
 		return
 	}
-	if kind := signalErrorKind(sig); kind != "" {
-		a.SetError(kind, reason)
+	if kind := signalErrorKind(c.Signal); kind != "" {
+		a.SetError(kind, c.Reason)
 	}
-	m.ReportProviderSignal(a.Provider, sig, reason, retryAfter)
+	m.ReportProviderSignal(a.Provider, c)
 }
 
 // signalErrorKind maps a provider health signal to the short error-kind tag
@@ -81,6 +85,12 @@ func buildErrorSample(stderrOut string, attemptEvents []StreamEvent) provider.Er
 		sample.ErrorType = e.ErrorType
 		sample.ErrorStatus = e.ErrorStatus
 		sample.Content = e.Content
+		// A provider adapter maps a CLI error envelope onto a result event
+		// (see ParseOpenCodeLine), so only a result carrying no error marker
+		// is the agent's own message. Anything error-shaped is a surface the
+		// CLI controls and keeps the broad auth needles.
+		sample.ContentIsAgentMessage = e.ErrorType == "" && e.ErrorStatus == 0 &&
+			!resultSubtypeIsError(e.Subtype)
 		break
 	}
 	return sample
@@ -89,10 +99,10 @@ func buildErrorSample(stderrOut string, attemptEvents []StreamEvent) provider.Er
 // classifyProviderError routes an error sample to the provider-appropriate
 // classifier. Without a copilot branch a logged-out / quota-exhausted copilot
 // would never be flagged, leaving the health gate routing failover work to it.
-func classifyProviderError(prov string, sample provider.ErrorSample) (provider.Signal, string, time.Duration) {
+func classifyProviderError(prov string, sample provider.ErrorSample) provider.Classification {
 	p, err := lookupProvider(prov)
 	if err != nil {
-		return provider.SignalNone, "", 0
+		return provider.Classification{Signal: provider.SignalNone, Source: provider.CooldownFromConfig}
 	}
 	return p.ClassifyError(sample)
 }
@@ -134,8 +144,7 @@ func resultSubtypeIsError(subtype string) bool {
 }
 
 func substringMatch529(s string) bool {
-	lower := strings.ToLower(s)
-	return strings.Contains(lower, "529") || strings.Contains(lower, "overloaded")
+	return errclass.Classify(s, errclass.AgentStreamRecoveryBiased) == errclass.RateLimited
 }
 
 func warnSubstringFallback(logger *slog.Logger) {

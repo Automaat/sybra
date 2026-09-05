@@ -114,7 +114,7 @@ func TestStatusReturnsCachedSample(t *testing.T) {
 func TestStatusNilGateReturnsAllNaN(t *testing.T) {
 	var g *Gate
 	s := g.Status()
-	if !isNaN(s.DiskFreePct) || !isNaN(s.MemAvailablePct) || !isNaN(s.LoadPerCPU) {
+	if !isNaN(s.DiskFreePct) || !isNaN(s.DiskFreeBytes) || !isNaN(s.MemAvailablePct) || !isNaN(s.LoadPerCPU) {
 		t.Fatalf("Status() on nil gate = %+v, want all-NaN", s)
 	}
 }

@@ -12,6 +12,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 // scriptedPRStateFetcher returns a fixed state or error for every probe,
@@ -56,9 +57,9 @@ func TestClassifyPRFixResult(t *testing.T) {
 			wantReason:  "e2e provisioning timeout, reproduces on base",
 		},
 		{
-			name:        "sentinel no-op alias maps to flake",
+			name:        "sentinel no-op has its own outcome",
 			output:      "Nothing to change.\nSYBRA_PR_FIX_RESULT: no-op\n",
-			wantVerdict: PRFixFlake,
+			wantVerdict: PRFixNoop,
 		},
 		{
 			name:            "flake without a reason sentinel reports no reason",
@@ -97,6 +98,68 @@ func TestClassifyPRFixResult(t *testing.T) {
 				"SYBRA_PR_FIX_REASON: real blocker\n",
 			wantVerdict: PRFixHuman,
 			wantReason:  "real blocker",
+		},
+		{
+			// Regression for a real production incident: an agent's own diagnosis
+			// ran past the old 200-char truncate() cap and got cut mid-sentence
+			// before it reached the actual root cause, leaving the task
+			// undiagnosable. The reason must survive in full, however long.
+			name: "sentinel reason longer than the old 200-char cap survives in full",
+			output: "SYBRA_PR_FIX_RESULT: human-required\n" +
+				"SYBRA_PR_FIX_REASON: " + strings.Repeat("environment-specific detail ", 20) + "root cause at the end\n",
+			wantVerdict: PRFixHuman,
+			wantReason:  strings.Repeat("environment-specific detail ", 20) + "root cause at the end",
+		},
+		{
+			// Regression: prFixReasonRe used to be a single capturing regex
+			// anchored with (?m) `^`/`$`, so `.` never matched past the first
+			// newline — a multi-line SYBRA_PR_FIX_REASON value (the realistic
+			// shape of any non-trivial diagnosis) was cut at line 1 even after
+			// the 200-char truncate() wrapper was removed. Found via a live
+			// end-to-end run of the workflow engine against a real task, not
+			// just this unit test — the value must span every line it wrote.
+			name: "sentinel reason spanning multiple lines survives in full",
+			output: "SYBRA_PR_FIX_RESULT: human-required\n" +
+				"SYBRA_PR_FIX_REASON: first line of the diagnosis\n" +
+				"second line with more detail\n" +
+				"third line with the actual root cause\n",
+			wantVerdict: PRFixHuman,
+			wantReason:  "first line of the diagnosis\nsecond line with more detail\nthird line with the actual root cause",
+		},
+		{
+			// A multi-line reason must still stop at the next sentinel line
+			// (e.g. a following SYBRA_PR_FIX_FAILING_TEST:) rather than
+			// swallowing it — only the reason's own lines belong to it.
+			name: "sentinel reason spanning multiple lines stops at the next sentinel",
+			output: "SYBRA_PR_FIX_RESULT: human-required\n" +
+				"SYBRA_PR_FIX_REASON: first line of the diagnosis\n" +
+				"second line with more detail\n" +
+				"SYBRA_PR_FIX_FAILING_TEST: pkg/a_test.go:1 TestA\n",
+			wantVerdict: PRFixHuman,
+			wantReason:  "first line of the diagnosis\nsecond line with more detail",
+		},
+		{
+			name: "legacy free-text reason longer than the old 200-char cap survives in full",
+			output: strings.Repeat("investigation detail. ", 20) +
+				"As instructed, I ran git rebase --abort. This task requires human review.",
+			wantVerdict: PRFixHuman,
+			wantReason: "pr-fix agent requested human review: " + strings.Repeat("investigation detail. ", 20) +
+				"As instructed, I ran git rebase --abort. This task requires human review.",
+		},
+		{
+			// Regression: the free-text fallback used to read only the first
+			// non-empty line via firstNonEmptyLine, so a multi-line narrative
+			// with the actual root cause on a later line — and the trigger
+			// phrase only at the very end — silently dropped everything but
+			// line 1. The full multi-line narrative must survive.
+			name: "legacy free-text reason with root cause on a later line survives in full",
+			output: "I looked into this PR failure.\n" +
+				"The root cause is a sandbox limitation unrelated to this diff.\n" +
+				"This task requires human review.\n",
+			wantVerdict: PRFixHuman,
+			wantReason: "pr-fix agent requested human review: I looked into this PR failure.\n" +
+				"The root cause is a sandbox limitation unrelated to this diff.\n" +
+				"This task requires human review.",
 		},
 	}
 
@@ -196,7 +259,7 @@ func TestExecRoutePRFixResult_HumanRequiredStopsBeforeRelink(t *testing.T) {
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	wf := &Execution{
 		WorkflowID:  "pr-fix",
 		CurrentStep: "route_pr_fix_result",
@@ -242,14 +305,14 @@ func TestExecRoutePRFixResult_RecoversResolvedUnmergedConflict(t *testing.T) {
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
-	engine.SetCheckConfigGetter(&fakeCheckGetter{focused: []project.FocusedCheck{{
+	engine.setCheckConfigGetterForTest(&fakeCheckGetter{focused: []project.FocusedCheck{{
 		Name:     "workflow",
 		Paths:    []string{"internal/workflow/**"},
 		Commands: []string{"true"},
 	}}})
-	engine.SetPushCredentialPreflighter(&fakePushPreflighter{})
+	engine.setPushCredentialPreflighterForTest(&fakePushPreflighter{})
 
 	wf := &Execution{
 		WorkflowID:  "pr-fix",
@@ -337,14 +400,14 @@ func TestExecRoutePRFixResult_RecoversResolvedButUnstagedConflict(t *testing.T) 
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
-	engine.SetCheckConfigGetter(&fakeCheckGetter{focused: []project.FocusedCheck{{
+	engine.setCheckConfigGetterForTest(&fakeCheckGetter{focused: []project.FocusedCheck{{
 		Name:     "workflow",
 		Paths:    []string{"internal/workflow/**"},
 		Commands: []string{"true"},
 	}}})
-	engine.SetPushCredentialPreflighter(&fakePushPreflighter{})
+	engine.setPushCredentialPreflighterForTest(&fakePushPreflighter{})
 
 	wf := &Execution{
 		WorkflowID:  "pr-fix",
@@ -421,20 +484,26 @@ func TestExecRoutePRFixResult_RecoversResolvedButUnstagedConflict(t *testing.T) 
 func TestExecRoutePRFixResult_ResolvedMergePushRetryKeepsCheckpointContext(t *testing.T) {
 	t.Parallel()
 
-	_, wtPath := newResolvedUnmergedPRFixWorktree(t, "feat/conflict-retry")
+	bare, wtPath := newResolvedUnmergedPRFixWorktree(t, "feat/conflict-retry")
 	runGitAt(t, wtPath, "add", filepath.Join("internal", "workflow", "engine_advance.go"))
+
+	// A preflight-only failure now falls through to a real push attempt
+	// (#2386) instead of parking, so this must drive the retry with a real
+	// push failure: break the remote for the first attempt, restore it
+	// before the resumed attempt.
+	runGitAt(t, wtPath, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "does-not-exist.git"))
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
-	engine.SetCheckConfigGetter(&fakeCheckGetter{focused: []project.FocusedCheck{{
+	engine.setCheckConfigGetterForTest(&fakeCheckGetter{focused: []project.FocusedCheck{{
 		Name:     "workflow",
 		Paths:    []string{"internal/workflow/**"},
 		Commands: []string{"true"},
 	}}})
-	preflight := &fakePushPreflighter{errs: []error{errors.New("i/o timeout")}}
-	engine.SetPushCredentialPreflighter(preflight)
+	preflight := &fakePushPreflighter{}
+	engine.setPushCredentialPreflighterForTest(preflight)
 
 	wf := &Execution{
 		WorkflowID:  "pr-fix",
@@ -476,6 +545,8 @@ func TestExecRoutePRFixResult_ResolvedMergePushRetryKeepsCheckpointContext(t *te
 		t.Fatalf("resolved paths after checkpoint = %v, want none", resolved)
 	}
 
+	runGitAt(t, wtPath, "remote", "set-url", "origin", bare)
+
 	resumedTask, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatal(err)
@@ -510,14 +581,14 @@ func TestExecRoutePRFixResult_ResolvedMergeRejectsUnexpectedDirtyPath(t *testing
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
-	engine.SetCheckConfigGetter(&fakeCheckGetter{focused: []project.FocusedCheck{{
+	engine.setCheckConfigGetterForTest(&fakeCheckGetter{focused: []project.FocusedCheck{{
 		Name:     "workflow",
 		Paths:    []string{"internal/workflow/**"},
 		Commands: []string{"true"},
 	}}})
-	engine.SetPushCredentialPreflighter(&fakePushPreflighter{})
+	engine.setPushCredentialPreflighterForTest(&fakePushPreflighter{})
 
 	beforeSHA := headSHA(t, wtPath)
 	wf := &Execution{
@@ -580,14 +651,14 @@ func TestExecRoutePRFixResult_HumanRequiredApprovalStopSkipsResolvedMergeRecover
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
-	engine.SetCheckConfigGetter(&fakeCheckGetter{focused: []project.FocusedCheck{{
+	engine.setCheckConfigGetterForTest(&fakeCheckGetter{focused: []project.FocusedCheck{{
 		Name:     "workflow",
 		Paths:    []string{"internal/workflow/**"},
 		Commands: []string{"true"},
 	}}})
-	engine.SetPushCredentialPreflighter(&fakePushPreflighter{})
+	engine.setPushCredentialPreflighterForTest(&fakePushPreflighter{})
 
 	beforeSHA := headSHA(t, wtPath)
 	wf := &Execution{
@@ -650,14 +721,14 @@ func TestExecRoutePRFixResult_ResolvedUnmergedWithFailingTestsRoutesToTestFix(t 
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
-	engine.SetCheckConfigGetter(&fakeCheckGetter{focused: []project.FocusedCheck{{
+	engine.setCheckConfigGetterForTest(&fakeCheckGetter{focused: []project.FocusedCheck{{
 		Name:     "workflow",
 		Paths:    []string{"internal/workflow/**"},
 		Commands: []string{"true"},
 	}}})
-	engine.SetPushCredentialPreflighter(&fakePushPreflighter{})
+	engine.setPushCredentialPreflighterForTest(&fakePushPreflighter{})
 
 	beforeSHA := headSHA(t, wtPath)
 	wf := &Execution{
@@ -709,8 +780,8 @@ func TestExecRoutePRFixResult_ResolvedUnmergedWithFailingTestsRoutesToTestFix(t 
 func TestResolvedMergeFocusedCommandsReturnsChangedFilesError(t *testing.T) {
 	t.Parallel()
 
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
-	engine.SetCheckConfigGetter(&fakeCheckGetter{focused: []project.FocusedCheck{{
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine.setCheckConfigGetterForTest(&fakeCheckGetter{focused: []project.FocusedCheck{{
 		Name:     "workflow",
 		Paths:    []string{"internal/workflow/**"},
 		Commands: []string{"true"},
@@ -791,7 +862,7 @@ func TestExecRoutePRFixResult_HumanRequiredWithFailingTestsRoutesToTestFix(t *te
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	wf := &Execution{
 		WorkflowID:  "pr-fix",
 		CurrentStep: "route_pr_fix_result",
@@ -838,7 +909,7 @@ func TestExecRoutePRFixResult_TestFixOwnHumanRequiredParksImmediately(t *testing
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	wf := &Execution{
 		WorkflowID:  "pr-fix",
 		CurrentStep: "route_test_fix_result",
@@ -885,7 +956,7 @@ func TestExecRoutePRFixResult_HumanRequiredWithoutFailingTestsNoNote(t *testing.
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	wf := &Execution{
 		WorkflowID:  "pr-fix",
 		CurrentStep: "route_pr_fix_result",
@@ -918,7 +989,7 @@ func TestExecRoutePRFixResult_NoPRRemoteOutageResumesRecovery(t *testing.T) {
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	wf := &Execution{
 		WorkflowID:  "branch-conflict-fix",
 		CurrentStep: "route_result",
@@ -967,7 +1038,7 @@ func TestExecRoutePRFixResult_FlakeRoutesToInReviewWithoutCommit(t *testing.T) {
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	wf := &Execution{
 		WorkflowID:  "pr-fix",
 		CurrentStep: "route_pr_fix_result",
@@ -993,7 +1064,7 @@ func TestExecRoutePRFixResult_FlakeRoutesToInReviewWithoutCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != "in-review" {
+	if got.Status != taskstatus.InReview {
 		t.Fatalf("status = %q, want in-review (a flake must never park a human)", got.Status)
 	}
 	if reason := tasks.Reason("t1"); !strings.Contains(reason, "reproduces on base") {
@@ -1008,7 +1079,7 @@ func TestExecRoutePRFixResult_ReviewHoldParkBeatsFlake(t *testing.T) {
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	wf := &Execution{
 		WorkflowID:  "pr-fix",
 		CurrentStep: "route_pr_fix_result",
@@ -1046,8 +1117,8 @@ func TestExecRoutePRFixResult_ReProbesResolvedRemotePR(t *testing.T) {
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
-	engine.SetPRStateFetcher(scriptedPRStateFetcher{state: github.PRState{State: "OPEN", Mergeable: "MERGEABLE"}})
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
+	engine.setPRStateFetcherForTest(scriptedPRStateFetcher{state: github.PRState{State: "OPEN", Mergeable: "MERGEABLE"}})
 	wf := &Execution{
 		WorkflowID:  "pr-fix",
 		CurrentStep: "route_pr_fix_result",
@@ -1078,6 +1149,41 @@ func TestExecRoutePRFixResult_ReProbesResolvedRemotePR(t *testing.T) {
 	}
 }
 
+func TestExecRoutePRFixResult_NoopReturnsToReviewWhileCIPending(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
+	// OPEN+UNKNOWN is deliberately not Resolved(): unlike the remote re-probe
+	// fallback, an explicit no-op outcome must not depend on CI/mergeability.
+	engine.setPRStateFetcherForTest(scriptedPRStateFetcher{state: github.PRState{State: "OPEN", Mergeable: "UNKNOWN"}})
+	wf := &Execution{
+		WorkflowID: "pr-fix", CurrentStep: "route_pr_fix_result", State: ExecRunning,
+		StepHistory: []StepRecord{{
+			StepID: "fix", Status: "completed",
+			Output:  "No unresolved current comments remain.\nSYBRA_PR_FIX_RESULT: no-op\nSYBRA_PR_FIX_REASON: current review threads are resolved",
+			AgentID: "agent-1",
+		}},
+	}
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", ProjectID: "acme/widgets", PRNumber: 1178, Workflow: wf})
+
+	out, err := engine.execRoutePRFixResult("t1", &Step{ID: "route_pr_fix_result"}, wf, TaskInfo{ID: "t1", ProjectID: "acme/widgets", PRNumber: 1178})
+	if err != nil {
+		t.Fatalf("execRoutePRFixResult: %v", err)
+	}
+	if !strings.Contains(out.Output, "live PR no longer requires changes") {
+		t.Fatalf("output = %q, want no-op message", out.Output)
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "in-review" {
+		t.Fatalf("status = %q, want in-review", got.Status)
+	}
+}
+
 // TestExecRoutePRFixResult_ReviewHoldParkIgnoresResolvedRemotePR asserts the
 // re-probe never overrides a review-hold park: that park exists because a
 // pending review draft needs a human to submit it, which is orthogonal to
@@ -1087,8 +1193,8 @@ func TestExecRoutePRFixResult_ReviewHoldParkIgnoresResolvedRemotePR(t *testing.T
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
-	engine.SetPRStateFetcher(scriptedPRStateFetcher{state: github.PRState{State: "OPEN", Mergeable: "MERGEABLE"}})
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
+	engine.setPRStateFetcherForTest(scriptedPRStateFetcher{state: github.PRState{State: "OPEN", Mergeable: "MERGEABLE"}})
 	wf := &Execution{
 		WorkflowID:  "pr-fix",
 		CurrentStep: "route_pr_fix_result",
@@ -1125,7 +1231,7 @@ func TestExecRoutePRFixResult_ReviewHoldParkWinsOverContinue(t *testing.T) {
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	// The agent pushed in review-hold push mode and reported `continue`; the
 	// deterministic park var must still route the task to human-required so the
 	// drafted pending review isn't silently left unsubmitted.
@@ -1169,7 +1275,7 @@ func TestExecRoutePRFixResult_ReviewHoldParkIgnoresFailingTestLines(t *testing.T
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	wf := &Execution{
 		WorkflowID:  "pr-fix",
 		CurrentStep: "route_pr_fix_result",
@@ -1321,8 +1427,8 @@ func TestAdvanceStep_PRFixHumanRequiredUsesUntruncatedOutput(t *testing.T) {
 
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
-	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
+	tasks.Put(TaskInfo{ID: "t1", Status: taskstatus.InProgress})
 	if err := engine.StartWorkflow("t1", "pr-fix-route-test"); err != nil {
 		t.Fatalf("start workflow: %v", err)
 	}
@@ -1396,7 +1502,7 @@ func TestAdvanceStep_TestFixHumanRequiredUsesUntruncatedOutput(t *testing.T) {
 
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 	if err := engine.StartWorkflow("t1", "test-fix-route-test"); err != nil {
 		t.Fatalf("start workflow: %v", err)
@@ -1445,5 +1551,30 @@ func TestIsCodeAuthorRun_IncludesTestFix(t *testing.T) {
 	t.Parallel()
 	if !isCodeAuthorRun(AgentRunInfo{Role: "test-fix"}) {
 		t.Error("isCodeAuthorRun({Role: \"test-fix\"}) = false, want true")
+	}
+}
+
+func TestPRFixShouldResumeNoPRRecovery_UsesSharedClassification(t *testing.T) {
+	t.Parallel()
+	withoutPR := TaskInfo{}
+	for _, tc := range []struct {
+		reason string
+		want   bool
+	}{
+		{"connection refused", true},
+		{"remote unreachable", true},
+		{"GitHub transport unavailable", true},
+		{"missing credential", false},
+		{"authentication failed", false},
+		{"permission denied", false},
+		{"unknown preparation failure", false},
+	} {
+		if got := prFixShouldResumeNoPRRecovery(withoutPR, tc.reason); got != tc.want {
+			t.Errorf("prFixShouldResumeNoPRRecovery(%q) = %v, want %v", tc.reason, got, tc.want)
+		}
+	}
+	withPR := TaskInfo{PRNumber: 42}
+	if prFixShouldResumeNoPRRecovery(withPR, "connection refused") {
+		t.Fatal("task with PR must not resume no-PR recovery")
 	}
 }

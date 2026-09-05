@@ -7,13 +7,9 @@ import (
 	"strings"
 
 	"github.com/Automaat/sybra/internal/providerid"
+	"github.com/Automaat/sybra/internal/roleeffort"
 	"github.com/Automaat/sybra/internal/skillinvoke"
 )
-
-// defaultReasoningEffort mirrors agent.DefaultReasoningEffort. It cannot be
-// imported directly: internal/agent transitively depends on internal/config,
-// which depends on internal/abtest, so importing agent here would cycle.
-const defaultReasoningEffort = "medium"
 
 // Select deterministically chooses a variant for the task/stage. It returns
 // ok=false when A/B is disabled or no enabled experiment matches the role.
@@ -53,7 +49,33 @@ func SelectEligibleWithEval(cfg Config, taskID, role, stepID string, providerAll
 }
 
 // SelectEligibleForContext is SelectEligible with workflow subject context.
+// Equivalent to SelectEligibleForContextWithCohort with a nil cohortObserved
+// — no experiment in cfg is treated as canary-gated even if it declares a
+// Canary policy (see that function's fail-closed-to-baseline doc comment).
 func SelectEligibleForContext(cfg Config, ctx SelectionContext, providerAllowed func(string) bool, evalPassed EvalPassed) (Assignment, bool, error) {
+	return SelectEligibleForContextWithCohort(cfg, ctx, providerAllowed, evalPassed, nil)
+}
+
+// CohortObserved reports the resolved-run count and freshness backing an
+// experiment's canary gate — typically sourced from the evaluation
+// scorecard's per-experiment sample size and evaluation.Trustworthy. abtest
+// has no notion of time-based staleness on its own; fresh=false is treated
+// exactly like an insufficient cohort. Never called for an experiment
+// without a Canary policy.
+type CohortObserved func(experimentID string) (observed int, fresh bool)
+
+// SelectEligibleForContextWithCohort is SelectEligibleForContext with an
+// additional canary-cohort predicate. An experiment with a non-nil Canary
+// policy forces every assignment to its BaselineVariantID unless
+// cohortObserved reports a fresh cohort of at least MinCohort resolved runs
+// — and even then, bounds non-baseline-eligible traffic to PercentBound via
+// the same deterministic per-(task,role,stage) hash the normal weighted
+// draw uses, so canary membership is stable and reproducible. A canary
+// experiment given a nil cohortObserved fails closed to its baseline (no
+// observability, no canary traffic) — the same fail-closed posture this
+// package already applies to positive-weight-only variants and provider
+// eligibility.
+func SelectEligibleForContextWithCohort(cfg Config, ctx SelectionContext, providerAllowed func(string) bool, evalPassed EvalPassed, cohortObserved CohortObserved) (Assignment, bool, error) {
 	if !cfg.EnabledValue() {
 		return Assignment{}, false, nil
 	}
@@ -62,9 +84,99 @@ func SelectEligibleForContext(cfg Config, ctx SelectionContext, providerAllowed 
 		if !exp.EnabledValue() || !roleMatches(exp.Roles, ctx.Role) || !subjectMatches(exp.Subject, ctx) {
 			continue
 		}
+		if exp.Canary != nil {
+			return selectFromCanaryExperiment(exp, ctx.TaskID, ctx.Role, ctx.StepID, providerAllowed, evalPassed, cfg.WeightsVersion, cohortObserved)
+		}
 		return selectFromExperiment(exp, ctx.TaskID, ctx.Role, ctx.StepID, providerAllowed, evalPassed, cfg.WeightsVersion)
 	}
 	return Assignment{}, false, nil
+}
+
+// selectFromCanaryExperiment applies exp.Canary's cohort/percent gate before
+// falling back to the normal weighted draw. Returns ok=false (no error) when
+// the baseline variant itself is not providerAllowed, deferring to plain
+// (non-AB) provider selection and failover exactly like selectFromExperiment
+// does when every variant is ineligible — a canary must never hard-error
+// dispatch just because its baseline provider is temporarily unavailable;
+// that is gateProvider's job, independently, at dispatch time.
+func selectFromCanaryExperiment(exp Experiment, taskID, role, stepID string, providerAllowed func(string) bool, evalPassed EvalPassed, weightsVersion *int, cohortObserved CohortObserved) (Assignment, bool, error) {
+	if err := validateExperiment(exp, providerAllowed); err != nil {
+		return Assignment{}, false, err
+	}
+	baseline, ok := findVariant(exp, exp.Canary.BaselineVariantID)
+	if !ok {
+		return Assignment{}, false, fmt.Errorf("abtest: experiment %q canary baseline_variant_id %q not found", exp.ID, exp.Canary.BaselineVariantID)
+	}
+	if providerAllowed != nil && !providerAllowed(baseline.Provider) {
+		return Assignment{}, false, nil
+	}
+
+	unit := exp.AssignmentUnit
+	if unit == "" {
+		unit = "stage"
+	}
+	key := taskID
+	if unit == "stage" {
+		key = strings.Join([]string{taskID, role, stepID}, "|")
+	}
+
+	observed, fresh := 0, false
+	if cohortObserved != nil {
+		observed, fresh = cohortObserved(exp.ID)
+	}
+	inCohort := fresh && observed >= exp.Canary.MinCohort
+	// Separate hash namespace ("canary|") from the variant-pick hash below
+	// so canary-bucket membership and (once admitted) variant choice are
+	// independent draws for the same key.
+	inCanaryBucket := hashKey("canary|"+exp.ID+"|"+key)%100 < clampPercent(exp.Canary.PercentBound)
+	if !inCohort || !inCanaryBucket {
+		// The baseline is still an online enrollment, so it must clear the same
+		// offline-eval gate as any weighted draw. A digested baseline whose
+		// verdict failed must not enroll just because the cohort is cold or the
+		// request fell outside PercentBound — fall out of the experiment and
+		// defer to plain (non-AB) provider selection, matching the
+		// provider-ineligible baseline path above.
+		if evalPassed != nil && baseline.Digest != "" && !evalPassed(baseline.ID, baseline.Digest) {
+			return Assignment{}, false, nil
+		}
+		return baselineAssignment(exp, baseline, unit, key, weightsVersion), true, nil
+	}
+	return selectFromExperiment(exp, taskID, role, stepID, providerAllowed, evalPassed, weightsVersion)
+}
+
+// clampPercent bounds p to [0,100] and returns it as a uint64, matching
+// hashKey's modulo result type — validateCanary already rejects an
+// out-of-range PercentBound before selection, this is a defensive clamp.
+func clampPercent(p int) uint64 {
+	if p < 0 {
+		return 0
+	}
+	if p > 100 {
+		return 100
+	}
+	// #nosec G115 -- bounded to [0,100] above; uint64 cannot overflow.
+	return uint64(p)
+}
+
+func baselineAssignment(exp Experiment, v Variant, unit, key string, weightsVersion *int) Assignment {
+	decisionVersion := 0
+	if weightsVersion != nil {
+		decisionVersion = *weightsVersion
+	}
+	return Assignment{
+		ExperimentID:    exp.ID,
+		Kind:            exp.KindValue(),
+		VariantID:       v.ID,
+		RoutingReason:   "canary_baseline",
+		Provider:        v.Provider,
+		Model:           v.Model,
+		ReasoningEffort: v.ReasoningEffort,
+		AssignmentUnit:  unit,
+		AssignmentKey:   key,
+		PromptTransform: clonePromptTransform(v.PromptTransform),
+		SkillAliases:    cloneSkillAliases(v.SkillAliases),
+		DecisionVersion: decisionVersion,
+	}
 }
 
 func selectFromExperiment(exp Experiment, taskID, role, stepID string, providerAllowed func(string) bool, evalPassed EvalPassed, weightsVersion *int) (Assignment, bool, error) {
@@ -228,7 +340,48 @@ func validateExperiment(exp Experiment, providerAllowed func(string) bool) error
 	if err := validatePromptSkillHomogeneity(exp, providerAllowed); err != nil {
 		return err
 	}
+	if err := validateCanary(exp); err != nil {
+		return err
+	}
 	return nil
+}
+
+func validateCanary(exp Experiment) error {
+	c := exp.Canary
+	if c == nil {
+		return nil
+	}
+	if strings.TrimSpace(c.BaselineVariantID) == "" {
+		return fmt.Errorf("abtest: experiment %q canary requires baseline_variant_id", exp.ID)
+	}
+	if c.PercentBound < 0 || c.PercentBound > 100 {
+		return fmt.Errorf("abtest: experiment %q canary percent_bound %d out of range [0,100]", exp.ID, c.PercentBound)
+	}
+	if c.MinCohort < 0 {
+		return fmt.Errorf("abtest: experiment %q canary min_cohort must be >= 0", exp.ID)
+	}
+	baseline, ok := findVariant(exp, c.BaselineVariantID)
+	if !ok {
+		return fmt.Errorf("abtest: experiment %q canary baseline_variant_id %q not found among variants", exp.ID, c.BaselineVariantID)
+	}
+	// The baseline receives all gated (cold-cohort / out-of-bound) production
+	// traffic, so a non-positive weight — treated as disabled everywhere else
+	// in this package — must not be usable as a canary baseline. Otherwise an
+	// operator zeroing a variant's weight to retire it would keep routing
+	// gated traffic to it.
+	if baseline.Weight <= 0 {
+		return fmt.Errorf("abtest: experiment %q canary baseline_variant_id %q must have positive weight", exp.ID, c.BaselineVariantID)
+	}
+	return nil
+}
+
+func findVariant(exp Experiment, id string) (Variant, bool) {
+	for i := range exp.Variants {
+		if exp.Variants[i].ID == id {
+			return exp.Variants[i], true
+		}
+	}
+	return Variant{}, false
 }
 
 func validateExperimentSubject(exp Experiment) error {
@@ -260,7 +413,8 @@ func validatePromptSkillHomogeneity(exp Experiment, providerAllowed func(string)
 		return nil
 	}
 	base := eligible[0]
-	baseEffort := normalizeReasoningEffort(base.ReasoningEffort)
+	omitted := experimentDefaultEffort(exp)
+	baseEffort := normalizeReasoningEffort(base.ReasoningEffort, omitted)
 	for i := 1; i < len(eligible); i++ {
 		v := eligible[i]
 		if v.Provider != base.Provider {
@@ -269,19 +423,57 @@ func validatePromptSkillHomogeneity(exp Experiment, providerAllowed func(string)
 		if v.Model != base.Model {
 			return fmt.Errorf("abtest: experiment %q model mismatch on variant %q", exp.ID, v.ID)
 		}
-		if normalizeReasoningEffort(v.ReasoningEffort) != baseEffort {
+		if normalizeReasoningEffort(v.ReasoningEffort, omitted) != baseEffort {
 			return fmt.Errorf("abtest: experiment %q reasoning_effort mismatch on variant %q", exp.ID, v.ID)
 		}
 	}
 	return nil
 }
 
-// normalizeReasoningEffort treats an omitted effort as the agent runtime's
-// default, so a variant that explicitly sets "medium" is homogeneous with one
-// that leaves the field empty.
-func normalizeReasoningEffort(effort string) string {
+// experimentDefaultEffort returns the level an omitted variant
+// reasoning_effort actually dispatches with for this experiment. That is the
+// per-role baseline, not the global default: a "review" experiment whose
+// variants leave the field empty runs at "high", so declaring "high"
+// explicitly on one arm must stay homogeneous with omitting it on another.
+//
+// Returns "" when the level is ambiguous — the experiment spans roles whose
+// baselines disagree, or it declares no role at all (roleMatches then matches
+// every role, so the omitted arm's level depends on where it lands). An
+// omitted effort then only matches another omitted one, which forces an
+// operator who wants to mix omitted and explicit efforts to declare the role.
+func experimentDefaultEffort(exp Experiment) string {
+	roles := exp.Roles
+	if len(roles) == 0 && exp.Subject != nil {
+		roles = []string{exp.Subject.Role}
+	}
+	if len(roles) == 0 {
+		return ""
+	}
+	resolved := ""
+	for i, r := range roles {
+		r = strings.TrimSpace(r)
+		if r == "" {
+			return ""
+		}
+		if i == 0 {
+			resolved = roleeffort.Resolve(r)
+			continue
+		}
+		if roleeffort.Resolve(r) != resolved {
+			return ""
+		}
+	}
+	return resolved
+}
+
+// normalizeReasoningEffort resolves a variant's declared effort against what an
+// omitted one dispatches with, so a variant that explicitly pins the role's
+// baseline is homogeneous with one that leaves the field empty. An empty
+// roleDefault marks the omitted case as ambiguous (see experimentDefaultEffort)
+// and is deliberately left unresolved so it only matches another omitted value.
+func normalizeReasoningEffort(effort, roleDefault string) string {
 	if effort == "" {
-		return defaultReasoningEffort
+		return roleDefault
 	}
 	return effort
 }

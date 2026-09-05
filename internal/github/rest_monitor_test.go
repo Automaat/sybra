@@ -467,6 +467,54 @@ func TestFetchCIStatusViaREST_OK(t *testing.T) {
 	}
 }
 
+func TestFetchCIStatusViaREST_PaginatesCheckRuns(t *testing.T) {
+	t.Parallel()
+	firstPage := make([]string, 100)
+	for i := range firstPage {
+		firstPage[i] = fmt.Sprintf(`{"name":"green-%d","status":"completed","conclusion":"success"}`, i)
+	}
+	e := &sequenceExecer{outputs: [][]byte{
+		fmt.Appendf(nil, `{"total_count":101,"check_runs":[%s]}`, strings.Join(firstPage, ",")),
+		[]byte(`{"total_count":101,"check_runs":[{"name":"late-failure","status":"completed","conclusion":"failure"}]}`),
+		[]byte(`{"total_count":0,"statuses":[]}`),
+	}}
+
+	status, pending, flaky, ok := fetchCIStatusViaREST(e, "o", "r", "sha")
+	if !ok || status != "FAILURE" || pending || flaky {
+		t.Fatalf("status=%q pending=%v flaky=%v ok=%v, want FAILURE/false/false/true", status, pending, flaky, ok)
+	}
+	if e.calls != 3 {
+		t.Fatalf("calls = %d, want two check-run pages and one status page", e.calls)
+	}
+	if endpoint := restAPIArg(e.args[1]); !strings.Contains(endpoint, "page=2") {
+		t.Fatalf("second endpoint = %q, want page=2", endpoint)
+	}
+}
+
+func TestFetchCIStatusViaREST_PaginatesLegacyStatuses(t *testing.T) {
+	t.Parallel()
+	firstPage := make([]string, 100)
+	for i := range firstPage {
+		firstPage[i] = fmt.Sprintf(`{"context":"green-%d","state":"success"}`, i)
+	}
+	e := &sequenceExecer{outputs: [][]byte{
+		[]byte(`{"total_count":0,"check_runs":[]}`),
+		fmt.Appendf(nil, `{"total_count":101,"statuses":[%s]}`, strings.Join(firstPage, ",")),
+		[]byte(`{"total_count":101,"statuses":[{"context":"late-failure","state":"failure"}]}`),
+	}}
+
+	status, pending, flaky, ok := fetchCIStatusViaREST(e, "o", "r", "sha")
+	if !ok || status != "FAILURE" || pending || flaky {
+		t.Fatalf("status=%q pending=%v flaky=%v ok=%v, want FAILURE/false/false/true", status, pending, flaky, ok)
+	}
+	if e.calls != 3 {
+		t.Fatalf("calls = %d, want one check-run page and two status pages", e.calls)
+	}
+	if endpoint := restAPIArg(e.args[2]); !strings.Contains(endpoint, "page=2") {
+		t.Fatalf("third endpoint = %q, want page=2", endpoint)
+	}
+}
+
 func TestFetchCIStatusViaREST_CheckRunsLegErrors(t *testing.T) {
 	t.Parallel()
 	e := &pathExecer{responses: map[string]string{

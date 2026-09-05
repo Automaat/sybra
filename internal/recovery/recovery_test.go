@@ -9,12 +9,15 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/Automaat/sybra/internal/provider"
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/blocker"
@@ -30,6 +33,34 @@ import (
 
 func discardLogger() *slog.Logger {
 	return slog.New(slog.DiscardHandler)
+}
+
+// createLegacyInteractiveTask simulates a task file that predates the
+// interactive-runner removal: agent_mode is no longer mintable via the
+// Manager/Store API (see task.ValidateMintableAgentMode), but a pre-existing
+// on-disk task carrying it must still load and drive
+// recoverStaleInteractive's back-compat restart path. Mints the task
+// headless through the normal API (for correct ID/slug generation), then
+// overwrites the file directly before reloading it.
+func createLegacyInteractiveTask(t *testing.T, tasks *task.Manager, title string) task.Task {
+	t.Helper()
+	created, err := tasks.Create(title, "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created.AgentMode = task.AgentModeInteractive
+	data, err := task.Marshal(created)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(created.FilePath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return reloaded
 }
 
 // fakeGate is a provider.HealthGate stub. IsHealthy/RateLimited return the
@@ -49,8 +80,8 @@ func (f fakeGate) Reason(string) string {
 	}
 	return ""
 }
-func (f fakeGate) ReportAuthFailure(string, string)              {}
-func (f fakeGate) ReportRateLimit(string, time.Duration, string) {}
+func (f fakeGate) ReportAuthFailure(string, string)                                       {}
+func (f fakeGate) ReportRateLimit(string, time.Duration, string, provider.CooldownSource) {}
 
 // TestRunStartupCleanupEmpty verifies the boot pass is idempotent on a
 // fresh, empty store — no panics, no error returns, no spurious task
@@ -84,6 +115,64 @@ func TestRunStartupCleanupEmpty(t *testing.T) {
 	}
 	r.RunStartupCleanup(context.Background())
 	wg.Wait()
+}
+
+func TestRunStartupCleanup_ReplaysEffectsBeforeStaleRestart(t *testing.T) {
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+
+	created, err := tasks.Create("startup replay ordering", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.UpdateMap(created.ID, map[string]any{
+		"status":     string(task.StatusInProgress),
+		"project_id": "owner/repo",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	logger := discardLogger()
+	agents := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: t.TempDir(),
+		Tasks:        tasks,
+		Logger:       logger,
+		AgentChecker: agents.HasRunningAgentForTask,
+	})
+
+	var order []string
+	wfStub := &stubWorkflowEngine{callOrder: &order}
+	orch := &stubOrchestrator{
+		onStart: func() {
+			order = append(order, "restart")
+		},
+	}
+
+	var wg sync.WaitGroup
+	r := &recovery.Recovery{
+		Tasks:          tasks,
+		Agents:         agents,
+		Worktrees:      wm,
+		WorkflowEngine: wfStub,
+		Orchestrator:   orch,
+		Logger:         logger,
+		Throttle:       logging.NewErrorThrottle(),
+		WG:             &wg,
+		LogDir:         t.TempDir(),
+	}
+	r.RunStartupCleanup(context.Background())
+	wg.Wait()
+
+	// Reclaim must lead: both replay paths claim effects, and a lease held by
+	// the previous engine instance fences them for the rest of its TTL.
+	if !slices.Equal(order, []string{"reclaim", "replay", "replay:" + created.ID, "restart"}) {
+		t.Fatalf("startup order = %v, want [reclaim replay replay:%s restart]", order, created.ID)
+	}
 }
 
 func TestRunStartupCleanup_CleansOrphanedSandboxes(t *testing.T) {
@@ -677,10 +766,7 @@ func TestRestartStaleInteractiveOneShotRestartsAsOneShot(t *testing.T) {
 		AgentChecker: agents.HasRunningAgentForTask,
 	})
 
-	created, err := tasks.Create("interactive one-shot", "", "interactive")
-	if err != nil {
-		t.Fatal(err)
-	}
+	created := createLegacyInteractiveTask(t, tasks, "interactive one-shot")
 	inProg := task.StatusInProgress
 	projID := "owner/repo"
 	if _, err := tasks.Update(created.ID, task.Update{Status: &inProg, ProjectID: &projID}); err != nil {
@@ -743,10 +829,7 @@ func TestRestartStaleInteractiveNoRunRedispatchesWhenProjectAssigned(t *testing.
 		AgentChecker: agents.HasRunningAgentForTask,
 	})
 
-	created, err := tasks.Create("zero-run stale", "", "interactive")
-	if err != nil {
-		t.Fatal(err)
-	}
+	created := createLegacyInteractiveTask(t, tasks, "zero-run stale")
 	inProg := task.StatusInProgress
 	projID := "owner/repo"
 	if _, err := tasks.Update(created.ID, task.Update{Status: &inProg, ProjectID: &projID}); err != nil {
@@ -800,10 +883,7 @@ func TestRestartStaleInteractiveNoWorkflowRedispatches(t *testing.T) {
 		AgentChecker: agents.HasRunningAgentForTask,
 	})
 
-	created, err := tasks.Create("interactive stale without workflow", "", "interactive")
-	if err != nil {
-		t.Fatal(err)
-	}
+	created := createLegacyInteractiveTask(t, tasks, "interactive stale without workflow")
 	inProg := task.StatusInProgress
 	projID := "owner/repo"
 	if _, err := tasks.Update(created.ID, task.Update{Status: &inProg, ProjectID: &projID}); err != nil {
@@ -871,10 +951,7 @@ func TestRestartStaleInteractiveModeMismatchRedispatches(t *testing.T) {
 		AgentChecker: agents.HasRunningAgentForTask,
 	})
 
-	created, err := tasks.Create("mode-mismatch stale", "", "interactive")
-	if err != nil {
-		t.Fatal(err)
-	}
+	created := createLegacyInteractiveTask(t, tasks, "mode-mismatch stale")
 	inProg := task.StatusInProgress
 	projID := "owner/repo"
 	if _, err := tasks.Update(created.ID, task.Update{Status: &inProg, ProjectID: &projID}); err != nil {
@@ -949,10 +1026,7 @@ func TestRestartStaleInteractiveNoRunWithoutProjectEscalates(t *testing.T) {
 		AgentChecker: agents.HasRunningAgentForTask,
 	})
 
-	created, err := tasks.Create("zero-run stale missing project", "", "interactive")
-	if err != nil {
-		t.Fatal(err)
-	}
+	created := createLegacyInteractiveTask(t, tasks, "zero-run stale missing project")
 	inProg := task.StatusInProgress
 	if _, err := tasks.Update(created.ID, task.Update{Status: &inProg}); err != nil {
 		t.Fatal(err)
@@ -1162,6 +1236,13 @@ type stubWorkflowEngine struct {
 	startWorkflowIDs   []string
 	startWorkflowErr   error
 	completions        []workflow.AgentCompletion
+	currentStepRole    string
+
+	replayCalls  int
+	reclaimCalls int
+	callOrder    *[]string
+	replayTasks  []string
+	replayTask   bool
 
 	dispatchEventCalls  []map[string]string
 	dispatchEventResult string
@@ -1181,6 +1262,31 @@ func (s *stubWorkflowEngine) DispatchEvent(_, _ string, extraFields, _ map[strin
 
 func (s *stubWorkflowEngine) HandleAgentComplete(_ string, c workflow.AgentCompletion) {
 	s.completions = append(s.completions, c)
+}
+
+func (s *stubWorkflowEngine) CurrentStepRunRole(string) string { return s.currentStepRole }
+
+func (s *stubWorkflowEngine) ReclaimOrphanedEffectLeases() int {
+	s.reclaimCalls++
+	if s.callOrder != nil {
+		*s.callOrder = append(*s.callOrder, "reclaim")
+	}
+	return 0
+}
+
+func (s *stubWorkflowEngine) ReplayPersistedEffects() {
+	s.replayCalls++
+	if s.callOrder != nil {
+		*s.callOrder = append(*s.callOrder, "replay")
+	}
+}
+
+func (s *stubWorkflowEngine) ReplayPersistedEffectsForTask(taskID string) bool {
+	s.replayTasks = append(s.replayTasks, taskID)
+	if s.callOrder != nil {
+		*s.callOrder = append(*s.callOrder, "replay:"+taskID)
+	}
+	return s.replayTask
 }
 
 // TestRestartStalePRFixWorkflowRevertsToInReview verifies the root cause of the
@@ -1541,8 +1647,8 @@ func TestRestartStaleReviewOnPlanWorkflowNoContextEscalates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Status != task.StatusHumanRequired {
-		t.Errorf("status = %s; want %s (durable recoverable state)", updated.Status, task.StatusHumanRequired)
+	if updated.Status != task.StatusBlocked {
+		t.Errorf("status = %s; want %s (machine-owned quarantine)", updated.Status, task.StatusBlocked)
 	}
 	if !strings.Contains(updated.StatusReason, "no project/PR context") {
 		t.Errorf("status reason = %q, want precise no-context reason", updated.StatusReason)
@@ -1564,8 +1670,8 @@ func TestRestartStaleReviewOnPlanWorkflowNoContextEscalates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parked.Status != task.StatusHumanRequired {
-		t.Errorf("status after tick 2 = %s; want %s", parked.Status, task.StatusHumanRequired)
+	if parked.Status != task.StatusBlocked {
+		t.Errorf("status after tick 2 = %s; want %s", parked.Status, task.StatusBlocked)
 	}
 	if parked.StatusReason != updated.StatusReason {
 		t.Errorf("status reason after tick 2 = %q; want unchanged %q", parked.StatusReason, updated.StatusReason)
@@ -1722,6 +1828,7 @@ func newReviewTaskWithHeadlessRun(t *testing.T, tasks *task.Manager, run task.Ag
 		State:       workflow.ExecRunning,
 		CurrentStep: "review_simple",
 		StartedAt:   time.Now(),
+		AgentRoutes: map[string]string{run.AgentID: "review_simple"},
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
 		Status:   &status,
@@ -1853,6 +1960,70 @@ func TestRestartStaleRecoverCompletedHeadlessRunKeysOnOutcome(t *testing.T) {
 // step, not only tasks tagged "review". Before this generalization a
 // non-review task in this exact shape fell through to the generic
 // stale-restart path instead and was silently re-implemented from scratch.
+func TestRestartStaleRecoversTerminalLegacyVerifierWithoutRoute(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
+	store, err := task.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := discardLogger()
+	agents := newTestAgentManager(t, ctx, func(string, any) {}, logger, t.TempDir())
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: t.TempDir(), Tasks: tasks, Logger: logger,
+		AgentChecker: agents.HasRunningAgentForTask,
+	})
+
+	created, err := tasks.Create("recover legacy verifier", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := task.StatusInProgress
+	wf := &workflow.Execution{
+		WorkflowID:  "pr-review",
+		State:       workflow.ExecWaiting,
+		CurrentStep: "review_simple",
+		StartedAt:   time.Now(),
+		EffectLog: []workflow.EffectRecord{{
+			ID:       workflow.EffectID{Generation: 1, StepSeq: 0, StepID: "review_simple", Pos: 0},
+			IntentAt: time.Now().UTC(),
+		}},
+	}
+	if _, err := tasks.Update(created.ID, task.Update{Status: &status, Workflow: &wf}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.AddRun(created.ID, task.AgentRun{
+		AgentID: "legacy-review", Role: "review", Mode: task.AgentModeHeadless,
+		State: string(agent.StateStopped), Outcome: task.RunOutcomeFailure,
+		Result: "review failed before restart", StartedAt: time.Now().Add(-10 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	orch := &stubOrchestrator{}
+	wfStub := &stubWorkflowEngine{currentStepRole: "review"}
+	r := &recovery.Recovery{
+		Tasks: tasks, Agents: agents, Worktrees: wm, Orchestrator: orch,
+		WorkflowEngine: wfStub, Logger: logger, Throttle: logging.NewErrorThrottle(),
+		WG: &wg, LogDir: t.TempDir(),
+	}
+	r.RestartStaleInProgress(context.Background())
+	wg.Wait()
+
+	if len(wfStub.completions) != 1 {
+		t.Fatalf("HandleAgentComplete called %d times, want 1", len(wfStub.completions))
+	}
+	if wfStub.completions[0].Success {
+		t.Fatal("legacy verifier failure was replayed as success")
+	}
+	if orch.startCalls != 0 {
+		t.Fatalf("StartAgent called %d times, want 0", orch.startCalls)
+	}
+}
+
 func TestRestartStaleRecoverCompletedHeadlessRunGeneralizedBeyondReviewTag(t *testing.T) {
 	dir := t.TempDir()
 	store, err := task.NewStore(dir)
@@ -1881,6 +2052,7 @@ func TestRestartStaleRecoverCompletedHeadlessRunGeneralizedBeyondReviewTag(t *te
 		State:       workflow.ExecRunning,
 		CurrentStep: "implement",
 		StartedAt:   time.Now(),
+		AgentRoutes: map[string]string{"ag-impl": "implement"},
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
 		Status:   &status,
@@ -1925,6 +2097,184 @@ func TestRestartStaleRecoverCompletedHeadlessRunGeneralizedBeyondReviewTag(t *te
 	}
 	if stub.startCalls != 0 {
 		t.Errorf("StartAgent called %d times; want 0 (recovered via completion, not a bare respawn)", stub.startCalls)
+	}
+}
+
+// TestRestartStaleRecoverCompletedHeadlessRunSkipsVerifyAutoFixRewind proves
+// recovery does not re-consume the original successful implementation run
+// after verify_checks rewound simple-task-implement back to implement with a
+// future retry_after window. That run belongs to the pre-rewind attempt; the
+// pending re-dispatch must be left for the workflow resume path so the
+// verify_reask note reaches a fresh implementation agent.
+func TestRestartStaleRecoverCompletedHeadlessRunSkipsVerifyAutoFixRewind(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := discardLogger()
+	agents := newTestAgentManager(t, ctx, func(string, any) {}, logger, t.TempDir())
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: t.TempDir(),
+		Tasks:        tasks,
+		Logger:       logger,
+		AgentChecker: agents.HasRunningAgentForTask,
+	})
+
+	created, err := tasks.Create("implement feature", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := task.StatusInProgress
+	retryAfter := time.Now().Add(10 * time.Minute).UTC().Format(time.RFC3339)
+	wf := &workflow.Execution{
+		WorkflowID:  "simple-task-implement",
+		State:       workflow.ExecWaiting,
+		CurrentStep: "implement",
+		StartedAt:   time.Now(),
+		AgentRoutes: map[string]string{"impl-1": "implement"},
+		Variables: map[string]string{
+			"workflow.retry_after":                 retryAfter,
+			"verify_auto_fix.rewound_run_agent_id": "impl-1",
+		},
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:   &status,
+		Workflow: &wf,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.AddRun(created.ID, task.AgentRun{
+		AgentID:   "impl-1",
+		Role:      "implementation",
+		Mode:      "headless",
+		State:     string(agent.StateStopped),
+		Outcome:   task.RunOutcomeSuccess,
+		Result:    "implementation done",
+		StartedAt: time.Now().Add(-10 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	stub := stubOrchestrator{}
+	wfStub := &stubWorkflowEngine{}
+	r := &recovery.Recovery{
+		Tasks:          tasks,
+		Agents:         agents,
+		Worktrees:      wm,
+		Orchestrator:   &stub,
+		WorkflowEngine: wfStub,
+		Logger:         logger,
+		Throttle:       logging.NewErrorThrottle(),
+		WG:             &wg,
+		LogDir:         t.TempDir(),
+	}
+
+	r.RestartStaleInProgress(context.Background())
+	wg.Wait()
+
+	if len(wfStub.completions) != 0 {
+		t.Fatalf("HandleAgentComplete called %d times; want 0 while verify auto-fix rewind is pending", len(wfStub.completions))
+	}
+	if stub.startCalls != 0 {
+		t.Fatalf("StartAgent called %d times; want 0 before retry_after expires", stub.startCalls)
+	}
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow == nil || got.Workflow.CurrentStep != "implement" || got.Workflow.State != workflow.ExecWaiting {
+		t.Fatalf("workflow = %+v, want implement/ExecWaiting preserved", got.Workflow)
+	}
+}
+
+func TestRestartStaleRecoverCompletedHeadlessRunSkipsMismatchedPriorStageRun(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := discardLogger()
+	agents := newTestAgentManager(t, ctx, func(string, any) {}, logger, t.TempDir())
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: t.TempDir(),
+		Tasks:        tasks,
+		Logger:       logger,
+		AgentChecker: agents.HasRunningAgentForTask,
+	})
+
+	created, err := tasks.Create("implement feature", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := task.StatusInProgress
+	now := time.Now().UTC()
+	leaseExpiresAt := now.Add(20 * time.Minute)
+	wf := &workflow.Execution{
+		WorkflowID:  "simple-task-implement",
+		State:       workflow.ExecWaiting,
+		CurrentStep: "implement",
+		StartedAt:   now.Add(-15 * time.Minute),
+		EffectLog: []workflow.EffectRecord{{
+			ID:             workflow.EffectID{Generation: 1, StepSeq: 1, StepID: "implement", Pos: 0},
+			IntentAt:       now.Add(-10 * time.Minute),
+			Owner:          "workflow-engine-stale",
+			LeaseExpiresAt: &leaseExpiresAt,
+		}},
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:   &status,
+		Workflow: &wf,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.AddRun(created.ID, task.AgentRun{
+		AgentID:   "plan-1",
+		Role:      "plan-critic",
+		Mode:      "headless",
+		State:     string(agent.StateStopped),
+		Outcome:   task.RunOutcomeSuccess,
+		Result:    "plan approved",
+		StartedAt: now.Add(-20 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	stub := stubOrchestrator{}
+	wfStub := &stubWorkflowEngine{replayTask: true}
+	r := &recovery.Recovery{
+		Tasks:          tasks,
+		Agents:         agents,
+		Worktrees:      wm,
+		Orchestrator:   &stub,
+		WorkflowEngine: wfStub,
+		Logger:         logger,
+		Throttle:       logging.NewErrorThrottle(),
+		WG:             &wg,
+		LogDir:         t.TempDir(),
+	}
+
+	r.RestartStaleInProgress(context.Background())
+	wg.Wait()
+
+	if len(wfStub.completions) != 0 {
+		t.Fatalf("HandleAgentComplete called %d times; want 0 for a prior-stage run with no current-step route", len(wfStub.completions))
+	}
+	if len(wfStub.replayTasks) != 1 || wfStub.replayTasks[0] != created.ID {
+		t.Fatalf("ReplayPersistedEffectsForTask calls = %v, want [%s]", wfStub.replayTasks, created.ID)
+	}
+	if stub.startCalls != 0 {
+		t.Fatalf("StartAgent called %d times; want 0 when effect replay consumed the tick", stub.startCalls)
 	}
 }
 
@@ -2062,6 +2412,76 @@ func (s *recordingWorkflowStub) HandleAgentComplete(taskID string, _ workflow.Ag
 	_, _ = s.tasks.Update(taskID, task.Update{Workflow: &wf})
 }
 
+func (*recordingWorkflowStub) CurrentStepRunRole(string) string { return "" }
+
+func (*recordingWorkflowStub) ReplayPersistedEffects() {}
+
+func (*recordingWorkflowStub) ReclaimOrphanedEffectLeases() int { return 0 }
+
+func (*recordingWorkflowStub) ReplayPersistedEffectsForTask(string) bool { return false }
+
+func TestRestartTaskIfStale_ReplaysPersistedEffectsBeforeFallback(t *testing.T) {
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := discardLogger()
+	ctx := context.Background()
+	agents := newTestAgentManager(t, ctx, func(string, any) {}, logger, t.TempDir())
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: t.TempDir(),
+		Tasks:        tasks,
+		Logger:       logger,
+		AgentChecker: agents.HasRunningAgentForTask,
+	})
+
+	created, err := tasks.Create("stale replay", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = tasks.UpdateMap(created.ID, map[string]any{
+		"status":     string(task.StatusInProgress),
+		"project_id": "owner/repo",
+		"workflow": &workflow.Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       workflow.ExecWaiting,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wfStub := &stubWorkflowEngine{replayTask: true}
+	orch := &stubOrchestrator{}
+	var wg sync.WaitGroup
+	r := &recovery.Recovery{
+		Tasks:          tasks,
+		Agents:         agents,
+		Worktrees:      wm,
+		WorkflowEngine: wfStub,
+		Orchestrator:   orch,
+		Logger:         logger,
+		Throttle:       logging.NewErrorThrottle(),
+		WG:             &wg,
+		LogDir:         t.TempDir(),
+	}
+
+	if err := r.RestartTaskIfStale(ctx, created.ID); err != nil {
+		t.Fatalf("RestartTaskIfStale: %v", err)
+	}
+	wg.Wait()
+
+	if !slices.Equal(wfStub.replayTasks, []string{created.ID}) {
+		t.Fatalf("task replay calls = %v, want [%s]", wfStub.replayTasks, created.ID)
+	}
+	if orch.startCalls != 0 {
+		t.Fatalf("StartAgent calls = %d, want 0 when workflow replay consumed the recovery tick", orch.startCalls)
+	}
+}
+
 // TestRestartStaleConcurrentPathsDoNotDoubleFireHandleAgentComplete is a
 // regression test for sybra#2452's actual race, reproduced with real
 // goroutines rather than a pre-held claim: the periodic
@@ -2148,6 +2568,7 @@ type stubOrchestrator struct {
 	lastMode      string
 	lastPrompt    string
 	lastOneShot   bool
+	onStart       func()
 }
 
 func (s *stubOrchestrator) StartAgent(_, mode, prompt string, _, oneShot bool) (*agent.Agent, error) {
@@ -2155,6 +2576,9 @@ func (s *stubOrchestrator) StartAgent(_, mode, prompt string, _, oneShot bool) (
 	s.lastMode = mode
 	s.lastPrompt = prompt
 	s.lastOneShot = oneShot
+	if s.onStart != nil {
+		s.onStart()
+	}
 	return s.startReturned, s.startErr
 }
 

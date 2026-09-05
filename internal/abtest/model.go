@@ -82,6 +82,17 @@ Review variant pl-a2d853b2c1d9: apply a stricter staff-code-review standard befo
 - If no blocking issues remain, say that clearly and call out any residual test or runtime verification gap.
 `
 
+const ImplementationTightenInstructionsPL41673AA95495 = `
+
+Implementation variant pl-41673aa95495: tighten completion and verification discipline before finishing.
+
+- Restate the task's acceptance criteria (and plan contract, if any) as an explicit checklist before writing code; if a criterion is ambiguous or unverifiable, stop and mark the task human-required with the specific blocker instead of guessing.
+- Touch only the files needed to satisfy those criteria — no unrelated refactors, renames, or "while I'm here" cleanup that risks an unreviewed regression.
+- For every edge case implied by the task (empty/nil input, error paths, boundary values, concurrent access), add or run a focused test that exercises it before considering the work done.
+- After committing, confirm the push actually landed and the branch is ahead of origin/main — a task with no pushed commit is not finished.
+- Before finishing, re-check the actual diff against every acceptance criterion one by one; do not rely on memory of what you intended to write.
+`
+
 func digestString(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])
@@ -97,6 +108,34 @@ type Experiment struct {
 	Subject        *Subject  `yaml:"subject,omitempty" json:"subject,omitempty"`
 	Roles          []string  `yaml:"roles" json:"roles"`
 	Variants       []Variant `yaml:"variants" json:"variants"`
+	// Canary bounds and gates how much of this experiment's traffic may
+	// deviate from its declared baseline variant. nil (the default) means
+	// uncapped: every eligible variant competes for its declared Weight
+	// share exactly as today. See CanaryPolicy and SelectEligibleForContextWithCohort.
+	Canary *CanaryPolicy `yaml:"canary,omitempty" json:"canary,omitempty"`
+}
+
+// CanaryPolicy bounds and gates non-baseline traffic for an experiment,
+// keeping production routing on a stable baseline until a canary has both
+// enough observed data and a fresh (trustworthy) signal behind it.
+type CanaryPolicy struct {
+	// BaselineVariantID names the Variant every gated-out assignment
+	// resolves to. Must match a configured Variant.ID.
+	BaselineVariantID string `yaml:"baseline_variant_id" json:"baselineVariantId"`
+	// PercentBound is the maximum share (0-100) of traffic eligible to
+	// resolve to any variant at all (including the baseline itself, since
+	// the baseline may also win the normal weighted draw); the rest is
+	// forced to baseline. Bucketing uses the same deterministic hash as
+	// variant selection, so a task/role's canary membership is stable and
+	// reproducible across repeated selections.
+	PercentBound int `yaml:"percent_bound" json:"percentBound"`
+	// MinCohort is the minimum resolved-run count a CohortObserved call
+	// must report for this experiment before any traffic is allowed outside
+	// the forced-baseline slice, regardless of PercentBound. A cohort
+	// predicate that reports fresh=false (e.g. the backing evaluation
+	// report is stale/untrustworthy) is treated the same as an
+	// insufficient cohort.
+	MinCohort int `yaml:"min_cohort" json:"minCohort"`
 }
 
 // Subject identifies the workflow target for prompt and skill experiments.
@@ -180,7 +219,6 @@ type Assignment struct {
 // be down-weighted here without code changes.
 func DefaultConfig() Config {
 	enabled := false
-	expEnabled := true
 	builtinVersion := CurrentBuiltinVersion
 	cheap := modeltier.Models(modeltier.Cheap)
 	expensive := modeltier.Models(modeltier.Expensive)
@@ -189,87 +227,125 @@ func DefaultConfig() Config {
 		MinSamplesPerVariant: 20,
 		BuiltinVersion:       &builtinVersion,
 		Experiments: []Experiment{
+			codeAuthorCheapExperiment(cheap),
+			codeAuthorMaintenanceCheapExperiment(cheap),
+			fixReviewExpensiveExperiment(expensive),
+			reviewExpensiveExperiment(expensive),
+			reviewTightenInstructionsExperiment(expensive),
+			humanReviewRestructureContextExperiment(),
+		},
+	}
+}
+
+func codeAuthorCheapExperiment(cheap map[string]string) Experiment {
+	expEnabled := true
+	return Experiment{
+		ID:             "code-author-cheap",
+		Enabled:        &expEnabled,
+		AssignmentUnit: "stage",
+		Bracket:        "cheap",
+		Roles:          []string{"implementation"},
+		Variants: []Variant{
+			{ID: "claude-sonnet", Provider: providerid.Claude, Model: "sonnet", Tier: "cheap", Weight: 1},
+			{ID: "codex-gpt-5.4", Provider: providerid.Codex, Model: cheap[providerid.Codex], Tier: "cheap", Weight: 1},
+			{ID: "copilot-sonnet", Provider: providerid.Copilot, Model: cheap[providerid.Copilot], Tier: "cheap", Weight: 1},
+			{ID: "opencode-deepseek-v4-flash", Provider: providerid.OpenCode, Model: cheap[providerid.OpenCode], Tier: "cheap", Weight: 1},
 			{
-				ID:             "code-author-cheap",
-				Enabled:        &expEnabled,
-				AssignmentUnit: "stage",
-				Bracket:        "cheap",
-				Roles:          []string{"implementation"},
-				Variants: []Variant{
-					{ID: "claude-sonnet", Provider: "claude", Model: "sonnet", Tier: "cheap", Weight: 1},
-					{ID: "codex-gpt-5.4", Provider: "codex", Model: cheap["codex"], Tier: "cheap", Weight: 1},
-					{ID: "copilot-sonnet", Provider: "copilot", Model: cheap["copilot"], Tier: "cheap", Weight: 1},
-					{ID: "opencode-deepseek-v4-flash", Provider: "opencode", Model: cheap["opencode"], Tier: "cheap", Weight: 1},
+				ID:       "pl-41673aa95495-claude-sonnet",
+				Provider: providerid.Claude,
+				Model:    "sonnet",
+				Tier:     "cheap",
+				Version:  "pl-41673aa95495",
+				Digest:   digestString(ImplementationTightenInstructionsPL41673AA95495),
+				PromptTransform: &PromptTransform{
+					Op:   "append",
+					Text: ImplementationTightenInstructionsPL41673AA95495,
 				},
+				Weight: 1,
 			},
+		},
+	}
+}
+
+func codeAuthorMaintenanceCheapExperiment(cheap map[string]string) Experiment {
+	expEnabled := true
+	return Experiment{
+		ID:             "code-author-maintenance-cheap",
+		Enabled:        &expEnabled,
+		AssignmentUnit: "stage",
+		Bracket:        "cheap",
+		Roles:          []string{"pr-fix", "test-runner"},
+		Variants: []Variant{
+			{ID: "claude-sonnet", Provider: providerid.Claude, Model: "sonnet", Tier: "cheap", Weight: 1},
+			{ID: "codex-gpt-5.4", Provider: providerid.Codex, Model: cheap[providerid.Codex], Tier: "cheap", Weight: 1},
+			{ID: "copilot-sonnet", Provider: providerid.Copilot, Model: cheap[providerid.Copilot], Tier: "cheap", Weight: 1},
+			{ID: "opencode-deepseek-v4-flash", Provider: providerid.OpenCode, Model: cheap[providerid.OpenCode], Tier: "cheap", Weight: 1},
+		},
+	}
+}
+
+func fixReviewExpensiveExperiment(expensive map[string]string) Experiment {
+	expEnabled := true
+	return Experiment{
+		ID:             "fix-review-expensive",
+		Enabled:        &expEnabled,
+		AssignmentUnit: "stage",
+		Bracket:        "expensive",
+		Roles:          []string{"fix-review"},
+		Variants: []Variant{
+			{ID: "claude-opus", Provider: providerid.Claude, Model: "opus", Tier: "expensive", Weight: 1},
+			{ID: "codex-gpt-5.5", Provider: providerid.Codex, Model: expensive[providerid.Codex], Tier: "expensive", Weight: 1},
+			{ID: "copilot-gemini-3.1-pro", Provider: providerid.Copilot, Model: expensive[providerid.Copilot], Tier: "expensive", Weight: 1},
+			{ID: "opencode-glm-5.2", Provider: providerid.OpenCode, Model: expensive[providerid.OpenCode], Tier: "expensive", Weight: 1},
+		},
+	}
+}
+
+func reviewExpensiveExperiment(expensive map[string]string) Experiment {
+	expEnabled := true
+	return Experiment{
+		ID:             "review-expensive",
+		Enabled:        &expEnabled,
+		AssignmentUnit: "stage",
+		Bracket:        "expensive",
+		Roles:          []string{"plan"},
+		Variants: []Variant{
+			{ID: "claude-opus", Provider: providerid.Claude, Model: "opus", Tier: "expensive", Weight: 1},
+			{ID: "codex-gpt-5.5", Provider: providerid.Codex, Model: expensive[providerid.Codex], Tier: "expensive", Weight: 1},
+			{ID: "copilot-gemini-3.1-pro", Provider: providerid.Copilot, Model: expensive[providerid.Copilot], Tier: "expensive", Weight: 1},
+			{ID: "opencode-glm-5.2", Provider: providerid.OpenCode, Model: expensive[providerid.OpenCode], Tier: "expensive", Weight: 1},
+		},
+	}
+}
+
+func reviewTightenInstructionsExperiment(expensive map[string]string) Experiment {
+	expEnabled := true
+	return Experiment{
+		ID:             "review-tighten-instructions-pl-a2d853b2c1d9",
+		Kind:           "compound",
+		Enabled:        &expEnabled,
+		AssignmentUnit: "stage",
+		Bracket:        "expensive",
+		Subject:        &Subject{Role: "review"},
+		Roles:          []string{"review"},
+		Variants: []Variant{
+			{ID: "claude-opus", Provider: providerid.Claude, Model: "opus", Tier: "expensive", Weight: 1},
+			{ID: "codex-gpt-5.5", Provider: providerid.Codex, Model: expensive[providerid.Codex], Tier: "expensive", Weight: 1},
+			{ID: "copilot-gemini-3.1-pro", Provider: providerid.Copilot, Model: expensive[providerid.Copilot], Tier: "expensive", Weight: 1},
+			{ID: "opencode-glm-5.2", Provider: providerid.OpenCode, Model: expensive[providerid.OpenCode], Tier: "expensive", Weight: 1},
 			{
-				ID:             "code-author-maintenance-cheap",
-				Enabled:        &expEnabled,
-				AssignmentUnit: "stage",
-				Bracket:        "cheap",
-				Roles:          []string{"pr-fix", "test-runner"},
-				Variants: []Variant{
-					{ID: "claude-sonnet", Provider: "claude", Model: "sonnet", Tier: "cheap", Weight: 1},
-					{ID: "codex-gpt-5.4", Provider: "codex", Model: cheap["codex"], Tier: "cheap", Weight: 1},
-					{ID: "copilot-sonnet", Provider: "copilot", Model: cheap["copilot"], Tier: "cheap", Weight: 1},
-					{ID: "opencode-deepseek-v4-flash", Provider: "opencode", Model: cheap["opencode"], Tier: "cheap", Weight: 1},
+				ID:       "pl-a2d853b2c1d9-codex-gpt-5.5",
+				Provider: providerid.Codex,
+				Model:    expensive[providerid.Codex],
+				Tier:     "expensive",
+				Version:  "pl-a2d853b2c1d9",
+				Digest:   digestString(ReviewTightenInstructionsPLA2D853B2C1D9),
+				PromptTransform: &PromptTransform{
+					Op:   "append",
+					Text: ReviewTightenInstructionsPLA2D853B2C1D9,
 				},
+				Weight: 1,
 			},
-			{
-				ID:             "fix-review-expensive",
-				Enabled:        &expEnabled,
-				AssignmentUnit: "stage",
-				Bracket:        "expensive",
-				Roles:          []string{"fix-review"},
-				Variants: []Variant{
-					{ID: "claude-opus", Provider: "claude", Model: "opus", Tier: "expensive", Weight: 1},
-					{ID: "codex-gpt-5.5", Provider: "codex", Model: expensive["codex"], Tier: "expensive", Weight: 1},
-					{ID: "copilot-gemini-3.1-pro", Provider: "copilot", Model: expensive["copilot"], Tier: "expensive", Weight: 1},
-					{ID: "opencode-glm-5.2", Provider: "opencode", Model: expensive["opencode"], Tier: "expensive", Weight: 1},
-				},
-			},
-			{
-				ID:             "review-expensive",
-				Enabled:        &expEnabled,
-				AssignmentUnit: "stage",
-				Bracket:        "expensive",
-				Roles:          []string{"plan"},
-				Variants: []Variant{
-					{ID: "claude-opus", Provider: "claude", Model: "opus", Tier: "expensive", Weight: 1},
-					{ID: "codex-gpt-5.5", Provider: "codex", Model: expensive["codex"], Tier: "expensive", Weight: 1},
-					{ID: "copilot-gemini-3.1-pro", Provider: "copilot", Model: expensive["copilot"], Tier: "expensive", Weight: 1},
-					{ID: "opencode-glm-5.2", Provider: "opencode", Model: expensive["opencode"], Tier: "expensive", Weight: 1},
-				},
-			},
-			{
-				ID:             "review-tighten-instructions-pl-a2d853b2c1d9",
-				Kind:           "compound",
-				Enabled:        &expEnabled,
-				AssignmentUnit: "stage",
-				Bracket:        "expensive",
-				Subject:        &Subject{Role: "review"},
-				Roles:          []string{"review"},
-				Variants: []Variant{
-					{ID: "claude-opus", Provider: "claude", Model: "opus", Tier: "expensive", Weight: 1},
-					{ID: "codex-gpt-5.5", Provider: "codex", Model: expensive["codex"], Tier: "expensive", Weight: 1},
-					{ID: "copilot-gemini-3.1-pro", Provider: "copilot", Model: expensive["copilot"], Tier: "expensive", Weight: 1},
-					{ID: "opencode-glm-5.2", Provider: "opencode", Model: expensive["opencode"], Tier: "expensive", Weight: 1},
-					{
-						ID:       "pl-a2d853b2c1d9-codex-gpt-5.5",
-						Provider: "codex",
-						Model:    expensive["codex"],
-						Tier:     "expensive",
-						Version:  "pl-a2d853b2c1d9",
-						Digest:   digestString(ReviewTightenInstructionsPLA2D853B2C1D9),
-						PromptTransform: &PromptTransform{
-							Op:   "append",
-							Text: ReviewTightenInstructionsPLA2D853B2C1D9,
-						},
-						Weight: 1,
-					},
-				},
-			},
-			humanReviewRestructureContextExperiment(expEnabled),
 		},
 	}
 }
@@ -282,7 +358,8 @@ func DefaultConfig() Config {
 // that verdict and requires re-running the offline eval before keeping
 // positive weight (see internal/prompteval/testdata/promptlab-human-review-
 // restructure-context-*.json for the screened fixture).
-func humanReviewRestructureContextExperiment(expEnabled bool) Experiment {
+func humanReviewRestructureContextExperiment() Experiment {
+	expEnabled := true
 	return Experiment{
 		ID:             "human-review-restructure-context-pl-50bbd0314913",
 		Kind:           "prompt",
@@ -316,6 +393,37 @@ func (c Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+// WithoutInvalidExperiments returns a copy with every experiment that would
+// fail selection-time validation removed, calling report once per drop.
+// Selection validates each experiment as it matches (see selectFromExperiment)
+// and propagates the error to the dispatcher, so one malformed experiment
+// otherwise wedges every role it targets — the workflow step fails to start an
+// agent, indefinitely, with nothing logged at startup.
+//
+// Dropping at load turns that into a warning plus unrouted (default-provider)
+// dispatch, which is recoverable. It matters for edits made outside Sybra and
+// for configs a code change retroactively invalidates: the per-role
+// reasoning-effort baseline decides what an omitted variant effort resolves to,
+// so retuning a role can invalidate an operator's prompt/skill experiment.
+func (c Config) WithoutInvalidExperiments(report func(id string, err error)) Config {
+	if len(c.Experiments) == 0 {
+		return c
+	}
+	kept := make([]Experiment, 0, len(c.Experiments))
+	for i := range c.Experiments {
+		exp := c.Experiments[i]
+		if err := validateExperiment(exp, nil); err != nil {
+			if report != nil {
+				report(exp.ID, err)
+			}
+			continue
+		}
+		kept = append(kept, exp)
+	}
+	c.Experiments = kept
+	return c
 }
 
 // EnabledValue reports whether A/B assignment should run.

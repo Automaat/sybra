@@ -61,11 +61,30 @@ var configRegistry = []configRegistryEntry{
 	{Path: "logging.max_files", Policy: configPolicyHot, Visibility: configVisibilityUI},
 	{Path: "logging.dir", Policy: configPolicyImmutable, Visibility: configVisibilityRaw},
 	{Path: "audit", Policy: configPolicyHot, Visibility: configVisibilityUI},
+	// restart, never hot: the backend handle and its migrated schema are opened
+	// once in Startup and handed to every store, so a live swap would leave the
+	// stores talking to the old engine while the UI reported the new one.
+	{Path: "database", Policy: configPolicyRestart, Visibility: configVisibilityRaw},
+	{Path: "database.dsn", Policy: configPolicyRestart, Visibility: configVisibilitySecret},
 	{Path: "attachments", Policy: configPolicyHot, Visibility: configVisibilityUI},
 	{Path: "trash", Policy: configPolicyHot, Visibility: configVisibilityRaw},
 	{Path: "sandbox", Policy: configPolicyHot, Visibility: configVisibilityRaw},
 	{Path: "task_snapshot", Policy: configPolicyRestart, Visibility: configVisibilityRaw},
 	{Path: "agent", Policy: configPolicyHot, Visibility: configVisibilityUI, ApplyGroup: configApplyAgentRuntime},
+	// restart, not hot (overrides the parent agent entry above): the workflow
+	// engine caches agent.evidence via SetEvidenceConfig (configureEvidencePolicy,
+	// called only from initWorkflowEngine) into an unexported Engine field. The
+	// hot-apply path (applyAgentGuardrails/refreshAgentRuntimeConfig) never
+	// re-invokes SetEvidenceConfig, so a hot reload of the flag would be a silent
+	// no-op — the store/UI would show it Applied while the engine kept enforcing
+	// the old value. Same rationale as the admission entry below.
+	{Path: "agent.evidence", Policy: configPolicyRestart, Visibility: configVisibilityUI},
+	// restart, not hot, same reason as agent.evidence above: the workflow
+	// engine's verify_checks slot channel (Engine.verifyChecksSlots) is
+	// lazily sized from Engine.verifyChecksMaxConcurrent on first use and
+	// never resized afterward, so a hot-apply of a config change after the
+	// first verify_checks dispatch would be a silent no-op.
+	{Path: "agent.verify_checks_max_concurrent", Policy: configPolicyRestart, Visibility: configVisibilityUI},
 	{Path: "testing", Policy: configPolicyHot, Visibility: configVisibilityUI},
 	{Path: "notification", Policy: configPolicyHot, Visibility: configVisibilityUI, ApplyGroup: configApplyNotification},
 	{Path: "orchestrator", Policy: configPolicyRestart, Visibility: configVisibilityUI},
@@ -73,6 +92,12 @@ var configRegistry = []configRegistryEntry{
 	{Path: "github", Policy: configPolicyRestart, Visibility: configVisibilityUI},
 	{Path: "umbrella", Policy: configPolicyRestart, Visibility: configVisibilityUI},
 	{Path: "triage", Policy: configPolicyHot, Visibility: configVisibilityUI},
+	// restart, not hot: the workflow engine caches this via
+	// SetAdmissionConfig (configureAdmissionPolicy, called once from
+	// initWorkflowEngine) into an unexported Engine field, mirroring
+	// orchestrator/monitor/self_monitor's read-once-at-startup tickers below
+	// — there is no live re-arm point that would pick up a config hot-swap.
+	{Path: "admission", Policy: configPolicyRestart, Visibility: configVisibilityUI},
 	{Path: "human_review", Policy: configPolicyHot, Visibility: configVisibilityRaw},
 	{Path: "review_hold", Policy: configPolicyHot, Visibility: configVisibilityRaw},
 	{Path: "monitor", Policy: configPolicyRestart, Visibility: configVisibilityUI},
@@ -83,6 +108,10 @@ var configRegistry = []configRegistryEntry{
 	{Path: "harness_evolution", Policy: configPolicyRestart, Visibility: configVisibilityRaw},
 	{Path: "prompt_lab", Policy: configPolicyRestart, Visibility: configVisibilityRaw},
 	{Path: "experience", Policy: configPolicyHot, Visibility: configVisibilityUI},
+	// hot, same as experience above: recordInterventionOnUnblock reads
+	// s.cfg.Intervention.Enabled fresh on every human-required dispatch off the
+	// shared *config.Config pointer — no cached copy to re-arm.
+	{Path: "intervention", Policy: configPolicyHot, Visibility: configVisibilityUI},
 	{Path: "ab_testing", Policy: configPolicyHot, Visibility: configVisibilityRaw},
 	// routing.Service reads its interval/budget/floor/step/coefficients once
 	// at Run() startup, same as evaluation/prompt_lab/harness_evolution's
@@ -119,6 +148,14 @@ type ConfigMutationResult struct {
 	Unchanged       []string        `json:"unchanged"`
 	Rejected        []string        `json:"rejected"`
 	Recovery        *ConfigRecovery `json:"recovery,omitempty"`
+
+	// appliedLeaves are the exact leaf paths whose changes a hot apply must copy
+	// into the live config. It is intentionally finer-grained than Applied (which
+	// carries registry-entry paths for apply-group dispatch): copying a hot
+	// ancestor entry (e.g. "agent") wholesale would also drag in a restart-policy
+	// child (e.g. "agent.evidence") that must NOT take effect until restart.
+	// Unexported so it never serializes to the frontend.
+	appliedLeaves []string
 }
 
 type ConfigRecovery struct {
@@ -159,6 +196,7 @@ func cloneConfig(src *config.Config) *config.Config {
 	cp.ProjectTypes = slices.Clone(src.ProjectTypes)
 	cp.Server.AllowedOrigins = slices.Clone(src.Server.AllowedOrigins)
 	cp.Agent.RoleEffort = cloneStringMap(src.Agent.RoleEffort)
+	cp.Agent.ClassReservations = cloneIntMap(src.Agent.ClassReservations)
 	cp.Agent.PlaywrightMCP.ExtraArgs = slices.Clone(src.Agent.PlaywrightMCP.ExtraArgs)
 	cp.Agent.K8sJobs.Command = slices.Clone(src.Agent.K8sJobs.Command)
 	cp.Agent.K8sJobs.Env = slices.Clone(src.Agent.K8sJobs.Env)
@@ -173,6 +211,15 @@ func cloneStringMap(src map[string]string) map[string]string {
 		return nil
 	}
 	dst := make(map[string]string, len(src))
+	maps.Copy(dst, src)
+	return dst
+}
+
+func cloneIntMap(src map[string]int) map[string]int {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]int, len(src))
 	maps.Copy(dst, src)
 	return dst
 }
@@ -227,15 +274,34 @@ func ConfigRegistryMetadataByRuntimePath(path string) (ConfigRegistryMeta, bool)
 }
 
 func diffConfig(old, next config.Config) ConfigMutationResult {
+	// Assign every changed leaf to its single most-specific registry entry, so a
+	// child entry's policy overrides its ancestor's (e.g. agent.evidence=restart
+	// wins over agent=hot). Evaluating each entry independently against the whole
+	// subtree it covers would classify the SAME evidence flip as both
+	// Applied [agent] and RestartRequired [agent.evidence], and the hot-apply copy
+	// of "agent" would then drag the restart-only value live — the exact silent
+	// override the restart policy exists to prevent.
+	changedLeaves := make([][]string, len(configRegistry))
+	for _, leaf := range configLeafPaths {
+		idx := mostSpecificRegistryEntryIndex(leaf)
+		if idx < 0 {
+			continue
+		}
+		if configValuesEqual(configValueAtPath(old, leaf), configValueAtPath(next, leaf)) {
+			continue
+		}
+		changedLeaves[idx] = append(changedLeaves[idx], leaf)
+	}
 	var result ConfigMutationResult
-	for _, entry := range configRegistry {
-		if configValuesEqual(configValueAtPath(old, entry.Path), configValueAtPath(next, entry.Path)) {
+	for i, entry := range configRegistry {
+		if len(changedLeaves[i]) == 0 {
 			result.Unchanged = append(result.Unchanged, entry.Path)
 			continue
 		}
 		switch entry.Policy {
 		case configPolicyHot:
 			result.Applied = append(result.Applied, entry.Path)
+			result.appliedLeaves = append(result.appliedLeaves, changedLeaves[i]...)
 		case configPolicyRestart:
 			result.RestartRequired = append(result.RestartRequired, entry.Path)
 		case configPolicyImmutable:
@@ -243,6 +309,23 @@ func diffConfig(old, next config.Config) ConfigMutationResult {
 		}
 	}
 	return result
+}
+
+// mostSpecificRegistryEntryIndex returns the index of the longest registry entry
+// path that covers leaf (exact match or dotted-prefix ancestor), or -1 when no
+// entry covers it. Mirrors ConfigRegistryMetadataByRuntimePath's selection.
+func mostSpecificRegistryEntryIndex(leaf string) int {
+	best := -1
+	for i := range configRegistry {
+		p := configRegistry[i].Path
+		if leaf != p && !strings.HasPrefix(leaf, p+".") {
+			continue
+		}
+		if best < 0 || len(p) > len(configRegistry[best].Path) {
+			best = i
+		}
+	}
+	return best
 }
 
 func configValuesEqual(a, b any) bool {

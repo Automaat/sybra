@@ -33,7 +33,7 @@ func setupPromptLabService(t *testing.T) *PromptLabService {
 	if err := workflow.SyncBuiltins(wfStore); err != nil {
 		t.Fatal(err)
 	}
-	engine := workflow.NewEngine(
+	engine := workflow.NewTestEngine(
 		wfStore,
 		&taskAdapter{tasks: a.tasks},
 		parkedAgentLauncher{&agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks}},
@@ -62,10 +62,15 @@ func setupPromptLabService(t *testing.T) *PromptLabService {
 
 func createProposal(t *testing.T, svc *PromptLabService, status task.Status, tags []string) task.Task {
 	t.Helper()
-	created, err := svc.tasks.CreateFull("Tighten instructions for role test-runner", "body", task.AgentModeInteractive, task.Update{
+	init := task.Update{
 		Status: &status,
 		Tags:   &tags,
-	})
+	}
+	if status == task.StatusHumanRequired {
+		init.Escalation = task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture")
+		init.AutonomyOutcome = task.HumanRequiredOutcome()
+	}
+	created, err := svc.tasks.CreateFull("Tighten instructions for role test-runner", "body", task.AgentModeHeadless, init)
 	if err != nil {
 		t.Fatal(err)
 	}

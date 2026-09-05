@@ -1,6 +1,6 @@
 # Sybra
 
-Local desktop app to orchestrate a swarm of Claude Code agents. Markdown-based task management, two execution modes (interactive conversational session + headless `claude -p`), Wails v3 alpha GUI (darwin-only).
+Local desktop app to orchestrate a swarm of Claude Code agents. Markdown-based task management, headless execution (`claude -p`, steerable mid-run), Wails v3 alpha GUI (darwin-only).
 
 ## Work-Data Confidentiality (HARD RULE)
 
@@ -40,28 +40,19 @@ sybra/
 ├── main_other.go            # No-op stub for non-darwin
 ├── go.mod / go.sum
 ├── internal/
-│   ├── task/                # YAML frontmatter + markdown task CRUD
-│   │   ├── model.go         # Task struct, Status enum
-│   │   ├── parser.go        # Frontmatter parse/marshal
-│   │   └── store.go         # Filesystem-backed store
-│   ├── artifact/            # Per-task harness artifact store (~/.sybra/artifacts/<task-id>/)
-│   │   ├── model.go         # Meta struct, Kind enum, Artifact write request
-│   │   └── store.go         # Put/Append/List/Read/Delete/Reindex
-│   ├── agent/               # Agent lifecycle management
-│   │   ├── model.go         # Agent struct, State enum, StreamEvent
-│   │   ├── manager.go       # Start/stop/list agents
-│   │   └── runner_headless.go # claude -p NDJSON stream parser
-│   ├── project/             # GitHub repo mirror + git worktree management
-│   │   ├── model.go         # Project struct
-│   │   ├── store.go         # YAML-backed project store
-│   │   └── git.go           # Clone, worktree, fetch operations
-│   ├── watcher/
-│   │   └── watcher.go       # fsnotify on tasks/ dir, debounced
-│   └── github/
-│       └── interface.go     # Future: GitHub issue sync interface
+│   ├── agent/               # Provider runners, approvals, recovery, OS sandboxing
+│   ├── artifact/            # Per-task artifact store (~/.sybra/artifacts/<task-id>/)
+│   ├── config/              # YAML config, defaults, validation, docs generation
+│   ├── github/              # Live GitHub integration surface (issues, PRs, checks, reviews)
+│   ├── harnessevolution/    # CLI-driven proposal mining from persisted self-monitor reports
+│   ├── selfmonitor/         # In-process report pipeline persisted for CLI/GUI reuse
+│   ├── sybra/               # App wiring, Wails/HTTP services, orchestrator, automation loops
+│   ├── task/                # Task model, parsing, manager/store, planning/review metadata
+│   ├── workflow/            # Workflow engine, builtin YAMLs, verification/tamper/evidence gates
+│   └── ...                  # ~80 internal packages total; inspect `internal/` directly
 ├── cmd/
-│   └── sybra-cli/         # CLI for task CRUD (used by Claude Code skills)
-│       └── main.go
+│   ├── sybra-cli/           # Multi-command CLI (tasks, projects, PRs, selfmonitor, harness-evolution)
+│   └── sybra-server/        # Headless HTTP/server entrypoint
 ├── .claude/
 │   └── skills/              # Claude Code skills (auto-copied to ~/.sybra/skills on start)
 │       ├── sybra-tasks.md # Task CRUD skill
@@ -122,22 +113,123 @@ construction (see `agentorch.Orchestrator`'s `SetSandboxes`/`SetBgops`/
 caller genuinely needs the underlying dependency itself (e.g. `Cfg()`,
 `Worktrees()`) — never export the field directly.
 
-### Wails v3 Binding Convention
+### One UI Transport
 
-The `App` struct and the 12 service structs (`internal/sybra/svc_*.go`) are registered via `App.V3Services()` and exposed to the frontend through `wails3 generate bindings`. Bindings live under `frontend/bindings/` keyed by Go package path (e.g. `frontend/bindings/github.com/Automaat/sybra/internal/sybra/taskservice.ts`).
+Both builds reach the backend over HTTP. `internal/httpserve` assembles the handler — API dispatch, the SSE stream, health/metrics/pprof, and the SPA — and both binaries serve it: `cmd/sybra-server` on its configured bind, and the desktop app on `127.0.0.1:0`, with the Wails window opened at that origin rather than the `wails://` asset server. The desktop binary is therefore a server too; there is no in-process IPC path left.
+
+`frontend/src/lib/api-http.ts` is the only implementation, and `frontend/src/lib/api.ts` re-exports it wholesale — never add a hand-written export list there, or a method has two places to be registered again.
 
 **Adding a new bound method:**
-1. Add method to a service struct in `internal/sybra/svc_*.go` (or `App` itself).
-2. Regenerate bindings: `wails3 generate bindings -ts -clean -d frontend/bindings ./...`.
-3. Re-export from `frontend/src/lib/api.ts` so the rest of the frontend hits the shim, not the binding directly.
-4. CI's `Wails Bindings Sync` job runs the same generate command and fails on drift.
+1. Add the method to a service struct in `internal/sybra/svc_*.go` (or `App` itself).
+2. Add it to the allowlist in `internal/sybra/services.go` (`ServiceRegistry`) — unlisted methods 404.
+3. Add a `call(...)` wrapper in `frontend/src/lib/api-http.ts`. `scripts/check-api-shim-sync.sh` fails on a registry method with no wrapper.
+4. Regenerate bindings: `wails3 generate bindings -ts -clean -d frontend/bindings ./...`. The frontend imports **types** from `frontend/bindings/`, never call paths; CI's `Wails Bindings Sync` job fails on drift.
 
-**Wails events (Go → Frontend):**
+A method whose first parameter is a `context.Context` gets it from the request — the JSON argument array carries only the remaining parameters.
+
+**Local-only methods.** A method that acts on the host serving the board (open an editor or terminal, open a worktree, grab an OS hotkey, shell out to the claude CLI) is registered with `.WithLocalOnly(...)`. `httpapi` then serves it to loopback callers carrying no forwarding header, so the desktop window reaches it through its own server while a window attached to a board on another machine is refused.
+
+**Events (Go → Frontend):**
 - `agent:state:<id>` — agent state change
 - `agent:output:<id>` — new StreamEvent from headless agent
 - `task:updated` / `task:created` / `task:deleted` — file system changes
 
-Emit events via the App's `emit` closure (set up in `main.go` to wrap `app.Event.Emit`). The frontend subscribes via `EventsOn` from `$lib/api`, which adapts v3's `WailsEvent` to the variadic callback shape stores expect.
+Emit via the App's `emit` closure, wired to `sse.Broker.Emit` in both binaries. The frontend subscribes with `EventsOn` from `$lib/api`, which multiplexes every subscription onto one `EventSource` against `GET /events`. `OnConnectionChange` reports that stream's health; `connectionStore` drives the offline banner from it and refetches the board when it comes back.
+
+**Attaching to a board on another machine.** Set `SYBRA_SERVER_TARGET` (bare `host:port` or an `http(s)://` origin, same forms `sybra-cli` takes) plus `SYBRA_SERVER_TOKEN` before launching the desktop app. The bundle still comes from this process — only a page it served can be handed a bearer token — but every call and event goes to the named board, and **no local App starts**, so the laptop does not run a second orchestrator against its own home. An unresolvable target is a startup error, never a silent fall back to the local board. `BrowserService` stays local: opening a window or a link acts on the machine the operator is sitting at.
+
+The desktop listener reuses the port recorded in `$SYBRA_HOME/desktop-port`. Browser storage is partitioned by origin **including port**, so a fresh port each launch would silently empty `localStorage` — colour scheme, open workspace tabs, pane sizes — on every start and every auto-update restart. That stable port is also what the attached board must list in its own `server.allowed_origins` (`http://127.0.0.1:<port>`), or its CORS check refuses every call the window makes.
+
+The content-security policy comes from the response header `internal/httpserve` sets, and from nowhere else — never add a `<meta http-equiv="Content-Security-Policy">` back to `frontend/index.html`. A meta copy is a second source of truth that wins wherever it is stricter, which is how its `connect-src 'self'` blocked every call an attached window made no matter what the header allowed.
+
+### Durable Storage Backend
+
+`database.backend` selects where durable state lives: `sqlite` (embedded
+single file, the default when unset, one machine alone), `postgres` (shared
+server, several machines on one board), or `file` (the per-domain filesystem
+stores Sybra has always used, retained for rollback and being retired). An
+install that never named this key migrates itself to sqlite on first start;
+the original files are left in place. See `docs/release-notes.md` for what
+that migration means for an operator's config and existing files.
+
+`internal/db` opens the handle, applies the embedded per-dialect migrations in
+`internal/db/migrations/<dialect>/`, and is the only place that knows a dialect.
+The query layer is deliberately plain `database/sql` with hand-written SQL and
+`DB.Rebind` for placeholders — no ORM, no codegen. **Ask before changing that
+choice**; every store written after this one depends on it.
+
+Rules for a store that moves to the backend:
+
+- Write SQL with `?` placeholders and let `Rebind` translate. A `?` inside a
+  quoted literal is left alone and `??` escapes one literal `?` (postgres'
+  jsonb key-existence operator).
+- Cross the seam with integers, not engine types: `db.TimeValue`/`db.TimeFrom`
+  for timestamps, `db.BoolValue`/`db.BoolFrom` for booleans. Stamp in-memory
+  records with `db.StoredTime` — the wall clock is nanosecond-granular on
+  Linux and stored timestamps keep microseconds, so a record returned straight
+  from a write would never equal its own read-back.
+- Wrap a read-modify-write in `DB.InTx` **and** take the row's write lock on
+  the way in (`SELECT ... FOR UPDATE` on postgres; sqlite gets it from the
+  DSN's `_txlock=immediate`). A plain read inside a transaction does not
+  serialize: postgres loses the other writer's edit silently, sqlite fails with
+  `SQLITE_BUSY_SNAPSHOT`.
+- Give the domain an import, and run it before anything seeds. `dbimport.Once`
+  copies the existing files in the first time a database is used and never
+  again; the marker row commits in the *same* transaction as the rows it
+  covers, so an interrupted run leaves neither and the next start retries. A
+  store that swaps implementations without one starts empty and the operator
+  silently loses every existing record — which is exactly what
+  `initLoopAgents` did between #3235 and #3239.
+- Import reads the files and never moves or deletes them. The operator decides
+  when the originals go.
+- Order the read explicitly. A table has no natural order, so a store that
+  reproduces a directory listing needs an `ORDER BY` matching what the file
+  store sorted by, and a test that compares both listings over one fixture.
+- Never edit a migration that has shipped — the runner records a checksum and
+  refuses to start on a changed file, because the edit reaches a fresh database
+  and silently misses every existing one.
+- Add the store's behaviour suite to `internal/testutil/dbtest.Each`/`Engines`
+  so it runs on both engines, and to `scripts/test-db-engines.sh`'s package
+  list so `mise run test:db` and CI cover it.
+
+### Task Trash-Generation History (decision, #3288)
+
+The file backend keeps every past deletion and restoration of a task as its
+own dated generation directory under `TrashDir()` (`Store.newTrashGeneration`,
+`internal/task/store_trash.go`) — the full task file plus every sidecar it
+owned at that moment, restorable individually, so a task deleted and
+restored more than once still has each earlier generation's content on disk.
+`internal/task/taskdb` deliberately does not build an equivalent: a task row
+carries a single `deleted_at` column, and restoring simply clears it —
+there is no generation table, and `Manager.ListTrash`/`PruneTrash`/
+`DeleteTrashedGeneration`/`PruneAllTrash` stay routed to the file `*Store`
+unconditionally regardless of which backend is configured for everything
+else.
+
+This is deliberate, not an oversight: `taskdb`'s `task_history` table
+(`internal/task/taskdb/history.go`) already records every delete and every
+restore as its own actor-attributed, timestamped entry with the task's full
+document snapshot at that moment (`HistoryEntry{Kind: ChangeDeleted, ...}` /
+`ChangeRestored`, written in the same transaction as the state change) — the
+question a trash generation answers ("what did this look like, and who
+changed it, before the Nth restore") already has a queryable answer on the
+database backend, just shaped as an append-only log rather than a
+recoverable directory tree. What `task_history` does *not* capture is
+sidecar content (Plan, CodeReview, ...) at each generation, only the primary
+task fields — recovering a specific historical plan or review body still
+needs the file backend's actual generation directories.
+
+Given that overlap, replicating trash's directory-snapshot model in SQL —
+a second, differently-shaped history mechanism answering a question
+`task_history` already answers for every field but the ten sidecar strings —
+is not worth the schema and query-surface it would add right now. The file
+backend remains fully supported specifically as the rollback path, so an
+operator who needs full generation fidelity (sidecars included) always has
+it by selecting `database.backend: file`. Revisit only if a real recovery
+need for sidecar-level content across generations shows up on the database
+backend specifically; `task_history` is not yet exposed through `sybra-cli`
+or the API to any operator, either, which is worth doing before trash
+parity would be (tracked separately, not part of this decision).
 
 ### Task Format
 
@@ -148,7 +240,7 @@ Tasks are YAML frontmatter + GFM markdown files in `tasks/`:
 id: task-abc123
 title: Implement auth middleware
 status: todo              # new|todo|in-progress|in-review|human-required|done
-agent_mode: headless      # interactive|headless
+agent_mode: headless      # headless (legacy task files may still carry interactive; load-only, no longer dispatchable)
 allowed_tools: []         # empty = all tools allowed
 tags: [backend, auth]
 project_id: owner/repo    # optional, links to a registered project
@@ -181,8 +273,9 @@ sybra-cli create --title "..." --project "owner/repo"
 
 **Headless** (`claude -p`):
 ```bash
-claude -p "prompt" --output-format stream-json [--resume <id>] [--allowedTools "..."]
+claude -p --output-format stream-json [--resume <id>] [--allowedTools "..."]
 ```
+- The prompt is piped over stdin (plain text, default `--input-format`), not a positional argument — argv is world-readable via `ps aux`/`/proc/PID/cmdline`, and a headless agent's own unscoped `pkill -f <pattern>` could otherwise self-match its own prompt text and kill itself. `runHeadlessAttemptPipe`/`startHeadlessSurviveProcess` write it and close stdin immediately (no steering).
 - Go spawns process, reads stdout NDJSON line-by-line
 - StreamEvent types: `init`, `assistant`, `tool_use`, `tool_result`, `result`
 - Permission flags are a 4-case precedence (`claudePermissionArgs`, `internal/agent/provider_claude.go:117-135`):
@@ -198,13 +291,13 @@ claude -p "prompt" --output-format stream-json [--resume <id>] [--allowedTools "
 
 Codex and copilot report no USD at all (tokens and premium requests respectively). `stats.EstimateAgentCost` derives it so the ceilings can see them; `Agent.BankEstimatedCost` banks it live, and **must** run after `AddCacheStats` — cached input is ~95% of a codex run and prices at a tenth of standard, so estimating first overstates by ~6x. A provider-reported cost always wins over the estimate.
 
-**Fork subagents** (`fork_subagent: true`): sets `CLAUDE_CODE_FORK_SUBAGENT=1` in the subprocess environment (CC v2.1.121+, claude provider only). Allows a single prompt to spawn parallel subagent runs, reducing wall-clock time for multi-part work. Tradeoff: each forked subagent incurs its own token usage — total cost multiplies with parallelism. Enable per-task from the metadata panel or task creation dialog. Not propagated to interactive or codex agents.
+**Fork subagents** (`fork_subagent: true`): sets `CLAUDE_CODE_FORK_SUBAGENT=1` in the subprocess environment (CC v2.1.121+, claude provider only). Allows a single prompt to spawn parallel subagent runs, reducing wall-clock time for multi-part work. Tradeoff: each forked subagent incurs its own token usage — total cost multiplies with parallelism. Enable per-task from the metadata panel or task creation dialog. Not propagated to codex agents.
 
-**Interactive** (persistent conversational session — not tmux):
+**Provider gate.** Headless dispatch resolves the provider through `prepareRunConfig` → `gateProvider` → `resolveProviderDecision`, so an unhealthy/rate-limited provider fails over (claude → codex → copilot) and the model is remapped (`NormalizeModel`). Failover is decided at *dispatch*; an agent already running when its own provider caps mid-run does not hot-swap (recovers by re-dispatch via `RescheduleRateLimitedAgent`).
 
-`agent.Manager.Run` spawns a long-lived CLI process that streams stream-json over stdin/stdout: claude via `runConversational` (persistent approval-hook runner), codex/copilot via the per-turn conversational runner (`UsesPerTurnConvo()`). The GUI renders the live stream in a bounded session box; the user drives it by sending turns.
+**Interactive mode has been removed** (the persistent conversational-session runner, `agent_mode: interactive`). A running headless agent is instead steered mid-run over its stdin/stream-json transport (`agent.Manager.Run` with `HeadlessSteerable`) — see Steering below. `task.AgentModeInteractive` is kept only so pre-existing task files carrying it still parse; no path can mint a new one (`task.ValidateMintableAgentMode`), and no dispatch path honors it.
 
-**Same provider gate as headless.** Both modes resolve the provider through `prepareRunConfig` → `gateProvider` → `resolveProviderDecision`, so an unhealthy/rate-limited provider fails over (claude → codex → copilot) and the model is remapped (`NormalizeModel`) exactly like headless. There is no provider-pinned interactive launcher. Failover is decided at *dispatch*; an agent already running when its own provider caps mid-run does not hot-swap (headless recovers by re-dispatch via `RescheduleRateLimitedAgent`).
+**Steering** a running headless agent: `SendMessage`/`GetConvoOutput` inject a mid-run message over the agent's stdin and stream the resulting `ConvoEvent`s back, gated on `Agent.CanSteer` (a live stdin transport — `agent.headless_steerable`, default `true`). This is the GUI's "steer agent" control on a running agent, not a second execution mode.
 
 ### Worktree Agent Context
 
@@ -249,8 +342,9 @@ pipe/survive, persistent claude convo, convo-survive, per-turn
 codex/copilot) routes through one constructor, `newProviderCmd`
 (`runner_core.go`). A `rg exec.CommandContext internal/agent` drift check must
 only ever match `newProviderCmd` itself plus the documented non-provider probe
-sites, so a new spawn site cannot obtain an unsandboxed provider process by
-construction.
+sites (`probeUserNamespace` in `procsandbox_linux.go` is one — it carries no
+prompt, environment, or run roots), so a new spawn site cannot obtain an
+unsandboxed provider process by construction.
 
 `newProviderCmd` wraps the invocation via `wrapInvocation`
 (`procsandbox_darwin.go` / `procsandbox_linux.go`): `sandbox-exec` on darwin,
@@ -274,10 +368,35 @@ into an unexported `RunConfig.sandbox` spec:
   explicit `enforce` posture, never the default rollout posture. This is
   why `report` is safe to ship as the default.
 - `enforce`: wraps the spawn and fails the run closed if the host sandbox
-  mechanism or profile/setup is unavailable. The server runs this posture now
-  (`agent.sandbox_mode: enforce` via Linux `bwrap`), so the real operator
-  board under `~/.sybra` and deploy checkout `/opt/sybra/src` stay read-only
-  to agents.
+  mechanism or profile/setup is unavailable — including a mechanism that is
+  installed but cannot build a sandbox, which certification refuses before
+  dispatch rather than leaving one failed step per run. It is **never** reached by
+  leaving the key unset — the built-in default is `report`, so every
+  deployment that wants containment must set `agent.sandbox_mode: enforce`
+  explicitly. Under it the real operator board under `~/.sybra` and the
+  deploy checkout `/opt/sybra/src` stay read-only to agents.
+
+Do not record which posture a given deployment runs here — that claim drifts
+silently and this section already carried a false one for months. Read it from
+the host instead. The postures are distinguishable only by their log line and
+by whether setup failures abort the run, never by observable agent behaviour on
+a healthy host, so a config that quietly resolves to `report` looks exactly
+like a contained one. Grep the app log (`~/.sybra/logs/sybra.log`, or
+`/data/sybra/home/logs/sybra.log` on the server) — **not** the systemd journal,
+which carries only build and start output:
+
+- `agent.sandbox.enforce` — spawn wrapped.
+- `agent.sandbox.report` — spawn **not** wrapped; allowlist logged only.
+- `agent.sandbox.report.unavailable` — `report` that fell back to unwrapped
+  because `bwrap`/`sandbox-exec` was missing **or** could not build a sandbox;
+  the `err` attribute carries which. On Linux the mechanism is probed, not
+  looked up: Ubuntu 24.04 denies unprivileged user namespaces
+  (`kernel.apparmor_restrict_unprivileged_userns`), so `bwrap` is on PATH and
+  still cannot produce a single sandbox, and a probe failure is re-probed after
+  a minute rather than refusing every later run on a host that recovered.
+- *neither line for a run* — resolved `off`, via config or the per-task
+  `sandbox: false` escape hatch; `injectProcessSandbox` returns before it logs
+  anything. Absence of both is the widest-blast-radius case, not the quiet one.
 
 The escape hatch's use is operator-visible: `agentorch.logSandboxEscapeHatch`
 logs a warning and records `audit.EventAgentSandboxDisabled`.
@@ -333,7 +452,7 @@ Sybra runs headless as a **systemd service** (not Docker) directly on the LXC, d
 - **Runtime:** `systemd` unit `sybra` runs `sybra-server` directly (no container). `ExecStartPre=/opt/sybra/bin/sybra-build.sh` rebuilds the web bundle + Go binary from `/opt/sybra/src` (a git checkout on `main`) into `/opt/sybra/build`; `ExecStart` runs it via `mise exec`. Toolchain (go/node) + `claude`/`codex` CLIs are host-installed via `mise` for the `sybra` user.
 - **Data:** `/data/sybra/home` ⇄ `~sybra/.sybra` (symlink), `/data/sybra/{claude,codex,klaudiush}` ⇄ the sybra user's `~/.claude`, `~/.codex`, `~/.config/klaudiush`. Tasks, config, projects, worktrees, and the agent registry live under `/data/sybra/home` and survive any restart/redeploy.
 - **Lossless redeploy:** the unit sets `KillMode=process`, so a restart signals only `sybra-server`; the detached (`setsid`) agent subprocesses keep running and are re-adopted by `ReattachAll` on the next start (no interrupted turn). `Restart=on-failure` + `RestartForceExitStatus=42` + `TimeoutStopSec=45` mean a crash or a hung shutdown always self-recovers.
-- **Auto-deploy:** `auto_update` (config `enabled: true`, `mode: auto`, `repo_dir: /opt/sybra/src`) polls `origin/main` every 5 min, `git merge --ff-only`, then requests a restart (exit 42) → `ExecStartPre` rebuilds → lossless restart. `sybra-build.sh` keeps the last-good build on a failed build, so a broken `main` never downs the service (it does **not** gate on CI-green — see `deploy/README.md`).
+- **Auto-deploy:** `auto_update` (config `enabled: true`, `mode: auto`, `repo_dir: /opt/sybra/src`) polls `origin/main` every 5 min, requires configured `required_checks` to be green, `git merge --ff-only`s the approved SHA, then requests a restart (exit 42) → `ExecStartPre` rebuilds → lossless restart. Restarts are coalesced by `auto_update.coalesce_seconds` (default 1h), so bursts of green merges do not flap the service. `sybra-build.sh` keeps the last-good build on a failed candidate, so a broken build never downs the service.
 - **Exposure:** local `:8080` → Traefik → `synapse.mskalski.dev` (Cloudflare DNS+TLS). ACL-locked to LAN, Cloudflare Tunnel, Tailscale CIDRs.
 - **Deploy:** `ansible/playbooks/setup-sybra-lxc.yml` (provision LXC), `ansible/playbooks/deploy-sybra.yml` (provision toolchain, install unit + scripts, render config, `systemctl restart`).
 - **Klaudiush hooks:** enabled in both Claude Code `settings.json` and Codex `config.toml` (`codex_hooks = true`) for event monitoring.
@@ -345,10 +464,10 @@ ssh root@192.168.20.219 "systemctl status sybra"                     # service s
 ssh root@192.168.20.219 "journalctl -u sybra -n 100 --no-pager"      # unit journal (build + start)
 ssh root@192.168.20.219 "tail -100 /data/sybra/home/logs/sybra.log"  # sybra-server app logs
 ssh root@192.168.20.219 "ls /data/sybra/home/tasks/"                 # task files
-ssh root@192.168.20.219 "sudo -u sybra env -i bash -lc 'cd /opt/sybra/src && mise exec -- go run ./cmd/sybra-cli list'"  # CLI (sybra-build.sh only builds sybra-server; run the CLI from source)
+ssh root@192.168.20.219 "sudo -u sybra /opt/sybra/build/sybra-cli list"      # built CLI from the active candidate
 ```
 
-Deploying = merge to `main` (auto-deploys within ~5 min) or `systemctl restart sybra` (rebuilds current `/opt/sybra/src` HEAD). To pin/rollback: `git -C /opt/sybra/src checkout <sha>` then restart (autoupdate's ff-only check pauses while off `main`).
+Deploying = merge to `main` (auto-deploy polls within ~5 min, then restarts once CI-green + coalesce gates allow it) or `systemctl restart sybra` (rebuilds current `/opt/sybra/src` HEAD). To pin/rollback: `git -C /opt/sybra/src checkout <sha>` then restart (autoupdate's ff-only check pauses while off `main`).
 
 **Toolchain on the server host.** The LXC has `mise` (+ go/node and the `claude`/`codex` CLIs) installed for the `sybra` user, but no per-project language tools. Every project declares its own bootstrap, resolved from two layers per worktree:
 
@@ -387,9 +506,7 @@ There is no Vite-backed hot reload — the frontend is built once per `mise run 
 ### Adding a Backend Feature
 
 1. Add/modify Go types in `internal/<package>/`.
-2. If exposing to frontend: add a method to a service struct in `internal/sybra/svc_*.go` (or to `App`).
-3. Regenerate bindings: `wails3 generate bindings -ts -clean -d frontend/bindings ./...`.
-4. Re-export from `frontend/src/lib/api.ts` so the rest of the frontend hits the shim.
+2. If exposing to frontend: add a method to a service struct in `internal/sybra/svc_*.go` (or to `App`), then follow **One UI Transport** above — allowlist it in `internal/sybra/services.go`, add its `call(...)` wrapper in `frontend/src/lib/api-http.ts`, and regenerate bindings for the types.
 
 ### Adding a Frontend Feature
 
@@ -417,7 +534,31 @@ There is no Vite-backed hot reload — the frontend is built once per `mise run 
 
 ## Quality Gates
 
-**`mise run verify` is the pre-commit gate — it runs every deterministic, CI-aligned gate in `.github/workflows/ci.yml`** (frontend build:desktop + build:web, `go build ./...`, `go mod verify`, `go mod tidy` drift check, `go test -race ./...`, `go test -race -tags e2e ./internal/sybra/...`, golangci-lint, frontend check + test:coverage + oxlint + pin-strategy, api-shim sync, no-home-fallback gate, Wails bindings drift check, hadolint). "Deterministic" means the outcome depends only on repo state, not ambient CI infra — some steps (`npm ci`, Go module resolution) still need network access. It intentionally excludes the CI jobs that need external advisory DBs or a browser and so can't run as a reliable pre-commit loop — `lint-nilaway`, `security` (govulncheck + npm audit), and the Playwright `e2e` job; CI stays the source of truth for those three. Running only `go test ./...` skips the e2e suite entirely (it's gated behind `//go:build e2e`) and will ship green-local / red-CI.
+### Linter Pairs That Fight Each Other
+
+Several enabled linters reject each other's preferred shape, so fixing one
+report by the first form that occurs to you produces a different report on the
+next run. Two agents have burned a full retry budget each ping-ponging between
+these. When a linter rejects a construct, **grep the repo for the shape that
+already satisfies both** before inventing one:
+
+- **A backward loop over a slice.** The manual `for i := len(x) - 1; i >= 0; i--`
+  trips `modernize`'s `slicesbackward`; ranging the *values* of
+  `slices.Backward(x)` then trips `gocritic`'s `rangeValCopy` on any struct of
+  real size (`AgentRunInfo` is 264 bytes). The shape that passes both is
+  `for i := range slices.Backward(x)` with `run := &x[i]` — see
+  `internal/recovery/stale.go` and five other call sites.
+- **`TestMain` with cleanup.** `defer cleanup(); os.Exit(m.Run())` trips
+  `gocritic`'s `exitAfterDefer`, and the deferred call genuinely never runs.
+  Write `code := m.Run(); cleanup(); os.Exit(code)` — see
+  `internal/worktree/testmain_test.go`.
+- **A multi-value return.** `gocritic`'s `unnamedResult` wants names once a
+  function returns three or more values, or two of the same type.
+
+Never reach for a `//nolint` directive to settle one of these; there is a shape
+that satisfies every linter, and the repo already contains it.
+
+**`mise run verify` is the pre-commit gate — it runs every deterministic, CI-aligned gate in `.github/workflows/ci.yml`** (frontend build:desktop + build:web, `go build ./...`, `go mod verify`, `go mod tidy` drift check, `go test -race ./...`, `go test -race -tags e2e ./internal/sybra/...`, golangci-lint, frontend check + test:coverage + oxlint + pin-strategy, api-shim sync, no-home-fallback gate, Wails bindings drift check, hadolint). "Deterministic" means the outcome depends only on repo state, not ambient CI infra — some steps (`npm ci`, Go module resolution) still need network access. It intentionally excludes the CI jobs that need external advisory DBs, a browser, or a container runtime and so can't run as a reliable pre-commit loop — `lint-nilaway`, `security` (govulncheck + npm audit), the Playwright `e2e` job, and `test-go-db` (run `mise run test:db` by hand before touching SQL); CI stays the source of truth for those four. Running only `go test ./...` skips the e2e suite entirely (it's gated behind `//go:build e2e`) and will ship green-local / red-CI.
 
 ```bash
 mise run verify
@@ -486,9 +627,32 @@ config   dump | doctor
 ```
 
 - `--json` for machine-parseable output (used by skills)
-- Reuses `internal/task.Store` + `internal/config.Load()` — same validation as GUI
 - `mise run dev` auto-installs latest CLI before launching the desktop app
 - `config dump` prints the resolved `~/.sybra/config.yaml` (env overrides applied, `server.auth_token` redacted); `config doctor` sanity-checks data dirs, `agent.provider`, `agent.headless_permission_mode`, and enabled integrations missing required credentials. See `docs/CONFIG.md` (generated from `internal/config` struct tags via `go generate ./internal/config/...`) for the full key reference.
+
+**The CLI is a client and nothing else.** It never opens the board's files — that made it a second writer behind whichever instance owned them, and a stale target turned an ordinary edit into a change the owner later overwrote. Every command that touches board state resolves a server and **refuses** when none answers, naming it.
+
+Target resolution — loopback wherever the configuration allows one, so the token stays off the wire. A home whose only bind is a LAN address is refused outright unless `cluster.tls` is configured, because there is no route to it that keeps the token off the network:
+
+1. `SYBRA_SERVER_TARGET` (+ `SYBRA_SERVER_TOKEN` for a board on another machine)
+2. else the port the desktop app recorded in `$SYBRA_HOME/desktop-port`
+3. else the configured server port
+
+`SYBRA_HOST`, `SYBRA_PORT`, and `SYBRA_BIND_ADDR` are deliberately **not** consulted. They name where a server should *listen*; letting one steer a client aims it — and the bearer token it sends next — at whatever answers there. Read `cfg.Cluster` directly, never `ListenAddrs`, which honours `SYBRA_BIND_ADDR` internally.
+
+`--home` / `SYBRA_CONTROL_HOME` / `SYBRA_HOME` select **which board's** config and recorded port to read — they no longer mean "edit files instead". `config`, `health`, `install-skills`, and `cluster` (its `gen-cert`/`nodes` halves touch no board; `reassign` refuses for itself) still run with no server. So does `doctor`, because it is what an operator reaches for when the server is what broke, but it refuses to delete.
+
+**A board is trusted with this disk only when it serves this home.** `GET /health` reports `home_id`, a digest of the home an instance serves — never the path, since that endpoint carries no authentication and the path would hand over the operator's username and layout. The CLI compares it against `httpserve.HomeID(config.HomeDir())`. Loopback is not the question: two instances on one machine are both loopback and own different homes, and an address-only check let a cleanup delete a live sandbox belonging to the other one. Anything that acts on local files must ask `apiClient.ownsHome`, never `!remote`.
+
+**An agent is told where its board is; it never infers one.** The runner writes the credential into the run's sandbox home and sets `SYBRA_SERVER_TARGET` + `SYBRA_AUTH_TOKEN_FILE` (plus `SYBRA_SERVER_CA` for a TLS board, whose self-signed certificate is copied in beside the token), the way the verifier control channel already did. It deliberately does **not** also set `SYBRA_CONTROL_HOME`: that points the CLI at the operator home, whose config the CLI loads *before* it looks at any target, and that directory is off the sandbox read allowlist for every role but monitor — so exporting both makes the whole mechanism inert under `enforce`. Name the board before `App.Startup`, because Startup's recovery pass dispatches agents and one that starts unnamed spends a whole paid run on calls that every one of them refuses.
+
+The board an agent is handed is currently the instance's own token, which is more authority than an agent needs — per-run credentials are #3258. What is closed already: an agent's calls carry `httpapi.SandboxedCallerHeader`, and the `.WithLocalOnly(...)` methods (open an editor, a terminal, a worktree, shell out to a provider CLI on the serving host) are refused for such a caller.
+
+The verifier control channel answers `GET /health` with its **own** marker, `agent.VerifierControlServiceMarker`, never `httpserve.ServiceMarker`. It serves two TaskService methods for one task, so a client that merely inferred that port and took it for a board would send the board's token and then 404 on everything. An inferred target that names no service at all is still accepted — a server predating the field answers exactly `{"status":"ok"}`, which nothing can tell from a process that is not Sybra.
+
+A contended record comes back as `503` and the CLI exits **75**, which is what an agent retries on. Never map it to a plain failure — the agent then abandons work it only had to repeat.
+
+Tests get a board, not a directory: `startTestBoard` (`cmd/sybra-cli/testboard_test.go`) mounts the real stores on the real dispatcher, so a test still asserts against files on disk and a missing task is still a 404. Add a service there when a command starts calling a new one.
 
 ### Skills
 
@@ -518,12 +682,13 @@ Frontend must build before Go compilation due to `//go:embed all:frontend/dist`:
 - ❌ Running `go build .` without building the frontend first — `//go:embed` fails if `frontend/dist/` is missing
 - ❌ Forgetting to regenerate v3 bindings after adding/changing service methods (run `wails3 generate bindings -ts -clean -d frontend/bindings ./...`); CI's `Wails Bindings Sync` job catches drift
 - ❌ Editing files in `frontend/bindings/` — these are auto-generated and get overwritten
-- ❌ Importing directly from `frontend/bindings/` in components/stores — go through `$lib/api` so the desktop ↔ web shim handles transport
-- ❌ Using WebSocket/HTTP for Go↔Frontend IPC on desktop — Wails v3 events + bound services handle this
+- ❌ Calling into `frontend/bindings/` from components/stores — those are generated Wails call paths the UI no longer uses; import calls from `$lib/api` and take only **types** from `frontend/bindings/`
+- ❌ Adding a hand-written export to `frontend/src/lib/api.ts` — it re-exports `api-http.ts` wholesale so a method is registered in one place; `scripts/check-api-shim-sync.sh` fails on a list there
+- ❌ Exposing a method that opens a GUI app, grabs an OS hotkey, or shells out on the serving host without `.WithLocalOnly(...)` — a board reached from another machine would run it on the host serving it
 - ❌ Storing agent state in files — agents are in-memory only, tasks are file-backed
 - ❌ Using `allowed_tools: []` without understanding the fallback is governed by `agent.require_permissions`/`agent.headless_permission_mode`, not always `--dangerously-skip-permissions` — see the permission-flag precedence under Agent Execution Modes
 - ❌ Adding a new auto-task source without (a) an `Enabled bool` toggle in its config block and (b) `cfg.AllowsProjectType(...)` filtering if the source is project-scoped — both are required so users running Sybra on multiple machines can route work without duplication
-- ❌ Adding a new pipeline status/stage without a matching handoff entry point — every stage a task can sit at must be directly reachable via `sybra-cli handoff --stage <name>`. That means: add the stage to `handoffStageTags` (`cmd/sybra-cli/main.go`) mapping it to a `handoff-<name>` tag, and add a `simple-task-handoff-<name>.yaml` builtin that flips a fresh task straight to that status while adopting its `worktree_dir`. Without this you cannot inject a task at the new stage to test/demo it in isolation (e.g. `--stage testing` → `simple-task-handoff-testing.yaml` → status `testing`)
+- ❌ Adding a new pipeline status/stage without a matching handoff entry point — every stage a task can sit at must be directly reachable via `sybra-cli handoff --stage <name>`. That means: add the stage to `handoffStageRegistry` (`cmd/sybra-cli/main.go`) mapping it to the right `handoff*` tags, and add a matching variant to the single handoff template at `internal/workflow/builtin/simple-task-handoff.yaml` so a fresh task flips straight to that status while adopting its `worktree_dir`. Without this you cannot inject a task at the new stage to test/demo it in isolation (e.g. `--stage testing` → generated `simple-task-handoff-testing` → status `testing`)
 - ❌ Baking project toolchains into the server host or `Dockerfile` — the server host has `mise` only (the darwin `Dockerfile` is CI/legacy, not the deploy path). Language-specific tools belong in each project's **Setup commands** (see Server Deployment section). New projects in new languages never require any host/image change.
 - ❌ Treating `go build .` (desktop) as a server-context commit gate — Wails v3 needs GTK/webkit on Linux (not installed server-side) and desktop is darwin-only/CI-owned. Use `mise run build:server` for server-side verification.
 - ❌ Pasting, linking, or paraphrasing work-repo content (URLs, branches, SHAs, ticket IDs, snippets, logs, customer names) into sybra issues/PRs/tasks/commits — see **Work-Data Confidentiality** at the top. Any new auto-source that ingests external content must filter work-repo content at the source, not in post-processing.

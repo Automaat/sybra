@@ -1,0 +1,7 @@
+./crossversionobjectreference.go
+./horizontalpodautoscaler.go
+./horizontalpodautoscalerspec.go
+./horizontalpodautoscalerstatus.go
+./scale.go
+./scalespec.go
+./scalestatus.go

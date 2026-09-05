@@ -2,6 +2,7 @@ package review
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -11,17 +12,19 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/errclass"
 	"github.com/Automaat/sybra/internal/github"
-	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/workflow"
+	"github.com/Automaat/sybra/internal/worktree"
 )
 
-func (r *Handler) createReviewTask(pr github.PullRequest, projectID string) {
-	r.createReviewTaskWithTriage(pr, projectID, r.triageReview)
+func (r *Handler) createReviewTask(viewer string, pr github.PullRequest, projectID string) {
+	r.createReviewTaskWithTriage(viewer, pr, projectID, r.triageReview)
 }
 
-func (r *Handler) createReviewTaskWithTriage(pr github.PullRequest, projectID string, triage func(task.Task)) {
+func (r *Handler) createReviewTaskWithTriage(viewer string, pr github.PullRequest, projectID string, triage func(task.Task)) {
 	title := "Review: " + pr.Title
 	body := fmt.Sprintf("%s\n\nAuthor: @%s", pr.URL, pr.Author)
 
@@ -30,12 +33,16 @@ func (r *Handler) createReviewTaskWithTriage(pr github.PullRequest, projectID st
 	// a window where the initial file has no "review" tag, which lets
 	// simple-task-plan claim the task.created workflow slot before pr-review
 	// can match — causing triage loops and incorrect status transitions.
-	tags := []string{"review"}
-	t, err := r.tasks.CreateFull(title, body, "headless", task.Update{
+	tags := []string{task.TagReview}
+	u := task.Update{
 		Tags:      &tags,
 		ProjectID: task.Ptr(projectID),
 		PRNumber:  task.Ptr(pr.Number),
-	})
+	}
+	if projectHeadRepoMatches(projectID, pr.HeadRepo) && pr.HeadRefName != "" && selfAuthoredPR(pr, viewer) {
+		u.Branch = task.Ptr(pr.HeadRefName)
+	}
+	t, err := r.tasks.CreateFull(title, body, "headless", u)
 	if err != nil {
 		r.logger.Error("review.create-task", "pr", pr.Number, "err", err)
 		return
@@ -57,7 +64,11 @@ func (r *Handler) triageReview(t task.Task) {
 	if err != nil {
 		r.logger.Warn("review.triage.stats", "task_id", t.ID, "err", err)
 		// fallback: start agent when we can't determine size
-		if _, err := r.tasks.Update(t.ID, task.Update{Status: task.Ptr(task.StatusInReview)}); err != nil {
+		if _, err := r.tasks.Apply(task.TransitionIntent{
+			TaskID:   t.ID,
+			ToStatus: task.StatusInReview,
+			Actor:    "review.triage",
+		}); err != nil {
 			r.logger.Error("review.triage.status", "task_id", t.ID, "err", err)
 		}
 		if err := start(t, false); err != nil {
@@ -68,7 +79,11 @@ func (r *Handler) triageReview(t task.Task) {
 
 	r.logger.Info("review.triage", "task_id", t.ID, "additions", stats.Additions, "files", stats.ChangedFiles)
 
-	if _, err := r.tasks.Update(t.ID, task.Update{Status: task.Ptr(task.StatusInReview)}); err != nil {
+	if _, err := r.tasks.Apply(task.TransitionIntent{
+		TaskID:   t.ID,
+		ToStatus: task.StatusInReview,
+		Actor:    "review.triage",
+	}); err != nil {
 		r.logger.Error("review.triage.status", "task_id", t.ID, "err", err)
 	}
 	if err := start(t, false); err != nil {
@@ -80,51 +95,82 @@ func (r *Handler) StartFixReviewAgent(t task.Task) error {
 	if t.ProjectID == "" || t.PRNumber == 0 {
 		return fmt.Errorf("task %s has no linked PR", t.ID)
 	}
+	if r.WorkflowEngine == nil {
+		return errors.New("fix review workflow engine is not configured")
+	}
+	releasePRDispatch, ok := r.tryReservePRDispatch(t.ID)
+	if !ok {
+		return workflow.ErrDispatchInFlight
+	}
+	defer releasePRDispatch()
+	if r.WorkflowEngine.HasActiveWorkflow(t.ID) {
+		return workflow.ErrWorkflowAlreadyActive
+	}
 
-	posture, postureErr := agentorch.ResolveHeadlessPermissionMode(t, r.cfg)
-	if postureErr != nil {
-		return postureErr
+	// Exclude every agent dispatch before PrepareForFix mutates, sanitizes, or
+	// recreates the shared checkout. The workflow's run_agent step takes this
+	// same claim later, so release it only after preparation and immediately
+	// before durable workflow dispatch. Rechecking the workflow after acquiring
+	// the claim closes the race with a workflow that started after the first
+	// cheap pre-check: its agent either won this claim (and we returned above)
+	// or is parked before touching the worktree.
+	claim, ok := r.agents.TryClaimDispatch(t.ID)
+	if !ok {
+		return workflow.ErrDispatchInFlight
+	}
+	defer claim.Release()
+	if r.WorkflowEngine.HasActiveWorkflow(t.ID) {
+		return workflow.ErrWorkflowAlreadyActive
 	}
 
 	// context.Background(): StartFixReviewAgent is reached both from a Wails-bound
 	// ReviewService method (no ctx) and from an async triage goroutine spawned
 	// with a fixed func(task.Task) signature — no ctx to thread from either path.
 	dir, err := r.worktrees.PrepareForFix(context.Background(), t, t.PRNumber)
-	if err != nil {
+	claim.Release()
+	switch {
+	case errors.Is(err, worktree.ErrPreparationInFlight), errors.Is(err, worktree.ErrAgentRunning):
+		return workflow.ErrDispatchInFlight
+	case err != nil:
 		return fmt.Errorf("prepare worktree: %w", err)
 	}
+	return r.startPreparedFixReviewWorkflow(t, dir)
+}
 
-	prompt := fmt.Sprintf(
-		"Run /fix-review https://github.com/%s/pull/%d --auto\n\n"+
-			"IMPORTANT: when committing, use conventional commit format "+
-			"`fix(review): address PR review comments` (type(scope) required by repo hooks). "+
-			"Sign the commit with `git commit %s`. Push the branch when done.",
-		t.ProjectID, t.PRNumber, project.CommitSignFlags(context.Background()),
-	) + reviewHoldFixSuffix(r.cfg)
-
-	ag, err := r.agents.Run(agent.RunConfig{
-		TaskID:                 t.ID,
-		Name:                   agent.RoleFixReview.AgentName(t.Title),
-		Role:                   agent.RoleFixReview,
-		Mode:                   "headless",
-		Prompt:                 prompt,
-		Dir:                    dir,
-		Model:                  "opus",
-		HeadlessPermissionMode: posture,
-		// MaxTurns intentionally not inherited: fix-review agents need
-		// enough turns to fetch the PR, apply fixes, and commit.
-	})
-	if err != nil {
+// startPreparedFixReviewWorkflow dispatches the manual review-fix action
+// through the same durable workflow boundary as automatic PR comment fixes.
+// The run_agent step mints the workflow effect/intent required by remote
+// execution; calling agent.Manager.Run directly leaves a daemon run without
+// durable completion or recovery authority.
+func (r *Handler) startPreparedFixReviewWorkflow(t task.Task, dir string) error {
+	prompt := manualFixReviewPrompt(r.signingPolicy()) + reviewHoldFixSuffix(r.cfg)
+	vars := map[string]string{
+		"prompt":                            prompt + PRFixResultContract,
+		"pr_issue_kind":                     string(github.PRIssueComments),
+		"pr_issue_kinds":                    string(github.PRIssueComments),
+		workflow.WorkflowVarDir:             dir,
+		"pr_fix_result_contract":            PRFixResultContract,
+		workflow.WorkflowVarCommitSignFlags: r.signingPolicy().CommitFlags(context.Background()),
+	}
+	if r.cfg.ReviewHoldEnabled() {
+		vars[workflow.ReviewHoldParkVar] = "true"
+	}
+	// An operator-triggered fix runs the same agent against the same threads,
+	// so it needs the same ground truth: without a brief verify_review_threads
+	// skips, and a run whose thread fetch failed still reports clean.
+	if t.ProjectID != "" && t.PRNumber > 0 {
+		pr := github.PullRequest{Repository: t.ProjectID, Number: t.PRNumber}
+		if brief := fetchReviewThreadBrief(context.Background(), pr, r.agentLogin(context.Background())); brief.vars() != "" {
+			vars[workflow.PRReviewThreadBriefVar] = brief.vars()
+			vars[workflow.PRReviewAgentLoginVar] = brief.agentLogin
+			vars["prompt"] = prompt + "\n\n" + brief.prompt + PRFixResultContract
+		}
+	}
+	if err := r.WorkflowEngine.StartWorkflowWithVars(t.ID, prFixWorkflowID, vars); err != nil {
 		return err
 	}
-	if err := r.tasks.AddRun(t.ID, task.AgentRun{
-		AgentID: ag.ID, Role: string(agent.RoleFixReview), Mode: "headless", State: string(agent.StateRunning), StartedAt: ag.StartedAt,
-		Prompt: prompt,
-	}); err != nil {
-		r.logger.Error("task.add-run", "task_id", t.ID, "err", err)
-	}
-	r.logAudit(audit.EventFixReviewStarted, t.ID, ag.ID, map[string]any{"pr": t.PRNumber, "prompt_hash": ag.GetPromptHash()})
-	r.logger.Info("fix-review.agent-started", "task_id", t.ID, "agent_id", ag.ID, "pr", t.PRNumber)
+	r.logAudit(audit.EventFixReviewStarted, t.ID, "", map[string]any{"pr": t.PRNumber, "workflow": prFixWorkflowID})
+	r.logger.Info("fix-review.workflow-started", "task_id", t.ID, "pr", t.PRNumber, "workflow", prFixWorkflowID)
 	return nil
 }
 
@@ -139,7 +185,7 @@ func (r *Handler) StartReviewAgent(t task.Task, force bool) error {
 		claim, ok := r.agents.TryClaimDispatch(current.ID)
 		if !ok {
 			r.logger.Info("review.agent-skip", "task_id", current.ID, "pr", current.PRNumber, "reason", "dispatch_in_progress")
-			return nil
+			return workflow.ErrDispatchInFlight
 		}
 		defer claim.Release()
 	}
@@ -151,6 +197,11 @@ func (r *Handler) StartReviewAgent(t task.Task, force bool) error {
 	if current.ProjectID == "" || current.PRNumber == 0 {
 		return fmt.Errorf("task %s has no linked PR", current.ID)
 	}
+	releasePRDispatch, ok := r.tryReservePRDispatch(current.ID)
+	if !ok {
+		return workflow.ErrDispatchInFlight
+	}
+	defer releasePRDispatch()
 	if !force && reviewAgentAlreadyRan(current) {
 		r.logger.Info("review.agent-skip", "task_id", current.ID, "pr", current.PRNumber, "reason", "already_reviewed")
 		return nil
@@ -161,26 +212,48 @@ func (r *Handler) StartReviewAgent(t task.Task, force bool) error {
 		return postureErr
 	}
 
-	dir := config.HomeDir()
-	if current.ProjectID != "" {
-		// context.Background(): same dead end as StartFixReviewAgent above —
-		// reached from a Wails-bound service method with no ctx.
-		d, err := r.worktrees.PrepareForReview(context.Background(), current)
-		if err != nil {
-			r.logger.Error("review.worktree", "task_id", current.ID, "err", err)
-		} else {
-			dir = d
-		}
+	// context.Background(): same dead end as StartFixReviewAgent above —
+	// reached from a Wails-bound service method with no ctx. A review without
+	// its PR checkout is not useful and can inspect unrelated files, so fail
+	// closed instead of falling back to the Sybra home directory.
+	dir, err := r.worktrees.PrepareForReview(context.Background(), current)
+	switch {
+	case errors.Is(err, worktree.ErrPreparationInFlight):
+		r.logger.Info("review.worktree.busy", "task_id", current.ID, "err", err)
+		return workflow.ErrDispatchInFlight
+	case err != nil:
+		r.logger.Error("review.worktree", "task_id", current.ID, "err", err)
+		return fmt.Errorf("prepare review worktree: %w", err)
 	}
 
 	prompt := StaffCodeReviewPrompt(current.ProjectID, current.PRNumber)
 
-	cfg := r.agents.ApplyABVariant(StaffCodeReviewRunConfig(current, prompt, dir, posture), r.abTestingConfig(), current.ID, string(agent.RoleReview))
+	cfg := r.agents.ApplyABVariant(StaffCodeReviewRunConfig(current, prompt, dir, posture, agentorch.ResolveSandboxMode(current, r.cfg)), r.abTestingConfig(), current.ID, string(agent.RoleReview))
+	cfg.SkipDispatchJitter = force
+	var release func()
+	if r.verification != nil && dir != config.HomeDir() {
+		lease, prepErr := r.verification.Prepare(context.Background(), current.ID, string(agent.RoleReview), dir)
+		if prepErr != nil {
+			return fmt.Errorf("prepare disposable staff-review workspace: %w", prepErr)
+		}
+		release = func() { r.verification.Release(lease) }
+		// The disposable clone is the execution cwd, not the durable identity
+		// of this review attempt. Preserve the canonical worktree for admission
+		// so restart/retry replay remains stable across fresh verifier clones.
+		cfg.AdmissionWorktree = dir
+		cfg.Dir = lease.WorkspaceDir
+		cfg.EphemeralSandboxHome = lease.ScratchDir
+		cfg.ReadOnlyDir = false
+		cfg.BeforeStart = func(agentID string) error { return r.verification.BindAgent(lease.ID, agentID) }
+	}
 	ag, err := r.agents.Run(cfg)
 	if err != nil {
+		if release != nil {
+			release()
+		}
 		return err
 	}
-	if err := r.tasks.AddRun(current.ID, task.AgentRun{
+	if err := r.tasks.AddRunBy(current.ID, "review.inbound.start_review_agent", task.AgentRun{
 		AgentID:         ag.ID,
 		Role:            string(agent.RoleReview),
 		Mode:            "headless",
@@ -214,39 +287,46 @@ func (r *Handler) StartReviewAgent(t task.Task, force bool) error {
 // A/B-disabled fallback keep their high-scrutiny model; an A/B pick overrides it.
 // MaxTurns is intentionally not inherited: review agents need enough turns to
 // fetch the PR, run the skill, and write findings.
-func StaffCodeReviewRunConfig(t task.Task, prompt, dir, posture string) agent.RunConfig {
+func StaffCodeReviewRunConfig(t task.Task, prompt, dir, posture, sandboxMode string) agent.RunConfig {
 	return agent.RunConfig{
-		TaskID:                 t.ID,
-		Name:                   agent.RoleReview.AgentName(t.Title),
-		Role:                   agent.RoleReview,
-		Mode:                   "headless",
-		Prompt:                 prompt,
-		Dir:                    dir,
-		Model:                  "opus",
+		TaskID: t.ID,
+		Name:   agent.RoleReview.AgentName(t.Title),
+		Role:   agent.RoleReview,
+		Mode:   "headless",
+		Prompt: prompt,
+		Dir:    dir,
+		Model:  "opus",
+		// An effort the operator pinned on the task outranks the role
+		// baseline the Manager would otherwise resolve; empty stays empty so
+		// the Manager applies agent.role_effort and then the baseline.
+		ReasoningEffort:        t.ReasoningEffort,
 		HeadlessPermissionMode: posture,
+		SandboxMode:            sandboxMode,
+		ReadOnlyDir:            true,
 	}
 }
 
 // StaffCodeReviewPrompt returns the direct PR-review prompt shared by inbound
-// review automation and task enrichment. It authorizes creating an unsubmitted
-// pending review so headless agents do not stop to ask the operator, while
-// withholding submission and approval authority: these PRs are other people's
-// work, and an approval from the operator's account can satisfy a
-// required-reviewer gate. Kept in lockstep with the pr-review builtin workflow
-// prompts and backed by the gh PATH shim (agent.writeGhShim), which refuses
-// submitted review events if this instruction ever drifts.
+// review automation and task enrichment. It withholds only approval
+// authority: these PRs are other people's work, and an approval from the
+// operator's account can satisfy a required-reviewer gate. REQUEST_CHANGES
+// and COMMENT are feedback, not authority, so the prompt authorizes
+// submitting those directly instead of parking every review as an unsubmitted
+// pending draft. Kept in lockstep with the pr-review builtin workflow prompts
+// and backed by the gh PATH shim (agent.writeGhShim), which refuses submitted
+// APPROVE events if this instruction ever drifts.
 func StaffCodeReviewPrompt(projectID string, prNumber int) string {
 	return fmt.Sprintf(`Run /staff-code-review on https://github.com/%s/pull/%d
 
 This task is an authorized Sybra PR review for the linked project. Do not ask the operator for confirmation before posting your review.
 
-NEVER submit any review event. You have no approval authority, and a human must verify and submit the review on GitHub. Do not run `+"`gh pr review`"+`, do not run `+"`gh pr review --approve`"+`, and do not submit COMMENT, REQUEST_CHANGES, or APPROVE via `+"`gh api`"+`.
+You have no approval authority: NEVER submit an APPROVE review event. Do not run `+"`gh pr review --approve`"+` and do not submit `+"`event=APPROVE`"+` via `+"`gh api`"+`. REQUEST_CHANGES and COMMENT are feedback, not approval authority, so submit those directly instead of leaving them pending.
 
-Create exactly one PENDING (draft) pull-request review and leave it unsubmitted. Before creating it, fetch the PR head SHA and existing reviews; if a review for that head already contains the Sybra harness footer, do not create another review.
+Before posting, fetch the PR head SHA and existing reviews; if a review for that head already contains the Sybra harness footer, do not create another review.
 
-Use GitHub's review API so findings become inline comments, not one aggregated comment. Add each blocking correctness issue as a `+"`comments`"+` entry on the changed line it applies to. Put only the short verdict and summary in the draft review body. If the review is clean and has no inline findings, create a pending review with the clean summary body and no inline comments.
+Use GitHub's review API so findings become inline comments, not one aggregated comment. Add each blocking correctness issue as a `+"`comments`"+` entry on the changed line it applies to. Put only the short verdict and summary in the review body.
 
-Prefer `+"`gh api repos/%s/pulls/%d/reviews -X POST ...`"+` with explicit `+"`-f`"+`/`+"`-F`"+` fields such as `+"`comments[][path]`"+`, `+"`comments[][line]`"+`, `+"`comments[][side]=RIGHT`"+`, and `+"`comments[][body]`"+`. Omit `+"`event`"+` so GitHub leaves the review PENDING.
+Post via `+"`gh api repos/%s/pulls/%d/reviews -X POST ...`"+` with explicit `+"`-f`"+`/`+"`-F`"+` fields such as `+"`comments[][path]`"+`, `+"`comments[][line]`"+`, `+"`comments[][side]=RIGHT`"+`, and `+"`comments[][body]`"+`, then choose the event by verdict: at least one blocking finding, submit with `+"`-f event=REQUEST_CHANGES`"+`; no blocking finding but the review has notes worth surfacing, submit with `+"`-f event=COMMENT`"+`; nothing to say at all (fully clean, no findings), omit `+"`event`"+` so GitHub leaves the review PENDING for a human to approve.
 
 End the review summary and every review comment you post with a blank line then exactly this standalone harness attribution footer:
 
@@ -262,7 +342,7 @@ func reviewAgentAlreadyRan(t task.Task) bool {
 	})
 }
 
-func (r *Handler) maybeCreateReviewTasks(tasks []task.Task, reviewPRs []github.PullRequest) {
+func (r *Handler) maybeCreateReviewTasks(ctx context.Context, tasks []task.Task, reviewPRs []github.PullRequest) {
 	projects, err := r.projects.List()
 	if err != nil || len(projects) == 0 {
 		return
@@ -277,6 +357,10 @@ func (r *Handler) maybeCreateReviewTasks(tasks []task.Task, reviewPRs []github.P
 	}
 
 	matches := github.MatchReviewPRs(reviewPRs, projectMatchers)
+	viewer := ""
+	if len(matches) > 0 {
+		viewer = strings.TrimSpace(r.agentLogin(ctx))
+	}
 	for i := range matches {
 		if matches[i].PR.IsDraft {
 			continue
@@ -284,24 +368,60 @@ func (r *Handler) maybeCreateReviewTasks(tasks []task.Task, reviewPRs []github.P
 		if matches[i].PR.ReviewDecision == "APPROVED" {
 			continue
 		}
-		if r.hasReviewTask(tasks, matches[i].ProjectID, matches[i].PR.Number) {
+		if r.hasActiveLocalPROwner(tasks, matches[i].ProjectID, matches[i].PR.Number, matches[i].PR.HeadRefName, matches[i].PR.HeadRepo) {
 			continue
 		}
-		r.createReviewTask(matches[i].PR, matches[i].ProjectID)
+		r.createReviewTask(viewer, matches[i].PR, matches[i].ProjectID)
 	}
 }
 
-func (r *Handler) hasReviewTask(tasks []task.Task, projectID string, prNumber int) bool {
+func (r *Handler) hasActiveLocalPROwner(tasks []task.Task, projectID string, prNumber int, branch, headRepo string) bool {
 	for i := range tasks {
-		// PR numbers are per-repo, so a review task only suppresses another
-		// PR with the same number when they belong to the same project.
-		if tasks[i].ProjectID == projectID &&
-			tasks[i].PRNumber == prNumber &&
-			slices.Contains(tasks[i].Tags, "review") {
+		// PR numbers are per-repo, so an existing local owner only suppresses
+		// another PR with the same number when they belong to the same project.
+		// This is intentionally broader than "has review tag": self-authored
+		// Sybra PRs are already owned by their implementation task. Branch is a
+		// secondary key for the window before create-pr/link-pr has stamped the
+		// implementation task's PR number, but only for same-repo heads; forked PR
+		// branch names are not unique.
+		if taskOwnsPR(tasks[i], "", projectID, prNumber, branch, headRepo, false) {
 			return true
 		}
 	}
 	return false
+}
+
+func activeNonReviewPROwner(tasks []task.Task, reviewTaskID, projectID string, prNumber int, branch, headRepo string) (string, bool) {
+	for i := range tasks {
+		if !taskOwnsPR(tasks[i], reviewTaskID, projectID, prNumber, branch, headRepo, true) {
+			continue
+		}
+		return tasks[i].ID, true
+	}
+	return "", false
+}
+
+func taskOwnsPR(t task.Task, reviewTaskID, projectID string, prNumber int, branch, headRepo string, excludeReviewTasks bool) bool {
+	if (reviewTaskID != "" && t.ID == reviewTaskID) ||
+		t.ProjectID != projectID ||
+		task.IsTerminalStatus(t.Status) ||
+		(excludeReviewTasks && slices.Contains(t.Tags, "review")) {
+		return false
+	}
+	if prNumber != 0 && t.PRNumber == prNumber {
+		return true
+	}
+	if t.PRNumber != 0 {
+		return false
+	}
+	return branch != "" && t.Branch == branch && projectHeadRepoMatches(projectID, headRepo)
+}
+
+func projectHeadRepoMatches(projectID, headRepo string) bool {
+	if projectID == "" || headRepo == "" {
+		return false
+	}
+	return strings.EqualFold(projectID, headRepo)
 }
 
 // reviewPRKey identifies a PR within a repo for summary lookups.
@@ -326,55 +446,75 @@ const reconcileEscalationReason = "review reconcile failed"
 // recordReconcileFailure counts consecutive reconcile failures and escalates
 // once they look permanent. Transient blips (5xx, timeouts, budget backoff) are
 // expected and never count; only a read that keeps failing is a defect.
+//
+// The count lives on the task itself (Task.ReconcileFailures), not an
+// in-memory map (#2199): a process restart must not hand a permanently-failing
+// task a fresh free budget, silently doubling how long #2164-style breakage
+// can run undetected across a redeploy.
 func (r *Handler) recordReconcileFailure(t *task.Task, err error) {
-	if github.IsTransientError(err) {
+	class := github.ClassifyError(err, errclass.GitHubPollerRetryBiased)
+	if class == errclass.Transient || class == errclass.RateLimited {
 		r.logger.Warn("review.my-state", "task_id", t.ID, "err", err, "transient", true)
 		return
 	}
 
-	// Already parked on a human: escalating again achieves nothing and actively
-	// harms — human-required is not terminal, so the poller keeps feeding this
+	// Already parked or quarantined: escalating again achieves nothing and actively
+	// harms — these states are not terminal, so the poller keeps feeding this
 	// task back, and each pass would overwrite the operator's own triage note
 	// and rewrite updated_at on work nobody is doing. Deliberately keyed on
 	// status alone, not on our own reason string: an operator who replaces the
 	// note must not thereby re-arm the clobber.
-	if t.Status == task.StatusHumanRequired {
+	if t.Status == task.StatusHumanRequired || t.Status == task.StatusBlocked {
 		// Drop the count too: it measures progress toward an escalation that has
 		// already happened, and keeping it would pin an entry for every parked
 		// task for the life of the process.
-		r.clearReconcileFailure(t.ID)
+		r.clearReconcileFailure(t)
 		return
 	}
 
-	r.failureMu.Lock()
-	if r.reconcileFailures == nil {
-		r.reconcileFailures = make(map[string]int)
-	}
-	r.reconcileFailures[t.ID]++
-	attempts := r.reconcileFailures[t.ID]
+	attempts := t.ReconcileFailures + 1
 	if attempts < reconcileFailureLimit {
-		r.failureMu.Unlock()
+		if _, uerr := r.tasks.UpdateBy(t.ID, "review.inbound.record_reconcile_failure", task.Update{ReconcileFailures: task.Ptr(attempts)}); uerr != nil {
+			r.logger.Error("review.reconcile.count", "task_id", t.ID, "err", uerr)
+		}
 		r.logger.Warn("review.my-state", "task_id", t.ID, "err", err, "attempts", attempts)
 		return
 	}
-	r.failureMu.Unlock()
 
 	r.logger.Error("review.reconcile.circuit-open",
 		"task_id", t.ID, "failures", reconcileFailureLimit, "err", err)
 	// human-required is not dispatchable, so escalating both surfaces the defect
-	// and starves the re-review a frozen phase would keep feeding.
-	if _, uerr := r.tasks.Update(t.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(fmt.Sprintf("%s %d times: %v", reconcileEscalationReason, reconcileFailureLimit, err)),
+	// and starves the re-review a frozen phase would keep feeding. Reset the
+	// count in this same write (rather than leaving it for the next
+	// clearReconcileFailure call) so an already-parked task never takes a
+	// second write — and a second updated_at bump — on the very next poll.
+	if _, uerr := r.tasks.Apply(task.TransitionIntent{
+		TaskID:   t.ID,
+		ToStatus: task.StatusBlocked,
+		Actor:    "review.reconcile.escalate",
+		Extra: task.Update{
+			StatusReason:      task.Ptr(fmt.Sprintf("%s %d times: %v", reconcileEscalationReason, reconcileFailureLimit, err)),
+			ReconcileFailures: task.Ptr(0),
+			Escalation:        task.MachineFailure("review.reconcile_exhausted", reconcileEscalationReason),
+			AutonomyOutcome:   task.QuarantinedOutcome(),
+		},
 	}); uerr != nil {
 		r.logger.Error("review.reconcile.escalate", "task_id", t.ID, "err", uerr)
 	}
 }
 
-func (r *Handler) clearReconcileFailure(taskID string) {
-	r.failureMu.Lock()
-	defer r.failureMu.Unlock()
-	delete(r.reconcileFailures, taskID)
+// clearReconcileFailure resets t's durable failure count once a reconcile
+// succeeds. A no-op write when the count is already zero, so a healthy task
+// reconciling every cooldown doesn't touch the task file on every pass.
+func (r *Handler) clearReconcileFailure(t *task.Task) {
+	if t == nil || t.ReconcileFailures == 0 {
+		return
+	}
+	if _, err := r.tasks.UpdateBy(t.ID, "review.inbound.clear_reconcile_failure", task.Update{ReconcileFailures: task.Ptr(0)}); err != nil {
+		r.logger.Error("review.reconcile.clear", "task_id", t.ID, "err", err)
+		return
+	}
+	t.ReconcileFailures = 0
 }
 
 // RateLimitParkReason prefixes the StatusReason written when the review rate
@@ -413,26 +553,58 @@ func (r *Handler) reconcileReviewPhases(tasks []task.Task, summary github.Review
 		if t.PRNumber == 0 || t.ProjectID == "" {
 			continue
 		}
+		key := reviewPRKey(t.ProjectID, t.PRNumber)
+		branch := t.Branch
+		headRepo := ""
+		if pr, ok := requested[key]; ok {
+			headRepo = pr.HeadRepo
+			if branch == "" {
+				branch = pr.HeadRefName
+			}
+		} else if pr, ok := approved[key]; ok {
+			headRepo = pr.HeadRepo
+			if branch == "" {
+				branch = pr.HeadRefName
+			}
+		}
+		if ownerID, ok := activeNonReviewPROwner(tasks, t.ID, t.ProjectID, t.PRNumber, branch, headRepo); ok {
+			reason := fmt.Sprintf("Duplicate: PR is already tracked by active task %s", ownerID)
+			if _, err := r.tasks.Apply(task.TransitionIntent{
+				TaskID:   t.ID,
+				ToStatus: task.StatusCancelled,
+				Actor:    "review.duplicate-owner.cancel",
+				Extra: task.Update{
+					StatusReason: task.Ptr(reason),
+				},
+			}); err != nil {
+				r.logger.Error("review.duplicate-owner.cancel", "task_id", t.ID, "owner_task_id", ownerID, "err", err)
+			}
+			continue
+		}
 		r.reconcileReviewTask(t, requested, approved)
 	}
 }
 
 // reconcileReviewTask computes and applies the phase for a single review task.
 func (r *Handler) reconcileReviewTask(t *task.Task, requested, approved map[string]github.PullRequest) {
+	key := reviewPRKey(t.ProjectID, t.PRNumber)
+	reqPR, inReq := requested[key]
+	apPR, inApproved := approved[key]
+
 	// An agent owning the PR short-circuits: surface "reviewing" without the
 	// extra GitHub round-trips.
 	if r.agents.HasRunningAgentForTask(t.ID) {
 		// Reaching this proves the task is healthy, so any earlier failures are
 		// stale. Without clearing here the count never decays and a single fresh
 		// failure hours later can trip a circuit meant to catch a persistent one.
-		r.clearReconcileFailure(t.ID)
+		r.clearReconcileFailure(t)
+		// A running (possibly stuck/looping) review agent that already submitted a
+		// bogus approval would otherwise leave it live on GitHub for the whole run,
+		// since this branch skips the full self-approval path below (#2198).
+		r.reverseLiveSelfApproval(t, inApproved)
 		r.applyReviewPhase(t, computeReviewPhase(reviewSignals{AgentRunning: true}))
 		return
 	}
-
-	key := reviewPRKey(t.ProjectID, t.PRNumber)
-	reqPR, inReq := requested[key]
-	apPR, inApproved := approved[key]
 
 	// A conflicting PR is blocked on the author rebasing — surface "conflict" and
 	// sink it to the bottom of the lane, whatever the viewer's review state (the
@@ -455,7 +627,12 @@ func (r *Handler) reconcileReviewTask(t *task.Task, requested, approved map[stri
 		}
 	}
 	if res, decided := stickyConflictPhase(mergeable, t.ReviewPhase); decided {
-		r.clearReconcileFailure(t.ID)
+		r.clearReconcileFailure(t)
+		// The conflict phase outranks review state, but a self-approval is still a
+		// live green light on GitHub that native auto-merge would count the moment
+		// the conflict clears — reverse it now rather than waiting for the one poll
+		// where mergeability flips back and this branch stops short-circuiting.
+		r.reverseLiveSelfApproval(t, inApproved)
 		r.applyReviewPhase(t, res)
 		return
 	}
@@ -469,7 +646,13 @@ func (r *Handler) reconcileReviewTask(t *task.Task, requested, approved map[stri
 		r.recordReconcileFailure(t, err)
 		return
 	}
-	r.clearReconcileFailure(t.ID)
+	r.clearReconcileFailure(t)
+
+	viewerApproved := myState.Approved || (!myState.Submitted && inApproved)
+	selfApproved := myState.ViewerIsBot && viewerApproved
+	if selfApproved {
+		r.dismissSelfApproval(t, myState)
+	}
 
 	submitted := myState.Submitted || inApproved
 	headSHA := ""
@@ -513,7 +696,8 @@ func (r *Handler) reconcileReviewTask(t *task.Task, requested, approved map[stri
 	r.applyReviewPhase(t, computeReviewPhase(reviewSignals{
 		CostGuardrailStopped:      latestReviewRunStoppedByCostGuardrail(t),
 		HasDraft:                  myState.Pending,
-		ViewerApproved:            myState.Approved || inApproved,
+		SelfApproved:              selfApproved,
+		Approved:                  viewerApproved,
 		Submitted:                 submitted,
 		ReRequested:               inReq,
 		HeadSHA:                   headSHA,
@@ -521,6 +705,64 @@ func (r *Handler) reconcileReviewTask(t *task.Task, requested, approved map[stri
 		HeadLineageUnknown:        headLineageUnknown,
 		BaseOnlyMergeFromReviewed: baseOnlyMergeFromReviewed,
 	}))
+}
+
+// selfApprovalDismissMessage is left on GitHub's audit trail explaining why
+// an approval was reversed the moment it was detected.
+const selfApprovalDismissMessage = "Dismissed automatically by Sybra: our own bot identity approved its own review task, which can never stand in for a human review."
+
+// reverseLiveSelfApproval dismisses a live bot self-approval before the
+// agent-running and conflict short-circuits in reconcileReviewTask return,
+// which would otherwise skip the full self-approval path and leave a bogus
+// APPROVED review standing on GitHub for the whole agent run / conflict window.
+//
+// The REST round-trip is spent only when the cheap approvals-only summary leg
+// (inApproved) already flags an approval, so the common no-approval path keeps
+// the short-circuit's zero-round-trip cost. Escalation to human-required is not
+// attempted here — the short-circuit phases (reviewing/conflict) stand; the
+// full self-approval escalation runs on the next fall-through poll.
+func (r *Handler) reverseLiveSelfApproval(t *task.Task, inApproved bool) {
+	if !inApproved {
+		return
+	}
+	myStateFn := github.FetchMyReviewState
+	if r.fetchMyReviewStateFn != nil {
+		myStateFn = r.fetchMyReviewStateFn
+	}
+	myState, err := myStateFn(t.ProjectID, t.PRNumber)
+	if err != nil {
+		r.logger.Warn("review.self-approval.probe", "task_id", t.ID, "pr", t.PRNumber, "err", err)
+		return
+	}
+	r.dismissSelfApproval(t, myState)
+}
+
+// dismissSelfApproval reverses an approval our own bot identity submitted on
+// a PR it is reviewing. This is never a legitimate green light — it means an
+// approval escaped the gh shim's PreToolUse-adjacent floor (internal/agent's
+// ghshim.go) or was otherwise submitted under the bot's own credentials
+// rather than a human's — so the outcome, not just the attempt, is caught and
+// reversed here (#2198).
+//
+// Best-effort: myState is only populated with a review ID when the REST
+// fetch itself observed the approval (myState.Approved), so an inApproved-only
+// detection (stale search-leg signal, REST already shows something else) has
+// nothing to dismiss yet — computeReviewPhase still keeps the task out of the
+// "approved" phase regardless. A dismissal failure is logged, never fatal:
+// escalating the task to human-required does not depend on it succeeding.
+func (r *Handler) dismissSelfApproval(t *task.Task, myState github.MyReviewState) {
+	if !myState.ViewerIsBot || !myState.Approved || myState.ReviewID == 0 {
+		return
+	}
+	dismissFn := github.DismissReview
+	if r.dismissReviewFn != nil {
+		dismissFn = r.dismissReviewFn
+	}
+	if err := dismissFn(t.ProjectID, t.PRNumber, myState.ReviewID, selfApprovalDismissMessage); err != nil {
+		r.logger.Error("review.self-approval.dismiss-failed", "task_id", t.ID, "pr", t.PRNumber, "err", err)
+		return
+	}
+	r.logAudit(audit.EventReviewSelfApprovalDismissed, t.ID, "", map[string]any{"pr": t.PRNumber, "repo": t.ProjectID})
 }
 
 func latestReviewRunStoppedByCostGuardrail(t *task.Task) bool {
@@ -534,9 +776,21 @@ func latestReviewRunStoppedByCostGuardrail(t *task.Task) bool {
 	return false
 }
 
+// defaultManualReviewReason explains the manual review phase on the board.
+// Without it a task parked by computeReviewPhase carries no status reason at
+// all, so the operator sees a needs-you badge with no stated cause.
+const defaultManualReviewReason = "no automated review exists for this PR yet — review it, or reopen the task to let an agent draft one"
+
 // applyReviewPhase persists only the fields that changed. Status is set only
 // when the result names one and it differs (so an unchanged status never
 // clears a triage-authored reason); the reason follows a status or phase change.
+//
+// This is the single write site for a review task's ReviewPhase/Status
+// (#2499): computeReviewPhase (review_phase.go) is a pure function of
+// reviewSignals — it returns a reviewPhaseResult rather than mutating
+// anything — and every caller routes the result through here rather than
+// writing task.Update directly. The outbound (own-PR) equivalent is
+// applyPRPhase in outbound.go, following the same pattern for PRPhase.
 func (r *Handler) applyReviewPhase(t *task.Task, res reviewPhaseResult) {
 	statusChanged := res.Status != "" && res.Status != t.Status
 	phaseChanged := res.Phase != t.ReviewPhase
@@ -548,15 +802,40 @@ func (r *Handler) applyReviewPhase(t *task.Task, res reviewPhaseResult) {
 	if phaseChanged {
 		u.ReviewPhase = task.Ptr(res.Phase)
 	}
-	if statusChanged {
-		u.Status = task.Ptr(res.Status)
+	reason := res.Reason
+	// A phase that asserts human-required but names no reason (manual) leaves
+	// the board showing "needs you" with nothing said, which is
+	// indistinguishable from a bug.
+	//
+	// The empty reason exists so an existing triage/reconciliation blocker
+	// survives — but that only holds while the status is unchanged, since a
+	// transition clears the reason regardless. So fill on a transition (where
+	// nothing is preserved either way) or when the reason is genuinely blank,
+	// and leave an existing reason alone on a phase-only update.
+	if reason == "" && res.Status == task.StatusHumanRequired &&
+		(statusChanged || strings.TrimSpace(t.StatusReason) == "") {
+		reason = defaultManualReviewReason
 	}
-	if res.Reason != "" && (statusChanged || phaseChanged) {
-		u.StatusReason = task.Ptr(res.Reason)
+	if reason != "" && (statusChanged || phaseChanged) {
+		u.StatusReason = task.Ptr(reason)
+	}
+	if statusChanged && res.Status == task.StatusHumanRequired {
+		u.Escalation = task.OperatorDecisionRequired("review.manual_action_required", reason)
+		u.AutonomyOutcome = task.HumanRequiredOutcome()
 	}
 
 	prev := t.ReviewPhase
-	if _, err := r.tasks.Update(t.ID, u); err != nil {
+	if statusChanged {
+		if _, err := r.tasks.Apply(task.TransitionIntent{
+			TaskID:   t.ID,
+			ToStatus: res.Status,
+			Actor:    "review.phase-update",
+			Extra:    u,
+		}); err != nil {
+			r.logger.Error("review.phase-update", "task_id", t.ID, "phase", res.Phase, "err", err)
+			return
+		}
+	} else if _, err := r.tasks.UpdateBy(t.ID, "review.phase-update", u); err != nil {
 		r.logger.Error("review.phase-update", "task_id", t.ID, "phase", res.Phase, "err", err)
 		return
 	}
@@ -649,9 +928,13 @@ func (r *Handler) closeFinishedReviewTasksWithFetch(tasks []task.Task, openRevie
 			continue
 		}
 		reason := fmt.Sprintf("review PR %s", strings.ToLower(c.State))
-		if _, err := r.tasks.Update(c.TaskID, task.Update{
-			Status:       task.Ptr(task.StatusDone),
-			StatusReason: &reason,
+		if _, err := r.tasks.Apply(task.TransitionIntent{
+			TaskID:   c.TaskID,
+			ToStatus: task.StatusDone,
+			Actor:    "review.closed-update",
+			Extra: task.Update{
+				StatusReason: &reason,
+			},
 		}); err != nil {
 			r.logger.Error("review.closed-update", "task_id", c.TaskID, "err", err)
 			continue

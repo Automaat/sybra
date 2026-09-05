@@ -32,6 +32,10 @@ func CloneConfig(src Config) Config {
 			subj := *exp.Subject
 			exp.Subject = &subj
 		}
+		if exp.Canary != nil {
+			canary := *exp.Canary
+			exp.Canary = &canary
+		}
 		exp.Roles = slices.Clone(exp.Roles)
 		exp.Variants = make([]Variant, len(src.Experiments[i].Variants))
 		for j := range src.Experiments[i].Variants {

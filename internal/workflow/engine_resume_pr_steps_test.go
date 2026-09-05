@@ -3,10 +3,12 @@ package workflow
 import (
 	"testing"
 	"time"
+
+	"github.com/Automaat/sybra/internal/config"
 )
 
 func TestIsResumableStepType(t *testing.T) {
-	resumable := []StepType{StepRunAgent, StepParallel, StepBestOfN, StepClassifyTask, StepVerifyChecks, StepCreatePR, StepPushBranch, StepPromoteBestOfN}
+	resumable := []StepType{StepRunAgent, StepParallel, StepBestOfN, StepClassifyTask, StepVerifyChecks, StepCreatePR, StepPushBranch, StepPromoteBestOfN, StepAdmissionPreflight, StepParallelGates}
 	for _, st := range resumable {
 		if !isResumableStepType(st) {
 			t.Errorf("isResumableStepType(%q) = false, want true", st)
@@ -54,11 +56,11 @@ func TestResumeStalled_ResumesParkedCreatePR(t *testing.T) {
 		},
 	})
 
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
 	creator := &fakePRCreator{number: 42, headSHA: headSHA(t, wtPath)}
 	engine.SetPRCreator(creator)
-	engine.SetPRContentGenerator(&fakePRContentGenerator{title: "feat(x): y", body: "## Motivation\n\nz\n\n## Implementation information\n\nw"})
+	engine.setPRContentGeneratorForTest(&fakePRContentGenerator{title: "feat(x): y", body: "## Motivation\n\nz\n\n## Implementation information\n\nw"})
 
 	engine.ResumeStalled()
 
@@ -138,9 +140,9 @@ func TestResumeStalled_ResumesParkedPushBranch(t *testing.T) {
 		},
 	})
 
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
-	engine.SetPRHeadFetcher(&fakePRHeadFetcher{sha: local})
+	engine.setPRHeadFetcherForTest(&fakePRHeadFetcher{sha: local})
 
 	engine.ResumeStalled()
 
@@ -148,5 +150,49 @@ func TestResumeStalled_ResumesParkedPushBranch(t *testing.T) {
 	if ti.Workflow.State != ExecCompleted || ti.Workflow.CurrentStep != "" {
 		t.Fatalf("workflow state = %v at step %q, want completed — parked push_existing_pr was not resumed (reason=%q)",
 			ti.Workflow.State, ti.Workflow.CurrentStep, tasks.Reason("t1"))
+	}
+}
+
+// TestResumeStalled_ResumesParkedAdmissionPreflight guards against the crash
+// window a stuck admission_preflight leaves behind: CurrentStep persisted but
+// the step never executed. Before admission_preflight was added to
+// isResumableStepType, ResumeStalled refused to touch this task and it stayed
+// stuck at in-progress indefinitely (see PR #2631 review).
+func TestResumeStalled_ResumesParkedAdmissionPreflight(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.Save(Definition{
+		ID:   "admission-wf",
+		Name: "admission wf",
+		Steps: []Step{
+			{ID: "admission_preflight", Name: "Admission Preflight", Type: StepAdmissionPreflight, Next: []Transition{{GoTo: ""}}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{
+		ID:     "t1",
+		Status: "in-progress",
+		Workflow: &Execution{
+			WorkflowID:  "admission-wf",
+			CurrentStep: "admission_preflight",
+			State:       ExecRunning,
+			Variables:   map[string]string{},
+		},
+	})
+
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
+	engine.SetAdmissionConfig(config.AdmissionConfig{Enabled: true})
+
+	engine.ResumeStalled()
+
+	ti, _ := tasks.GetTask("t1")
+	if ti.Workflow.State != ExecCompleted || ti.Workflow.CurrentStep != "" {
+		t.Fatalf("workflow state = %v at step %q, want completed — parked admission_preflight was not resumed (reason=%q)",
+			ti.Workflow.State, ti.Workflow.CurrentStep, tasks.Reason("t1"))
+	}
+	if ti.Status == "human-required" {
+		t.Fatalf("status = %q, want not human-required (no plan contract must admit)", ti.Status)
 	}
 }

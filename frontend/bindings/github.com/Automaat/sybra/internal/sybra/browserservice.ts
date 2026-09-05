@@ -26,3 +26,14 @@ import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Cr
 export function Open(rawURL: string): $CancellablePromise<void> {
     return $Call.ByID(2849660783, rawURL);
 }
+
+/**
+ * OpenExternal hands rawURL to the browser on the host serving this board.
+ * 
+ * The UI cannot do this itself: the desktop window's webview implements no
+ * window-opening delegate, so window.open there is a silent no-op and an
+ * external link would do nothing at all.
+ */
+export function OpenExternal(rawURL: string): $CancellablePromise<void> {
+    return $Call.ByID(2755146676, rawURL);
+}

@@ -5,15 +5,19 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
-	"syscall"
 	"time"
 
+	"github.com/Automaat/sybra/internal/errclass"
+
 	"github.com/Automaat/sybra/internal/attribution"
+	"github.com/Automaat/sybra/internal/evidence"
+	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 // errStepParked is a sentinel returned by a synchronous step that has parked
@@ -35,11 +39,11 @@ const (
 // human can fix the linkage manually.
 //
 // The step is a no-op when any of these are missing: task.Issue,
-// task.PRNumber, task.ProjectID, engine.prLinker. It also skips when
+// task.PRNumber, task.ProjectID, engine.pr.Linker. It also skips when
 // the issue lives in a different repo than the PR (cross-repo linking
 // needs explicit support GitHub handles but this check does not).
 func (e *Engine) execEnsurePRClosesIssue(taskID string, step *Step, t TaskInfo) (StepOutput, error) {
-	if e.prLinker == nil {
+	if e.pr.Linker == nil {
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: no pr linker configured"}, nil
 	}
 	if t.Issue == "" || t.PRNumber == 0 || t.ProjectID == "" {
@@ -54,7 +58,7 @@ func (e *Engine) execEnsurePRClosesIssue(taskID string, step *Step, t TaskInfo) 
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: cross-repo issue link"}, nil
 	}
 
-	issues, body, err := e.prLinker.GetClosingIssues(t.ProjectID, t.PRNumber)
+	issues, body, err := e.pr.Linker.GetClosingIssues(t.ProjectID, t.PRNumber)
 	if err != nil {
 		e.logger.Error("workflow.pr-close.fetch", "task_id", taskID, "err", err)
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "fetch failed: " + err.Error()}, nil
@@ -68,9 +72,9 @@ func (e *Engine) execEnsurePRClosesIssue(taskID string, step *Step, t TaskInfo) 
 		newBody += "\n\n"
 	}
 	newBody += "Closes " + t.Issue
-	if editErr := e.prLinker.EditBody(t.ProjectID, t.PRNumber, newBody); editErr != nil {
+	if editErr := e.pr.Linker.EditBody(t.ProjectID, t.PRNumber, newBody); editErr != nil {
 		e.logger.Error("workflow.pr-close.edit", "task_id", taskID, "err", editErr)
-		if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", "PR does not close linked issue and auto-fix failed: "+editErr.Error()); statusErr != nil {
+		if statusErr := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, "PR does not close linked issue and auto-fix failed: "+editErr.Error()); statusErr != nil {
 			e.logger.Error("workflow.pr-close.status", "task_id", taskID, "err", statusErr)
 		}
 		return StepOutput{StepID: step.ID, Status: "failed", Output: "edit failed: " + editErr.Error()}, nil
@@ -88,7 +92,7 @@ func (e *Engine) execEnsurePRClosesIssue(taskID string, step *Step, t TaskInfo) 
 			prVerifySleep(prVerifyBackoffs[attempt-1])
 		}
 		var verified []int
-		verified, _, verifyErr = e.prLinker.GetClosingIssues(t.ProjectID, t.PRNumber)
+		verified, _, verifyErr = e.pr.Linker.GetClosingIssues(t.ProjectID, t.PRNumber)
 		if verifyErr == nil && slices.Contains(verified, issueNum) {
 			e.logger.Info("workflow.pr-close.linked", "task_id", taskID, "pr", t.PRNumber, "issue", issueNum, "attempt", attempt)
 			return StepOutput{StepID: step.ID, Status: "completed", Output: fmt.Sprintf("linked issue #%d", issueNum)}, nil
@@ -116,14 +120,14 @@ func (e *Engine) execEnsurePRClosesIssue(taskID string, step *Step, t TaskInfo) 
 // no-op when the PR linker is unset or the task carries no PR/project, and it
 // never blocks the workflow — a fetch/edit failure is logged and completed.
 func (e *Engine) execStampPRAttribution(taskID string, step *Step, t TaskInfo) (StepOutput, error) {
-	if e.prLinker == nil {
+	if e.pr.Linker == nil {
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: no pr linker configured"}, nil
 	}
 	if t.PRNumber == 0 || t.ProjectID == "" {
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: missing pr or project"}, nil
 	}
 
-	_, body, err := e.prLinker.GetClosingIssues(t.ProjectID, t.PRNumber)
+	_, body, err := e.pr.Linker.GetClosingIssues(t.ProjectID, t.PRNumber)
 	if err != nil {
 		e.logger.Error("workflow.pr-attribution.fetch", "task_id", taskID, "err", err)
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "fetch failed: " + err.Error()}, nil
@@ -136,7 +140,7 @@ func (e *Engine) execStampPRAttribution(taskID string, step *Step, t TaskInfo) (
 		}
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "already stamped"}, nil
 	}
-	if editErr := e.prLinker.EditBody(t.ProjectID, t.PRNumber, stamped); editErr != nil {
+	if editErr := e.pr.Linker.EditBody(t.ProjectID, t.PRNumber, stamped); editErr != nil {
 		e.logger.Error("workflow.pr-attribution.edit", "task_id", taskID, "err", editErr)
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "edit failed: " + editErr.Error()}, nil
 	}
@@ -145,14 +149,14 @@ func (e *Engine) execStampPRAttribution(taskID string, step *Step, t TaskInfo) (
 }
 
 func (e *Engine) execRerequestReview(taskID string, step *Step, t TaskInfo) (StepOutput, error) {
-	if e.prReviewers == nil {
+	if e.pr.ReviewRequester == nil {
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: no pr review requester configured"}, nil
 	}
 	if t.PRNumber == 0 || t.ProjectID == "" {
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: missing pr or project"}, nil
 	}
 
-	reviewers, err := e.prReviewers.RerequestReview(t.ProjectID, t.PRNumber)
+	reviewers, err := e.pr.ReviewRequester.RerequestReview(t.ProjectID, t.PRNumber)
 	if err != nil {
 		e.logger.Warn("workflow.rerequest-review.failed", "task_id", taskID, "pr", t.PRNumber, "err", err)
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "request failed: " + err.Error()}, nil
@@ -186,6 +190,14 @@ func (e *Engine) execRerequestReview(taskID string, step *Step, t TaskInfo) (Ste
 // Catches the codex-sandbox-blocked class of failure where the agent
 // exits cleanly without producing its expected output file.
 func (e *Engine) execRequireSidecar(taskID string, step *Step, t TaskInfo) (StepOutput, error) {
+	wfExec := t.Workflow
+	if wfExec == nil {
+		wfExec = &Execution{Variables: map[string]string{}}
+	}
+	return e.execRequireSidecarWithExec(taskID, step, wfExec, t)
+}
+
+func (e *Engine) execRequireSidecarWithExec(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error) {
 	var content, label string
 	sk := step.Config.Sidecar
 	switch {
@@ -228,7 +240,38 @@ func (e *Engine) execRequireSidecar(taskID string, step *Step, t TaskInfo) (Step
 			e.logger.Warn("workflow.require-sidecar.missing-soft", "task_id", taskID, "sidecar", step.Config.Sidecar)
 			return StepOutput{StepID: step.ID, Status: "completed", Output: reason + " — skipped"}, nil
 		}
-		if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
+		producer := step.Config.RetryStep
+		if producer == "" && step.Config.RetryStepVar != "" {
+			producer = wfExec.Variables[step.Config.RetryStepVar]
+		}
+		if producer != "" && step.Config.MaxRetries > 0 {
+			def, defErr := e.store.Get(wfExec.WorkflowID)
+			if defErr != nil {
+				return StepOutput{}, defErr
+			}
+			producerStep := def.StepByID(producer)
+			if producerStep == nil || producerStep.Type != StepRunAgent {
+				return StepOutput{}, fmt.Errorf("require_sidecar: retry producer %q is not a run_agent step", producer)
+			}
+			armed, attempt, retryErr := e.rewindRetry(taskID, wfExec, t, rewindRetryPolicy{
+				counterKey: "step." + producer + ".missing_sidecar_retry",
+				max:        step.Config.MaxRetries,
+				rewindStep: producer,
+				backoff:    func(int) time.Duration { return 10 * time.Second },
+				reason: func(attempt int) string {
+					return fmt.Sprintf("re-running %s: required %s was missing (attempt %d/%d)", producer, label, attempt, step.Config.MaxRetries)
+				},
+			})
+			if retryErr != nil {
+				return StepOutput{}, retryErr
+			}
+			if armed {
+				e.logger.Warn("workflow.require-sidecar.retry", "task_id", taskID, "sidecar", step.Config.Sidecar,
+					"producer", producer, "attempt", attempt, "max", step.Config.MaxRetries)
+				return StepOutput{}, errStepParked
+			}
+		}
+		if statusErr := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); statusErr != nil {
 			e.logger.Error("workflow.require-sidecar.status", "task_id", taskID, "err", statusErr)
 		}
 		e.logger.Warn("workflow.require-sidecar.missing", "task_id", taskID, "sidecar", step.Config.Sidecar)
@@ -238,25 +281,41 @@ func (e *Engine) execRequireSidecar(taskID string, step *Step, t TaskInfo) (Step
 }
 
 // resolveOriginBase returns the remote ref to use as the base for commit
-// range comparisons. It checks for origin/HEAD (set when the remote HEAD
-// symbolic ref is configured), then falls back to probing master and main.
+// range comparisons. It first resolves the linked repository's default branch,
+// then checks origin/HEAD, followed by compatibility fallbacks. A plain
+// rev-parse accepts a syntactically valid but missing object ID, so each
+// candidate must resolve to a commit before it can be used in a range.
 // Returns "origin/main" if nothing resolves.
 func resolveOriginBase(ctx context.Context, wtPath string) string {
-	for _, candidate := range []string{"origin/HEAD", "origin/master", "origin/main"} {
-		cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", candidate)
-		cmd.Dir = wtPath
-		if cmd.Run() == nil {
+	candidates := originBaseCandidates(ctx, wtPath)
+	for _, candidate := range candidates {
+		if gitOK(ctx, wtPath, "rev-parse", "--verify", candidate+"^{commit}") {
 			return candidate
 		}
 	}
 	return "origin/main"
 }
 
+func originBaseCandidates(ctx context.Context, wtPath string) []string {
+	candidates := make([]string, 0, 4)
+	if commonDir, err := gitStdout(ctx, wtPath, "rev-parse", "--git-common-dir"); err == nil && commonDir != "" {
+		if !filepath.IsAbs(commonDir) {
+			commonDir = filepath.Join(wtPath, commonDir)
+		}
+		if bare, err := gitStdout(ctx, commonDir, "rev-parse", "--is-bare-repository"); err == nil && bare == "true" {
+			if branch, err := gitStdout(ctx, commonDir, "symbolic-ref", "--short", "HEAD"); err == nil && branch != "" {
+				candidates = append(candidates, "origin/"+branch)
+			}
+		}
+	}
+	return append(candidates, "origin/HEAD", "origin/master", "origin/main")
+}
+
 func (e *Engine) execVerifyCommits(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error) {
-	if e.worktrees == nil {
+	if e.execution.Worktrees == nil {
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: no worktree getter configured"}, nil
 	}
-	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	wtPath, ok := e.execution.Worktrees.GetWorktreePath(taskID)
 	if !ok {
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: no worktree for task"}, nil
 	}
@@ -305,13 +364,15 @@ func (e *Engine) execVerifyCommits(taskID string, step *Step, wfExec *Execution,
 	}
 
 	if strings.TrimSpace(string(output)) == "" {
-		return e.verifyCommitsHandleEmptyOutput(taskID, step, wfExec, wtPath), nil
+		return e.verifyCommitsHandleEmptyOutput(taskID, step, wfExec, t, wtPath)
 	}
 
 	if finalSource == "" {
 		finalSource = finalCommitSourceAgent
 	}
 	e.recordFinalCommitState(taskID, wfExec, wtPath, finalSource)
+	e.recordEvidence(taskID, step.ID, evidenceCriterionVerifyCommits, evidence.ProofDeterministicCheck,
+		0, "git log <base>..HEAD --oneline", string(output))
 	return StepOutput{StepID: step.ID, Status: "completed", Output: "commits verified"}, nil
 }
 
@@ -348,7 +409,7 @@ func (e *Engine) verifyCommitsGitErrorOutput(taskID, wtPath string, err error, p
 	if diagnosis != "" {
 		reason += " (" + diagnosis + ")"
 	}
-	if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
+	if statusErr := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); statusErr != nil {
 		e.logger.Error("workflow.verify-commits.status", "task_id", taskID, "err", statusErr)
 	}
 	return "git error: flipped to human-required", true
@@ -432,28 +493,116 @@ func (e *Engine) verifyCommitsRecoveredRemoteAdopt(taskID, wtPath string, t Task
 	}
 }
 
-func (e *Engine) verifyCommitsHandleEmptyOutput(taskID string, step *Step, wfExec *Execution, wtPath string) StepOutput {
-	if wfExec.LastAgentStepFailed() {
+func (e *Engine) verifyCommitsHandleEmptyOutput(taskID string, step *Step, wfExec *Execution, t TaskInfo, wtPath string) (StepOutput, error) {
+	if wfExec != nil && wfExec.LastAgentStepFailed() {
 		reason := "implementation agent failed before committing — no commits on branch"
-		if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
+		if statusErr := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); statusErr != nil {
 			e.logger.Error("workflow.verify-commits.status", "task_id", taskID, "err", statusErr)
 		}
 		e.logger.Warn("workflow.verify-commits.agent-failed", "task_id", taskID)
-		return StepOutput{StepID: step.ID, Status: "completed", Output: "agent failed before commit: flipped to human-required"}
+		e.recordEvidence(taskID, step.ID, evidenceCriterionVerifyCommits, evidence.ProofDeterministicCheck, 1, "", reason)
+		return StepOutput{StepID: step.ID, Status: "completed", Output: "agent failed before commit: flipped to human-required"}, nil
 	}
-	if branchMergedIntoBase(e.ctx, wtPath) {
-		reason := "branch already merged into base — implementation already on origin"
-		if statusErr := e.tasks.UpdateTaskStatus(taskID, "done", reason); statusErr != nil {
-			e.logger.Error("workflow.verify-commits.status", "task_id", taskID, "err", statusErr)
-		}
-		e.logger.Info("workflow.verify-commits.branch-merged", "task_id", taskID)
-		return StepOutput{StepID: step.ID, Status: "completed", Output: "branch merged into base: marked done"}
+	if e.rearmNoCommitAuthorRun(taskID, wfExec, t) {
+		return StepOutput{}, errStepParked
 	}
+	// branchMergedIntoBase(e.ctx, wtPath) used to gate a "done" verdict here,
+	// on the theory that HEAD == base could mean the fix already landed via a
+	// different branch. That check is unreachable-false in this exact spot:
+	// the caller only reaches verifyCommitsHandleEmptyOutput when
+	// gitLogAheadOfBase (baseRef..HEAD) already came back empty, and
+	// "baseRef..HEAD has no commits" and "HEAD is an ancestor of baseRef" are
+	// the same git fact stated two ways — merge-base --is-ancestor can never
+	// disagree with an empty log range. So this branch was true unconditionally
+	// on every call, silently marking done any task whose implementation agent
+	// reported success but committed nothing. Confirmed live: two foundational
+	// tasks under the durable-effects umbrella (issues #2658, #2659) landed
+	// `done` with prNumber 0 and a branch byte-identical to origin/main —
+	// zero code, zero diff. Always escalate instead, matching the sibling
+	// agent-failed case above: a human must see and explain "the agent
+	// reported success but committed nothing," never have it silently closed.
 	reason := "no commits pushed to branch"
-	if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
+	if statusErr := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); statusErr != nil {
 		e.logger.Error("workflow.verify-commits.status", "task_id", taskID, "err", statusErr)
 	}
-	return StepOutput{StepID: step.ID, Status: "completed", Output: "no commits: flipped to human-required"}
+	e.recordEvidence(taskID, step.ID, evidenceCriterionVerifyCommits, evidence.ProofDeterministicCheck, 1, "", reason)
+	return StepOutput{StepID: step.ID, Status: "completed", Output: "no commits: flipped to human-required"}, nil
+}
+
+// markRunIncomplete downgrades a clean-exit code-author run that produced
+// nothing. Best-effort: the retry it accompanies matters more than the
+// bookkeeping, so a patch failure is logged rather than aborting the rearm.
+func (e *Engine) markRunIncomplete(taskID, agentID string) {
+	if agentID == "" {
+		return
+	}
+	if err := e.tasks.MarkAgentRunIncomplete(taskID, agentID); err != nil {
+		e.logger.Error("workflow.verify-commits.mark-incomplete", "task_id", taskID, "agent_id", agentID, "err", err)
+	}
+}
+
+func (e *Engine) rearmNoCommitAuthorRun(taskID string, wfExec *Execution, t TaskInfo) bool {
+	if wfExec == nil {
+		return false
+	}
+	agentID := wfExec.LastAgentID()
+	run, ok := agentRunInfoByID(t.AgentRuns, agentID)
+	if !ok || !isCodeAuthorRun(run) {
+		return false
+	}
+	// Correct the record before retrying. The completion handler derives
+	// success from a clean exit, which is all it can see — but a code-author
+	// run that produced no commit did not succeed, and every consumer of
+	// Outcome (stats, evaluation, the human-review verdict gate, stale-run
+	// recovery) otherwise believes the implementation landed.
+	e.markRunIncomplete(taskID, agentID)
+	stepID := wfExec.LastAgentStepID()
+	if stepID == "" {
+		return false
+	}
+	const counterKey = "step.verify_commits.no_commit_retry"
+	if parseWorkflowInt(wfExec.Variables[counterKey]) >= 1 {
+		return false
+	}
+	wfExec.SetVar(counterKey, "1")
+	wfExec.SetVar(verifyReaskNoteVar, noCommitReaskNote(run))
+	wfExec.SetVar(workflowRetryAfterVar, e.now().Add(verifyChecksAutoFixBackoff).Format(time.RFC3339))
+	wfExec.ClearStepRecords(stepID)
+	wfExec.CurrentStep = stepID
+	wfExec.State = ExecWaiting
+	reason := "retrying implementation once after no commits were produced"
+	if run.SubagentCallCount > 0 {
+		reason = "retrying implementation once after a background subagent handoff produced no commits"
+	}
+	if err := e.tasks.SetStatusAndWorkflow(taskID, string(t.Status), reason, wfExec); err != nil {
+		e.logger.Error("workflow.verify-commits.no-commit-retry.persist", "task_id", taskID, "err", err)
+		return false
+	}
+	e.logger.Warn("workflow.verify-commits.no-commit-retry",
+		"task_id", taskID, "step", stepID, "agent_id", agentID, "subagent_call_count", run.SubagentCallCount)
+	return true
+}
+
+// noCommitReaskNote builds the retry-once prompt injection for a code-author
+// run that ended without commits. A run that fanned out to subagent calls
+// (SubagentCallCount > 0) gets a diagnosis specific to the background-handoff
+// failure mode instead of the generic no-commit note: the one-shot CLI
+// process tears down as soon as it emits its final response, which kills any
+// delegated subagent work still in flight — so a run that hands off to a
+// subagent and says it will "wait" for the result ends with nothing done, see
+// backgroundTaskGuardrail for the mid-run equivalent of this warning.
+func noCommitReaskNote(run AgentRunInfo) string {
+	if run.SubagentCallCount > 0 {
+		return "The previous implementation run delegated work to a background " +
+			"subagent and ended before that work produced any commits — a one-shot " +
+			"run's process exits as soon as it emits its final response, which kills " +
+			"any subagent still working in the background. Do not delegate the " +
+			"implementation to a background/forked subagent and end your turn waiting " +
+			"on it. Make the required code changes directly yourself, then commit and " +
+			"push them before finishing this run."
+	}
+	return "The previous implementation run completed without producing commits. " +
+		"Make the required code changes, then commit and push them before finishing."
 }
 
 func (e *Engine) recordFinalCommitState(taskID string, wfExec *Execution, wtPath, source string) {
@@ -502,6 +651,19 @@ func (e *Engine) adoptEquivalentRemoteCommit(taskID, wtPath string, t TaskInfo) 
 	}
 
 	if worktreeTree == remoteTree {
+		baseRef := resolveOriginBase(ctx, wtPath)
+		hasWork, err := remoteBranchCarriesWork(ctx, wtPath, baseRef, remoteRef, remoteTree)
+		if err != nil {
+			return "", false, err
+		}
+		if !hasWork {
+			// The remote branch is byte-identical to base with nothing ahead
+			// of it — adopting it would silently mark a no-op as done (an
+			// implementation agent that hands off to a background subagent
+			// and exits can leave a branch pushed but empty). Fall through
+			// to the no-commits handling instead.
+			return "", false, nil
+		}
 		if err := resetHardToRef(ctx, wtPath, remoteRef); err != nil {
 			return "", false, err
 		}
@@ -530,6 +692,24 @@ func (e *Engine) adoptEquivalentRemoteCommit(taskID, wtPath string, t TaskInfo) 
 	}
 	e.logger.Info("workflow.verify-commits.remote-adopted", "task_id", taskID, "branch", branch, "reason", "fast_forward")
 	return finalCommitSourceAgent, true, nil
+}
+
+// remoteBranchCarriesWork reports whether remoteRef represents real work
+// relative to baseRef: either its tree differs from base's, or it has
+// commits base does not (a merge/revert lineage that nets out to base's
+// tree but still carries history). Guards equivalent-tree remote adoption so
+// a branch pushed byte-identical to base with zero commits ahead is never
+// mistaken for completed work.
+func remoteBranchCarriesWork(ctx context.Context, wtPath, baseRef, remoteRef, remoteTree string) (bool, error) {
+	baseTree := revParseTree(ctx, wtPath, baseRef)
+	if baseTree == "" || baseTree != remoteTree {
+		return true, nil
+	}
+	ahead, err := gitCombinedOutput(ctx, wtPath, "log", baseRef+".."+remoteRef, "--oneline")
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(string(ahead)) != "", nil
 }
 
 func (e *Engine) gitLogAheadOfBaseWithRetry(taskID, wtPath string, t TaskInfo) ([]byte, error) {
@@ -569,52 +749,21 @@ func branchMergedIntoBase(parentCtx context.Context, wtPath string) bool {
 	ctx, cancel := context.WithTimeout(parentCtx, shellTimeout)
 	defer cancel()
 	baseRef := resolveOriginBase(ctx, wtPath)
-	cmd := exec.CommandContext(ctx, "git", "merge-base", "--is-ancestor", "HEAD", baseRef)
-	cmd.Dir = wtPath
-	return cmd.Run() == nil
+	return gitIsAncestor(ctx, wtPath, "HEAD", baseRef)
 }
 
 func (e *Engine) gitLogAheadOfBase(wtPath string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
 	defer cancel()
 	baseRef := resolveOriginBase(ctx, wtPath)
-	cmd := exec.CommandContext(ctx, "git", "log", baseRef+"..HEAD", "--oneline")
-	cmd.Dir = wtPath
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		detail := strings.TrimSpace(string(out))
-		if detail == "" {
-			return out, fmt.Errorf("git log %s..HEAD: %w", baseRef, err)
-		}
-		return out, fmt.Errorf("git log %s..HEAD: %w: %s", baseRef, err, detail)
-	}
-	return out, nil
+	return gitCombinedOutput(ctx, wtPath, "log", baseRef+"..HEAD", "--oneline")
 }
 
 func shouldRetryVerifyCommitsGitError(err error, output []byte) bool {
 	if err == nil {
 		return false
 	}
-	text := strings.ToLower(err.Error() + "\n" + string(output))
-	for _, needle := range []string{
-		"bad object head",
-		"fatal: bad object",
-		"not a valid object name",
-		"invalid object",
-		"invalid revision range",
-		"missing object",
-		"unable to read sha1 file",
-		"object file",
-		"loose object",
-		"unknown revision",
-		"ambiguous argument",
-		"reference broken",
-	} {
-		if strings.Contains(text, needle) {
-			return true
-		}
-	}
-	return false
+	return errclass.IsBadRef(err.Error() + "\n" + string(output))
 }
 
 func (e *Engine) recoverVerifyCommitsRefs(taskID, wtPath string, t TaskInfo) bool {
@@ -641,26 +790,14 @@ func (e *Engine) recoverVerifyCommitsRefs(taskID, wtPath string, t TaskInfo) boo
 		refspecs = append(refspecs, "+"+"refs/heads/"+baseBranch+":refs/remotes/origin/"+baseBranch)
 	}
 
-	deleteCmd := exec.CommandContext(ctx, "git", "update-ref", "-d", "refs/remotes/origin/"+branch)
-	deleteCmd.Dir = wtPath
-	_ = deleteCmd.Run()
-	if baseBranch, ok := strings.CutPrefix(baseRef, "origin/"); ok && baseBranch != "" && baseBranch != "HEAD" {
-		deleteBaseCmd := exec.CommandContext(ctx, "git", "update-ref", "-d", "refs/remotes/origin/"+baseBranch)
-		deleteBaseCmd.Dir = wtPath
-		_ = deleteBaseCmd.Run()
-	}
-
 	args := []string{"fetch", "--no-tags", "--no-recurse-submodules"}
 	for _, tip := range negotiationTips {
 		args = append(args, "--negotiation-tip="+tip)
 	}
 	args = append(args, "origin")
 	args = append(args, refspecs...)
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = wtPath
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		e.logger.Warn("workflow.verify-commits.ref-recovery.failed", "task_id", taskID, "branch", branch, "err", err, "output", strings.TrimSpace(string(out)))
+	if _, err := gitCombinedOutput(ctx, wtPath, args...); err != nil {
+		e.logger.Warn("workflow.verify-commits.ref-recovery.failed", "task_id", taskID, "branch", branch, "err", err)
 		return false
 	}
 	e.logger.Warn("workflow.verify-commits.ref-recovery.fetched", "task_id", taskID, "branch", branch, "base", baseRef)
@@ -686,34 +823,26 @@ func verifyCommitsNegotiationTips(ctx context.Context, wtPath, baseRef string) [
 }
 
 func pruneBrokenVerifyCommitRefs(ctx context.Context, wtPath, barePath, taskBranch string) []string {
-	cmd := exec.CommandContext(ctx, "git", "for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes/origin")
-	cmd.Dir = wtPath
-	out, err := cmd.Output()
+	out, err := gitStdout(ctx, wtPath, "for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes/origin")
 	if err != nil {
 		return nil
 	}
 
 	keepLocalBranch := "refs/heads/" + taskBranch
 	var pruned []string
-	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		ref := strings.TrimSpace(line)
 		if ref == "" || ref == keepLocalBranch {
 			continue
 		}
-		check := exec.CommandContext(ctx, "git", "cat-file", "-e", ref+"^{object}")
-		check.Dir = wtPath
-		if check.Run() == nil {
+		if gitOK(ctx, wtPath, "cat-file", "-e", ref+"^{object}") {
 			continue
 		}
 		if barePath != "" {
-			badValue := exec.CommandContext(ctx, "git", "rev-parse", ref)
-			badValue.Dir = wtPath
-			shaOut, _ := badValue.Output()
-			project.QuarantineRef(barePath, ref, strings.TrimSpace(string(shaOut)))
+			sha, _ := gitStdout(ctx, wtPath, "rev-parse", ref)
+			project.QuarantineRef(barePath, ref, sha)
 		}
-		deleteCmd := exec.CommandContext(ctx, "git", "update-ref", "-d", ref)
-		deleteCmd.Dir = wtPath
-		if deleteCmd.Run() == nil {
+		if gitDo(ctx, wtPath, "update-ref", "-d", ref) == nil {
 			pruned = append(pruned, ref)
 		}
 	}
@@ -721,47 +850,13 @@ func pruneBrokenVerifyCommitRefs(ctx context.Context, wtPath, barePath, taskBran
 }
 
 func revParseCommit(ctx context.Context, wtPath, ref string) string {
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", ref+"^{commit}")
-	cmd.Dir = wtPath
-	configureWorkflowGitCancel(cmd)
-	out, err := cmd.Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
-}
-
-func configureWorkflowGitCancel(cmd *exec.Cmd) {
-	if cmd == nil {
-		return
-	}
-	if cmd.SysProcAttr == nil {
-		cmd.SysProcAttr = &syscall.SysProcAttr{}
-	}
-	cmd.SysProcAttr.Setpgid = true
-	cmd.WaitDelay = time.Second
-	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return nil
-		}
-		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
-			if errors.Is(err, syscall.ESRCH) {
-				return nil
-			}
-			return err
-		}
-		return nil
-	}
+	sha, _ := gitRevParseVerify(ctx, wtPath, ref+"^{commit}")
+	return sha
 }
 
 func revParseTree(ctx context.Context, wtPath, ref string) string {
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", ref+"^{tree}")
-	cmd.Dir = wtPath
-	out, err := cmd.Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
+	sha, _ := gitRevParseVerify(ctx, wtPath, ref+"^{tree}")
+	return sha
 }
 
 func currentWorktreeTree(ctx context.Context, wtPath string) (string, error) {
@@ -773,56 +868,36 @@ func currentWorktreeTree(ctx context.Context, wtPath string) (string, error) {
 	_ = tmpIndex.Close()
 	defer func() { _ = os.Remove(path) }()
 
-	env := append(os.Environ(), "GIT_INDEX_FILE="+path)
-	readTree := exec.CommandContext(ctx, "git", "read-tree", "HEAD")
-	readTree.Dir = wtPath
-	readTree.Env = env
-	if out, err := readTree.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("git read-tree HEAD: %w: %s", err, strings.TrimSpace(string(out)))
+	opts := gitexec.Options{Dir: wtPath, ExtraEnv: []string{"GIT_INDEX_FILE=" + path}}
+	if _, err := gitexec.CombinedOutput(ctx, opts, "read-tree", "HEAD"); err != nil {
+		return "", err
 	}
-	add := exec.CommandContext(ctx, "git", "add", "-A")
-	add.Dir = wtPath
-	add.Env = env
-	if out, err := add.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("git add -A: %w: %s", err, strings.TrimSpace(string(out)))
+	if _, err := gitexec.CombinedOutput(ctx, opts, "add", "-A"); err != nil {
+		return "", err
 	}
-	writeTree := exec.CommandContext(ctx, "git", "write-tree")
-	writeTree.Dir = wtPath
-	writeTree.Env = env
-	out, err := writeTree.CombinedOutput()
+	out, err := gitexec.CombinedOutput(ctx, opts, "write-tree")
 	if err != nil {
-		return "", fmt.Errorf("git write-tree: %w: %s", err, strings.TrimSpace(string(out)))
+		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
 }
 
 func resetHardToRef(ctx context.Context, wtPath, ref string) error {
-	cmd := exec.CommandContext(ctx, "git", "reset", "--hard", ref)
-	cmd.Dir = wtPath
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git reset --hard %s: %w: %s", ref, err, strings.TrimSpace(string(out)))
-	}
-	return nil
+	_, err := gitCombinedOutput(ctx, wtPath, "reset", "--hard", ref)
+	return err
 }
 
 func fastForwardToRef(ctx context.Context, wtPath, ref string) error {
-	cmd := exec.CommandContext(ctx, "git", "merge", "--ff-only", ref)
-	cmd.Dir = wtPath
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git merge --ff-only %s: %w: %s", ref, err, strings.TrimSpace(string(out)))
-	}
-	return nil
+	_, err := gitCombinedOutput(ctx, wtPath, "merge", "--ff-only", ref)
+	return err
 }
 
 func isAncestorCommit(ctx context.Context, wtPath, ancestor, ref string) (bool, error) {
-	cmd := exec.CommandContext(ctx, "git", "merge-base", "--is-ancestor", ancestor, ref)
-	cmd.Dir = wtPath
-	err := cmd.Run()
+	err := gitexec.RunQuiet(ctx, gitexec.Options{Dir: wtPath}, "merge-base", "--is-ancestor", ancestor, ref)
 	if err == nil {
 		return true, nil
 	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+	if code, ok := gitexec.ExitCode(err); ok && code == 1 {
 		return false, nil
 	}
 	return false, err
@@ -837,9 +912,7 @@ func diagnoseWorktreeState(parentCtx context.Context, wtPath string) string {
 	ctx, cancel := context.WithTimeout(parentCtx, shellTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
-	cmd.Dir = wtPath
-	out, err := cmd.CombinedOutput()
+	out, err := gitexec.CombinedOutput(ctx, gitexec.Options{Dir: wtPath}, "status", "--porcelain")
 	if err != nil {
 		first, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
 		first = strings.TrimSpace(first)

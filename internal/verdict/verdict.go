@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 // Decision is the agent's structured verdict output.
@@ -46,7 +48,7 @@ const (
 // therefore modeled as nullable and listed as required; the model emits null
 // for them on a human verdict. Go decodes JSON null into the zero value
 // (empty string / nil slice), so normalize() sees them as absent.
-const Schema = `{"type":"object","properties":{"decision":{"type":"string","enum":["human","sybra_bug","unblocked"]},"reason":{"type":"string"},"recoverable_action":{"type":"string","enum":["none","todo","planning","plan-review","in-progress","ready-review","in-review","testing","ready-pr","done"]},"confidence":{"type":"string","enum":["low","medium","high"]},"issue_title":{"type":["string","null"]},"issue_body":{"type":["string","null"]},"issue_labels":{"type":["array","null"],"items":{"type":"string"}}},"required":["decision","reason","recoverable_action","confidence","issue_title","issue_body","issue_labels"],"additionalProperties":false}`
+const Schema = `{"type":"object","properties":{"decision":{"type":"string","enum":["human","sybra_bug","unblocked"]},"reason":{"type":"string"},"recoverable_action":{"type":"string","enum":["none","in-progress","ready-review","in-review","testing","ready-pr","done"]},"confidence":{"type":"string","enum":["low","medium","high"]},"issue_title":{"type":["string","null"]},"issue_body":{"type":["string","null"]},"issue_labels":{"type":["array","null"],"items":{"type":"string"}}},"required":["decision","reason","recoverable_action","confidence","issue_title","issue_body","issue_labels"],"additionalProperties":false}`
 
 var fenceRe = regexp.MustCompile("(?s)```\\s*sybra-verdict\\s*\\n(.*?)\\n```")
 
@@ -139,16 +141,13 @@ func normalize(v Decision, src Source) (Decision, Source, error) {
 }
 
 var validRecoverableActions = map[string]bool{
-	"none":         true,
-	"todo":         true,
-	"planning":     true,
-	"plan-review":  true,
-	"in-progress":  true,
-	"ready-review": true,
-	"in-review":    true,
-	"testing":      true,
-	"ready-pr":     true,
-	"done":         true,
+	"none":                         true,
+	string(taskstatus.InProgress):  true,
+	string(taskstatus.ReadyReview): true,
+	string(taskstatus.InReview):    true,
+	string(taskstatus.Testing):     true,
+	string(taskstatus.ReadyPR):     true,
+	string(taskstatus.Done):        true,
 }
 
 var validConfidence = map[string]bool{

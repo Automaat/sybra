@@ -1,0 +1,4 @@
+./doc.go
+./fake_event.go
+./fake_event_expansion.go
+./fake_events_client.go

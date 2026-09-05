@@ -1,6 +1,9 @@
 package workflow
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func hasCondition(conds []Condition, field, op, value string) bool {
 	for _, c := range conds {
@@ -24,6 +27,27 @@ func defByID(t *testing.T, id string) *Definition {
 	}
 	t.Fatalf("%s builtin definition not found", id)
 	return nil
+}
+
+func TestBuiltinHandoff_UsesSingleTemplateFile(t *testing.T) {
+	t.Parallel()
+
+	entries, err := builtinFS.ReadDir("builtin")
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	count := 0
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if strings.HasPrefix(entry.Name(), "simple-task-handoff") && strings.HasSuffix(entry.Name(), ".yaml") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("handoff builtin files = %d, want exactly 1 template", count)
+	}
 }
 
 // TestBuiltinHandoff_SkipsPlanningToImplement locks the handoff contract: a
@@ -228,5 +252,32 @@ func TestBuiltinHandoffPR_DoesNotEnterPRReview(t *testing.T) {
 	plan := defByID(t, "simple-task-plan")
 	if EvalConditions(plan.Trigger.Conditions, fields) {
 		t.Fatalf("simple-task-plan must not match handoff-pr tags %q; conditions=%+v", fields["task.tags"], plan.Trigger.Conditions)
+	}
+}
+
+// TestBuiltinPRReview_RequiresPRNumber is the regression for #2627: a plain
+// bugfix task carrying "review" as a category tag (not a PR-review marker)
+// with no attached PR must not match pr-review's trigger, or it sticks
+// forever re-dispatching to a nonexistent PR #0.
+func TestBuiltinPRReview_RequiresPRNumber(t *testing.T) {
+	t.Parallel()
+
+	pr := defByID(t, "pr-review")
+	plan := defByID(t, "simple-task-plan")
+
+	noPR := map[string]string{"task.tags": "backend,review,medium,bug"}
+	if EvalConditions(pr.Trigger.Conditions, noPR) {
+		t.Fatalf("pr-review must not match a category 'review' tag with no pr_number; conditions=%+v", pr.Trigger.Conditions)
+	}
+	if !EvalConditions(plan.Trigger.Conditions, noPR) {
+		t.Fatalf("simple-task-plan must pick up a category 'review' tag with no pr_number; conditions=%+v", plan.Trigger.Conditions)
+	}
+
+	withPR := map[string]string{"task.tags": "review", "task.pr_number": "2599"}
+	if !EvalConditions(pr.Trigger.Conditions, withPR) {
+		t.Fatalf("pr-review must still match a real PR-review task; conditions=%+v", pr.Trigger.Conditions)
+	}
+	if EvalConditions(plan.Trigger.Conditions, withPR) {
+		t.Fatalf("simple-task-plan must leave a real PR-review task to pr-review; conditions=%+v", plan.Trigger.Conditions)
 	}
 }

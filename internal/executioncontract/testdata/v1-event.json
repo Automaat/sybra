@@ -1,0 +1,1 @@
+{"version":{"major":1,"minor":0},"buildVersion":"1.2.3","runId":"run-01JREMOTE","sequence":1,"eventId":"evt-1","idempotencyKey":"run-01JREMOTE:1","type":"started","observedAt":"2026-08-12T17:00:01Z","payload":{"worker":"worker-a"},"future":true}

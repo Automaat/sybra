@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # The main-branch merge queue creates a synthetic commit containing the
+  # queued group. Required checks must run for this event or GitHub cannot
+  # prove that independently-green PRs are green in combination. Keep this in
+  # sync with .github/BRANCH_PROTECTION.md.
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
@@ -14,9 +20,17 @@ jobs:
     name: Go Tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
-      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+      - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
+
+      - name: Install Linux process sandbox
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          sudo sysctl -w kernel.unprivileged_userns_clone=1
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          bwrap --ro-bind / / --dev /dev --proc /proc true
 
       - name: Build frontend (needed for go:embed)
         run: cd frontend && npm ci && npm run build:desktop
@@ -24,28 +38,123 @@ jobs:
       - name: Run Go tests
         run: go test -race -timeout 5m ./...
 
+  test-go-darwin:
+    name: Go Sandbox Tests (macOS)
+    # The seatbelt profile, its write roots, and the darwin-only paths around
+    # them are exercised by tests that skip on a host without sandbox-exec, so
+    # ubuntu runs green over a suite that covered none of it. That is how a
+    # heredoc failure reached every enforce-mode agent (#3377). Scoped to the
+    # sandbox owner rather than the tree: about a minute of runner time, and
+    # no frontend build, since nothing here embeds the bundle.
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
+
+      - name: Run sandbox tests
+        # shell: bash for -o pipefail. Without it the step reports tee's exit
+        # status, so a failing suite reads as a passing step — which is what
+        # this job did on its first run, over a real darwin failure.
+        shell: bash
+        run: go test -race -timeout 10m ./internal/agent/... 2>&1 | tee darwin-tests.log
+
+      - name: Fail when the sandbox itself was unavailable
+        # A skipped test prints nothing without -v, so a suite that covered
+        # nothing reads exactly like one that covered everything. Only a skip
+        # that names a missing sandbox counts: a test needing a GPG key or a
+        # provider CLI legitimately skips on a runner, and failing on those
+        # would make the job noise rather than a signal.
+        shell: bash
+        run: |
+          go test -run 'TestSandboxEnforce|TestOneShotCommand|TestSandboxBreakout' -v ./internal/agent/ \
+            2>&1 | tee darwin-sandbox.log
+          if grep -qE 'sandbox (mechanism unavailable|-exec not installed)' darwin-sandbox.log; then
+            echo "::error::the macOS runner could not build a sandbox; this job proves nothing" >&2
+            grep -E 'sandbox (mechanism unavailable|-exec not installed)' darwin-sandbox.log >&2
+            exit 1
+          fi
+          if ! grep -q -- '--- PASS: TestSandboxEnforce' darwin-sandbox.log; then
+            echo "::error::no enforce-mode sandbox test ran" >&2
+            exit 1
+          fi
+
   test-go-e2e:
     name: Go E2E Tests
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
-      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+      - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
+
+      - name: Install Linux process sandbox
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          sudo sysctl -w kernel.unprivileged_userns_clone=1
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          bwrap --ro-bind / / --dev /dev --proc /proc true
 
       - name: Build frontend (needed for go:embed)
         run: cd frontend && npm ci && npm run build:desktop
 
+      - name: Pre-fetch Go modules (retried, bounded)
+        # go test's own -timeout only bounds test execution, not module
+        # download — a proxy/network stall during `go mod download` is only
+        # caught by this job's outer 20m timeout-minutes, burning the whole
+        # budget on one bad fetch. Bound each attempt short and retry so a
+        # transient stall costs seconds, not the whole job.
+        run: |
+          for i in 1 2 3 4 5; do
+            timeout --kill-after=10 120 go mod download && exit 0
+            echo "go mod download attempt $i exited $?; retrying" >&2
+          done
+          echo "go mod download failed after 5 attempts" >&2
+          exit 1
+
       - name: Run Go e2e tests
         run: go test -race -tags e2e -p 1 -timeout 20m ./internal/sybra/...
+
+  test-go-db:
+    name: Go Database Engine Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Every SQL-backed store's behaviour suite runs against both engines here.
+    # Without this job the postgres leg of internal/testutil/dbtest silently
+    # skips and sqlite-only SQL reaches an operator's postgres box unreviewed.
+    services:
+      postgres:
+        image: postgres:17@sha256:67f41722b7a8cbdb868a44a4995c846eddfdc2973bccb291ce937dce88ad5675
+        env:
+          POSTGRES_USER: sybra
+          POSTGRES_PASSWORD: sybra
+          POSTGRES_DB: sybra
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sybra -d sybra"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
+
+      - name: Run database-backed store tests on sqlite and postgres
+        run: go test -race -timeout 10m ./internal/db/... ./internal/loopagent/... ./internal/testutil/dbtest/...
+        env:
+          SYBRA_TEST_POSTGRES_DSN: postgres://sybra:sybra@127.0.0.1:5432/sybra?sslmode=disable
+          SYBRA_REQUIRE_POSTGRES_TESTS: "1"
 
   test-frontend:
     name: Frontend Tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
-      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+      - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
 
       - name: Install dependencies
         run: cd frontend && npm ci
@@ -66,14 +175,14 @@ jobs:
     name: Go Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
-      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+      - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
 
       - name: Build frontend (needed for go:embed)
         run: cd frontend && npm ci && npm run build:desktop
 
-      - uses: golangci/golangci-lint-action@82606bf257cbaff209d206a39f5134f0cfbfd2ee # v9.2.1
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           # renovate: datasource=github-releases depName=golangci/golangci-lint
           version: v2.12.2
@@ -82,16 +191,16 @@ jobs:
     name: Nilaway
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
-      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+      - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
 
       - name: Build frontend (needed for go:embed)
         run: cd frontend && npm ci && npm run build:desktop
 
       - name: Install nilaway
         # renovate: datasource=go depName=go.uber.org/nilaway
-        run: go install go.uber.org/nilaway/cmd/nilaway@v0.0.0-20260723163314-0c9f43cc407d
+        run: go install go.uber.org/nilaway/cmd/nilaway@v0.0.0-20260808063849-8649a03c818a
 
       - name: Run nilaway
         run: |
@@ -130,13 +239,17 @@ jobs:
     name: Dockerfile Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
-      - uses: hadolint/hadolint-action@2332a7b74a6de0dda2e2221d575162eba76ba5e5 # v3.3.0
-        with:
-          dockerfile: Dockerfile
-          config: .hadolint.yaml
-          failure-threshold: warning
+      # Uses the mise-pinned hadolint rather than hadolint-action's bundled
+      # binary. The action shipped an older hadolint than mise.toml, so a
+      # Renovate bump of the pin made `mise run verify` fail locally on rules
+      # CI never ran — silently red pre-commit hook, green CI. mise.toml is now
+      # the only place the version is declared.
+      - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
+
+      # .hadolint.yaml supplies the config and failure-threshold.
+      - run: hadolint Dockerfile
 
   check-wailsjs:
     name: Wails Bindings Sync
@@ -144,7 +257,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           # Only same-repo PRs check out the head branch (so regenerated files
           # can be pushed back). Fork PRs and push/tag events resolve to an
@@ -156,7 +269,7 @@ jobs:
           # the follow-up PR checks are left action_required by anti-recursion.
           persist-credentials: false
 
-      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+      - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
 
       - name: Install wails3 CLI
         # Upstream v3 module has a relative `replace` directive that breaks a
@@ -223,7 +336,7 @@ jobs:
     name: API Shim Sync
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Check HTTP-allowlisted methods have api.ts/api-http.ts shims
         run: bash scripts/check-api-shim-sync.sh
@@ -232,25 +345,105 @@ jobs:
     name: No Operator-Home Fallbacks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Check for ~/.sybra fallbacks outside internal/config
         run: bash scripts/check-no-home-fallback.sh
+
+  check-repo-hygiene:
+    name: Repository Hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Check tracked runtime/build artifacts stay out of the repo
+        run: bash scripts/check-repo-hygiene.sh
+  check-atomic-writes:
+    name: Atomic Record Writes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Check for hand-rolled temp-rename writes outside internal/fsutil
+        run: bash scripts/check-atomic-writes.sh
+
+      - name: Check the gate itself still catches drift
+        run: bash scripts/check-atomic-writes.test.sh
+
+  check-consolidated-primitives:
+    name: Consolidated Primitive Drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
+
+      - name: Check truncation, JSON extraction, task status, and provider boundaries
+        run: bash scripts/check-consolidated-primitives.sh
 
   check-no-viewer-user-endpoint:
     name: No /user Identity Lookups
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Check for /user identity lookups outside viewerLoginE
         run: bash scripts/check-no-viewer-user-endpoint.sh
+
+  check-gh-exec-gate:
+    name: gh Calls Routed Through ghGate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Check for direct gh subprocess spawns outside github.Run/RunWithEnv
+        run: bash scripts/check-gh-exec-gate.sh
+
+  check-provider-exec-gate:
+    name: Provider CLIs Routed Through the Sandbox
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Check for provider CLI spawns outside agent.newProviderCmd
+        run: bash scripts/check-provider-exec-gate.sh
+
+  check-git-exec-gate:
+    name: Git Calls Routed Through gitexec
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
+
+      - name: Check for direct production Git subprocess spawns outside gitexec
+        run: |
+          bash scripts/check-git-exec-gate.sh
+          bash scripts/check-git-exec-gate.test.sh
+
+  check-no-direct-status-write:
+    name: No Direct Task-Status Writes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: "Check for direct task.Update{Status: ...} writes outside the transition API"
+        run: bash scripts/check-no-direct-status-write.sh
+
+  check-no-direct-workflow-write:
+    name: No Direct Task-Workflow Writes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: "Check for direct task.Update{Workflow: ...} writes outside the transition API"
+        run: bash scripts/check-no-direct-workflow-write.sh
 
   test-release-scripts:
     name: Release Scripts Tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Run resolve-release-version.sh tests
         run: bash scripts/resolve-release-version.test.sh
@@ -258,13 +451,29 @@ jobs:
       - name: Run generate-release-notes.sh tests
         run: bash scripts/generate-release-notes.test.sh
 
+  test-deploy-scripts:
+    name: Deploy Scripts Tests
+    # The deploy artifacts are versioned with the code they support, but until
+    # now nothing ran their suite: every scenario — build/rollback/quarantine,
+    # the health URL, the TLS board, the AppArmor profile — was covered only by
+    # whoever remembered to run it by hand. A defect in them takes the server
+    # down on the next restart, so this belongs on the same gate as the code.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
+
+      - name: Run the deploy integration suite
+        run: bash deploy/tests/deploy_integration_test.sh
+
   autonomy-slo:
     name: Autonomy SLO Gate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
-      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+      - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
 
       - name: Run autonomy SLO gate
         run: bash scripts/check-autonomy-slo.sh
@@ -273,9 +482,9 @@ jobs:
     name: Build
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
-      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+      - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
 
       - name: Lint frontend
         run: cd frontend && npm ci && npx oxlint .
@@ -292,7 +501,7 @@ jobs:
     name: Doc Version Sync
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - run: |
           GO_VERSION=$(grep '^go ' go.mod | awk '{print $2}')
           MISE_GO_VERSION=$(grep '^go = ' mise.toml | awk -F'"' '{print $2}')
@@ -313,9 +522,9 @@ jobs:
     name: Go Module Integrity
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
-      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+      - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
 
       - name: Verify module checksums
         run: go mod verify
@@ -330,9 +539,9 @@ jobs:
     name: npm Lockfile Integrity
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
-      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+      - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
 
       - name: Verify lockfile is in sync with package.json
         run: |
@@ -347,9 +556,9 @@ jobs:
     name: Security Audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
-      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+      - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
 
       - name: Run govulncheck
         # renovate: datasource=go depName=golang.org/x/vuln
@@ -367,9 +576,9 @@ jobs:
       matrix:
         provider: [claude, codex]
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
-      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+      - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
 
       - name: Install frontend deps
         run: cd frontend && npm ci
@@ -385,8 +594,16 @@ jobs:
           # destructive task cleanup without it (#1576).
           touch "$SYBRA_HOME/.sybra-e2e-home"
           cat > "$SYBRA_HOME/config.yaml" <<EOF
+          # This suite seeds fixtures by writing files into the tasks directory, both before startup and, for the watcher test, while the server is already running, and expects a file written directly to disk to be noticed live. A database store only reads rows, not the tasks directory, so it pins the backend it was written against.
+          database:
+            backend: file
           agent:
             provider: ${{ matrix.provider }}
+            # sybra-server refuses to start without an explicit posture, so a
+            # config that merely omits the key can never be mistaken for a
+            # contained one. "off" is correct here: this suite drives the HTTP
+            # API against fake providers and starts no real agent subprocess.
+            sandbox_mode: "off"
           server:
             auth_token: e2e-test-token
           monitor:
@@ -469,11 +686,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
-      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+      - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
 
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
       # The agent image is multi-GB and gets built, loaded into dockerd, then
       # imported into the k3d node — three copies. A stock runner does not have
@@ -488,7 +705,7 @@ jobs:
       # Dockerfile and uses load: false, so nothing k3d could import survives it.
       # Hence load: true and a build of our own here.
       - name: Build agent image
-        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           tags: sybra-server:poc

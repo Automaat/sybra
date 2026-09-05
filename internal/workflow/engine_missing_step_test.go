@@ -1,8 +1,11 @@
 package workflow
 
 import (
+	"os"
 	"strings"
 	"testing"
+
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 // missingStepDef registers a workflow whose only step is NOT the one tasks are
@@ -42,7 +45,7 @@ func TestResumeStalled_MissingStepEscalatesOnce(t *testing.T) {
 		},
 	})
 
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	engine.ResumeStalled()
 
 	ti, _ := tasks.GetTask("t1")
@@ -67,13 +70,15 @@ func TestResumeStalled_MissingStepEscalatesOnce(t *testing.T) {
 	}
 }
 
-// TestResumeStalled_MissingStepRetriesPartialEscalation covers the window
-// escalateMissingStep's write order opens: the status lands first, so a failed
-// SetWorkflow leaves the task human-required with a live execution. The planning
-// dispatcher only re-plans over a terminal execution, so that half-applied state
-// cannot follow the escalation's own advice — the next tick must finish the job
-// rather than skip the task for being human-required.
-func TestResumeStalled_MissingStepRetriesPartialEscalation(t *testing.T) {
+// TestResumeStalled_MissingStepRetriesAfterPersistFailure covers the window
+// escalateMissingStep used to leave open when status and execution were two
+// separate store writes: a failed second write could land a `human-required`
+// task with a still-waiting execution, which the planning dispatcher refuses
+// to re-plan over. SetStatusAndWorkflow persists both fields in one store
+// call, so a failed write must now leave the task completely unchanged
+// (neither field applied) — and the next tick must retry and fully apply
+// both once the store recovers.
+func TestResumeStalled_MissingStepRetriesAfterPersistFailure(t *testing.T) {
 	store := missingStepDef(t)
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{
@@ -86,17 +91,17 @@ func TestResumeStalled_MissingStepRetriesPartialEscalation(t *testing.T) {
 		},
 	})
 
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 
 	tasks.failSetWorkflow = true
 	engine.ResumeStalled()
 
 	ti, _ := tasks.GetTask("t1")
-	if ti.Status != "human-required" {
-		t.Fatalf("Status = %q, want human-required after the first write", ti.Status)
+	if ti.Status != "planning" {
+		t.Fatalf("Status = %q, want unchanged planning — a failed atomic write must not apply either field", ti.Status)
 	}
 	if ti.Workflow.State != ExecWaiting {
-		t.Fatalf("State = %q, want %q — the fixture must simulate the failed second write", ti.Workflow.State, ExecWaiting)
+		t.Fatalf("State = %q, want %q — a failed atomic write must not apply either field", ti.Workflow.State, ExecWaiting)
 	}
 
 	// Once the store recovers, the next tick must complete the escalation.
@@ -104,8 +109,11 @@ func TestResumeStalled_MissingStepRetriesPartialEscalation(t *testing.T) {
 	engine.ResumeStalled()
 
 	ti2, _ := tasks.GetTask("t1")
+	if ti2.Status != "human-required" {
+		t.Errorf("Status = %q, want human-required — the retried escalation must fully apply", ti2.Status)
+	}
 	if ti2.Workflow.State != ExecFailed {
-		t.Errorf("State = %q, want %q — a half-applied escalation never retried, so the operator's re-plan stays blocked forever",
+		t.Errorf("State = %q, want %q — the retried escalation must fully apply",
 			ti2.Workflow.State, ExecFailed)
 	}
 }
@@ -117,9 +125,9 @@ func TestResumeStalled_MissingStepRetriesPartialEscalation(t *testing.T) {
 func TestResumeStalled_MissingStepSkipsQuietCases(t *testing.T) {
 	cases := []struct {
 		name       string
-		status     string
+		status     taskstatus.Status
 		hasAgent   bool
-		wantStatus string
+		wantStatus taskstatus.Status
 	}{
 		{name: "cancelled", status: "cancelled", wantStatus: "cancelled"},
 		{name: "done", status: "done", wantStatus: "done"},
@@ -143,7 +151,7 @@ func TestResumeStalled_MissingStepSkipsQuietCases(t *testing.T) {
 				agents.running["t1"] = "agent-1"
 			}
 
-			engine := NewEngine(store, tasks, agents, discardLogger())
+			engine := NewTestEngine(store, tasks, agents, discardLogger())
 			engine.ResumeStalled()
 
 			ti, _ := tasks.GetTask("t1")
@@ -154,5 +162,72 @@ func TestResumeStalled_MissingStepSkipsQuietCases(t *testing.T) {
 				t.Error("execution failed — escalation must not fire here")
 			}
 		})
+	}
+}
+
+func TestResumeStalled_MissingSnapshotEscalatesOnce(t *testing.T) {
+	store := newTestStore(t)
+	def, err := store.Get("test-simple")
+	if err != nil {
+		t.Fatalf("Get workflow: %v", err)
+	}
+	hash, err := store.SaveSnapshot(def)
+	if err != nil {
+		t.Fatalf("SaveSnapshot: %v", err)
+	}
+	if err := store.Save(Definition{
+		ID:   "test-simple",
+		Name: def.Name,
+		Trigger: Trigger{
+			On: def.Trigger.On,
+		},
+		Steps: []Step{
+			{ID: "triage", Name: "Changed", Type: StepRunAgent, Config: StepConfig{Role: "triage"}},
+		},
+	}); err != nil {
+		t.Fatalf("Save updated workflow: %v", err)
+	}
+	snapshotPath, err := store.snapshotPath("test-simple", hash)
+	if err != nil {
+		t.Fatalf("snapshotPath: %v", err)
+	}
+	if err := os.Remove(snapshotPath); err != nil {
+		t.Fatalf("Remove snapshot: %v", err)
+	}
+
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{
+		ID:     "t1",
+		Status: taskstatus.Planning,
+		Workflow: &Execution{
+			WorkflowID:     "test-simple",
+			DefinitionHash: hash,
+			CurrentStep:    "triage",
+			State:          ExecWaiting,
+		},
+	})
+
+	engine, err := NewEngine(store, tasks, newMockAgents(), discardLogger(), completeDependencies())
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	engine.ResumeStalled()
+
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != taskstatus.HumanRequired {
+		t.Fatalf("Status = %q, want human-required", ti.Status)
+	}
+	if ti.Workflow.State != ExecFailed {
+		t.Fatalf("State = %q, want %q", ti.Workflow.State, ExecFailed)
+	}
+	if ti.Blocker.Code != workflowDefinitionSnapshotMissingCode {
+		t.Fatalf("blocker code = %q, want %q", ti.Blocker.Code, workflowDefinitionSnapshotMissingCode)
+	}
+
+	before := tasks.Reason("t1")
+	engine.ResumeStalled()
+	ti2, _ := tasks.GetTask("t1")
+	if ti2.Workflow.State != ExecFailed || tasks.Reason("t1") != before {
+		t.Fatalf("second ResumeStalled mutated task: state=%q reason=%q", ti2.Workflow.State, tasks.Reason("t1"))
 	}
 }

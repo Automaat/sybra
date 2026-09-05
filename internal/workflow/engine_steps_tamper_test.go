@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 func TestClassifyTamperPath(t *testing.T) {
@@ -899,6 +901,13 @@ func TestParseNameStatus(t *testing.T) {
 
 func newTamperStep() *Step { return &Step{ID: "detect_tampering", Type: StepDetectTampering} }
 
+// TestBuiltinSimpleTaskImplement_DetectTamperingWiring pins detect_tampering's
+// place in simple-task-implement now that it runs concurrently with
+// focused_checks/verify_checks inside the parallel_gates coordinator (see
+// execParallelGates, engine_steps_parallel_gates.go) rather than as its own
+// serial step — a flagged detect_tampering result still ends the workflow at
+// human-required, and a clean one still lets the workflow proceed to
+// set_ready_review/set_ready_pr_existing.
 func TestBuiltinSimpleTaskImplement_DetectTamperingWiring(t *testing.T) {
 	t.Parallel()
 	defs, err := BuiltinDefinitions()
@@ -916,18 +925,17 @@ func TestBuiltinSimpleTaskImplement_DetectTamperingWiring(t *testing.T) {
 		t.Fatal("simple-task-implement builtin not found")
 	}
 
-	tamper := impl.StepByID("detect_tampering")
-	if tamper == nil {
-		t.Fatal("detect_tampering step missing from simple-task-implement")
+	gates := impl.StepByID("parallel_gates")
+	if gates == nil {
+		t.Fatal("parallel_gates step missing from simple-task-implement")
 		return
 	}
-	if tamper.Type != StepDetectTampering {
-		t.Errorf("detect_tampering type = %q, want %q", tamper.Type, StepDetectTampering)
+	if gates.Type != StepParallelGates {
+		t.Errorf("parallel_gates type = %q, want %q", gates.Type, StepParallelGates)
 	}
 
 	// verify_commits default (no status condition) must route to codegen_gate,
-	// then focused_checks, which hands off to detect_tampering once generated
-	// drift is fixed.
+	// which hands off to parallel_gates once generated drift is fixed.
 	vc := impl.StepByID("verify_commits")
 	if vc == nil {
 		t.Fatal("verify_commits step missing")
@@ -939,15 +947,16 @@ func TestBuiltinSimpleTaskImplement_DetectTamperingWiring(t *testing.T) {
 
 	cases := []struct {
 		name   string
-		status string
+		status taskstatus.Status
 		want   string
 	}{
 		{"flagged_ends_workflow", "human-required", ""},
-		{"clean_flows_to_verify_checks", "ready-review", "verify_checks"},
+		{"blocked_ends_workflow", "blocked", ""},
+		{"clean_flows_to_ready_review", "ready-review", "set_ready_review"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := ResolveTransition(tamper.Next, map[string]string{"task.status": tc.status})
+			got, err := ResolveTransition(gates.Next, map[string]string{"task.status": string(tc.status)})
 			if err != nil {
 				t.Fatalf("ResolveTransition: %v", err)
 			}
@@ -987,6 +996,12 @@ func makeBaseRepo(t *testing.T, baseFiles map[string]string) string {
 	gitRun(t, dir, "init", "-b", "main")
 	gitRun(t, dir, "config", "user.email", "test@test.com")
 	gitRun(t, dir, "config", "user.name", "Test")
+	// Auto-maintenance detaches a process that keeps writing under
+	// .git/objects after the command returns, and t.TempDir's RemoveAll then
+	// races it: "unlinkat .../.git/objects: directory not empty" fails a test
+	// that already passed.
+	gitRun(t, dir, "config", "gc.auto", "0")
+	gitRun(t, dir, "config", "maintenance.auto", "false")
 	for path, content := range baseFiles {
 		writeRepoFile(t, dir, path, content)
 	}
@@ -1001,7 +1016,7 @@ func newTamperEngine(t *testing.T, wt string) (*Engine, *memTasks) {
 	t.Helper()
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wt, ok: true})
 	return engine, tasks
 }
@@ -1010,7 +1025,7 @@ func TestExecDetectTampering_NoWorktreeSkips(t *testing.T) {
 	t.Parallel()
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 
 	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1"})
 	if err != nil {
@@ -1018,6 +1033,33 @@ func TestExecDetectTampering_NoWorktreeSkips(t *testing.T) {
 	}
 	if out.Output == "flagged" {
 		t.Errorf("no worktree must not flag; got %q", out.Output)
+	}
+}
+
+// TestExecDetectTampering_DiffErrorDoesNotClaimClean proves a genuine
+// diff/tooling failure (here: no git repository at the worktree path) is
+// reported honestly rather than as "clean" — the fail-open routing still
+// lets the task continue (no evidence recorded either — see the doc comment
+// on the diff-error branch), but operators/logs must not be told the diff
+// was actually checked and found clean when it never ran.
+func TestExecDetectTampering_DiffErrorDoesNotClaimClean(t *testing.T) {
+	t.Parallel()
+	wt := t.TempDir() // not a git repository — git diff fails
+	engine, tasks := newTamperEngine(t, wt)
+	tasks.Put(TaskInfo{ID: "t1"})
+
+	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output == "clean" {
+		t.Errorf("Output = %q, a diff/tooling error must not be reported as clean", out.Output)
+	}
+	if !strings.Contains(out.Output, "skipped") {
+		t.Errorf("Output = %q, want it to say the check was skipped", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status == "human-required" {
+		t.Errorf("status = %q, a diff error must not itself flip the task", ti.Status)
 	}
 }
 
@@ -1781,8 +1823,37 @@ func TestBuiltinSimpleTaskReview_DetectTamperingWiring(t *testing.T) {
 		t.Fatal("fix_review step missing from simple-task-review")
 		return
 	}
-	if got, _ := ResolveTransition(fix.Next, map[string]string{"task.status": "ready-review"}); got != "detect_tampering" {
-		t.Errorf("fix_review goto = %q, want detect_tampering", got)
+	// fix_review commits code changes, so the branch must be pushed
+	// deterministically, then verify_checks must re-run before tamper detection
+	// to keep verify_checks evidence fresh at the post-fix HEAD (and catch a
+	// fix that broke the suite) ahead of require_evidence.
+	push := rev.StepByID("push_review_fix_branch")
+	if push == nil {
+		t.Fatal("push_review_fix_branch step missing from simple-task-review")
+		return
+	}
+	if push.Type != StepPushBranch {
+		t.Fatalf("push_review_fix_branch type = %q, want %q", push.Type, StepPushBranch)
+	}
+	verify := rev.StepByID("verify_checks")
+	if verify == nil {
+		t.Fatal("verify_checks step missing from simple-task-review")
+		return
+	}
+	if got, _ := ResolveTransition(fix.Next, map[string]string{"task.status": "ready-review"}); got != "push_review_fix_branch" {
+		t.Errorf("fix_review goto = %q, want push_review_fix_branch", got)
+	}
+	if got, _ := ResolveTransition(push.Next, map[string]string{"task.status": "ready-review"}); got != "verify_checks" {
+		t.Errorf("push_review_fix_branch goto = %q, want verify_checks", got)
+	}
+	if got, _ := ResolveTransition(push.Next, map[string]string{"task.status": "human-required"}); got != "" {
+		t.Errorf("push_review_fix_branch human-required goto = %q, want end", got)
+	}
+	if got, _ := ResolveTransition(verify.Next, map[string]string{"task.status": "ready-review"}); got != "detect_tampering" {
+		t.Errorf("verify_checks goto = %q, want detect_tampering", got)
+	}
+	if got, _ := ResolveTransition(verify.Next, map[string]string{"task.status": "human-required"}); got != "" {
+		t.Errorf("verify_checks human-required goto = %q, want end", got)
 	}
 	if got, _ := ResolveTransition(tamper.Next, map[string]string{"task.status": "human-required"}); got != "" {
 		t.Errorf("flagged detect_tampering goto = %q, want end", got)

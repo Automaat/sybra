@@ -52,6 +52,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 type options struct {
@@ -308,7 +310,7 @@ func resolveFakeClaude(explicit string) (string, error) {
 	// Runner looks up "claude" by name via exec.LookPath, so symlink the
 	// fake binary under that name inside our private dir. Fall back to copy
 	// if symlink fails (e.g. tmpfs with no symlink support).
-	claudePath := filepath.Join(dir, "claude")
+	claudePath := filepath.Join(dir, providerid.Claude)
 	if err := os.Symlink(src, claudePath); err != nil {
 		data, readErr := os.ReadFile(src)
 		if readErr != nil {

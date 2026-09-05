@@ -474,7 +474,7 @@ func TestManager_CleanupOrphaned(t *testing.T) {
 	}
 	m.CleanupOrphaned(context.Background(), tasks, func(taskID string) bool {
 		return taskID == "task-live-terminal"
-	})
+	}, nil)
 
 	if _, err := os.Stat(filepath.Dir(keepDir)); err != nil {
 		t.Fatalf("active task dir removed unexpectedly: %v", err)
@@ -487,6 +487,40 @@ func TestManager_CleanupOrphaned(t *testing.T) {
 	}
 	if _, err := os.Stat(missingRoot); !os.IsNotExist(err) {
 		t.Fatalf("missing-task dir still exists after cleanup: %v", err)
+	}
+}
+
+// TestManager_CleanupOrphaned_PreservesUnpushedCommits proves the
+// hasUnpushedCommits resolver takes precedence over every other signal —
+// terminal status, deletion, retention age — exactly like hasAgent does for
+// live agents. A task's sandbox is a separate data dir from its git
+// worktree, so this is sandbox cleanup's own defense against reaping a task
+// whose worktree still holds completed-but-unpushed work (#2593).
+func TestManager_CleanupOrphaned_PreservesUnpushedCommits(t *testing.T) {
+	t.Parallel()
+	m := newTestManager(t)
+
+	doneDir, err := m.SybraHomeDir("task-done-unpushed")
+	if err != nil {
+		t.Fatalf("SybraHomeDir(done-unpushed): %v", err)
+	}
+	deletedDir, err := m.SybraHomeDir("task-deleted-unpushed")
+	if err != nil {
+		t.Fatalf("SybraHomeDir(deleted-unpushed): %v", err)
+	}
+
+	tasks := []task.Task{
+		{ID: "task-done-unpushed", Status: task.StatusDone},
+	}
+	m.CleanupOrphaned(context.Background(), tasks, nil, func(taskID string) bool {
+		return taskID == "task-done-unpushed" || taskID == "task-deleted-unpushed"
+	})
+
+	if _, err := os.Stat(filepath.Dir(doneDir)); err != nil {
+		t.Fatalf("done task's sandbox removed despite unpushed commits: %v", err)
+	}
+	if _, err := os.Stat(filepath.Dir(deletedDir)); err != nil {
+		t.Fatalf("deleted task's sandbox removed despite unpushed commits: %v", err)
 	}
 }
 
@@ -525,7 +559,7 @@ func TestManager_CleanupOrphaned_Retention(t *testing.T) {
 		{ID: "task-recent-blocked", Status: task.StatusBlocked, StatusChangedAt: now},
 		{ID: "task-in-review", Status: task.StatusInReview, StatusChangedAt: now.Add(-2 * time.Hour)},
 	}
-	m.CleanupOrphaned(context.Background(), tasks, nil)
+	m.CleanupOrphaned(context.Background(), tasks, nil, nil)
 
 	for _, dir := range []string{agedDoneDir, agedCancelledDir, agedBlockedDir} {
 		if _, err := os.Stat(filepath.Dir(dir)); !os.IsNotExist(err) {
@@ -552,7 +586,7 @@ func TestManager_CleanupOrphaned_RetentionDisabled(t *testing.T) {
 	tasks := []task.Task{
 		{ID: "task-aged-done", Status: task.StatusDone, StatusChangedAt: time.Now().Add(-1000 * time.Hour)},
 	}
-	m.CleanupOrphaned(context.Background(), tasks, nil)
+	m.CleanupOrphaned(context.Background(), tasks, nil, nil)
 
 	if _, err := os.Stat(filepath.Dir(dir)); err != nil {
 		t.Fatalf("eligible dir removed despite disabled retention: %v", err)
@@ -824,7 +858,7 @@ func TestManager_CleanupOrphaned_SkipsAlreadyQuarantined(t *testing.T) {
 	}
 
 	tasks := []task.Task{{ID: "task-q", Status: task.StatusDone}}
-	m.CleanupOrphaned(context.Background(), tasks, nil)
+	m.CleanupOrphaned(context.Background(), tasks, nil, nil)
 	if calls != 1 {
 		t.Fatalf("removeAll calls after first tick = %d, want 1", calls)
 	}
@@ -838,7 +872,7 @@ func TestManager_CleanupOrphaned_SkipsAlreadyQuarantined(t *testing.T) {
 		calls++
 		return nil
 	}
-	m.CleanupOrphaned(context.Background(), tasks, nil)
+	m.CleanupOrphaned(context.Background(), tasks, nil, nil)
 	if calls != 1 {
 		t.Errorf("removeAll calls after second tick = %d, want still 1 (quarantined task skipped)", calls)
 	}
@@ -865,7 +899,7 @@ func TestManager_CleanupOrphaned_PreservesOrphanedActiveAgent(t *testing.T) {
 
 	m.CleanupOrphaned(context.Background(), nil, func(taskID string) bool {
 		return taskID == "task-live-orphan"
-	})
+	}, nil)
 
 	if _, err := os.Stat(taskDir); err != nil {
 		t.Fatalf("orphaned dir with live agent removed unexpectedly: %v", err)

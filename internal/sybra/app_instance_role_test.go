@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -22,10 +23,10 @@ func TestAppInstanceRoleGates(t *testing.T) {
 		wantBrain     bool
 	}{
 		{
-			name:          "default full runs both",
+			name:          "default full runs the scheduler, brain stays off",
 			orch:          config.DefaultConfig().Orchestrator,
 			wantScheduler: true,
-			wantBrain:     true,
+			wantBrain:     false,
 		},
 		{
 			name:          "agent-only runs neither",
@@ -40,10 +41,16 @@ func TestAppInstanceRoleGates(t *testing.T) {
 			wantBrain:     false,
 		},
 		{
-			name:          "invalid role falls back to full",
+			name:          "agent-only with explicit brain opt-in",
+			orch:          config.OrchestratorConfig{Role: config.InstanceRoleAgentOnly, Enabled: ptr(true)},
+			wantScheduler: false,
+			wantBrain:     true,
+		},
+		{
+			name:          "invalid role falls back to full scheduler, brain stays off",
 			orch:          config.OrchestratorConfig{Role: "bogus"},
 			wantScheduler: true,
-			wantBrain:     true,
+			wantBrain:     false,
 		},
 	}
 	for _, tt := range tests {
@@ -66,8 +73,8 @@ func TestAppInstanceRoleGatesNilConfig(t *testing.T) {
 	if !a.runsScheduler() {
 		t.Error("runsScheduler() = false with nil cfg, want true")
 	}
-	if !a.runsOrchestratorBrain() {
-		t.Error("runsOrchestratorBrain() = false with nil cfg, want true")
+	if a.runsOrchestratorBrain() {
+		t.Error("runsOrchestratorBrain() = true with nil cfg, want false")
 	}
 }
 
@@ -115,7 +122,12 @@ func TestQueueDrainPassDrainsManualStartsForEveryRole(t *testing.T) {
 
 func waitForFreeSlot(t *testing.T, a *App) {
 	t.Helper()
-	for range 200 {
+	// 5s flat used to be the whole budget here, unscaled — this helper predates
+	// the deadline scaling and never picked it up, so on a contended runner a
+	// slot that frees in 6s read as a hung pool (#2811).
+	budget := time.Duration(int64(5*time.Second) * e2eTimeoutScale())
+	deadline := time.Now().Add(budget)
+	for time.Now().Before(deadline) {
 		if a.agents.AvailableQueueDrainSlots(1) > 0 {
 			return
 		}
@@ -166,7 +178,7 @@ steps:
 			}
 			ta := &taskAdapter{tasks: a.tasks}
 			aa := &agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks}
-			a.workflowEngine = workflow.NewEngine(wfStore, ta, aa, a.logger)
+			a.workflowEngine = workflow.NewTestEngine(wfStore, ta, aa, a.logger)
 			a.applyInstanceRole()
 			a.initStatusHook()
 
@@ -190,6 +202,77 @@ steps:
 			}
 			if !tt.wantWorkflow && tk.Status != task.StatusReadyReview {
 				t.Errorf("task status = %q, want ready-review untouched on an agent-only instance", tk.Status)
+			}
+		})
+	}
+}
+
+func TestDispatchTaskCreatedWorkflowPromotesApprovedTodoPlan(t *testing.T) {
+	// Legacy approved plans were left in todo. They must enter implementation
+	// without replaying task.created/triage and discarding their contract.
+	const createdWF = `id: probe-created
+name: Probe Created
+trigger:
+  on: task.created
+steps:
+  - id: mark_planning
+    name: Mark Planning
+    type: set_status
+    config:
+      status: planning
+    next:
+      - goto: ""
+`
+	cases := []struct {
+		name            string
+		hasPlanContract bool
+		wantStatus      task.Status
+	}{
+		{name: "todo with approved plan contract enters implementation", hasPlanContract: true, wantStatus: task.StatusInProgress},
+		{name: "brand new todo with no plan contract still dispatches", hasPlanContract: false, wantStatus: task.StatusPlanning},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := setupApp(t)
+			a.cfg = config.DefaultConfig()
+
+			wfDir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(wfDir, "probe-created.yaml"), []byte(createdWF), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			wfStore, err := workflow.NewStore(wfDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ta := &taskAdapter{tasks: a.tasks}
+			aa := &agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks}
+			a.workflowEngine = workflow.NewTestEngine(wfStore, ta, aa, a.logger)
+			a.applyInstanceRole()
+
+			created, err := a.tasks.Create("todo plan-contract probe", "", "headless")
+			if err != nil {
+				t.Fatal(err)
+			}
+			planContract := ""
+			if tc.hasPlanContract {
+				planContract = validTestPlanContract(created.ID)
+			}
+			if _, err := a.tasks.Update(created.ID, task.Update{
+				Status:       task.Ptr(task.StatusTodo),
+				PlanContract: task.Ptr(planContract),
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			a.dispatchTaskCreatedWorkflow(created.ID)
+			a.wg.Wait()
+
+			tk, err := a.tasks.Get(created.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tk.Status != tc.wantStatus {
+				t.Errorf("status = %q, want %q", tk.Status, tc.wantStatus)
 			}
 		})
 	}
@@ -242,7 +325,7 @@ steps:
 				}
 				ta := &taskAdapter{tasks: a.tasks}
 				aa := &agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks}
-				a.workflowEngine = workflow.NewEngine(wfStore, ta, aa, a.logger)
+				a.workflowEngine = workflow.NewTestEngine(wfStore, ta, aa, a.logger)
 				a.applyInstanceRole()
 
 				created, err := a.tasks.Create("dispatch sink probe", "", "headless")
@@ -310,5 +393,54 @@ func TestRecoveryDispatchGateRespectsInstanceRole(t *testing.T) {
 				t.Fatalf("recovery DispatchGate = %v on role %q, want %v", got, tt.role, tt.wantGate)
 			}
 		})
+	}
+}
+
+// TestFullTaskLifecycle_SchedulerDispatchesBrainStaysDisabled exercises a
+// default-config instance (Role "full", Enabled unset) across a real
+// dispatch-and-run cycle: the deterministic scheduler starts and completes an
+// agent for an active task while the orchestrator brain never auto-starts.
+// orchSvc here carries a nil agent.Manager (see setupManualQueueApp), so a
+// regression that let maybeStartOrchestrator call StartOrchestratorContext
+// would panic on a nil-pointer dispatch, not just fail an assertion.
+func TestFullTaskLifecycle_SchedulerDispatchesBrainStaysDisabled(t *testing.T) {
+	a := setupManualQueueApp(t, "", "", 1)
+	a.applyInstanceRole()
+	if !a.runsScheduler() {
+		t.Fatal("expected the default full role to run the scheduler")
+	}
+	if a.runsOrchestratorBrain() {
+		t.Fatal("expected the orchestrator brain disabled by default (Enabled unset)")
+	}
+
+	created := createTaskWithPriority(t, a.tasks, "full lifecycle probe", task.PriorityMedium)
+	// An active status so maybeStartOrchestrator's own active-task scan would
+	// trip a would-be auto-start if the brain gate regressed.
+	if _, err := a.tasks.Update(created.ID, task.Update{Status: task.Ptr(task.StatusInProgress)}); err != nil {
+		t.Fatal(err)
+	}
+
+	ag, err := a.agentOrch.StartAgent(created.ID, "headless", "advance the task", false, false)
+	if err != nil {
+		t.Fatalf("StartAgent: %v", err)
+	}
+
+	for range 5 {
+		a.dispatchPass(t.Context())
+		if a.orchSvc.IsOrchestratorRunning() {
+			t.Fatal("orchestrator brain auto-started despite an active task and brain disabled by default")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for ag.GetState() != agent.StateStopped && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if ag.GetState() != agent.StateStopped {
+		t.Fatalf("agent did not reach StateStopped: state=%v", ag.GetState())
+	}
+	if a.orchSvc.IsOrchestratorRunning() {
+		t.Fatal("orchestrator brain running after a scheduler-driven lifecycle completed")
 	}
 }

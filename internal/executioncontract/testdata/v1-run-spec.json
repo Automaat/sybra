@@ -1,0 +1,19 @@
+{
+  "version": {"major": 1, "minor": 0},
+  "buildVersion": "1.2.3",
+  "runId": "run-01JREMOTE",
+  "effectId": "17:4:implement:0",
+  "idempotencyKey": "dispatch:task-123:17:implement",
+  "fence": {"taskId": "task-123", "taskGeneration": 17, "workflowId": "ship", "workflowGeneration": 6, "stepId": "implement"},
+  "role": "implementation",
+  "provider": {"provider": "codex", "model": "gpt-5.6-codex", "reasoningEffort": "high"},
+  "prompt": {"text": "Implement the accepted plan.", "outputSchema": "{\"type\":\"object\"}"},
+  "tools": {"allowedTools": ["Bash", "Read"], "requirePermissions": true, "permissionMode": "auto"},
+  "deadline": "2026-08-12T18:00:00Z",
+  "resources": {"cpuMillis": 2000, "memoryBytes": 4294967296, "ephemeralStorageBytes": 10737418240, "maxTurns": 150, "bashTimeoutMillis": 120000},
+  "options": {"steerable": true, "forkSubagent": true, "retryWatchdog": 8, "fallbackModel": "gpt-5.5", "requestedSkill": "ship-issue", "skillExecutionMode": "native", "seedWorkingMemory": true, "resumeSessionId": "session-sensitive"},
+  "workspace": {"repositoryId": "repo-01JREMOTE", "baseSha": "0123456789abcdef0123456789abcdef01234567", "baseRef": "refs/heads/main", "roots": ["worktree", "sidecar", "artifact", "working_memory"]},
+  "environment": [{"name": "FEATURE_MODE", "value": "remote"}, {"name": "TASK_GRANT", "secretRef": {"name": "run/run-01JREMOTE/grant"}}],
+  "expectedOutputs": [{"name": "git-diff", "kind": "git_bundle", "root": "artifact", "path": "changes/run.bundle", "required": true, "sensitivity": "internal"}],
+  "futureAdditiveField": {"accepted": true}
+}

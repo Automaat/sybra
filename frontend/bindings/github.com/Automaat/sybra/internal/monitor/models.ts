@@ -18,6 +18,14 @@ export class Anomaly {
     "evidence"?: { [_ in string]?: any };
     "detectedAt": string;
 
+    /**
+     * IncidentScope is a public project ID, "fleet", or an opaque work key.
+     * Confidential forces deterministic local routing even without TaskID.
+     */
+    "incidentScope"?: string;
+    "incidentTaskId"?: string;
+    "confidential"?: boolean;
+
     /** Creates a new Anomaly instance. */
     constructor($$source: Partial<Anomaly> = {}) {
         if (!("kind" in $$source)) {
@@ -69,6 +77,16 @@ export enum AnomalyKind {
     KindLostAgent = "lost_agent",
     KindFailureSpike = "failure_spike",
     KindBottleneck = "bottleneck",
+    KindBoardStalled = "board_stalled",
+
+    /**
+     * KindNoProviderCapacity fires when every enabled provider is unhealthy
+     * and there is work that would otherwise dispatch. Without it a fleet with
+     * nowhere to run looks exactly like an idle one: monitor.tick reports
+     * dispatched:0 either way, and diagnosing it means grepping
+     * provider.health.flip out of the app log by hand.
+     */
+    KindNoProviderCapacity = "no_provider_capacity",
 
     /**
      * KindClusterDrift is filed by clusterlead.Mirror, not Detect — a leader
@@ -79,6 +97,37 @@ export enum AnomalyKind {
      */
     KindClusterDrift = "cluster_drift",
 };
+
+/**
+ * CertifiedEvidence is the safe, typed projection persisted for an incident.
+ * Raw anomaly prose is deliberately excluded, especially for work projects.
+ */
+export class CertifiedEvidence {
+    "certificateId"?: string;
+    "fingerprint"?: string;
+    "observedAt": string;
+    "proven": boolean;
+
+    /** Creates a new CertifiedEvidence instance. */
+    constructor($$source: Partial<CertifiedEvidence> = {}) {
+        if (!("observedAt" in $$source)) {
+            this["observedAt"] = "0001-01-01T00:00:00.000Z";
+        }
+        if (!("proven" in $$source)) {
+            this["proven"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CertifiedEvidence instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CertifiedEvidence {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new CertifiedEvidence($$parsedSource as Partial<CertifiedEvidence>);
+    }
+}
 
 /**
  * Counts is a snapshot of board status counts at the moment of detection.
@@ -139,6 +188,167 @@ export class Counts {
 }
 
 /**
+ * Incident coalesces every affected task for one typed root cause.
+ */
+export class Incident {
+    "version": number;
+    "revision": number;
+    "publishedRevision": number;
+    "fingerprint": string;
+    "failureCode": string;
+    "component": string;
+    "capability": string;
+    "projectScope": string;
+    "confidential"?: boolean;
+    "configGeneration": string;
+    "state": IncidentState;
+    "firstSeen": string;
+    "lastSeen": string;
+    "firstContainedAt"?: string | null;
+    "healthySince"?: string | null;
+    "resolvedAt"?: string | null;
+    "supersededAt"?: string | null;
+    "supersededByConfig"?: string;
+    "suppressedUntil"?: string | null;
+    "reopenGraceUntil"?: string | null;
+    "affectedTaskIds"?: string[];
+    "affectedTaskCount": number;
+    "affectedTaskOverflow"?: boolean;
+    "recurrenceCount": number;
+    "latestEvidence": CertifiedEvidence;
+    "remediationAttempts"?: RemediationAttempt[];
+    "issueUrl"?: string;
+    "prUrl"?: string;
+    "duplicateIssues"?: number[];
+
+    /** Creates a new Incident instance. */
+    constructor($$source: Partial<Incident> = {}) {
+        if (!("version" in $$source)) {
+            this["version"] = 0;
+        }
+        if (!("revision" in $$source)) {
+            this["revision"] = 0;
+        }
+        if (!("publishedRevision" in $$source)) {
+            this["publishedRevision"] = 0;
+        }
+        if (!("fingerprint" in $$source)) {
+            this["fingerprint"] = "";
+        }
+        if (!("failureCode" in $$source)) {
+            this["failureCode"] = "";
+        }
+        if (!("component" in $$source)) {
+            this["component"] = "";
+        }
+        if (!("capability" in $$source)) {
+            this["capability"] = "";
+        }
+        if (!("projectScope" in $$source)) {
+            this["projectScope"] = "";
+        }
+        if (!("configGeneration" in $$source)) {
+            this["configGeneration"] = "";
+        }
+        if (!("state" in $$source)) {
+            this["state"] = IncidentState.$zero;
+        }
+        if (!("firstSeen" in $$source)) {
+            this["firstSeen"] = "0001-01-01T00:00:00.000Z";
+        }
+        if (!("lastSeen" in $$source)) {
+            this["lastSeen"] = "0001-01-01T00:00:00.000Z";
+        }
+        if (!("affectedTaskCount" in $$source)) {
+            this["affectedTaskCount"] = 0;
+        }
+        if (!("recurrenceCount" in $$source)) {
+            this["recurrenceCount"] = 0;
+        }
+        if (!("latestEvidence" in $$source)) {
+            this["latestEvidence"] = (new CertifiedEvidence());
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new Incident instance from a string or object.
+     */
+    static createFrom($$source: any = {}): Incident {
+        const $$createField20_0 = $$createType2;
+        const $$createField24_0 = $$createType3;
+        const $$createField25_0 = $$createType5;
+        const $$createField28_0 = $$createType6;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("affectedTaskIds" in $$parsedSource) {
+            $$parsedSource["affectedTaskIds"] = $$createField20_0($$parsedSource["affectedTaskIds"]);
+        }
+        if ("latestEvidence" in $$parsedSource) {
+            $$parsedSource["latestEvidence"] = $$createField24_0($$parsedSource["latestEvidence"]);
+        }
+        if ("remediationAttempts" in $$parsedSource) {
+            $$parsedSource["remediationAttempts"] = $$createField25_0($$parsedSource["remediationAttempts"]);
+        }
+        if ("duplicateIssues" in $$parsedSource) {
+            $$parsedSource["duplicateIssues"] = $$createField28_0($$parsedSource["duplicateIssues"]);
+        }
+        return new Incident($$parsedSource as Partial<Incident>);
+    }
+}
+
+/**
+ * IncidentState is the durable lifecycle of one root cause.
+ */
+export enum IncidentState {
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero = "",
+
+    IncidentActive = "active",
+    IncidentResolved = "resolved",
+};
+
+/**
+ * RemediationAttempt remains pending until a later observation proves that
+ * the root cause stayed healthy. A successful API call is not proof of repair.
+ */
+export class RemediationAttempt {
+    "id": string;
+    "attemptedAt": string;
+    "kind": string;
+    "result": string;
+    "observedAt"?: string | null;
+
+    /** Creates a new RemediationAttempt instance. */
+    constructor($$source: Partial<RemediationAttempt> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("attemptedAt" in $$source)) {
+            this["attemptedAt"] = "0001-01-01T00:00:00.000Z";
+        }
+        if (!("kind" in $$source)) {
+            this["kind"] = "";
+        }
+        if (!("result" in $$source)) {
+            this["result"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new RemediationAttempt instance from a string or object.
+     */
+    static createFrom($$source: any = {}): RemediationAttempt {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new RemediationAttempt($$parsedSource as Partial<RemediationAttempt>);
+    }
+}
+
+/**
  * Report is the result of one tick. Anomalies is the raw detector output;
  * Remediated/Dispatched/Issues are filled in by the Service after side effects.
  */
@@ -150,6 +360,8 @@ export class Report {
     "dispatched": string[];
     "issuesOpened": number;
     "issuesUpdated": number;
+    "issuesClosed": number;
+    "incidents"?: Incident[];
 
     /** Creates a new Report instance. */
     constructor($$source: Partial<Report> = {}) {
@@ -174,6 +386,9 @@ export class Report {
         if (!("issuesUpdated" in $$source)) {
             this["issuesUpdated"] = 0;
         }
+        if (!("issuesClosed" in $$source)) {
+            this["issuesClosed"] = 0;
+        }
 
         Object.assign(this, $$source);
     }
@@ -182,10 +397,11 @@ export class Report {
      * Creates a new Report instance from a string or object.
      */
     static createFrom($$source: any = {}): Report {
-        const $$createField1_0 = $$createType2;
-        const $$createField2_0 = $$createType4;
-        const $$createField3_0 = $$createType5;
-        const $$createField4_0 = $$createType5;
+        const $$createField1_0 = $$createType7;
+        const $$createField2_0 = $$createType9;
+        const $$createField3_0 = $$createType2;
+        const $$createField4_0 = $$createType2;
+        const $$createField8_0 = $$createType11;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("counts" in $$parsedSource) {
             $$parsedSource["counts"] = $$createField1_0($$parsedSource["counts"]);
@@ -198,6 +414,9 @@ export class Report {
         }
         if ("dispatched" in $$parsedSource) {
             $$parsedSource["dispatched"] = $$createField4_0($$parsedSource["dispatched"]);
+        }
+        if ("incidents" in $$parsedSource) {
+            $$parsedSource["incidents"] = $$createField8_0($$parsedSource["incidents"]);
         }
         return new Report($$parsedSource as Partial<Report>);
     }
@@ -217,7 +436,13 @@ export enum Severity {
 // Private type creation functions
 const $$createType0 = $Create.Map($Create.Any, $Create.Any);
 const $$createType1 = $Create.Map($Create.Any, $Create.Any);
-const $$createType2 = Counts.createFrom;
-const $$createType3 = Anomaly.createFrom;
-const $$createType4 = $Create.Array($$createType3);
-const $$createType5 = $Create.Array($Create.Any);
+const $$createType2 = $Create.Array($Create.Any);
+const $$createType3 = CertifiedEvidence.createFrom;
+const $$createType4 = RemediationAttempt.createFrom;
+const $$createType5 = $Create.Array($$createType4);
+const $$createType6 = $Create.Array($Create.Any);
+const $$createType7 = Counts.createFrom;
+const $$createType8 = Anomaly.createFrom;
+const $$createType9 = $Create.Array($$createType8);
+const $$createType10 = Incident.createFrom;
+const $$createType11 = $Create.Array($$createType10);

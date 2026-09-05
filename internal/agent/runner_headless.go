@@ -15,10 +15,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Automaat/sybra/internal/errclass"
+
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/logging"
 	"github.com/Automaat/sybra/internal/project"
 	providerpkg "github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/providerid"
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 // errSurviveShutdown is returned by a detached headless attempt when the
@@ -109,11 +113,12 @@ var headlessRetryBackoffs = []time.Duration{30 * time.Second, 60 * time.Second, 
 // stream_tooLong log lines.
 const headlessScannerBuffer = 4 * 1024 * 1024
 
-// maxPendingHeadlessSteerPrompts bounds queued operator guidance while a
+// MaxPendingHeadlessSteerPrompts bounds queued operator guidance while a
 // headless turn is still running. The queue is replayed into the survival
 // registry, so keep it finite rather than allowing a stuck turn to grow memory
-// and restart-replay state without limit.
-const maxPendingHeadlessSteerPrompts = 20
+// and restart-replay state without limit. Exported so e2e tests outside this
+// package can assert against the real cap instead of a duplicated literal.
+const MaxPendingHeadlessSteerPrompts = 20
 
 type preparedHeadlessAttempt struct {
 	cfg     RunConfig
@@ -161,6 +166,10 @@ func (m *Manager) runHeadless(ctx context.Context, a *Agent, cfg RunConfig) {
 	if a.WasStopped() && a.GetSessionID() != "" {
 		a.SetResumable(true)
 	}
+	if sink, handle := a.executionEventTarget(); sink != nil {
+		sink.EmitExecutionEvent(ctx, handle, ExecutionEvent{Kind: ExecutionCompleted, Err: a.GetExitErr()})
+		return
+	}
 	// finalizeRun releases the agent only after onComplete returns.
 	// HasRunningAgentForTask gates ResumeStalled; releasing it before the
 	// workflow advance handler runs lets a tight ResumeStalled loop dispatch
@@ -179,7 +188,7 @@ func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, cfg RunConfi
 		return false, err
 	}
 	defer prepared.cleanup()
-	a.SetForkSubagent(prepared.cfg.ForkSubagent && prepared.inv.name == "claude")
+	a.SetForkSubagent(prepared.cfg.ForkSubagent && prepared.inv.name == providerid.Claude)
 
 	if _, _, unrendered := a.GetPromptRender(); len(unrendered) > 0 {
 		m.logger.Warn("agent.headless.skill_unrendered", "id", a.ID, "provider", prepared.inv.name, "skills", unrendered)
@@ -187,9 +196,22 @@ func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, cfg RunConfi
 
 	if m.survives() && a.Mode == "headless" {
 		inv := prepared.inv
-		return m.runHeadlessAttemptSurvive(ctx, a, prepared.cfg, outFile, tailOffset, inv.name, inv.args, inv.env, inv.command)
+		retry, err = m.runHeadlessAttemptSurvive(ctx, a, prepared.cfg, outFile, tailOffset, inv.name, inv.args, inv.env, inv.command)
+	} else {
+		retry, err = m.runHeadlessAttemptPipe(ctx, a, prepared.cfg, outFile, prepared.inv)
 	}
-	return m.runHeadlessAttemptPipe(ctx, a, prepared.cfg, outFile, prepared.inv)
+
+	if errors.Is(err, errPromptUndelivered) && prepared.cfg.HeadlessSteerable && prepared.inv.name == providerid.Claude {
+		m.logger.Warn("agent.headless.prompt-fallback", "id", a.ID, "provider", prepared.inv.name,
+			"transport", "stream-json", "payload_bytes", len(prepared.cfg.Prompt), "fallback", "one-shot-stdin")
+		a.SetError("", "")
+		a.SetExitErr(nil)
+		fallback := cfg
+		fallback.HeadlessSteerable = false
+		fallback.promptFallback = true
+		return m.runHeadlessAttempt(ctx, a, fallback, outFile, tailOffset)
+	}
+	return retry, err
 }
 
 func prepareHeadlessAttempt(a *Agent, cfg RunConfig) (preparedHeadlessAttempt, error) {
@@ -231,7 +253,77 @@ func prepareHeadlessAttempt(a *Agent, cfg RunConfig) (preparedHeadlessAttempt, e
 // stdin pipe/FIFO must never be attached for them (nothing would ever read
 // or need it).
 func steerableHeadlessInvocation(cfg RunConfig, providerName string) bool {
-	return cfg.HeadlessSteerable && providerName == "claude"
+	return cfg.HeadlessSteerable && providerName == providerid.Claude
+}
+
+// stdinPromptHeadlessInvocation reports whether this attempt needs the
+// caller to write its prompt to stdin as a plain one-shot blob (see
+// claudeProvider.BuildHeadlessInvocation's non-steerable branch) — true only
+// for a non-steerable claude run. A steerable claude run also delivers its
+// prompt over stdin, but through the pre-existing writeUserMessage/convo
+// pipe path, so it's excluded here; codex/copilot still receive the prompt
+// positionally and are excluded too.
+func stdinPromptHeadlessInvocation(steerable bool, providerName string) bool {
+	return !steerable && providerName == providerid.Claude
+}
+
+// writeAndCloseHeadlessPrompt sends the one-shot stdin prompt then closes the
+// pipe so the child (default --input-format text) sees EOF immediately,
+// matching a plain `claude -p <text>` run's stdin behavior. The delivery is
+// bounded: a child that does not consume stdin must not strand the runner.
+func (m *Manager) writeAndCloseHeadlessPrompt(a *Agent, stdin io.WriteCloser, prompt string) error {
+	done := make(chan error, 1)
+	go func() {
+		_, err := io.WriteString(stdin, prompt)
+		done <- err
+	}()
+	timer := time.NewTimer(stdinInitialWriteTimeout)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		_ = stdin.Close()
+		if err != nil {
+			return fmt.Errorf("write stdin: %w", err)
+		}
+		return nil
+	case <-timer.C:
+		// If the write completed at the same instant as the timer, prefer its
+		// result. A select is allowed to choose either ready case, and treating
+		// a delivered prompt as a timeout would unnecessarily abort fallback.
+		select {
+		case err := <-done:
+			_ = stdin.Close()
+			if err != nil {
+				return fmt.Errorf("write stdin: %w", err)
+			}
+			return nil
+		default:
+		}
+		_ = stdin.Close()
+		return fmt.Errorf("write stdin: timed out after %s, pipe closed", stdinInitialWriteTimeout)
+	}
+}
+
+// handleOneShotPromptWrite preserves the legacy best-effort behavior for a
+// normal one-shot run: a CLI that exits immediately can close stdin after
+// having already produced its terminal result. The recovery fallback is
+// different: an undelivered prompt there must fail closed rather than leave a
+// task silently stranded.
+func (m *Manager) handleOneShotPromptWrite(a *Agent, cmd *exec.Cmd, writeErr error, required bool) error {
+	if writeErr == nil {
+		return nil
+	}
+	m.logger.Warn("agent.headless.initial-prompt", "id", a.ID, "err", writeErr, "required", required)
+	if !required {
+		return nil
+	}
+	a.SetError(ErrorKindPromptUndelivered, writeErr.Error())
+	a.SetExitErr(fmt.Errorf("%w: %w", errPromptUndelivered, writeErr))
+	if cmd.Process != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}
+	return fmt.Errorf("deliver initial prompt: %w: %w", errPromptUndelivered, writeErr)
 }
 
 func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunConfig, outFile **os.File, inv headlessInvocation) (retry bool, err error) {
@@ -239,11 +331,11 @@ func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunC
 	if a.sessionCWD != "" {
 		cmd.Dir = a.sessionCWD
 	}
-	if len(cfg.ExtraEnv) > 0 || len(inv.env) > 0 {
-		cmd.Env = append(os.Environ(), inv.env...)
+	if len(cfg.ExtraEnv) > 0 || len(inv.env) > 0 || len(cfg.StripEnvKeys) > 0 {
+		cmd.Env = append(stripEnvKeys(os.Environ(), cfg.StripEnvKeys...), inv.env...)
 		cmd.Env = append(cmd.Env, cfg.ExtraEnv...)
 	}
-	a.Command = inv.command
+	a.SetCommand(inv.command)
 
 	stdout, pipeErr := cmd.StdoutPipe()
 	if pipeErr != nil {
@@ -251,6 +343,8 @@ func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunC
 	}
 
 	steerable := steerableHeadlessInvocation(cfg, inv.name)
+	stdinPrompt := stdinPromptHeadlessInvocation(steerable, inv.name) && cfg.Prompt != ""
+	var promptStdin io.WriteCloser
 	if steerable {
 		stdinPipe, stdinErr := cmd.StdinPipe()
 		if stdinErr != nil {
@@ -261,6 +355,12 @@ func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunC
 		// setFinalizing refreshed CanSteer; emit so the UI shows steer controls
 		// as soon as the stdin transport is live, not only on a later event.
 		m.emit(events.AgentState(a.ID), a)
+	} else if stdinPrompt {
+		stdinPipe, stdinErr := cmd.StdinPipe()
+		if stdinErr != nil {
+			return false, fmt.Errorf("stdin pipe: %w", stdinErr)
+		}
+		promptStdin = stdinPipe
 	}
 
 	var stderrBuf bytes.Buffer
@@ -269,18 +369,37 @@ func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunC
 	if startErr := cmd.Start(); startErr != nil {
 		if steerable {
 			a.convo.closeStdinPipe()
+		} else if promptStdin != nil {
+			_ = promptStdin.Close()
 		}
 		return false, fmt.Errorf("start %s: %w", inv.name, startErr)
 	}
 	a.SetCmd(cmd)
 
-	// The prompt is delivered as the first user message over stdin instead of
-	// a positional argument (see BuildHeadlessInvocation), mirroring the
-	// conversational runner's initial-prompt handling: a resumed run
-	// (session already set) must not resend it.
+	// Steerable: the prompt is the first user message over stdin, mirroring
+	// the conversational runner's initial-prompt handling — a resumed run
+	// (session already set) must not resend it, since the session already
+	// has it. Non-steerable stdin-prompt: always resent on every attempt,
+	// matching what the old positional-argv delivery did unconditionally.
 	if steerable && cfg.Prompt != "" && a.GetSessionID() == "" {
-		if writeErr := m.writeUserMessage(a, cfg.Prompt); writeErr != nil {
+		// Unlike a steer message, the initial prompt is the run's only chance to
+		// reach the child — on failure the child gets EOF having never seen the
+		// task, so a log-and-continue would silently strand the run. Fail the
+		// attempt instead of pressing on as if delivery succeeded.
+		if writeErr := m.writeUserMessageTimeout(a, cfg.Prompt, stdinInitialWriteTimeout); writeErr != nil {
 			m.logger.Error("agent.headless.initial-prompt", "id", a.ID, "err", writeErr)
+			a.SetError(ErrorKindPromptUndelivered, writeErr.Error())
+			a.SetExitErr(fmt.Errorf("%w: %w", errPromptUndelivered, writeErr))
+			a.convo.closeStdinPipe()
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+			}
+			_ = cmd.Wait()
+			return false, fmt.Errorf("deliver initial prompt: %w: %w", errPromptUndelivered, writeErr)
+		}
+	} else if promptStdin != nil {
+		if writeErr := m.handleOneShotPromptWrite(a, cmd, m.writeAndCloseHeadlessPrompt(a, promptStdin, cfg.Prompt), cfg.promptFallback); writeErr != nil {
+			return false, writeErr
 		}
 	}
 
@@ -313,7 +432,8 @@ func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunC
 	// waitErr is expected and not a failure. Completion comes from the result
 	// event, mirroring the detached path's own handling in
 	// runHeadlessAttemptSurvive.
-	if a.wasCompletedByResult() {
+	if completedByResultOnAttemptExit(a) {
+		a.setCompletedByResult(true)
 		m.finalizeFromResult(a, prevLen)
 		return false, nil
 	}
@@ -341,19 +461,16 @@ func makeFIFO(path string) error {
 
 // startHeadlessProcessSurviveStdin assigns a steerable detached headless
 // claude process's stdin to a FIFO (reusing makeFIFO/agentFIFOPath). Unlike a
-// conversational agent — which is handed an O_RDWR fd so it never sees EOF and
-// survives the parent indefinitely — a headless run MUST terminate when the
-// steer turn boundary closes stdin with no queued message (see
-// drainOrCloseHeadlessSteer). So the child is given a READ-ONLY stdin fd while
-// the parent keeps its own O_RDWR writer: closing the parent's only writer then
-// delivers EOF to the child, which exits exactly like a plain one-shot
-// `claude -p`. Passing the child an O_RDWR fd instead (as the convo path does)
-// leaves the child itself a writer on the pipe, so it never sees EOF and every
-// unsteered run hangs until postResultGrace kills it.
+// conversational agent — which is handed an O_RDWR fd so it keeps a writer
+// across an app restart — a steerable headless run needs the same property.
+// Giving it a read-only fd makes the parent's writer the last writer, so a
+// deploy closes stdin and silently ends the detached child before reattach.
+// The normal terminal-result path already has an explicit finalizing state and
+// post-result kill, so EOF is neither needed nor safe as its close signal.
 //
-// The returned *os.File is the parent's copy of the child's read end; the
-// caller must close it after cmd.Start() (the child holds its own dup) so a
-// single closeStdinPipe on the parent's writer is enough to EOF the child.
+// The returned *os.File is the parent's copy of the child's O_RDWR end; the
+// caller closes it after cmd.Start(), leaving the child as the restart-safe
+// FIFO anchor.
 // Called from startHeadlessSurviveProcess before cmd.Start(); on any error
 // cmd.Stdin is left unset and the caller aborts the attempt.
 func (m *Manager) startHeadlessProcessSurviveStdin(a *Agent, cmd *exec.Cmd) (*os.File, error) {
@@ -361,16 +478,16 @@ func (m *Manager) startHeadlessProcessSurviveStdin(a *Agent, cmd *exec.Cmd) (*os
 	if err := makeFIFO(fifoPath); err != nil {
 		return nil, fmt.Errorf("mkfifo: %w", err)
 	}
-	// Open the writer first (O_RDWR never blocks on a FIFO), so the read-only
-	// open below finds a writer present and returns immediately too.
+	// O_RDWR never blocks on a FIFO. Both parent and child retain a writer, so
+	// a process that survives an app restart cannot observe a false EOF.
 	writeFifo, err := os.OpenFile(fifoPath, os.O_RDWR, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open fifo (write): %w", err)
 	}
-	childStdin, err := os.OpenFile(fifoPath, os.O_RDONLY, 0)
+	childStdin, err := os.OpenFile(fifoPath, os.O_RDWR, 0)
 	if err != nil {
 		_ = writeFifo.Close()
-		return nil, fmt.Errorf("open fifo (read): %w", err)
+		return nil, fmt.Errorf("open fifo (child): %w", err)
 	}
 	cmd.Stdin = childStdin
 	a.convo.replaceStdinPipe(writeFifo)
@@ -391,27 +508,34 @@ func (m *Manager) startHeadlessSurviveProcess(ctx context.Context, a *Agent, cfg
 	if a.sessionCWD != "" {
 		cmd.Dir = a.sessionCWD
 	}
-	if len(cfg.ExtraEnv) > 0 || len(invokeEnv) > 0 {
-		cmd.Env = append(os.Environ(), invokeEnv...)
+	if len(cfg.ExtraEnv) > 0 || len(invokeEnv) > 0 || len(cfg.StripEnvKeys) > 0 {
+		cmd.Env = append(stripEnvKeys(os.Environ(), cfg.StripEnvKeys...), invokeEnv...)
 		cmd.Env = append(cmd.Env, cfg.ExtraEnv...)
 	}
-	a.Command = command
+	a.SetCommand(command)
 	cmd.Stdout = outFile
 
-	// Steerable claude runs get a FIFO stdin, exactly like a detached
-	// conversational agent (startConvoProcessSurvive). The parent keeps an
-	// O_RDWR anchor open so the FIFO survives process handoff, while the child
-	// gets a read-only fd and still sees EOF once the writer side closes.
+	// Steerable claude runs get an O_RDWR FIFO stdin, exactly like a detached
+	// conversational agent. The child retains a writer across process handoff,
+	// so a server restart cannot deliver a false EOF before reattach.
 	// Only claude honors HeadlessSteerable (see steerableHeadlessInvocation);
 	// codex/copilot keep the plain no-stdin invocation unchanged.
 	steerable := steerableHeadlessInvocation(cfg, name)
+	stdinPrompt := stdinPromptHeadlessInvocation(steerable, name) && cfg.Prompt != ""
 	var childStdin *os.File
+	var promptStdin io.WriteCloser
 	if steerable {
 		cs, err := m.startHeadlessProcessSurviveStdin(a, cmd)
 		if err != nil {
 			return nil, err
 		}
 		childStdin = cs
+	} else if stdinPrompt {
+		stdinPipe, err := cmd.StdinPipe()
+		if err != nil {
+			return nil, fmt.Errorf("stdin pipe: %w", err)
+		}
+		promptStdin = stdinPipe
 	}
 
 	stderrPath := outFile.Name() + ".stderr"
@@ -426,17 +550,17 @@ func (m *Manager) startHeadlessSurviveProcess(ctx context.Context, a *Agent, cfg
 				_ = childStdin.Close()
 			}
 			a.convo.closeStdinPipe()
+		} else if promptStdin != nil {
+			_ = promptStdin.Close()
 		}
 		return nil, fmt.Errorf("start %s: %w", name, startErr)
 	}
-	// The child holds its own dup of the read end; drop the parent's copy so
-	// closing the parent's writer (closeStdinPipe) is enough to EOF the child.
+	// The child holds its own O_RDWR dup; drop the parent's copy after start.
 	if childStdin != nil {
 		_ = childStdin.Close()
 	}
 	a.SetCmd(cmd)
 	a.setDetached(true)
-	m.saveRegistry(ctx, a)
 	if steerable {
 		// setFinalizing(false) in startHeadlessProcessSurviveStdin refreshed
 		// CanSteer; emit so the UI shows steer controls as soon as the FIFO
@@ -445,15 +569,41 @@ func (m *Manager) startHeadlessSurviveProcess(ctx context.Context, a *Agent, cfg
 	}
 	m.logger.Info("agent.headless.start", "id", a.ID, "pid", cmd.Process.Pid, "dir", cmd.Dir, "detached", true)
 
-	// The prompt is delivered as the first user message over the FIFO instead
-	// of a positional argument (see BuildHeadlessInvocation); a resumed run
-	// (session already set) must not resend it. Mirrors
-	// runConvoAttemptSurvive's initial-prompt handling.
+	// Steerable: the prompt is the first user message over the FIFO,
+	// mirroring runConvoAttemptSurvive — a resumed run (session already set)
+	// must not resend it. Non-steerable stdin-prompt: always resent on every
+	// attempt, matching what the old positional-argv delivery did
+	// unconditionally.
 	if steerable && cfg.Prompt != "" && a.GetSessionID() == "" {
-		if writeErr := m.writeUserMessage(a, cfg.Prompt); writeErr != nil {
+		// Unlike a steer message, the initial prompt is the run's only chance to
+		// reach the child — on failure the child gets EOF having never seen the
+		// task, so a log-and-continue would silently strand the detached run.
+		// Fail the attempt instead of pressing on as if delivery succeeded.
+		if writeErr := m.writeUserMessageTimeout(a, cfg.Prompt, stdinInitialWriteTimeout); writeErr != nil {
 			m.logger.Error("agent.headless.initial-prompt", "id", a.ID, "err", writeErr)
+			a.SetError(ErrorKindPromptUndelivered, writeErr.Error())
+			a.SetExitErr(fmt.Errorf("%w: %w", errPromptUndelivered, writeErr))
+			a.convo.closeStdinPipe()
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+				// This process is the killed child's real OS parent, and the
+				// caller only starts its cmd.Wait() reaper after a successful
+				// start — so reap here to avoid leaking a zombie, mirroring the
+				// pipe variant's kill path.
+				_ = cmd.Wait()
+			}
+			return nil, fmt.Errorf("deliver initial prompt: %w: %w", errPromptUndelivered, writeErr)
+		}
+	} else if promptStdin != nil {
+		if writeErr := m.handleOneShotPromptWrite(a, cmd, m.writeAndCloseHeadlessPrompt(a, promptStdin, cfg.Prompt), cfg.promptFallback); writeErr != nil {
+			return nil, writeErr
 		}
 	}
+	// The provider has a short no-input deadline. Do not place a durable write
+	// between Start and its first prompt: a slow task/attempt store can otherwise
+	// let the child exit before it ever receives work. Persist immediately after
+	// successful delivery so restart adoption still sees only live agents.
+	m.saveRegistry(ctx, a)
 	return cmd, nil
 }
 
@@ -518,7 +668,8 @@ func (m *Manager) runHeadlessAttemptSurvive(ctx context.Context, a *Agent, cfg R
 	// Post-result-hang finalize: the tailer stopped a process that had already
 	// emitted a terminal result, so the kill signal in waitErr is expected and
 	// not a failure. Completion status comes from the result event.
-	if a.wasCompletedByResult() {
+	if completedByResultOnAttemptExit(a) {
+		a.setCompletedByResult(true)
 		m.finalizeFromResult(a, prevLen)
 		return false, nil
 	}
@@ -551,6 +702,11 @@ func (m *Manager) resolveHeadlessAttemptExit(a *Agent, waitErr error, stderrOut 
 	// quota exhaustion as an exit-0 result event, so classify provider health
 	// even when the process itself looked successful.
 	attemptEvents := attemptEventsFrom(a.Output(), prevLen)
+	if toolUseAborted(attemptEvents) {
+		a.SetError(ErrorKindToolUseAborted, "provider run aborted after tool use was rejected")
+	} else if userInterruptedStream(attemptEvents) {
+		a.SetError(ErrorKindUserInterrupted, "provider run was interrupted by the user before completion")
+	}
 	switch {
 	case waitErr != nil:
 		a.SetExitErr(waitErr)
@@ -569,6 +725,14 @@ func (m *Manager) resolveHeadlessAttemptExit(a *Agent, waitErr error, stderrOut 
 	return false
 }
 
+func completedByResultOnAttemptExit(a *Agent) bool {
+	if a.wasCompletedByResult() {
+		return true
+	}
+	_, _, ok := a.PostResultWait()
+	return ok
+}
+
 // finalizeFromResult sets the exit status of a run that the post-result-hang
 // guard stopped, deriving completion from the terminal result event rather
 // than the kill signal that appears in the process wait error.
@@ -578,16 +742,55 @@ func (m *Manager) finalizeFromResult(a *Agent, prevLen int) {
 		return
 	}
 	evs := attemptEventsFrom(a.Output(), prevLen)
+	if toolUseAborted(evs) {
+		a.SetError(ErrorKindToolUseAborted, "provider run aborted after tool use was rejected")
+	} else if userInterruptedStream(evs) {
+		a.SetError(ErrorKindUserInterrupted, "provider run was interrupted by the user before completion")
+	}
+	// A run executed on another host reports that host's provider state. The
+	// health gate it would feed is this host's, and is keyed by provider with
+	// no node dimension, so a follower's exhausted account would fail this
+	// leader's own dispatches over to a different provider.
+	remote := a.RemotelyExecuted()
 	if streamErr := resultStreamError(evs); streamErr != nil {
 		a.SetExitErr(streamErr)
-		m.reportProviderHealthSignal(a, "", evs)
+		if !remote {
+			m.reportProviderHealthSignal(a, "", evs)
+		}
 		return
 	}
-	if m.reportCleanProviderHealthSignal(a, "", evs) == providerpkg.SignalRateLimit {
+	if !remote && m.reportCleanProviderHealthSignal(a, "", evs) == providerpkg.SignalRateLimit {
 		a.SetExitErr(errProviderRateLimited)
 		return
 	}
 	a.SetExitErr(checkLiveBackgroundTasksAtExit(m, a))
+}
+
+func toolUseAborted(streamEvents []StreamEvent) bool {
+	for i := range slices.Backward(streamEvents) {
+		e := streamEvents[i]
+		if e.Type != "result" {
+			continue
+		}
+		content := strings.ToLower(e.Content)
+		return e.TerminalReason == "aborted_tools" ||
+			strings.Contains(content, "request interrupted by user for tool use") ||
+			strings.Contains(content, "tool use was rejected")
+	}
+	return false
+}
+
+func userInterruptedStream(streamEvents []StreamEvent) bool {
+	for i := range slices.Backward(streamEvents) {
+		e := streamEvents[i]
+		if e.Type != "result" {
+			continue
+		}
+		content := strings.ToLower(e.Content)
+		return e.TerminalReason == "aborted_streaming" ||
+			strings.Contains(content, "request interrupted by user")
+	}
+	return false
 }
 
 // logAttemptStderr logs a completed attempt's captured stderr. Codex (and
@@ -699,7 +902,7 @@ func (m *Manager) tailHeadlessFile(ctx context.Context, a *Agent, path string, s
 			}
 			line := buf[:i]
 			buf = buf[i+1:]
-			if m.processHeadlessLine(ctx, a, line, &lastEmit, prov) {
+			if m.processHeadlessExecutionLine(ctx, a, line, &lastEmit, prov) {
 				return true
 			}
 		}
@@ -726,6 +929,12 @@ func (m *Manager) tailHeadlessFile(ctx context.Context, a *Agent, path string, s
 		}
 
 		if drain() {
+			// A turns escalation may be waiting when shutdown cancels ctx. The
+			// guardrail reports stop in that case, but the detached child was not
+			// intentionally stopped and must survive for reattach.
+			if ctx.Err() != nil && !a.WasStopped() {
+				return false, end()
+			}
 			// Guardrail kill: force the child to stop, wait for it, finalize.
 			m.signalKill(a)
 			waitExit()
@@ -789,7 +998,7 @@ func (m *Manager) streamHeadlessOutput(ctx context.Context, a *Agent, stdout io.
 			_, _ = outFile.Write([]byte("\n"))
 		}
 
-		if m.processHeadlessLine(ctx, a, line, &lastEmit, prov) {
+		if m.processHeadlessExecutionLine(ctx, a, line, &lastEmit, prov) {
 			// Guardrail asked to stop: cancel the context so the pipe-backed
 			// subprocess is terminated, then unwind. cancel may be nil in
 			// unit tests that drive the streamer directly.
@@ -800,6 +1009,16 @@ func (m *Manager) streamHeadlessOutput(ctx context.Context, a *Agent, stdout io.
 		}
 	}
 	m.reportScannerError(a, scanner.Err())
+}
+
+func (m *Manager) processHeadlessExecutionLine(ctx context.Context, a *Agent, line []byte, lastEmit *time.Time, provider Provider) bool {
+	if sink, handle := a.executionEventTarget(); sink != nil {
+		sink.EmitExecutionEvent(ctx, handle, ExecutionEvent{
+			Kind: ExecutionOutput, Provider: provider.Name(), Output: append([]byte(nil), line...),
+		})
+		return a.WasStopped()
+	}
+	return m.processHeadlessLine(ctx, a, line, lastEmit, provider)
 }
 
 // parseHeadlessEvent parses one raw NDJSON line into a StreamEvent using the
@@ -820,13 +1039,41 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 		m.logger.Warn("agent.headless.parse", "id", a.ID, "err", parseErr, "line", string(line))
 		return false
 	}
+	return m.applyHeadlessEvent(ctx, a, event, lastEmit, provider, true)
+}
+
+// applyHeadlessEvent runs everything processHeadlessLine does once a line has
+// become a StreamEvent: state, output, tool accounting, and the terminal
+// result's cost and token totals.
+//
+// A run placed on another machine arrives here already parsed. The daemon
+// forwards this package's own StreamEvent rather than the provider's wire
+// format, so feeding it back through a provider parser yields nothing and the
+// run's cost, session and result are silently lost — along with the cumulative
+// task budget that reads them.
+//
+// hostLocal is false for such a run, and every effect that describes THIS
+// host is skipped: the provider quota snapshot feeds a dispatch gate keyed by
+// provider with no node dimension, so a follower's exhausted account would
+// refuse dispatch here, and the session file names a path that exists only on
+// the worker. Only the accounting the board and the task budget need crosses
+// the boundary.
+//
+// The cost ceiling is not one of those: it describes the run, not the host, so
+// it applies either way. Its stop reaches the worker through the backend (see
+// stopBackendOwnedRun) rather than through the pipe a remote run does not
+// have.
+func (m *Manager) applyHeadlessEvent(ctx context.Context, a *Agent, event StreamEvent, lastEmit *time.Time, provider Provider, hostLocal bool) (stop bool) {
 	if event.Type == "" {
+		return false
+	}
+	if isToolFailureDiagnosticEvent(event.Type) {
 		return false
 	}
 	event = bindToolResultEvent(a.TaskID, string(a.EffectiveRole()), m.artifacts, event)
 
 	event.Timestamp = time.Now().UTC()
-	if event.LimitSnapshot != nil {
+	if event.LimitSnapshot != nil && hostLocal {
 		snapshot := *event.LimitSnapshot
 		if snapshot.Provider == "" {
 			snapshot.Provider = provider.Name()
@@ -856,7 +1103,9 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 	for _, d := range event.permissionDenials {
 		a.NotePermissionDenial(d.ToolUseID, d.Reason)
 	}
-	if event.Type == "result" || time.Since(*lastEmit) >= headlessEmitInterval {
+	m.recordToolResultFailures(a, event)
+	m.recordTerminalFailure(a, event)
+	if a.unthrottledOutputEvents || event.Type == "result" || time.Since(*lastEmit) >= headlessEmitInterval {
 		m.emit(events.AgentOutput(a.ID), event)
 		*lastEmit = time.Now()
 	}
@@ -865,14 +1114,13 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 	// Capture the session id as soon as it appears (init/system), not only on
 	// the terminal result. Claude/Codex report it at session start; without
 	// this a mid-run crash leaves the registry record with an empty session
-	// and restart-stale cold-restarts instead of resuming. Mirrors the
-	// conversational runner (runner_convo.go) and AddResultStats.
+	// and restart-stale cold-restarts instead of resuming. Mirrors AddResultStats.
 	if (event.Type == "init" || event.Type == "system") && event.SessionID != "" {
 		if a.GetSessionID() != event.SessionID {
 			a.SetSessionID(event.SessionID)
 			m.saveRegistry(ctx, a)
 		}
-		if p := provider.SessionFilePath(event.SessionID); p != "" {
+		if p := provider.SessionFilePath(event.SessionID); p != "" && hostLocal {
 			a.SetSessionFilePath(p)
 		}
 	}
@@ -887,21 +1135,8 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 	}
 
 	if event.Type == "assistant" {
-		// Copilot reports output tokens per assistant.message (claude/codex
-		// carry 0 here and total on the result event instead). Accumulate them
-		// as they stream so the stats reflect a copilot run that has no
-		// token totals on its terminal result.
-		if event.OutputTokens > 0 {
-			a.AddOutputTokens(event.OutputTokens)
-		}
-		// A forked subagent's assistant turns carry parent_tool_use_id and must
-		// not inflate the top-level turn count: a single Task-tool fan-out can
-		// emit hundreds of subagent turns that have nothing to do with the
-		// top-level conversation the guardrail is meant to bound.
-		if event.parentToolUseID == "" {
-			if keepGoing := m.checkTurnsGuardrail(ctx, a); !keepGoing {
-				return true
-			}
+		if stop := m.applyAssistantGuardrails(ctx, a, event); stop {
+			return true
 		}
 	}
 
@@ -933,7 +1168,7 @@ func postResultPipeResolution(reason string) string {
 }
 
 func shouldTrackPostResultWait(a *Agent) bool {
-	return a.PendingPromptCount() == 0 && (!a.convo.hasStdinPipe() || a.isFinalizing())
+	return !a.completionOwnedByBackend() && a.PendingPromptCount() == 0 && (!a.convo.hasStdinPipe() || a.isFinalizing())
 }
 
 func ensurePostResultWaitState(a *Agent) {
@@ -1052,10 +1287,15 @@ func (m *Manager) handleMalformedToolResults(a *Agent, event StreamEvent) {
 				return
 			}
 		}
-		reason := fmt.Sprintf("tool %s rejected malformed input: %s", toolName, truncatePromptField(diag.ValidationError))
+		reason := fmt.Sprintf("tool %s rejected malformed input: %s", toolName, textutil.TruncateBytesTrimmed(strings.TrimSpace(diag.ValidationError), malformedToolPromptFieldLimit, "\n... (truncated)"))
 		a.NoteMalformedToolCall(event.toolResults[i].ToolUseID, toolName, malformedToolCallOutcomeUnrecoverable)
 		a.SetError(malformedToolCallErrorKind, reason)
-		m.ReportProviderSignal(a.GetProvider(), providerpkg.SignalRateLimit, malformedToolCallErrorKind, malformedToolFailoverCooldown)
+		m.ReportProviderSignal(a.GetProvider(), providerpkg.Classification{
+			Signal:     providerpkg.SignalRateLimit,
+			Reason:     malformedToolCallErrorKind,
+			RetryAfter: malformedToolFailoverCooldown,
+			Source:     providerpkg.CooldownFromConfig,
+		})
 		m.logger.Warn("agent.headless.tool_call_malformed.unrecoverable",
 			"id", a.ID,
 			"provider", a.GetProvider(),
@@ -1083,13 +1323,17 @@ func (m *Manager) handleHeadlessResult(ctx context.Context, a *Agent, event Stre
 	// Must follow AddCacheStats: cached input dominates a codex run and prices at a tenth of standard. EXC:FILE011:load-bearing-invariant
 	costNow := a.BankEstimatedCost()
 	costSource := a.CostSource()
+	// The terminal result's totals now cover everything the live estimate was
+	// tracking for the in-flight turn; reset so the next turn's estimate isn't
+	// double-counted on top of the freshly banked totals.
+	a.ResetLiveUsage()
 	// Codex NDJSON never reports session_id/cost on the result event, so
 	// those alone read as an empty/crashed run (this misled diagnosis of
 	// the 2026-07-05 stalled-workflow incident, #1559). Omit the
 	// meaningless fields for codex and log only the token counts it does
 	// report, so a healthy codex completion is distinguishable from a
 	// real crash at a glance.
-	if a.Provider == "codex" {
+	if a.Provider == providerid.Codex {
 		m.logger.Info("agent.headless.result", "id", a.ID,
 			"input_tokens", event.InputTokens, "output_tokens", event.OutputTokens, "reasoning_tokens", event.ReasoningTokens)
 	} else {
@@ -1106,16 +1350,20 @@ func (m *Manager) handleHeadlessResult(ctx context.Context, a *Agent, event Stre
 	maxCost := m.guardrails.MaxCostUSD
 	m.mu.RUnlock()
 	if maxCost > 0 && costNow > maxCost {
-		if keepGoing := m.checkCostGuardrail(a, costNow, maxCost, costSource); !keepGoing {
+		if keepGoing := m.checkCostGuardrail(a, costNow, maxCost, costSource, true, "post_result_usd"); !keepGoing {
 			return false
 		}
 	}
 
-	m.drainOrCloseHeadlessSteer(a)
 	if resultSubtypeIsError(event.Subtype) || event.ErrorType != "" || event.ErrorStatus != 0 {
+		// A queued steer belongs to the next successful turn, not to this failed
+		// result. Preserve it for the runner's retry while closing this stdin and
+		// rejecting any new input that cannot be delivered by this process.
+		m.closeHeadlessSteerAfterError(a)
 		a.ClearPostResultWait()
 		return true
 	}
+	m.drainOrCloseHeadlessSteer(a)
 	if !shouldTrackPostResultWait(a) {
 		a.ClearPostResultWait()
 		return true
@@ -1148,16 +1396,17 @@ func (m *Manager) logPostResultWaitDone(a *Agent, resolution string) {
 
 // drainOrCloseHeadlessSteer is the steerable headless run's turn-boundary
 // chokepoint: it flushes one queued steer message so the process stays alive
-// and lands the next turn back-to-back, or closes stdin so the child sees
-// EOF and exits exactly like an unsteered one-shot run. Gated on
+// and lands the next turn back-to-back, or marks the transport finalizing.
+// Detached FIFO children retain an O_RDWR anchor across restart; their normal
+// terminal cleanup is performed by the post-result reaper, not EOF. Gated on
 // hasStdinPipe so a non-steerable (legacy one-shot) run is unaffected.
 func (m *Manager) drainOrCloseHeadlessSteer(a *Agent) {
 	if !a.convo.hasStdinPipe() {
 		return
 	}
-	next, ok := a.PopPendingPrompt()
+	next, ok := a.BeginPendingPromptDispatch()
 	if !ok {
-		a.setFinalizing(true)
+		a.refreshCanSteer()
 		a.convo.closeStdinPipe()
 		return
 	}
@@ -1169,25 +1418,56 @@ func (m *Manager) drainOrCloseHeadlessSteer(a *Agent) {
 	// run rate-limited so the completion path's reschedule picks it back up
 	// instead of writing to a doomed session.
 	if !m.providerHealthyForSteer(a) {
-		a.RestorePendingPrompt(next)
+		a.mu.Lock()
+		a.steerDispatching = false
+		a.mu.Unlock()
 		m.saveRegistry(m.ctx, a)
 		a.SetError("rate_limit", "provider unhealthy at steer boundary")
-		a.setFinalizing(true)
-		a.convo.closeStdinPipe()
+		m.closeHeadlessSteerForRetry(a)
 		m.logger.Warn("agent.headless.steer.parked", "id", a.ID, "provider", a.GetProvider(),
 			"remaining", a.PendingPromptCount())
 		return
 	}
-	if writeErr := m.writeUserMessage(a, next); writeErr != nil {
-		m.logger.Error("agent.headless.steer.write", "id", a.ID, "err", writeErr)
-		a.RestorePendingPrompt(next)
-		m.saveRegistry(m.ctx, a)
-		a.setFinalizing(true)
-		a.convo.closeStdinPipe()
+	if err := m.persistRegistry(m.ctx, a); err != nil {
+		m.logger.Error("agent.headless.steer.prepare", "id", a.ID, "err", err)
+		a.SetExitErr(fmt.Errorf("persist steer delivery intent: %w", err))
+		m.closeHeadlessSteerForRetry(a)
 		return
 	}
-	m.saveRegistry(m.ctx, a)
+	if writeErr := m.writeUserMessage(a, next); writeErr != nil {
+		m.logger.Error("agent.headless.steer.write", "id", a.ID, "err", writeErr)
+		a.SetExitErr(fmt.Errorf("ambiguous steer delivery: %w", writeErr))
+		m.closeHeadlessSteerForRetry(a)
+		return
+	}
+	a.CommitPendingPromptDispatch()
+	if err := m.persistRegistry(m.ctx, a); err != nil {
+		m.logger.Error("agent.headless.steer.commit", "id", a.ID, "err", err)
+	}
 	m.logger.Info("agent.headless.steer.flushed", "id", a.ID, "remaining", a.PendingPromptCount())
+}
+
+// closeHeadlessSteerAfterError stops the failed stdin turn without consuming
+// queued follow-ups. A retry starts a fresh stdin transport and can deliver
+// those prompts in order; a new message is rejected rather than falsely
+// acknowledged after the terminal error has already arrived.
+func (m *Manager) closeHeadlessSteerAfterError(a *Agent) {
+	m.closeHeadlessSteerForRetry(a)
+}
+
+// closeHeadlessSteerForRetry ends the current transport while retaining queued
+// prompts. Detached children retain a FIFO writer across restart, so retry
+// paths must explicitly terminate them instead of depending on EOF.
+func (m *Manager) closeHeadlessSteerForRetry(a *Agent) {
+	a.setFinalizing(true)
+	m.saveRegistry(m.ctx, a)
+	a.convo.closeStdinPipe()
+	// An O_RDWR child intentionally survives the parent's close across a
+	// restart. A terminal provider error is different: this attempt must end
+	// now so the normal retry path can start a fresh transport.
+	if a.isDetached() {
+		m.signalKill(a)
+	}
 }
 
 // sendHeadlessSteerMessage queues a follow-up message for a steerable
@@ -1198,20 +1478,52 @@ func (m *Manager) drainOrCloseHeadlessSteer(a *Agent) {
 // Rejects once the run has begun finalizing (its stdin is being closed for
 // good) so a message is never silently queued for a process that is exiting.
 func (m *Manager) sendHeadlessSteerMessage(a *Agent, text string) error {
-	if a.isFinalizing() {
-		return conflictError(fmt.Sprintf("agent %s is finalizing and can no longer accept messages", a.ID))
+	queueLen, enqueued, finalizing := a.TryEnqueuePrompt(text, MaxPendingHeadlessSteerPrompts)
+	if !enqueued {
+		if finalizing {
+			return conflictError(fmt.Sprintf("agent %s is finalizing and can no longer accept messages", a.ID))
+		}
+		return conflictError(fmt.Sprintf("agent %s has too many pending steer messages (%d max)", a.ID, MaxPendingHeadlessSteerPrompts))
 	}
-	if a.PendingPromptCount() >= maxPendingHeadlessSteerPrompts {
-		return conflictError(fmt.Sprintf("agent %s has too many pending steer messages (%d max)", a.ID, maxPendingHeadlessSteerPrompts))
-	}
-	a.EnqueuePrompt(text)
 	m.saveRegistry(m.ctx, a)
-	m.logger.Info("agent.headless.message_queued", "id", a.ID, "queue_len", a.PendingPromptCount())
+	m.logger.Info("agent.headless.message_queued", "id", a.ID, "queue_len", queueLen)
 
 	// Surface the sent message immediately in StreamOutput — the CLI only
 	// echoes tool-result/assistant turns back over stdout, never the
-	// injected user text itself (mirrors ConvoEvent's user_input in
-	// runner_convo.go's SendMessage).
+	// injected user text itself.
+	ev := StreamEvent{Type: "user_input", Content: text, Timestamp: time.Now().UTC()}
+	a.AppendOutput(ev)
+	m.emit(events.AgentOutput(a.ID), ev)
+	return nil
+}
+
+// sendHeadlessConvergeSteer delivers the live-cost "wrap up and converge"
+// nudge by writing it straight to the running child's stdin instead of parking
+// it on the pending-prompt queue. The queue is flushed only by
+// drainOrCloseHeadlessSteer at a terminal "result" boundary, but the live-cost
+// ceiling exists precisely for the case where a single in-flight turn's own
+// usage crosses both the steer threshold and the hard-stop ceiling before any
+// result event lands — a queued message would then be killed with the process,
+// never reaching the model. Writing it in-band (stream-json input mode buffers
+// it) hands the CLI the instruction at the earliest turn boundary the run
+// reaches. It is best-effort: a turn that blows straight past the hard ceiling
+// still cannot be interrupted mid-generation. Bypassing the queue also avoids
+// a double delivery, since drainOrCloseHeadlessSteer will find nothing to pop.
+func (m *Manager) sendHeadlessConvergeSteer(a *Agent, text string) error {
+	if a.isFinalizing() {
+		return conflictError(fmt.Sprintf("agent %s is finalizing and can no longer accept messages", a.ID))
+	}
+	if !a.convo.hasStdinPipe() {
+		return conflictError(fmt.Sprintf("agent %s has no live stdin transport for a converge steer", a.ID))
+	}
+	if err := m.writeUserMessage(a, text); err != nil {
+		return err
+	}
+	m.saveRegistry(m.ctx, a)
+	m.logger.Info("agent.headless.converge_steer_sent", "id", a.ID)
+
+	// Surface the sent message in StreamOutput — the CLI only echoes
+	// tool-result/assistant turns back over stdout, never the injected text.
 	ev := StreamEvent{Type: "user_input", Content: text, Timestamp: time.Now().UTC()}
 	a.AppendOutput(ev)
 	m.emit(events.AgentOutput(a.ID), ev)
@@ -1253,22 +1565,140 @@ func (m *Manager) warnIfResultHasLiveBackgroundTasks(a *Agent) {
 // any sidecar it already wrote) gets discarded as a hard failure purely
 // because the kill happened to land after the cost ceiling (see task
 // 6ee7ee8d).
-func (m *Manager) checkCostGuardrail(a *Agent, costNow, maxCost float64, costSource string) bool {
-	m.logger.Warn("agent.guardrail.cost", "id", a.ID, "cost", costNow, "limit", maxCost, "source", costSource)
+func (m *Manager) checkCostGuardrail(a *Agent, costNow, maxCost float64, costSource string, completedByResult bool, measurement string) bool {
+	m.logger.Warn("agent.guardrail.cost", "id", a.ID, "cost", costNow, "limit", maxCost, "source", costSource, "measurement", measurement)
 	a.MarkStopped()
 	// Stamping "cost" over a checkpoint discards a handoff whose work is already committed. EXC:FILE011:load-bearing-invariant
 	if !IsCheckpointEscalation(a.GetEscalationReason()) {
 		a.SetEscalationReason(EscalationReasonCost)
 	}
-	a.setCompletedByResult(true)
+	a.setCompletedByResult(completedByResult)
 	m.emit(events.AgentEscalation(a.ID), EscalationEvent{
 		Reason:        "cost",
 		Guardrail:     "execution.agent.post_result_cost_usd",
-		Measurement:   "post_result_usd",
+		Measurement:   measurement,
 		CostSource:    costSource,
 		CostUSD:       costNow,
 		MeasuredValue: costNow,
 		Limit:         maxCost,
+	})
+	m.emit(events.AgentState(a.ID), a)
+	return false
+}
+
+// applyAssistantGuardrails accounts an assistant event's token usage and runs
+// the per-turn guardrails. Returns true when the caller should stop the stream.
+func (m *Manager) applyAssistantGuardrails(ctx context.Context, a *Agent, event StreamEvent) bool {
+	// Copilot reports output tokens per assistant.message (claude/codex carry 0
+	// here and total on the result event instead). Accumulate them as they
+	// stream so the stats reflect a copilot run that has no token totals on its
+	// terminal result.
+	if event.OutputTokens > 0 {
+		a.AddOutputTokens(event.OutputTokens)
+	}
+	// A forked subagent's assistant turns carry parent_tool_use_id and must not
+	// inflate the top-level turn count: a single Task-tool fan-out can emit
+	// hundreds of subagent turns that have nothing to do with the top-level
+	// conversation the guardrail is meant to bound. They are bounded by their
+	// own separate ceiling instead (checkSubagentTurnsGuardrail).
+	if event.parentToolUseID == "" {
+		if stop := m.maybeEnforceLiveCostCeiling(a, event); stop {
+			return true
+		}
+		return !m.checkTurnsGuardrail(ctx, a)
+	}
+	// Fork subagents get no steer/turn nudge (they are bounded by their own turn
+	// ceiling), but their token usage must still feed the live cost estimate so
+	// a runaway fan-out is stopped as it spends.
+	if stop := m.bankLiveUsageAndCheckCostCeiling(a, event); stop {
+		return true
+	}
+	return !m.checkSubagentTurnsGuardrail(a)
+}
+
+// maybeEnforceLiveCostCeiling banks a top-level assistant event's own token
+// usage into the run's in-flight live estimate and, once it breaches
+// MaxCostUSD, hard-stops the stream before the terminal result event would
+// have reported a cost that is already fully incurred (see the doc on
+// LiveCostEstimateUSD/BankEstimatedCost for why providers can't do this
+// themselves). Below the ceiling but at or above TurnCostFraction of it, it
+// nudges the run with a one-shot steer message asking it to converge, giving
+// it a chance to land cleanly rather than being cut off mid-turn. Returns true
+// when the caller should stop the stream.
+func (m *Manager) maybeEnforceLiveCostCeiling(a *Agent, event StreamEvent) bool {
+	if stop := m.bankLiveUsageAndCheckCostCeiling(a, event); stop {
+		return true
+	}
+	m.mu.RLock()
+	maxCost := m.guardrails.MaxCostUSD
+	fraction := m.guardrails.TurnCostFraction
+	m.mu.RUnlock()
+	if maxCost <= 0 {
+		return false
+	}
+	if fraction <= 0 {
+		fraction = 0.8
+	}
+	costNow := a.LiveCostEstimateUSD()
+	if costNow >= fraction*maxCost && a.computeCanSteer() && !a.MarkBudgetSteerSent() {
+		msg := fmt.Sprintf(
+			"You are approaching the run's cost ceiling (estimated $%.2f of a $%.2f limit). "+
+				"Please wrap up your current work and converge to a stopping point soon — the run will be stopped once the ceiling is reached.",
+			costNow, maxCost)
+		if err := m.sendHeadlessConvergeSteer(a, msg); err != nil {
+			m.logger.Warn("agent.guardrail.cost.steer_failed", "id", a.ID, "err", err)
+		}
+	}
+	return false
+}
+
+// bankLiveUsageAndCheckCostCeiling banks an assistant event's own token usage
+// into the run's in-flight live estimate and hard-stops the stream once that
+// pushes the run over MaxCostUSD. It is called for both top-level and forked
+// -subagent assistant turns: a runaway fork fan-out multiplies spend across
+// hundreds of subagent turns (CLAUDE.md: "total cost multiplies with
+// parallelism"), and those turns never reach the top-level steer/turn
+// guardrails — so without banking them here the live ceiling would be blind to
+// exactly the spend it exists to bound, catching it only reactively once/if a
+// terminal result event eventually lands. Returns true when the caller should
+// stop the stream.
+func (m *Manager) bankLiveUsageAndCheckCostCeiling(a *Agent, event StreamEvent) bool {
+	a.AddLiveUsage(event.InputTokens, event.OutputTokens, event.CacheCreationInputTokens, event.CacheReadInputTokens)
+	m.mu.RLock()
+	maxCost := m.guardrails.MaxCostUSD
+	m.mu.RUnlock()
+	if maxCost <= 0 {
+		return false
+	}
+	costNow := a.LiveCostEstimateUSD()
+	if costNow > maxCost {
+		m.checkCostGuardrail(a, costNow, maxCost, "estimated", false, "live_estimate_usd")
+		return true
+	}
+	return false
+}
+
+// checkSubagentTurnsGuardrail increments the forked-subagent turn counter
+// and, on a breach of effectiveMaxSubagentEvents, hard-stops the run.
+// Unlike checkTurnsGuardrail there is no auto-continue or human-escalation
+// path: a runaway subagent fan-out is stopped outright. Returns false when
+// the caller should stop the stream.
+func (m *Manager) checkSubagentTurnsGuardrail(a *Agent) bool {
+	count := a.IncSubagentTurnCount()
+	maxEvents := m.effectiveMaxSubagentEvents()
+	if maxEvents <= 0 || count < maxEvents {
+		return true
+	}
+	m.logger.Warn("agent.guardrail.subagent_turns", "id", a.ID, "count", count, "limit", maxEvents)
+	a.MarkStopped()
+	a.SetEscalationReason(EscalationReasonSubagentTurns)
+	m.emit(events.AgentEscalation(a.ID), EscalationEvent{
+		Reason:        "subagent_turns",
+		Guardrail:     "execution.agent.max_subagent_events",
+		Measurement:   "subagent_events",
+		TurnCount:     count,
+		MeasuredValue: float64(count),
+		Limit:         float64(maxEvents),
 	})
 	m.emit(events.AgentState(a.ID), a)
 	return false
@@ -1323,6 +1753,7 @@ func (m *Manager) checkTurnsGuardrail(ctx context.Context, a *Agent) bool {
 			// Caller terminates the subprocess: streamHeadlessOutput cancels
 			// the context (pipe-backed); tailHeadlessFile signal-kills the
 			// detached child by PID.
+			a.MarkStopped()
 			return false
 		}
 		a.SetEscalationReason("")
@@ -1384,9 +1815,14 @@ func (m *Manager) effectiveMaxTurns(a *Agent) int {
 func (m *Manager) handleError(ctx context.Context, a *Agent, err error) {
 	kind := classifyAgentError(err)
 	a.SetError(kind, err.Error())
-	a.SetState(StateStopped)
 	m.logger.Error("agent.error", "id", a.ID, "kind", kind, "err", err)
 	m.emit(events.AgentError(a.ID), ErrorEvent{Kind: kind, Msg: err.Error()})
+	if sink, handle := a.executionEventTarget(); sink != nil {
+		sink.EmitExecutionEvent(ctx, handle, ExecutionEvent{Kind: ExecutionCompleted, Err: err})
+		return
+	}
+	a.SetState(StateStopped)
+	m.unregisterExecution(a.ID)
 	m.emit(events.AgentState(a.ID), a)
 	m.fireComplete(ctx, a, false)
 	m.markAgentDone(ctx, a)
@@ -1397,24 +1833,26 @@ func classifyAgentError(err error) string {
 	if err == nil {
 		return "crash"
 	}
+	// Ahead of the substring table, which reads this as a bare i/o timeout and
+	// mislabels it git_clone.
+	if errors.Is(err, errPromptUndelivered) {
+		return ErrorKindPromptUndelivered
+	}
+	if errors.Is(err, ErrProviderCapacityReached) {
+		return "provider_capacity"
+	}
 	msg := strings.ToLower(err.Error())
+	class := errclass.Classify(msg, errclass.AgentRecoveryBiased)
 	switch {
 	case strings.Contains(msg, "worktree") || strings.Contains(msg, "already checked out"):
 		return "worktree_conflict"
-	case strings.Contains(msg, "clone") ||
-		strings.Contains(msg, "fetch origin") ||
-		strings.Contains(msg, "git fetch") ||
-		strings.Contains(msg, "could not resolve host") ||
-		strings.Contains(msg, "dial tcp") ||
-		strings.Contains(msg, "i/o timeout") ||
-		strings.Contains(msg, "dns") ||
-		(strings.Contains(msg, "git") && strings.Contains(msg, "network")):
+	case class == errclass.Transient:
 		return "git_clone"
 	case strings.Contains(msg, "permission denied") ||
 		strings.Contains(msg, "eacces") ||
 		strings.Contains(msg, "operation not permitted"):
 		return "permission_denied"
-	case strings.Contains(msg, "rate limit") || strings.Contains(msg, "429") || strings.Contains(msg, "overloaded"):
+	case class == errclass.RateLimited:
 		return "rate_limit"
 	default:
 		return "crash"

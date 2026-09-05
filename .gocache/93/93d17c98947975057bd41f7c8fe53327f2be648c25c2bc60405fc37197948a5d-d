@@ -1,0 +1,4 @@
+./OpenAPIv3.go
+./OpenAPIv3.pb.go
+./annotations.pb.go
+./document.go

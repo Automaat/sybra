@@ -24,7 +24,7 @@ func ClassifyAndApply(
 	ctx context.Context,
 	classifier Classifier,
 	mgr *task.Manager,
-	al *audit.Logger,
+	al audit.Store,
 	t task.Task,
 	projects []project.Project,
 ) (Verdict, task.Task, error) {
@@ -37,7 +37,7 @@ func ClassifyAndApplyWithOptions(
 	ctx context.Context,
 	classifier Classifier,
 	mgr *task.Manager,
-	al *audit.Logger,
+	al audit.Store,
 	t task.Task,
 	projects []project.Project,
 	opts ApplyOptions,
