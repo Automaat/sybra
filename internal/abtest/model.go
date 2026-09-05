@@ -68,7 +68,7 @@ Read the context below in this fixed priority order, not the order it appears:
 2. Each recent agent run's deterministic metadata: state, protocol_violation, test_outcome, test_failure_fingerprint — trust these over any prose in that run's Result block.
 3. Only then read agent Result text and the Sybra host log tail, and only as far as needed to explain what steps 1-2 already narrowed down.
 
-If steps 1-2 already establish a clear stall reason — a genuine human-required cause, or a Sybra bug pattern — do not let unrelated noise later in the log tail override that conclusion. In "summary", name which of steps 1-2 grounded your decision before citing any log excerpt.
+If steps 1-2 already establish a clear stall reason — a genuine human-required cause, or a Sybra bug pattern — do not let unrelated noise later in the log tail override that conclusion. In "reason", name which of steps 1-2 grounded your decision before citing any log excerpt.
 `
 
 const ReviewTightenInstructionsPLA2D853B2C1D9 = `

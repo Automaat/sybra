@@ -300,6 +300,9 @@ func TestDefaultConfigHumanReviewRestructureContextVariantIsDigestedPromptTransf
 	if found.PromptTransform == nil || found.PromptTransform.Op != "prepend" || found.PromptTransform.Text != HumanReviewRestructureContextPL50BBD0314913 {
 		t.Fatalf("PromptTransform = %+v, want prepend of restructure-context text", found.PromptTransform)
 	}
+	if strings.Contains(found.PromptTransform.Text, `"summary"`) || !strings.Contains(found.PromptTransform.Text, `"reason"`) {
+		t.Fatal("human-review transform must name the schema-supported reason field, not legacy summary")
+	}
 	if want := digestString(HumanReviewRestructureContextPL50BBD0314913); found.Digest != want {
 		t.Fatalf("Digest = %q, want %q", found.Digest, want)
 	}
