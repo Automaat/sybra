@@ -34,7 +34,7 @@ type Config struct {
 // returned by DefaultConfig. Bump this whenever the built-in experiments'
 // roles, variants, or weights change in a way that persisted configs should
 // pick up automatically.
-const CurrentBuiltinVersion = 7
+const CurrentBuiltinVersion = 8
 
 // BuiltinExperimentIDs lists the experiment IDs owned by Sybra's shipped
 // defaults. A persisted config's experiment is only replaced during a builtin
