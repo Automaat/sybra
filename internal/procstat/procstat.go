@@ -31,6 +31,18 @@ var (
 
 // Sample returns a top-N summary sorted by CPU and memory usage.
 func Sample(topN int, owned func(pid, pgid int) bool) Summary {
+	return sample(topN, owned, false)
+}
+
+// SampleOwned returns a top-N summary of only the processes owned reports
+// true for, sorted by CPU and memory usage. Unlike Sample, ranking is
+// restricted to owned processes so a low-usage hung process is never pushed
+// out by unrelated high-usage processes elsewhere on the host.
+func SampleOwned(topN int, owned func(pid, pgid int) bool) Summary {
+	return sample(topN, owned, true)
+}
+
+func sample(topN int, owned func(pid, pgid int) bool, ownedOnly bool) Summary {
 	processes, available := readProcessesFn()
 	summary := Summary{
 		SampledAt: timeNow(),
@@ -48,6 +60,15 @@ func Sample(topN int, owned func(pid, pgid int) bool) Summary {
 	all := append([]Process(nil), processes...)
 	for i := range all {
 		all[i].Owned = owned(all[i].PID, all[i].PGID)
+	}
+	if ownedOnly {
+		filtered := all[:0]
+		for _, p := range all {
+			if p.Owned {
+				filtered = append(filtered, p)
+			}
+		}
+		all = filtered
 	}
 
 	summary.TopCPU = append([]Process(nil), all...)

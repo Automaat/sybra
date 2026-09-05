@@ -277,7 +277,7 @@ func buildAllowances() map[allowanceKey]allowance { //nolint:funlen // The expli
 	add(kindStringTruncation, "internal/agent/procsandbox_linux_test.go", "Conservative unresolved tuple-call provenance reaches a controlled non-string test-fixture slice.", map[string]int{"slice": 2})
 	add(kindStringTruncation, "internal/agent/reattach.go", "Conservative unresolved tuple-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "internal/pressure/sample_darwin.go", "Conservative unresolved tuple-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 2})
-	add(kindStringTruncation, "internal/procstat/procstat.go", "Conservative unresolved tuple-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/procstat/procstat.go", "Both slices operate on process-record collections (filter reuse and top-N truncation), never text bytes.", map[string]int{"slice": 2})
 	add(kindStringTruncation, "internal/project/git.go", "Conservative unresolved tuple-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 5})
 	add(kindStringTruncation, "internal/stats/store.go", "Conservative unresolved tuple-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 3})
 	add(kindStringTruncation, "internal/sybra/clusterlead/mirror_oob_integration_test.go", "Conservative unresolved tuple-call provenance reaches a controlled non-string test-fixture slice.", map[string]int{"slice": 1})

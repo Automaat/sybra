@@ -2,18 +2,22 @@ package watchdog
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/backoff"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/pressure"
+	"github.com/Automaat/sybra/internal/procstat"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/textutil"
@@ -228,6 +232,15 @@ type Watchdog struct {
 	// not impose a smaller generic cap than the workflow check budget. Nil
 	// falls through to unconditional escalation.
 	verifyNow func(ctx context.Context, taskID string) (verified, passed bool, failedCmd, output string, err error)
+
+	// artifacts persists best-effort process-state evidence captured on a
+	// zero-output silent hang (captureZeroOutputProcessState). Nil disables
+	// capture entirely — a watchdog wired without an artifact store still
+	// runs every other check unchanged.
+	artifacts *artifact.Store
+	// processSampler samples the hung agent's owned processes for the
+	// capture. Defaults to procstat.SampleOwned; overridable in tests.
+	processSampler func(topN int, owned func(pid, pgid int) bool) procstat.Summary
 }
 
 // applyStatusEffect moves taskID to status, gated on the caller's
@@ -272,6 +285,7 @@ func New(
 	cfg config.WatchdogConfig,
 	pressureGate *pressure.Gate,
 	verifyNow func(ctx context.Context, taskID string) (verified, passed bool, failedCmd, output string, err error),
+	artifacts *artifact.Store,
 ) *Watchdog {
 	return &Watchdog{
 		agents:               agents,
@@ -298,6 +312,8 @@ func New(
 		maxRunsPerWindow: cfg.MaxRunsPerWindow,
 		runWindow:        time.Duration(cfg.RunWindowMinutes) * time.Minute,
 		verifyNow:        verifyNow,
+		artifacts:        artifacts,
+		processSampler:   procstat.SampleOwned,
 	}
 }
 
@@ -976,6 +992,7 @@ func (w *Watchdog) handleZeroOutputStall(ag *agent.Agent, stall, total time.Dura
 	w.logger.Warn("agent.watchdog.zero_output_stall",
 		"id", ag.ID, "task_id", ag.TaskID, "provider", ag.Provider,
 		"stall_sec", int(stall.Seconds()), "total_sec", int(total.Seconds()))
+	w.captureZeroOutputProcessState(ag, stall, total)
 	reason := watchdogreason.SilentHang(zeroOutputReason)
 	if ag.TaskID == "" {
 		w.logger.Warn("agent.watchdog.zero_output_stall.untracked", "id", ag.ID, "provider", ag.Provider)
@@ -986,6 +1003,83 @@ func (w *Watchdog) handleZeroOutputStall(ag *agent.Agent, stall, total time.Dura
 	if err := w.stopAgent(ag.ID); err != nil {
 		w.logger.Error("agent.watchdog.stop.failed", "id", ag.ID, "err", err)
 	}
+}
+
+// watchdogProcessStateTopN bounds how many owned processes the zero-output
+// capture records per CPU/mem ranking — enough to see a stuck process tree
+// without ballooning the artifact.
+const watchdogProcessStateTopN = 10
+
+// zeroOutputProcessCapture is the JSON envelope persisted by
+// captureZeroOutputProcessState. It intentionally carries no command-line
+// arguments or environment — only identity, timing, and the process sample.
+type zeroOutputProcessCapture struct {
+	AgentID    string           `json:"agentId"`
+	TaskID     string           `json:"taskId"`
+	Provider   string           `json:"provider"`
+	PID        int              `json:"pid"`
+	StallSec   int              `json:"stallSec"`
+	TotalSec   int              `json:"totalSec"`
+	CapturedAt time.Time        `json:"capturedAt"`
+	Processes  procstat.Summary `json:"processes"`
+}
+
+// captureZeroOutputProcessState best-effort persists a snapshot of the hung
+// agent's own process (and process group) as a task-scoped generic artifact
+// before handleZeroOutputStall stops it — the last chance to see whether the
+// child was running and stuck, or never got far enough to run at all. Skips
+// silently (logging only) when there is no task to attach the artifact to,
+// no configured artifact store, or the sampler/marshal/write step fails; none
+// of that may block the existing stop/retry/tag behavior.
+func (w *Watchdog) captureZeroOutputProcessState(ag *agent.Agent, stall, total time.Duration) {
+	if ag.TaskID == "" || w.artifacts == nil {
+		return
+	}
+	sampler := w.processSampler
+	if sampler == nil {
+		sampler = procstat.SampleOwned
+	}
+
+	pid := ag.GetPID()
+	var groupID int
+	if pid > 0 {
+		if g, err := syscall.Getpgid(pid); err == nil {
+			groupID = g
+		}
+	}
+	owned := func(p, pgid int) bool {
+		if pid <= 0 {
+			return false
+		}
+		return p == pid || (groupID != 0 && pgid == groupID)
+	}
+
+	capture := zeroOutputProcessCapture{
+		AgentID:    ag.ID,
+		TaskID:     ag.TaskID,
+		Provider:   ag.Provider,
+		PID:        pid,
+		StallSec:   int(stall.Seconds()),
+		TotalSec:   int(total.Seconds()),
+		CapturedAt: time.Now().UTC(),
+		Processes:  sampler(watchdogProcessStateTopN, owned),
+	}
+	data, err := json.Marshal(capture)
+	if err != nil {
+		w.logger.Warn("agent.watchdog.zero_output_stall.capture.marshal_failed", "id", ag.ID, "err", err)
+		return
+	}
+	if _, err := w.artifacts.Put(ag.TaskID, artifact.Artifact{
+		Kind:         artifact.KindGeneric,
+		Name:         "watchdog-process-state-" + ag.ID + ".json",
+		ProducerRole: string(ag.EffectiveRole()),
+		StepID:       "watchdog.zero_output_stall",
+		Content:      data,
+	}); err != nil {
+		w.logger.Warn("agent.watchdog.zero_output_stall.capture.write_failed", "id", ag.ID, "err", err)
+		return
+	}
+	w.logger.Info("agent.watchdog.zero_output_stall.capture", "id", ag.ID, "task_id", ag.TaskID, "pid", pid)
 }
 
 // supervisorNudgePrefix tags a watchdog steer delivered to a live agent so the
