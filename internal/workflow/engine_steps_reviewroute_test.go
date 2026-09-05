@@ -5,6 +5,9 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 func TestExtractReviewVerdict(t *testing.T) {
@@ -172,5 +175,89 @@ func TestExecFlagPlanCritique_MalformedRetriesThenEscalates(t *testing.T) {
 	}
 	if got := tasks.Reason("t1"); !strings.Contains(got, "schema-valid verdict after auto-retries") {
 		t.Fatalf("reason = %q, want schema-valid verdict exhaustion", got)
+	}
+}
+
+func TestPrepareReviewVerdictAttemptVars_DropsThePreviousRoundsVerdict(t *testing.T) {
+	t.Parallel()
+	wf := &Execution{Variables: map[string]string{
+		reviewVerdictVar:           reviewVerdictNeedsFixes,
+		reviewVerdictSourceStepVar: "code_review_simple",
+		"unrelated":                "keep",
+	}}
+	prepareReviewVerdictAttemptVars(wf, &Step{ID: "code_review_simple", Config: StepConfig{Role: reviewAgentRole}})
+
+	if got := wf.Variables[reviewVerdictVar]; got != "" {
+		t.Fatalf("verdict = %q, want the previous round's answer dropped before a new review runs", got)
+	}
+	if got := wf.Variables[reviewVerdictSourceStepVar]; got != "code_review_simple" {
+		t.Fatalf("source step = %q, want the step being dispatched so a rewind returns to it", got)
+	}
+	if got := wf.Variables["unrelated"]; got != "keep" {
+		t.Fatalf("unrelated var = %q, want it untouched", got)
+	}
+}
+
+func TestPrepareReviewVerdictAttemptVars_LeavesOtherRolesAlone(t *testing.T) {
+	t.Parallel()
+	wf := &Execution{Variables: map[string]string{reviewVerdictVar: reviewVerdictClean}}
+	prepareReviewVerdictAttemptVars(wf, &Step{ID: "fix_review", Config: StepConfig{Role: "fix-review"}})
+	if got := wf.Variables[reviewVerdictVar]; got != reviewVerdictClean {
+		t.Fatalf("verdict = %q, want a non-review dispatch to leave it alone", got)
+	}
+}
+
+func TestAdvanceStep_FailedReviewDoesNotRouteOnTheLastVerdict(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.Save(*mustBuiltinDefinition(t, "simple-task-review")); err != nil {
+		t.Fatalf("save simple-task-review: %v", err)
+	}
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
+	wf := &Execution{
+		WorkflowID:  "simple-task-review",
+		CurrentStep: "code_review_simple",
+		State:       ExecRunning,
+		Variables: map[string]string{
+			reviewVerdictVar:           reviewVerdictNeedsFixes,
+			reviewVerdictSourceStepVar: "code_review_simple",
+		},
+		StartedAt: time.Now().UTC(),
+	}
+	tasks.Put(TaskInfo{ID: "t-stale", Status: taskstatus.ReadyReview, AgentMode: "headless", Workflow: wf})
+
+	engine.ResumeStalled()
+
+	stored, _ := tasks.GetTask("t-stale")
+	if got := stored.Workflow.Variables[reviewVerdictVar]; got != "" {
+		t.Fatalf("verdict = %q, want dispatching a fresh review to drop the previous round's answer", got)
+	}
+}
+
+func TestPrepareReviewVerdictAttemptVars_KeepsTheStaffLaneRewindTarget(t *testing.T) {
+	t.Parallel()
+	wf := &Execution{Variables: map[string]string{
+		reviewVerdictVar:           reviewVerdictNeedsFixes,
+		reviewVerdictSourceStepVar: "code_review_staff",
+	}}
+	prepareReviewVerdictAttemptVars(wf, &Step{ID: "code_review_staff", Config: StepConfig{Role: reviewAgentRole}})
+
+	if got := wf.Variables[reviewVerdictSourceStepVar]; got != "code_review_staff" {
+		t.Fatalf("source step = %q, want a staff review to rewind to itself rather than the cheap review", got)
+	}
+}
+
+func TestRouteReviewVerdict_StopsInsteadOfFixingWhenItEscalated(t *testing.T) {
+	t.Parallel()
+	def := mustBuiltinDefinition(t, "simple-task-review")
+	step := def.StepByID("route_review_verdict")
+	if step == nil {
+		t.Fatal("route_review_verdict missing from the builtin")
+	}
+	first := step.Next[0]
+	if first.When == nil || first.When.Field != "task.status" ||
+		first.When.Value != string(taskstatus.HumanRequired) || first.GoTo != "" {
+		t.Fatalf("first edge = %+v, want a human-required stop before the fix edge", first)
 	}
 }

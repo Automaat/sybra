@@ -37,6 +37,15 @@ var allowedTransitions = map[Status]map[Status]bool{
 		StatusInReview:      true,
 		StatusHumanRequired: true,
 		StatusBlocked:       true,
+		// A handoff enters the pipeline at the stage the operator names: the
+		// task is created at todo and its simple-task-handoff-<stage> workflow
+		// flips it straight to that stage's status. Without these three the
+		// review, testing and ready-pr entry points each trip the circuit
+		// breaker instead, which is what
+		// TestHandoffVariantsEnterFromTodo pins.
+		StatusReadyReview: true,
+		StatusTesting:     true,
+		StatusReadyPR:     true,
 		// monitor.routing.local_autoclose closes a scrubbed local
 		// investigation task from whatever non-terminal status it is
 		// currently sitting at, including a freshly created (still todo)
@@ -70,11 +79,16 @@ var allowedTransitions = map[Status]map[Status]bool{
 		// A resumed planning workflow can already carry in-progress after an
 		// interrupted agent retry; its review gate must still be able to park at
 		// plan-review rather than tripping the circuit breaker.
-		StatusPlanReview:    true,
-		StatusInReview:      true,
-		StatusTodo:          true,
-		StatusTesting:       true,
-		StatusReadyReview:   true,
+		StatusPlanReview:  true,
+		StatusInReview:    true,
+		StatusTodo:        true,
+		StatusTesting:     true,
+		StatusReadyReview: true,
+		// verify_checks routes failures proven unrelated to the task's diff
+		// straight to PR creation so CI and reviewers can see both the valid
+		// change and the pre-existing breakage. The gate runs while the task is
+		// in-progress, including in prompt-lab-author.
+		StatusReadyPR:       true,
 		StatusHumanRequired: true,
 		StatusBlocked:       true,
 		StatusDone:          true,
@@ -83,6 +97,10 @@ var allowedTransitions = map[Status]map[Status]bool{
 	StatusReadyReview: {
 		StatusInReview: true,
 		StatusTesting:  true,
+		// A post-review verify_checks pass can still prove that the only
+		// failing package is untouched by the task and route directly to PR
+		// creation, just like the authoring workflows do from in-progress.
+		StatusReadyPR: true,
 		// Recovery needs a route back to in-progress to run its fix agent.
 		// Without it a branch that diverges while the task sits here cannot be
 		// auto-resolved: branch-conflict-fix dispatches, the transition is

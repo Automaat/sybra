@@ -1770,7 +1770,7 @@ func TestHandleKnownPRConflictsViaREST_SkipsCommentsWithoutGraphQLThreadData(t *
 		if kinds := gotTask.Workflow.Variables["pr_issue_kinds"]; strings.Contains(kinds, string(github.PRIssueComments)) {
 			t.Errorf("pr_issue_kinds = %q, must not carry %q (no GraphQL thread data in REST fallback)", kinds, github.PRIssueComments)
 		}
-		if prompt := gotTask.Workflow.Variables["prompt"]; strings.Contains(prompt, "/fix-review") {
+		if prompt := gotTask.Workflow.Variables["prompt"]; strings.Contains(prompt, "reply on every thread") {
 			t.Errorf("dispatched prompt must not address review comments in the REST fallback:\n%s", prompt)
 		}
 	})

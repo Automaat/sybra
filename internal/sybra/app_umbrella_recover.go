@@ -25,7 +25,7 @@ func (a *App) recoverDegradedUmbrellas() {
 	if a.cfg == nil || !a.cfg.Umbrella.Enabled {
 		return
 	}
-	tasks, err := a.tasks.List()
+	tasks, err := a.tasks.ListBoard()
 	if err != nil {
 		return
 	}

@@ -381,7 +381,7 @@ func (o *Orchestrator) resolveDispatchProvider(taskID string, assignment workflo
 	resolved, err := o.agents.ResolveProvider(agent.RunConfig{
 		TaskID:                  taskID,
 		Provider:                assignment.Provider,
-		DisableProviderFailover: assignment.ExperimentID != "",
+		DisableProviderFailover: false, // A/B attribution must not pin local dispatch.
 	})
 	if err == nil {
 		return resolved
@@ -546,6 +546,9 @@ func (o *Orchestrator) resolveDispatchDir(ctx context.Context, t task.Task, task
 	}
 	if o.worktrees == nil {
 		return t, fallbackDispatchDir(dir), nil
+	}
+	if t.IsPRReview() {
+		return t, "", fmt.Errorf("task %s only reviews pull request %d: refusing a writable worktree", taskID, t.PRNumber)
 	}
 	var assignErr error
 	t, assignErr = o.AutoAssignProject(t)
@@ -717,22 +720,25 @@ func (o *Orchestrator) startAgent(ctx context.Context, taskID, mode, prompt stri
 	if postureErr != nil {
 		return nil, "", postureErr
 	}
-	return o.runImplementationAgent(ctx, taskID, prompt, includeTaskDescription, oneShot, skipWT, dir, effMode, requirePerm, posture, baselineRef, resumeSessionID, model, t, assignment, opts, reservation)
+	return o.runImplementationAgent(ctx, taskID, prompt, includeTaskDescription, oneShot, skipWT, dir, effMode, requirePerm, posture, baselineRef, resumeSessionID, dispatchProvider, model, t, assignment, opts, reservation)
 }
 
 // runImplementationAgent builds the RunConfig for an implementation dispatch,
 // launches it, and translates a launch failure through the same
 // capacity-race / provider-gate handling startAgent used inline before this
 // was split out to satisfy funlen.
-func (o *Orchestrator) runImplementationAgent(ctx context.Context, taskID, prompt string, includeTaskDescription, oneShot, skipWT bool, dir, effMode string, requirePerm bool, posture, baselineRef, resumeSessionID, model string, t task.Task, assignment workflow.AgentAssignment, opts startOptions, reservation *agent.CapacityReservation) (*agent.Agent, string, error) {
+func (o *Orchestrator) runImplementationAgent(ctx context.Context, taskID, prompt string, includeTaskDescription, oneShot, skipWT bool, dir, effMode string, requirePerm bool, posture, baselineRef, resumeSessionID, resumeSessionProvider, model string, t task.Task, assignment workflow.AgentAssignment, opts startOptions, reservation *agent.CapacityReservation) (*agent.Agent, string, error) {
 	extraEnv := o.SandboxEnvIfRunning(taskID)
 	fullPrompt := BuildTaskStartPrompt(t, prompt, includeTaskDescription)
 	o.logSandboxEscapeHatch(taskID, t)
 	runCfg := o.implementationRunConfig(implementationRunParams{
 		taskID: taskID, t: t, effMode: effMode, prompt: prompt, fullPrompt: fullPrompt, dir: dir,
 		assignment: assignment, model: model, requirePerm: requirePerm, posture: posture,
-		oneShot:         oneShot,
-		resumeSessionID: resumeSessionID, extraEnv: extraEnv, opts: opts,
+		oneShot:               oneShot,
+		resumeSessionID:       resumeSessionID,
+		resumeSessionProvider: resumeSessionProvider,
+		extraEnv:              extraEnv,
+		opts:                  opts,
 	})
 	var (
 		ag  *agent.Agent
@@ -766,20 +772,21 @@ func (o *Orchestrator) runImplementationAgent(ctx context.Context, taskID, promp
 // implementation-role dispatch. Kept as one struct rather than a long
 // positional parameter list — mirrors the shape of the RunConfig it feeds.
 type implementationRunParams struct {
-	taskID          string
-	t               task.Task
-	effMode         string
-	prompt          string
-	fullPrompt      string
-	dir             string
-	assignment      workflow.AgentAssignment
-	model           string
-	requirePerm     bool
-	posture         string
-	oneShot         bool
-	resumeSessionID string
-	extraEnv        []string
-	opts            startOptions
+	taskID                string
+	t                     task.Task
+	effMode               string
+	prompt                string
+	fullPrompt            string
+	dir                   string
+	assignment            workflow.AgentAssignment
+	model                 string
+	requirePerm           bool
+	posture               string
+	oneShot               bool
+	resumeSessionID       string
+	resumeSessionProvider string
+	extraEnv              []string
+	opts                  startOptions
 }
 
 func (o *Orchestrator) implementationRunConfig(p implementationRunParams) agent.RunConfig {
@@ -801,13 +808,14 @@ func (o *Orchestrator) implementationRunConfig(p implementationRunParams) agent.
 		AssignmentUnit:          p.assignment.AssignmentUnit,
 		AssignmentKey:           p.assignment.AssignmentKey,
 		DecisionVersion:         p.assignment.DecisionVersion,
-		DisableProviderFailover: p.assignment.ExperimentID != "",
+		DisableProviderFailover: false, // Preserve availability after A/B assignment.
 		RequestedSkill:          requestedWorkflowSkill(p.prompt),
 		RequirePermissions:      p.requirePerm,
 		HeadlessPermissionMode:  p.posture,
 		SkipDispatchJitter:      p.opts.skipDispatchJitter,
 		OneShot:                 p.oneShot,
 		ResumeSessionID:         p.resumeSessionID,
+		ResumeSessionProvider:   p.resumeSessionProvider,
 		ExtraEnv:                p.extraEnv,
 		MaxTurns:                p.t.MaxTurns,
 		// Always an implementation run (a code-author role, Role.AuthorsCode),
@@ -1040,6 +1048,14 @@ func taskCumulativeCostUSD(runs []task.AgentRun) float64 {
 	return total
 }
 
+func taskRecordedCumulativeCostUSD(t task.Task) float64 {
+	total := taskCumulativeCostUSD(t.AgentRuns)
+	if t.DocumentCompaction != nil {
+		total += t.DocumentCompaction.DroppedRunCostUSD
+	}
+	return total
+}
+
 // CheckTaskCostBudget re-exports the cumulative task cost-budget check
 // (agent.max_task_cost_usd) for dispatch paths that bypass
 // StartAgentWithAssignment — e.g. workflow.execBestOfN, whose attempts and
@@ -1058,12 +1074,16 @@ func (o *Orchestrator) enforceTaskCostBudget(t task.Task) error {
 	if o.cfg == nil || o.cfg.Agent.MaxTaskCostUSD <= 0 {
 		return nil
 	}
-	spent := taskCumulativeCostUSD(t.AgentRuns)
+	spent := taskRecordedCumulativeCostUSD(t)
 	if spent < o.cfg.Agent.MaxTaskCostUSD {
 		return nil
 	}
+	runs := len(t.AgentRuns)
+	if t.DocumentCompaction != nil {
+		runs += t.DocumentCompaction.DroppedAgentRuns
+	}
 	return fmt.Errorf("%w: $%.2f spent across %d run(s), limit $%.2f",
-		workflow.ErrTaskCostExceeded, spent, len(t.AgentRuns), o.cfg.Agent.MaxTaskCostUSD)
+		workflow.ErrTaskCostExceeded, spent, runs, o.cfg.Agent.MaxTaskCostUSD)
 }
 func (o *Orchestrator) handleProviderGateStartError(taskID string, err error) {
 	switch {

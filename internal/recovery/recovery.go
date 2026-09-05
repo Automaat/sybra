@@ -45,6 +45,7 @@ type WorkflowRestarter interface {
 	// restarting a stale WorkflowID.
 	DispatchEvent(taskID, event string, extraFields, vars map[string]string) (string, error)
 	HandleAgentComplete(taskID string, completion workflow.AgentCompletion)
+	CurrentStepRunRole(taskID string) string
 	ReplayPersistedEffects()
 	ReplayPersistedEffectsForTask(taskID string) bool
 	// ReclaimOrphanedEffectLeases must run before the two replay paths above:
@@ -232,7 +233,7 @@ func (r *Recovery) cleanupOrphanedSandboxes(ctx context.Context) {
 	if r.Sandboxes == nil || r.Tasks == nil {
 		return
 	}
-	tasks, err := r.Tasks.List()
+	tasks, err := r.Tasks.ListBoard()
 	if err != nil {
 		r.Logger.Warn("recovery.sandboxes.list", "err", err)
 		return

@@ -1527,6 +1527,180 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			want:       testOutcomePass,
 			wantStatus: "completed",
 		},
+		{
+			name:       "unstartable_k8s_surface_is_an_unrunnable_gate",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"k8s","app_started":false,"start_command":"","unable_to_run_reason":"the host has no kubernetes context","readiness_probe":{"command":"kubectl config view --minify","actual":"No current context","observed":"kubectl reported that no current context exists","output":"error: current-context must exist in order to minify","status":"unavailable"},"manual_probes":[{"command":"helm package deployments/charts/app","expected":"the chart packages","actual":"the chart packaged","observed":"helm package succeeded","output":"Successfully packaged chart","status":"pass"}],"automated_checks":[{"command":"go test ./pkg/...","actual":"Exit code 0","output":"ok","status":"pass"}]}`,
+			bodySuffix: "",
+			want:       testOutcomeInfraFailure,
+			wantStatus: "failed",
+		},
+		{
+			name:       "unstartable_web_surface_is_an_unrunnable_gate_too",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web","app_started":false,"start_command":"","unable_to_run_reason":"the sandbox denies every listening port","readiness_probe":{"command":"curl -fsS http://127.0.0.1:8080/health","actual":"connection refused","output":"curl: (7) Failed to connect","status":"unavailable"},"automated_checks":[{"command":"go test ./pkg/...","actual":"Exit code 0","output":"ok","status":"pass"}]}`,
+			bodySuffix: "",
+			want:       testOutcomeInfraFailure,
+			wantStatus: "failed",
+		},
+		{
+			name:       "unstartable_surface_without_supporting_evidence_stays_missing_evidence",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"k8s","app_started":false,"start_command":"","unable_to_run_reason":"the host has no kubernetes context","readiness_probe":{"command":"kubectl config view --minify","actual":"No current context","observed":"kubectl reported that no current context exists","output":"error: current-context must exist in order to minify","status":"unavailable"},"manual_probes":[],"automated_checks":[]}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:       "unstartable_surface_with_a_throwaway_probe_stays_missing_evidence",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web","app_started":false,"start_command":"","unable_to_run_reason":"cannot start it","readiness_probe":{"command":"true","status":"unavailable"},"manual_probes":[{"command":"ls","actual":"x"}],"automated_checks":[]}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:       "unstartable_surface_without_a_declared_reason_stays_missing_evidence",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"k8s","app_started":false,"start_command":"","readiness_probe":{"command":"kubectl config view --minify","actual":"No current context","observed":"kubectl reported that no current context exists","output":"error: current-context must exist in order to minify","status":"unavailable"},"automated_checks":[{"command":"go test ./pkg/...","actual":"Exit code 0","output":"ok","status":"pass"}]}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:       "an_honest_probe_naming_a_high_port_still_routes",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"server","app_started":false,"start_command":"","unable_to_run_reason":"nothing is listening in this sandbox","readiness_probe":{"command":"curl -fsS http://127.0.0.1:9200/","actual":"connection refused","observed":"nothing answered","output":"curl: (7) Failed to connect to 127.0.0.1 port 9200 after 0 ms: Connection refused","status":"unavailable"},"automated_checks":[{"command":"go test ./pkg/...","actual":"Exit code 0","output":"ok","status":"pass"}]}`,
+			bodySuffix: "",
+			want:       testOutcomeInfraFailure,
+			wantStatus: "failed",
+		},
+		{
+			name:       "an_honest_probe_carrying_a_timestamp_still_routes",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"k8s","app_started":false,"start_command":"","unable_to_run_reason":"no cluster reachable from this host","readiness_probe":{"command":"kubectl cluster-info","actual":"fatal","observed":"the cluster did not answer","output":"time=\"2026-08-19T09:14:33Z\" level=fatal msg=\"cluster not reachable\"","status":"unavailable"},"automated_checks":[{"command":"go test ./pkg/...","actual":"Exit code 0","output":"ok","status":"pass"}]}`,
+			bodySuffix: "",
+			want:       testOutcomeInfraFailure,
+			wantStatus: "failed",
+		},
+		{
+			name:       "raw_string_evidence_arrays_still_route",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"k8s","app_started":false,"start_command":"","unable_to_run_reason":"no cluster reachable from this host","readiness_probe":{"command":"kubectl cluster-info","actual":"refused","observed":"the cluster did not answer","output":"The connection to the server localhost:8080 was refused","status":"unavailable"},"manual_probes":[],"automated_checks":"go test ./... -> ok, exit code 0"}`,
+			bodySuffix: "",
+			want:       testOutcomeInfraFailure,
+			wantStatus: "failed",
+		},
+		{
+			name:       "a_raw_string_readiness_probe_still_routes",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"k8s","app_started":false,"start_command":"","unable_to_run_reason":"no cluster reachable from this host","readiness_probe":"ran kubectl cluster-info -> The connection to the server localhost:8080 was refused","manual_probes":[],"automated_checks":[{"command":"go test ./pkg/...","actual":"Exit code 0","output":"ok","status":"pass"}]}`,
+			bodySuffix: "",
+			want:       testOutcomeInfraFailure,
+			wantStatus: "failed",
+		},
+		{
+			name:       "a_probe_that_got_an_http_status_back_stays_missing_evidence",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web","app_started":false,"start_command":"","unable_to_run_reason":"the health endpoint did not answer","readiness_probe":{"command":"curl -fsS http://127.0.0.1:5173/health","actual":"HTTP 404","observed":"the dev server answered but /health is not routed","output":"HTTP/1.1 404 Not Found","status":"unavailable"},"manual_probes":[],"automated_checks":[{"command":"go test ./pkg/...","actual":"Exit code 0","output":"ok","status":"pass"}]}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:       "readiness_probe_that_recorded_nothing_stays_missing_evidence",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web","app_started":false,"start_command":"","unable_to_run_reason":"could not start it here","readiness_probe":{"command":"curl -fsS http://127.0.0.1:8080/health","expected":"","actual":"","observed":"","output":"","status":"unavailable"},"manual_probes":[],"automated_checks":[{"command":"go test ./...","actual":"Exit code 0","output":"ok","status":"pass"}]}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:       "readiness_probe_whose_transcript_contradicts_its_status_stays_missing_evidence",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web","app_started":false,"start_command":"","unable_to_run_reason":"could not start it here","readiness_probe":{"command":"curl -fsS http://127.0.0.1:8080/health","expected":"","actual":"HTTP 200 OK","observed":"the endpoint answered","output":"{\"status\":\"ok\"}","status":"unavailable"},"manual_probes":[],"automated_checks":[{"command":"go test ./...","actual":"Exit code 0","output":"ok","status":"pass"}]}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:       "check_that_recorded_only_a_status_word_stays_missing_evidence",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"cli","app_started":false,"start_command":"","unable_to_run_reason":"could not start it here","readiness_probe":{"command":"./bin/app --version","expected":"a version","actual":"no such file","observed":"the binary is absent","output":"sh: ./bin/app: No such file or directory","status":"unavailable"},"manual_probes":[],"automated_checks":[{"command":"go test ./...","status":"pass"}]}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			// A one-shot surface leaves no process to start or poll. The probe
+			// it did run is the whole evidence a CLI-shaped change can offer,
+			// and demanding app_started of it rejected every honest report.
+			name:       "cli_pass_backed_by_an_executed_probe_needs_no_app_start",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"cli","app_started":false,"start_command":"","readiness_probe":{"command":"","expected":"","actual":"","observed":"","output":"","status":"","url":""},"manual_probes":[{"command":"make print/versions","expected":"the gate version is printed","actual":"RC=0; printed gate 2.14.0","observed":"PASS","output":"Gate version: 2.14.0\nRC=0","status":"passed"}],"automated_checks":[],"unable_to_run_reason":""}`,
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+		{
+			// The relaxed app-start rule is not a relaxed evidence rule: a
+			// probe that admits it never ran proves nothing about the change.
+			name:       "cli_pass_whose_only_probe_never_ran_stays_missing_evidence",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"cli","app_started":false,"start_command":"","readiness_probe":{"command":"","expected":"","actual":"","observed":"","output":"","status":"","url":""},"manual_probes":[{"command":"make print/versions","expected":"the gate version is printed","actual":"not run","observed":"skipped","output":"","status":"not run"}],"automated_checks":[],"unable_to_run_reason":""}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:   "plain_text_cli_pass_backed_by_an_executed_probe_needs_no_app_start",
+			status: "completed",
+			output: "Exercised the new gate flag by hand.\n\n" +
+				"surface_kind: cli\n" +
+				"manual_probes:\n" +
+				"  - command: go run ./cmd/tool --gate 2.14.0\n" +
+				"    expected: the flag is accepted and echoed\n" +
+				"    actual: exit code 0, printed gate 2.14.0\n\n" +
+				"TEST_VERDICT: PASS",
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+		{
+			// The plain-text gate must hold the same bar as the structured
+			// one: labels alone are not evidence when the result they carry
+			// says the probe never ran.
+			name:   "plain_text_cli_pass_whose_probe_never_ran_stays_missing_evidence",
+			status: "completed",
+			output: "Tried to exercise the new gate flag.\n\n" +
+				"surface_kind: cli\n" +
+				"manual_probes:\n" +
+				"  - command: go run ./cmd/tool --gate 2.14.0\n" +
+				"    expected: the flag is accepted and echoed\n" +
+				"    actual: not run\n\n" +
+				"TEST_VERDICT: PASS",
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:       "startable_surface_that_was_never_started_stays_missing_evidence",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web","app_started":false,"start_command":"","unable_to_run_reason":"the host has no kubernetes context","readiness_probe":{"command":"curl -fsS http://127.0.0.1:8080/health","actual":"HTTP 200","output":"ok","status":"pass"},"manual_probes":[{"command":"helm package deployments/charts/app","expected":"the chart packages","actual":"the chart packaged","observed":"helm package succeeded","output":"Successfully packaged chart","status":"pass"}]}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
 	}
 
 	for _, tc := range cases {
@@ -1560,6 +1734,28 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 				t.Fatal("fingerprint is empty for evidenced failure")
 			}
 		})
+	}
+}
+
+// The router can only name the rejection reason if the verdict pass recorded
+// it; without this the two halves drift and the re-ask silently falls back to
+// the FAIL-shaped note.
+func TestApplyTestVerdictCompletion_RecordsWhyAPassWasRejected(t *testing.T) {
+	t.Parallel()
+
+	wf := &Execution{Variables: map[string]string{}}
+	prepareTestVerdictAttemptVars(wf, testVerdictSourceStep, "")
+	out := StepOutput{
+		StepID: testVerdictSourceStep,
+		Status: "completed",
+		Output: `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web","app_started":false,"start_command":"","readiness_probe":{"command":"","expected":"","actual":"","observed":"","output":"","status":"","url":""},"manual_probes":[],"automated_checks":[],"unable_to_run_reason":""}`,
+	}
+	if _, outcome, _ := applyTestVerdictCompletion(wf, &out, "", TaskInfo{}); outcome != testOutcomeMissingEvidence {
+		t.Fatalf("outcome = %q, want %q", outcome, testOutcomeMissingEvidence)
+	}
+	got := wf.Variables["step."+testVerdictSourceStep+"."+testPassEvidenceReasonKey]
+	if !strings.Contains(got, "app_started") {
+		t.Errorf("recorded reason = %q, want it to name app_started", got)
 	}
 }
 
@@ -2755,6 +2951,49 @@ func TestRouteTestResult_MissingEvidenceParksWithReaskThenEscalates(t *testing.T
 	}
 }
 
+// A rejected PASS used to be re-asked with the FAIL-shaped note ("for EVERY
+// claimed defect you MUST include..."), which says nothing to a tester that
+// claimed no defect — so it re-emitted the identical report until the retry
+// budget ran out and the task quarantined. The re-ask must name the evidence
+// reason instead, and must not read as an instruction to produce a FAIL.
+func TestRouteTestResult_RejectedPassReasksAboutEvidenceNotDefects(t *testing.T) {
+	t.Parallel()
+	e, tasks := makeTestEngine(t)
+	reason := "PASS report did not confirm app_started"
+	vars := map[string]string{
+		"step." + testVerdictSourceStep + "." + testVerdictTaintedKey:     testProtocolMissingEvidence,
+		"step." + testVerdictSourceStep + "." + testPassEvidenceReasonKey: reason,
+	}
+	_, ti, err := routeWithOutcome(t, e, tasks, "t-pass-evidence", testOutcomeMissingEvidence, vars)
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("err = %v, want errStepParked", err)
+	}
+	note := ti.Workflow.Variables[testingReaskNoteVar]
+	if !strings.Contains(note, reason) {
+		t.Errorf("reask note = %q, want the rejection reason %q", note, reason)
+	}
+	if strings.Contains(note, "claimed defect") {
+		t.Errorf("reask note = %q, want no FAIL-shaped defect guidance", note)
+	}
+
+	// At cap the human reason must say the verdict was never the problem, so a
+	// triaging human does not go looking for the defect the tester never found.
+	capVars := map[string]string{
+		"step." + testVerdictSourceStep + "." + testVerdictTaintedKey:     testProtocolMissingEvidence,
+		"step." + testVerdictSourceStep + "." + testPassEvidenceReasonKey: reason,
+		testingAutoRetryKey(testOutcomeMissingEvidence):                   strconv.Itoa(testingAutoRetryCap),
+	}
+	if _, ti, err = routeWithOutcome(t, e, tasks, "t-pass-evidence-cap", testOutcomeMissingEvidence, capVars); err != nil {
+		t.Fatal(err)
+	}
+	if ti.Status != taskstatus.HumanRequired {
+		t.Errorf("status = %q, want human-required", ti.Status)
+	}
+	if got := tasks.Reason("t-pass-evidence-cap"); !strings.Contains(got, "PASS report") {
+		t.Errorf("reason = %q, want it to name the rejected PASS", got)
+	}
+}
+
 func TestRouteTestResult_DuplicateFailureEscalatesWithoutAnotherRetry(t *testing.T) {
 	t.Parallel()
 	e, tasks := makeTestEngine(t)
@@ -3843,5 +4082,264 @@ func TestRouteTestResult_ReDispatch_Escalates(t *testing.T) {
 	ti, _ := tasks.GetTask("t5")
 	if ti.Status != "human-required" {
 		t.Errorf("status = %q, want human-required", ti.Status)
+	}
+}
+
+func TestAdvanceStep_UnstartableSurfaceOpensPRWithoutRerunningTheTester(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.Save(*mustBuiltinDefinition(t, "testing-task")); err != nil {
+		t.Fatalf("save testing-task: %v", err)
+	}
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
+	tasks.Put(TaskInfo{
+		ID:        "t-advance",
+		Status:    taskstatus.Testing,
+		AgentMode: "headless",
+		Workflow: &Execution{
+			WorkflowID:  "testing-task",
+			CurrentStep: testVerdictSourceStep,
+			State:       ExecRunning,
+			Variables:   map[string]string{},
+			StartedAt:   time.Now().UTC(),
+		},
+	})
+	report := `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"k8s",` +
+		`"app_started":false,"start_command":"","unable_to_run_reason":"the host has no kubernetes context",` +
+		`"readiness_probe":{"command":"kubectl config view --minify","actual":"No current context",` +
+		`"output":"error: current-context must exist in order to minify","status":"unavailable"},` +
+		`"manual_probes":[],"automated_checks":[{"command":"go test ./pkg/...","actual":"Exit code 0","output":"ok","status":"pass"}]}`
+	if err := engine.AdvanceStep("t-advance", StepOutput{
+		StepID: testVerdictSourceStep,
+		Status: "completed",
+		Output: report,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := agents.CallCount(); got != 0 {
+		t.Fatalf("StartAgent calls = %d, want 0 — no rerun against an absent surface", got)
+	}
+	ti, _ := tasks.GetTask("t-advance")
+	if ti.Status != taskstatus.ReadyPR {
+		t.Fatalf("status = %q, want ready-pr", ti.Status)
+	}
+	if reason := tasks.Reason("t-advance"); !strings.Contains(reason, "k8s") {
+		t.Fatalf("reason = %q, want the surface named", reason)
+	}
+}
+
+func TestAdvanceStep_StaleSurfaceVarDoesNotMislabelALaterInfraFailure(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.Save(*mustBuiltinDefinition(t, "testing-task")); err != nil {
+		t.Fatalf("save testing-task: %v", err)
+	}
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
+	wf := &Execution{
+		WorkflowID:  "testing-task",
+		CurrentStep: testVerdictSourceStep,
+		State:       ExecWaiting,
+		Variables: map[string]string{
+			"step." + testVerdictSourceStep + "." + testSurfaceUnavailableKey: "k8s",
+		},
+		StartedAt: time.Now().UTC(),
+	}
+	tasks.Put(TaskInfo{ID: "t-stale", Status: taskstatus.Testing, AgentMode: "headless", Workflow: wf})
+
+	engine.ResumeStalled()
+
+	if got := agents.CallCount(); got != 1 {
+		t.Fatalf("StartAgent calls = %d, want 1 — the tester must be re-dispatched", got)
+	}
+	dispatched, _ := tasks.GetTask("t-stale")
+	if got := dispatched.Workflow.Variables["step."+testVerdictSourceStep+"."+testSurfaceUnavailableKey]; got != "" {
+		t.Errorf("surface var = %q, want the dispatch path to clear it", got)
+	}
+	if err := engine.AdvanceStep("t-stale", StepOutput{
+		StepID: testVerdictSourceStep,
+		Status: "failed",
+		Output: "provider crashed: context deadline exceeded",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ti, _ := tasks.GetTask("t-stale")
+	if ti.Status == taskstatus.ReadyPR {
+		t.Fatalf("an unrelated infra failure was routed as an unstartable surface: reason=%q", tasks.Reason("t-stale"))
+	}
+}
+
+func TestRouteTestResult_UnstartableSurfaceOpensPR(t *testing.T) {
+	t.Parallel()
+	e, tasks := makeTestEngine(t)
+	tasks.Put(TaskInfo{ID: "t-surface", Status: taskstatus.Testing})
+	wf := &Execution{
+		WorkflowID: "testing-task",
+		StartedAt:  time.Now().UTC(),
+		Variables: map[string]string{
+			"step." + testVerdictSourceStep + "." + testVerdictOutcomeKey:     testOutcomeInfraFailure,
+			"step." + testVerdictSourceStep + "." + testSurfaceUnavailableKey: "k8s",
+		},
+	}
+	out, err := e.execRouteTestResult("t-surface", &Step{ID: "route_test"}, wf, mustGetTaskInfo(t, tasks, "t-surface"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Output != "surface unavailable — opened pr" {
+		t.Errorf("output = %q, want surface unavailable — opened pr", out.Output)
+	}
+	ti, _ := tasks.GetTask("t-surface")
+	if ti.Status != taskstatus.ReadyPR {
+		t.Errorf("status = %q, want ready-pr", ti.Status)
+	}
+	if reason := tasks.Reason("t-surface"); !strings.Contains(reason, "k8s") {
+		t.Errorf("reason = %q, want the surface named", reason)
+	}
+}
+
+func TestRouteTestResult_UnstartableSurfaceEscalatesWhenOpenPRDisabled(t *testing.T) {
+	t.Parallel()
+	e, tasks := makeTestEngine(t)
+	e.SetOpenPROnUnrunnableGate(false)
+	tasks.Put(TaskInfo{ID: "t-surface-off", Status: taskstatus.Testing})
+	wf := &Execution{
+		WorkflowID: "testing-task",
+		StartedAt:  time.Now().UTC(),
+		Variables: map[string]string{
+			"step." + testVerdictSourceStep + "." + testVerdictOutcomeKey:     testOutcomeInfraFailure,
+			"step." + testVerdictSourceStep + "." + testSurfaceUnavailableKey: "k8s",
+		},
+	}
+	if _, err := e.execRouteTestResult("t-surface-off", &Step{ID: "route_test"}, wf, mustGetTaskInfo(t, tasks, "t-surface-off")); err != nil {
+		t.Fatal(err)
+	}
+	ti, _ := tasks.GetTask("t-surface-off")
+	if ti.Status != taskstatus.HumanRequired {
+		t.Errorf("status = %q, want human-required", ti.Status)
+	}
+	if reason := tasks.Reason("t-surface-off"); !strings.Contains(reason, "k8s") {
+		t.Errorf("reason = %q, want the surface named", reason)
+	}
+}
+
+func TestProseUnstartableClaim_ReadsOnlyTheStructuralFields(t *testing.T) {
+	t.Parallel()
+	full := "surface_kind: k8s\napp_started: false\nunable_to_run_reason: this host has no kubernetes cluster\n" +
+		"readiness_probe: kubectl get nodes -> The connection to the server was refused\n" +
+		"automated_checks: go test ./... -> ok, all packages pass\n\nTEST_VERDICT: PASS\n"
+	cases := []struct {
+		name   string
+		report string
+		want   bool
+	}{
+		{name: "a complete prose claim", report: full, want: true},
+		{name: "a denial that explains itself", report: strings.Replace(full, "app_started: false", "app_started: false (webkit is missing here)", 1), want: true},
+		{name: "a denial written as a sentence", report: strings.Replace(full, "app_started: false", "app_started: never started, the binary is absent", 1), want: true},
+		{name: "no surface named", report: strings.Replace(full, "surface_kind: k8s\n", "", 1)},
+		{name: "an exempt surface", report: strings.Replace(full, "surface_kind: k8s", "surface_kind: library", 1)},
+		{name: "the app was started", report: strings.Replace(full, "app_started: false", "app_started: true", 1)},
+		{name: "an unreadable app_started", report: strings.Replace(full, "app_started: false", "app_started: partially, the worker came up", 1)},
+		{name: "no reason given", report: strings.Replace(full, "unable_to_run_reason: this host has no kubernetes cluster\n", "", 1)},
+		{name: "no probe recorded", report: strings.Replace(full, "readiness_probe: kubectl get nodes -> The connection to the server was refused\n", "", 1)},
+		{name: "a failure also reported", report: full + "\n## Test Failures\n\nThe save button does nothing.\n"},
+		{name: "a structured report", report: `{"verdict":"PASS","outcome":"pass","surface_kind":"k8s","app_started":false}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := proseUnstartableClaim(tc.report, TaskInfo{}); got != tc.want {
+				t.Fatalf("proseUnstartableClaim = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestApplyTestVerdictCompletion_ProseClaimAsksForTheSchemaForm(t *testing.T) {
+	t.Parallel()
+	report := "surface_kind: k8s\napp_started: false\nunable_to_run_reason: this host has no kubernetes cluster\n" +
+		"readiness_probe: kubectl get nodes -> The connection to the server was refused\n" +
+		"automated_checks: go test ./... -> ok, all packages pass\n\nTEST_VERDICT: PASS\n"
+	wf := &Execution{Variables: map[string]string{}}
+	out := StepOutput{StepID: testVerdictSourceStep, Status: "completed", Output: report}
+
+	violation, outcome, _ := applyTestVerdictCompletion(wf, &out, "## Problem\nbody", TaskInfo{})
+
+	if outcome != testOutcomeMissingEvidence || violation != testProtocolMissingEvidence {
+		t.Fatalf("outcome/violation = %q/%q, want a prose PASS to stay unroutable", outcome, violation)
+	}
+	if wf.Variables["step."+testVerdictSourceStep+"."+testSurfaceUnavailableKey] != "" {
+		t.Fatal("a prose report routed to a PR without a schema-shaped re-emission")
+	}
+	if wf.Variables["step."+testVerdictSourceStep+"."+testSchemaReaskKey] == "" {
+		t.Fatal("the runner was not asked for the schema form, so the retry repeats the same prose")
+	}
+}
+
+func TestRouteTestResult_ProseClaimReasksForSchemaNotEvidence(t *testing.T) {
+	t.Parallel()
+	e, tasks := makeTestEngine(t)
+	tasks.Put(TaskInfo{ID: "t-prose", Status: taskstatus.Testing})
+	wf := &Execution{
+		WorkflowID: "testing-task",
+		StartedAt:  time.Now().UTC(),
+		Variables: map[string]string{
+			"step." + testVerdictSourceStep + "." + testVerdictTaintedKey: testProtocolMissingEvidence,
+			"step." + testVerdictSourceStep + "." + testSchemaReaskKey:    "1",
+		},
+	}
+	if _, err := e.execRouteTestResult("t-prose", &Step{ID: "route_test"}, wf, mustGetTaskInfo(t, tasks, "t-prose")); err != nil && !errors.Is(err, errStepParked) {
+		t.Fatal(err)
+	}
+	note := wf.Variables[testingReaskNoteVar]
+	if !strings.Contains(note, "schema") {
+		t.Fatalf("reask note = %q, want the schema-shaped re-emission asked for", note)
+	}
+	if strings.Contains(note, "lacked machine-checkable") {
+		t.Fatal("the runner was told its evidence was missing when its own fields already made the claim")
+	}
+}
+
+func TestReaskNotes_NameNoRoutingConsequence(t *testing.T) {
+	t.Parallel()
+	for name, note := range map[string]string{
+		"schema":          schemaReask,
+		"missing":         missingEvidenceReask,
+		"fix suggestions": fixSuggestionsReask,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			lower := strings.ToLower(note)
+			for _, leak := range []string{"routes the task", "opens a pr", "instead of a rerun", string(taskstatus.ReadyPR)} {
+				if strings.Contains(lower, leak) {
+					t.Fatalf("re-ask reaches the runner prompt and names a routing consequence (%q):\n%s", leak, note)
+				}
+			}
+		})
+	}
+}
+
+func TestRouteTestResult_ProseClaimEscalatesWithItsOwnReason(t *testing.T) {
+	t.Parallel()
+	e, tasks := makeTestEngine(t)
+	tasks.Put(TaskInfo{ID: "t-prose-exhausted", Status: taskstatus.Testing})
+	wf := &Execution{
+		WorkflowID: "testing-task",
+		StartedAt:  time.Now().UTC(),
+		Variables: map[string]string{
+			"step." + testVerdictSourceStep + "." + testVerdictTaintedKey: testProtocolMissingEvidence,
+			"step." + testVerdictSourceStep + "." + testSchemaReaskKey:    "1",
+			testingAutoRetryKey(testOutcomeMissingEvidence):               strconv.Itoa(testingAutoRetryCap),
+		},
+	}
+	if _, err := e.execRouteTestResult("t-prose-exhausted", &Step{ID: "route_test"}, wf, mustGetTaskInfo(t, tasks, "t-prose-exhausted")); err != nil {
+		t.Fatal(err)
+	}
+	reason := tasks.Reason("t-prose-exhausted")
+	if strings.Contains(reason, "lacked machine-checkable evidence") {
+		t.Fatalf("the operator is sent after missing evidence for a report that had it: %q", reason)
+	}
+	if !strings.Contains(reason, "schema") {
+		t.Fatalf("reason = %q, want the operator pointed at the provider's schema support", reason)
 	}
 }

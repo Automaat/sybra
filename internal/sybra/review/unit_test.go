@@ -316,14 +316,14 @@ func TestCommentsPrompt_DetectsForkRemote(t *testing.T) {
 		Number:      1178,
 		HeadRefName: "fix/example",
 		URL:         "https://github.com/acme/widgets/pull/1178",
-	}, project.SigningAuto)
+	}, project.SigningAuto, reviewThreadBrief{})
 
 	assertPRFixPromptUsesResolvedPushRemote(t, prompt, "fix/example")
 	for _, want := range []string{
-		"re-fetch that thread",
-		"already posted a reply containing the harness footer",
+		"re-fetch that one thread",
+		"already replied with the harness footer",
 		"__SHA__",
-		"do not retry the same thread through another API path",
+		"never retry the same thread through the other API",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("comments prompt missing duplicate-reply guard %q:\n%s", want, prompt)
@@ -864,7 +864,7 @@ func TestCreateReviewTaskPassesUpdatedTaskToTriage(t *testing.T) {
 		logger: slog.New(slog.DiscardHandler),
 		tasks:  tasks,
 	}
-	r.createReviewTaskWithTriage(github.PullRequest{
+	r.createReviewTaskWithTriage("owner", github.PullRequest{
 		Number:        2708,
 		Title:         "docs: explain precedence",
 		URL:           "https://github.com/owner/repo/pull/2708",
@@ -913,10 +913,11 @@ func TestCreateReviewTaskStoresSameRepoHeadBranch(t *testing.T) {
 	got := make(chan task.Task, 1)
 
 	r := &Handler{
-		logger: slog.New(slog.DiscardHandler),
-		tasks:  tasks,
+		logger:        slog.New(slog.DiscardHandler),
+		tasks:         tasks,
+		viewerLoginFn: func() string { return "owner" },
 	}
-	r.createReviewTaskWithTriage(github.PullRequest{
+	r.createReviewTaskWithTriage("owner", github.PullRequest{
 		Number:        2709,
 		Title:         "fix: owned branch",
 		URL:           "https://github.com/owner/repo/pull/2709",
@@ -932,6 +933,42 @@ func TestCreateReviewTaskStoresSameRepoHeadBranch(t *testing.T) {
 	case reviewTask := <-got:
 		if reviewTask.Branch != "fix/owned" {
 			t.Fatalf("Branch = %q, want same-repo head branch", reviewTask.Branch)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("triage was not called")
+	}
+}
+
+func TestCreateReviewTaskSkipsAnotherAuthorsHeadBranch(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "tasks")
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	got := make(chan task.Task, 1)
+
+	r := &Handler{
+		logger:        slog.New(slog.DiscardHandler),
+		tasks:         tasks,
+		viewerLoginFn: func() string { return "owner" },
+	}
+	r.createReviewTaskWithTriage("owner", github.PullRequest{
+		Number:        2710,
+		Title:         "feat: their branch",
+		URL:           "https://github.com/owner/repo/pull/2710",
+		Author:        "colleague",
+		HeadRefName:   "feat/theirs",
+		HeadRepoOwner: "owner",
+		HeadRepo:      "owner/repo",
+	}, "owner/repo", func(t task.Task) {
+		got <- t
+	})
+
+	select {
+	case reviewTask := <-got:
+		if reviewTask.Branch != "" {
+			t.Fatalf("Branch = %q, want empty for a branch another author owns", reviewTask.Branch)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("triage was not called")
@@ -2285,7 +2322,7 @@ func TestMaybeCreateReviewTasksSkipsBranchOwnedPRBeforeNumberLinked(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.maybeCreateReviewTasks(existing, []github.PullRequest{{
+	r.maybeCreateReviewTasks(t.Context(), existing, []github.PullRequest{{
 		Number:        123,
 		Repository:    "owner/repo",
 		HeadRefName:   "feat/x",
@@ -2343,7 +2380,7 @@ func TestMaybeCreateReviewTasksDoesNotSkipForkPRWithSameBranchName(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.maybeCreateReviewTasks(existing, []github.PullRequest{{
+	r.maybeCreateReviewTasks(t.Context(), existing, []github.PullRequest{{
 		Number:        456,
 		Repository:    "owner/repo",
 		HeadRefName:   "fix/shared",

@@ -189,6 +189,7 @@ copilot, opencode) and their background health-check loop. A missing block defau
 |---|---|---|---|---|---|---|---|---|---|
 | `execution.providers.health_check.enabled` | `bool` | `true` |  |  | `providers.health_check.enabled` | `false` | `restart` |  |  |
 | `execution.providers.health_check.interval` | `int` | `300` | `seconds` |  | `providers.health_check.interval_seconds`, `providers.health_check.interval` | `false` | `restart` |  |  |
+| `execution.providers.health_check.auth_failure_cooldown` | `int` | `900` | `seconds` |  | `providers.health_check.auth_failure_cooldown_seconds`, `providers.health_check.auth_failure_cooldown` | `false` | `restart` |  |  |
 
 ### ProviderEntryConfig (`execution.providers.claude`)
 
@@ -251,6 +252,7 @@ real-app/cluster load independently of Agent.MaxConcurrent.
 | `workflow.testing.max_concurrent` | `int` | `0` |  |  | `testing.max_concurrent` | `false` | `hot` |  | MaxConcurrent caps simultaneously-running test-runner agents on this machine. 0 falls back to DefaultTestingMaxConcurrent. |
 | `workflow.testing.max_attempts` | `int` | `0` |  |  | `testing.max_attempts` | `false` | `hot` |  | MaxAttempts is the generous absolute backstop for the testing → re-implementation loop. Recurring grounded failure fingerprints escalate independently of this count; this limit only parks a task human-required when distinct grounded defects keep surfacing without convergence. 0 falls back to DefaultTestingMaxAttempts. |
 | `workflow.testing.open_pr_on_unrunnable_gate` | `*bool` | _(nil)_ |  |  | `testing.open_pr_on_unrunnable_gate` | `false` | `hot` |  | OpenPROnUnrunnableGate controls what happens when a testing cycle exhausts its auto-retry budget on an infra_failure outcome — the manual gate itself could not be run (harness/tooling limitation), not a product defect (see classifyTestOutcome). nil means not configured (defaults to true): the task opens a PR (ready-pr) so CI and a human reviewer see the real diff, instead of parking at human-required with no PR for anyone to act on. Set false to restore the legacy human-required escalation. |
+| `workflow.testing.verify_timeout_minutes` | `int` | `0` |  |  | `testing.verify_timeout_minutes` | `false` | `hot` |  | VerifyTimeoutMinutes bounds one verify_checks run — every command in the repo's `checks.verify` list together. 0 falls back to DefaultVerifyTimeoutMinutes. The budget is stretched further on an oversubscribed host (see resolveWorkflowCheckTimeout), so raise this only when the suite itself has outgrown the default rather than to compensate for load.  It exists because a repo whose suite grows past the compiled-in default has no way to say so: the task blocks on a timeout that names slow tests, and the only documented escape is the `verify-blessed` tag, which skips verification for that task altogether. |
 
 ### OrchestratorConfig (`workflow.orchestrator`)
 
@@ -724,6 +726,7 @@ SandboxConfig controls retention of per-task app sandbox dirs under
 | YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
 |---|---|---|---|---|---|---|---|---|---|
 | `storage.sandboxes.retention` | `int` | `0` | `hours` |  | `sandbox.retention_hours`, `sandbox.retention` | `false` | `hot` |  | RetentionHours bounds how long a done/cancelled/blocked task's sandbox dir survives before the periodic sweep removes it. 0 falls back to DefaultSandboxRetention (24h); a negative value disables age-based pruning (eligible dirs are never removed by age, only on task delete). |
+| `storage.sandboxes.build_cache_idle_hours` | `int` | `0` |  |  | `sandbox.build_cache_idle_hours` | `false` | `hot` |  | BuildCacheIdleHours is how long a per-task Go build cache may sit untouched before cleanup may reclaim it regardless of its owning task's status. 0 falls back to DefaultBuildCacheIdleHours; negative disables idle reclaim and leaves these caches on task status alone.  Separate from RetentionHours because it answers a different question. Retention asks how long after a task finishes its resources are kept; this asks how long an unused cache is worth its disk. A task parked in human-required never finishes, so retention never starts running, and its cache is pinned indefinitely — which is what filled the disk. |
 
 ### TaskSnapshotConfig (`storage.task_snapshot`)
 
@@ -749,6 +752,8 @@ DatabaseConfig selects the durable-storage backend and its connection settings. 
 | `storage.database.max_open_conns` | `int` | `0` |  |  | `database.max_open_conns` | `false` | `restart` |  | MaxOpenConns caps concurrent connections; 0 uses the per-engine default (4 for sqlite, 16 for postgres). |
 | `storage.database.max_idle_conns` | `int` | `0` |  |  | `database.max_idle_conns` | `false` | `restart` |  | MaxIdleConns caps pooled idle connections; 0 uses the per-engine default. |
 | `storage.database.conn_max_lifetime_seconds` | `int` | `0` |  |  | `database.conn_max_lifetime_seconds` | `false` | `restart` |  | ConnMaxLifetimeSeconds retires a pooled connection after this age; 0 keeps it until the driver drops it. |
+| `storage.database.max_task_history_per_task` | `int` | `0` |  |  | `database.max_task_history_per_task` | `false` | `restart` |  | MaxTaskHistoryPerTask caps how many task_history entries one task keeps, trimmed as each new entry lands and swept across existing tasks at startup; 0 uses taskdb.DefaultMaxHistoryPerTask (200), and a negative value disables the cap. Each entry holds a whole task document, so without a cap this is by far the largest table on a busy board. |
+| `storage.database.max_task_history_bytes_per_task` | `int` | `0` |  |  | `database.max_task_history_bytes_per_task` | `false` | `restart` |  | MaxTaskHistoryBytesPerTask bounds one task's history by size as well as by count, trimmed as each new entry lands and swept across existing tasks at startup; 0 uses taskdb.DefaultMaxHistoryBytesPerTask (2 MiB), and a negative value disables the budget. The row cap alone does not bound the table, because one entry is a whole task document and a document carrying plans, reviews and a long ledger runs to tens of kilobytes. |
 
 ## Observability
 

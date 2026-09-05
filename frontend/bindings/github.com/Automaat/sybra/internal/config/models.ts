@@ -1813,6 +1813,7 @@ export class ProviderEntryConfig {
 export class ProviderHealthCheckConfig {
     "enabled": boolean;
     "intervalSeconds": number;
+    "authFailureCooldownSeconds": number;
 
     /** Creates a new ProviderHealthCheckConfig instance. */
     constructor($$source: Partial<ProviderHealthCheckConfig> = {}) {
@@ -1821,6 +1822,9 @@ export class ProviderHealthCheckConfig {
         }
         if (!("intervalSeconds" in $$source)) {
             this["intervalSeconds"] = 0;
+        }
+        if (!("authFailureCooldownSeconds" in $$source)) {
+            this["authFailureCooldownSeconds"] = 0;
         }
 
         Object.assign(this, $$source);
@@ -2313,6 +2317,21 @@ export class TestingConfig {
      */
     "openPrOnUnrunnableGate": boolean | null;
 
+    /**
+     * VerifyTimeoutMinutes bounds one verify_checks run — every command in
+     * the repo's `checks.verify` list together. 0 falls back to
+     * DefaultVerifyTimeoutMinutes. The budget is stretched further on an
+     * oversubscribed host (see resolveWorkflowCheckTimeout), so raise this
+     * only when the suite itself has outgrown the default rather than to
+     * compensate for load.
+     * 
+     * It exists because a repo whose suite grows past the compiled-in
+     * default has no way to say so: the task blocks on a timeout that names
+     * slow tests, and the only documented escape is the `verify-blessed`
+     * tag, which skips verification for that task altogether.
+     */
+    "verifyTimeoutMinutes": number;
+
     /** Creates a new TestingConfig instance. */
     constructor($$source: Partial<TestingConfig> = {}) {
         if (!("maxConcurrent" in $$source)) {
@@ -2323,6 +2342,9 @@ export class TestingConfig {
         }
         if (!("openPrOnUnrunnableGate" in $$source)) {
             this["openPrOnUnrunnableGate"] = null;
+        }
+        if (!("verifyTimeoutMinutes" in $$source)) {
+            this["verifyTimeoutMinutes"] = 0;
         }
 
         Object.assign(this, $$source);

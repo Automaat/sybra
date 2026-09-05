@@ -15,15 +15,17 @@ import (
 
 // Compile-time interface checks.
 var (
-	_ workflow.PRLinker           = (*LinkerAdapter)(nil)
-	_ workflow.PRStateFetcher     = (*StateFetcherAdapter)(nil)
-	_ workflow.PRHeadFetcher      = (*HeadFetcherAdapter)(nil)
-	_ workflow.PRCreator          = (*CreatorAdapter)(nil)
-	_ workflow.PRCloser           = (*CloserAdapter)(nil)
-	_ workflow.PRFinder           = (*FinderAdapter)(nil)
-	_ workflow.PRExistenceChecker = (*ExistenceCheckerAdapter)(nil)
-	_ workflow.PRContentGenerator = (*ContentGeneratorAdapter)(nil)
-	_ workflow.PRReviewRequester  = (*ReviewRequesterAdapter)(nil)
+	_ workflow.PRLinker              = (*LinkerAdapter)(nil)
+	_ workflow.PRStateFetcher        = (*StateFetcherAdapter)(nil)
+	_ workflow.PRReviewThreadFetcher = (*ThreadFetcherAdapter)(nil)
+	_ workflow.PRHeadFetcher         = (*HeadFetcherAdapter)(nil)
+	_ workflow.PRMetaFetcher         = (*MetaFetcherAdapter)(nil)
+	_ workflow.PRCreator             = (*CreatorAdapter)(nil)
+	_ workflow.PRCloser              = (*CloserAdapter)(nil)
+	_ workflow.PRFinder              = (*FinderAdapter)(nil)
+	_ workflow.PRExistenceChecker    = (*ExistenceCheckerAdapter)(nil)
+	_ workflow.PRContentGenerator    = (*ContentGeneratorAdapter)(nil)
+	_ workflow.PRReviewRequester     = (*ReviewRequesterAdapter)(nil)
 )
 
 // LinkerAdapter wires the workflow engine's PRLinker interface to the github
@@ -46,12 +48,28 @@ func (StateFetcherAdapter) FetchPRState(repo string, number int) (github.PRState
 	return github.FetchPRState(repo, number)
 }
 
+// ThreadFetcherAdapter wires the workflow engine's PRReviewThreadFetcher
+// interface to the github package.
+type ThreadFetcherAdapter struct{}
+
+func (ThreadFetcherAdapter) FetchReviewThreads(ctx context.Context, repo string, number int) ([]github.ReviewThread, error) {
+	return github.FetchReviewThreadsContext(ctx, repo, number)
+}
+
 // HeadFetcherAdapter wires the workflow engine's PRHeadFetcher interface to
 // the github package. Stateless — all state lives in `gh` / GitHub.
 type HeadFetcherAdapter struct{}
 
 func (HeadFetcherAdapter) FetchPRHeadSHA(ctx context.Context, repo string, number int) (string, error) {
 	return github.FetchPRHeadSHAContext(ctx, repo, number)
+}
+
+// MetaFetcherAdapter wires the workflow engine's PRMetaFetcher interface to
+// the github package. Stateless — all state lives in `gh` / GitHub.
+type MetaFetcherAdapter struct{}
+
+func (MetaFetcherAdapter) FetchPRMeta(ctx context.Context, repo string, number int) (github.PullRequest, error) {
+	return github.FetchPRMetaContext(ctx, repo, number)
 }
 
 // CreatorAdapter wires the workflow engine's PRCreator interface to the

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/Automaat/sybra/internal/db"
@@ -47,7 +48,28 @@ type Sidecar struct {
 // left a task disagreeing with its own plan or review, and nothing afterwards
 // could tell which of the two was current.
 type SQLStore struct {
-	db *db.DB
+	db                     *db.DB
+	maxHistoryPerTask      int
+	maxHistoryBytesPerTask int
+	historySweepBatch      int
+}
+
+// SetMaxHistoryPerTask overrides the per-task history cap. 0 restores the
+// default; a negative value keeps every entry.
+func (s *SQLStore) SetMaxHistoryPerTask(n int) {
+	if s == nil {
+		return
+	}
+	s.maxHistoryPerTask = n
+}
+
+// SetMaxHistoryBytesPerTask overrides the per-task history size budget. 0
+// restores the default; a negative value keeps every entry regardless of size.
+func (s *SQLStore) SetMaxHistoryBytesPerTask(n int) {
+	if s == nil {
+		return
+	}
+	s.maxHistoryBytesPerTask = n
 }
 
 func (s *SQLStore) WithTaskLock(ctx context.Context, id string, fn func() error) error {
@@ -60,6 +82,16 @@ func NewSQLStore(database *db.DB) (*SQLStore, error) {
 		return nil, errors.New("task store needs an open database")
 	}
 	return &SQLStore{db: database}, nil
+}
+
+// ReclaimStorage hands pages freed by maintenance back to SQLite when its file
+// supports incremental auto-vacuum. It is a no-op for postgres and for older
+// SQLite files that require an operator-scheduled full VACUUM.
+func (s *SQLStore) ReclaimStorage(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
+	return s.db.ReclaimFreePages(ctx)
 }
 
 const (
@@ -104,7 +136,7 @@ const (
 
 	softDeleteTask = `UPDATE tasks SET deleted_at = ? WHERE id = ?`
 
-	restoreTask = `UPDATE tasks SET deleted_at = 0, board_doc = ?, assigned_node = ?, closed_at = ? WHERE id = ?`
+	restoreTask = `UPDATE tasks SET deleted_at = 0, doc = ?, board_doc = ?, assigned_node = ?, closed_at = ? WHERE id = ?`
 
 	purgeDeletedTasks = `DELETE FROM tasks WHERE deleted_at > 0 AND deleted_at < ?`
 
@@ -116,14 +148,20 @@ const (
 	backfillBoardProjection       = `UPDATE tasks SET board_doc = ?, assigned_node = ?, closed_at = ? WHERE id = ? AND board_doc = ''`
 )
 
-func marshalTaskDocuments(t task.Task) (doc, boardDoc []byte, err error) {
-	doc, err = task.MarshalStored(t)
+const documentCompactionBatch = 25
+
+func marshalTaskDocuments(t task.Task) (stored task.Task, doc, boardDoc []byte, err error) {
+	stored, err = task.BoundStoredDocument(t, time.Now().UTC())
 	if err != nil {
-		return nil, nil, err
+		return task.Task{}, nil, nil, err
 	}
-	board := task.BoardProjection(t)
+	doc, err = task.MarshalStored(stored)
+	if err != nil {
+		return task.Task{}, nil, nil, err
+	}
+	board := task.BoardProjection(stored)
 	boardDoc, err = task.MarshalStored(board)
-	return doc, boardDoc, err
+	return stored, doc, boardDoc, err
 }
 
 func taskClosedAtValue(t task.Task) int64 {
@@ -171,7 +209,7 @@ func (s *SQLStore) BackfillBoardProjections(ctx context.Context) error {
 			// duplicating an unbounded transcript-heavy document.
 			boardDoc, assignedNode, closedAt := "\n", "", int64(0)
 			if parsed, err := task.ParseBytes([]byte(p.doc)); err == nil {
-				_, projected, marshalErr := marshalTaskDocuments(parsed)
+				_, _, projected, marshalErr := marshalTaskDocuments(parsed)
 				if marshalErr != nil {
 					return fmt.Errorf("marshal task %s board projection: %w", p.id, marshalErr)
 				}
@@ -181,6 +219,94 @@ func (s *SQLStore) BackfillBoardProjections(ctx context.Context) error {
 			}
 			if _, err := s.db.ExecContext(ctx, s.db.Rebind(backfillBoardProjection), boardDoc, assignedNode, closedAt, p.id); err != nil {
 				return fmt.Errorf("backfill task %s: %w", p.id, err)
+			}
+		}
+	}
+}
+
+// CompactOversizedDocuments upgrades task rows written before the document
+// bound existed. It selects only IDs in small pages, then locks and rewrites
+// one row per transaction so a large legacy document is never duplicated as a
+// whole-board in-memory batch and a concurrent task write cannot be lost.
+// Completed rows checkpoint themselves and retries resume at the next one.
+func (s *SQLStore) CompactOversizedDocuments(ctx context.Context) (int, error) {
+	if s == nil {
+		return 0, errors.New("task store is not configured")
+	}
+	sizeExpr := `length(CAST(doc AS BLOB))`
+	if s.db.Dialect() == db.Postgres {
+		sizeExpr = `octet_length(doc)`
+	}
+	selectIDs := `SELECT id FROM tasks WHERE deleted_at = 0 AND ` + sizeExpr + ` > ? ORDER BY id LIMIT ?`
+	updated := 0
+	for {
+		rows, err := s.db.QueryContext(ctx, s.db.Rebind(selectIDs), task.MaxStoredDocumentBytes, documentCompactionBatch)
+		if err != nil {
+			return updated, err
+		}
+		ids := make([]string, 0, documentCompactionBatch)
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				_ = rows.Close()
+				return updated, err
+			}
+			ids = append(ids, id)
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return updated, err
+		}
+		if err := rows.Close(); err != nil {
+			return updated, err
+		}
+		if len(ids) == 0 {
+			return updated, nil
+		}
+
+		for _, id := range ids {
+			didUpdate := false
+			err := s.db.InTx(ctx, func(tx *sql.Tx) error {
+				doc, deletedAt, found, err := s.lockedTaskRow(ctx, tx, id)
+				if err != nil || !found || deletedAt != 0 || len(doc) <= task.MaxStoredDocumentBytes {
+					return err
+				}
+				parsed, err := task.ParseBytes([]byte(doc))
+				if err != nil {
+					return fmt.Errorf("parse task %s: %w", id, err)
+				}
+				stored, boundedDoc, boardDoc, err := marshalTaskDocuments(parsed)
+				if err != nil {
+					return fmt.Errorf("compact task %s: %w", id, err)
+				}
+				// ParseBytes normalizes the final body newline, so the reparshaled
+				// input can be a byte smaller than the row the operator actually
+				// had. Keep the receipt factual to the observed database value.
+				if stored.DocumentCompaction != nil && stored.DocumentCompaction.LargestBytesSeen < len(doc) {
+					stored.DocumentCompaction.LargestBytesSeen = len(doc)
+					boundedDoc, err = task.MarshalStored(stored)
+					if err != nil {
+						return fmt.Errorf("marshal compacted task %s: %w", id, err)
+					}
+					boardDoc, err = task.MarshalStored(task.BoardProjection(stored))
+					if err != nil {
+						return fmt.Errorf("marshal compacted task %s board projection: %w", id, err)
+					}
+				}
+				if len(boundedDoc) > task.MaxStoredDocumentBytes {
+					return fmt.Errorf("compact task %s: result is %d bytes", id, len(boundedDoc))
+				}
+				if _, err := tx.ExecContext(ctx, s.db.Rebind(`UPDATE tasks SET doc = ?, board_doc = ? WHERE id = ?`), string(boundedDoc), string(boardDoc), id); err != nil {
+					return fmt.Errorf("write compacted task %s: %w", id, err)
+				}
+				didUpdate = true
+				return nil
+			})
+			if err != nil {
+				return updated, err
+			}
+			if didUpdate {
+				updated++
 			}
 		}
 	}
@@ -202,7 +328,7 @@ func (s *SQLStore) CreateBy(ctx context.Context, t task.Task, sidecars []Sidecar
 	if t.ID == "" {
 		return task.Task{}, errors.New("task store: record has no id")
 	}
-	doc, boardDoc, err := marshalTaskDocuments(t)
+	stored, doc, boardDoc, err := marshalTaskDocuments(t)
 	if err != nil {
 		return task.Task{}, fmt.Errorf("marshal task: %w", err)
 	}
@@ -226,14 +352,14 @@ func (s *SQLStore) CreateBy(ctx context.Context, t task.Task, sidecars []Sidecar
 				return fmt.Errorf("write sidecar %s: %w", sc.Kind, err)
 			}
 		}
-		return appendHistoryTx(ctx, s.db, tx, HistoryEntry{
+		return s.appendHistoryTx(ctx, tx, HistoryEntry{
 			TaskID: t.ID, Actor: actor, Kind: ChangeCreated, Snapshot: string(doc),
 		})
 	})
 	if err != nil {
 		return task.Task{}, err
 	}
-	return t, nil
+	return stored, nil
 }
 
 // Put stores a task and replaces its sidecars, both in one transaction.
@@ -247,19 +373,27 @@ func (s *SQLStore) Put(ctx context.Context, t task.Task, sidecars []Sidecar) err
 // both are recorded in the same transaction as the write, so a change that
 // landed always has a matching history entry and one that did not has none.
 func (s *SQLStore) PutBy(ctx context.Context, t task.Task, sidecars []Sidecar, actor string, changed []string) error {
+	_, err := s.PutStoredBy(ctx, t, sidecars, actor, changed)
+	return err
+}
+
+// PutStoredBy is PutBy with the compacted value returned to adapters that
+// must publish exactly what was persisted rather than the caller's potentially
+// oversized input value.
+func (s *SQLStore) PutStoredBy(ctx context.Context, t task.Task, sidecars []Sidecar, actor string, changed []string) (task.Task, error) {
 	if s == nil {
-		return errors.New("task store is not configured")
+		return task.Task{}, errors.New("task store is not configured")
 	}
 	if t.ID == "" {
-		return errors.New("task store: record has no id")
+		return task.Task{}, errors.New("task store: record has no id")
 	}
-	doc, boardDoc, err := marshalTaskDocuments(t)
+	stored, doc, boardDoc, err := marshalTaskDocuments(t)
 	if err != nil {
-		return fmt.Errorf("marshal task: %w", err)
+		return task.Task{}, fmt.Errorf("marshal task: %w", err)
 	}
 	ctx, cancel := context.WithTimeout(ctx, taskQueryTimeout)
 	defer cancel()
-	return s.db.InTx(ctx, func(tx *sql.Tx) error {
+	err = s.db.InTx(ctx, func(tx *sql.Tx) error {
 		var existing bool
 		var seen string
 		switch err := tx.QueryRowContext(ctx, s.db.Rebind(`SELECT id FROM tasks WHERE id = ?`), t.ID).Scan(&seen); {
@@ -284,11 +418,12 @@ func (s *SQLStore) PutBy(ctx context.Context, t task.Task, sidecars []Sidecar, a
 				return fmt.Errorf("write sidecar %s: %w", sc.Kind, err)
 			}
 		}
-		return appendHistoryTx(ctx, s.db, tx, HistoryEntry{
+		return s.appendHistoryTx(ctx, tx, HistoryEntry{
 			TaskID: t.ID, Actor: actor, Kind: kindFor(existing), Fields: changed,
 			Snapshot: string(doc),
 		})
 	})
+	return stored, err
 }
 
 // kindFor names the change from whether the task was already there.
@@ -312,7 +447,7 @@ func (s *SQLStore) Get(ctx context.Context, id string) (task.Task, []Sidecar, er
 		return task.Task{}, nil, fmt.Errorf("task %q not found: %w", id, os.ErrNotExist)
 	}
 	if err != nil {
-		return task.Task{}, nil, fmt.Errorf("read task: %w", err)
+		return task.Task{}, nil, fmt.Errorf("read task: %w", db.Contended(err))
 	}
 	t, err := task.ParseBytes([]byte(doc))
 	if err != nil {
@@ -352,9 +487,35 @@ func (s *SQLStore) List(ctx context.Context) ([]task.Task, error) {
 		out = append(out, t)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate tasks: %w", err)
+		return nil, fmt.Errorf("iterate tasks: %w", db.Contended(err))
 	}
 	return out, nil
+}
+
+// ListActive returns every non-terminal live task. The status predicate runs
+// in SQL before doc is transferred or parsed, so recurring automation scales
+// with work it can still act on instead of the complete task history.
+func (s *SQLStore) ListActive(ctx context.Context) ([]task.Task, error) {
+	query, args := activeTasksQuery(s.db.OrderText("id"))
+	return s.listDocuments(ctx, query, args...)
+}
+
+func activeTasksQuery(orderID string) (query string, args []any) {
+	statuses := task.AllStatuses()
+	args = make([]any, 0, len(statuses)-2)
+	marks := make([]string, 0, len(statuses)-2)
+	for _, status := range statuses {
+		if task.IsTerminalStatus(status) {
+			continue
+		}
+		args = append(args, string(status))
+		marks = append(marks, "?")
+	}
+	// tasks_active_idx seeks each actionable status beneath deleted_at=0,
+	// keeping the scan proportional to active work rather than task history.
+	query = `SELECT doc FROM tasks WHERE deleted_at = 0 AND status IN (` +
+		strings.Join(marks, ",") + `) ORDER BY ` + orderID
+	return query, args
 }
 
 // ListBoard returns the compact document persisted for board cards. Unlike
@@ -393,7 +554,7 @@ func (s *SQLStore) listDocuments(ctx context.Context, query string, args ...any)
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate tasks: %w", err)
+		return nil, fmt.Errorf("iterate tasks: %w", db.Contended(err))
 	}
 	return out, nil
 }
@@ -449,7 +610,7 @@ func (s *SQLStore) DeleteBy(ctx context.Context, id, actor string) error {
 		if _, err := tx.ExecContext(ctx, s.db.Rebind(softDeleteTask), db.TimeValue(time.Now().UTC()), id); err != nil {
 			return fmt.Errorf("delete task: %w", err)
 		}
-		return appendHistoryTx(ctx, s.db, tx, HistoryEntry{TaskID: id, Actor: actor, Kind: ChangeDeleted, Snapshot: doc})
+		return s.appendHistoryTx(ctx, tx, HistoryEntry{TaskID: id, Actor: actor, Kind: ChangeDeleted, Snapshot: doc})
 	})
 }
 
@@ -478,20 +639,21 @@ func (s *SQLStore) RestoreBy(ctx context.Context, id, actor string) error {
 		if !deleted {
 			return nil
 		}
-		boardDoc, assignedNode, closedAt := "\n", "", int64(0)
+		storedDoc, boardDoc, assignedNode, closedAt := doc, "\n", "", int64(0)
 		if parsed, parseErr := task.ParseBytes([]byte(doc)); parseErr == nil {
-			_, projected, marshalErr := marshalTaskDocuments(parsed)
+			_, bounded, projected, marshalErr := marshalTaskDocuments(parsed)
 			if marshalErr != nil {
 				return fmt.Errorf("marshal restored task board projection: %w", marshalErr)
 			}
+			storedDoc = string(bounded)
 			boardDoc = string(projected)
 			assignedNode = parsed.AssignedNode
 			closedAt = taskClosedAtValue(parsed)
 		}
-		if _, err := tx.ExecContext(ctx, s.db.Rebind(restoreTask), boardDoc, assignedNode, closedAt, id); err != nil {
+		if _, err := tx.ExecContext(ctx, s.db.Rebind(restoreTask), storedDoc, boardDoc, assignedNode, closedAt, id); err != nil {
 			return fmt.Errorf("restore task: %w", err)
 		}
-		return appendHistoryTx(ctx, s.db, tx, HistoryEntry{TaskID: id, Actor: actor, Kind: ChangeRestored, Snapshot: doc})
+		return s.appendHistoryTx(ctx, tx, HistoryEntry{TaskID: id, Actor: actor, Kind: ChangeRestored, Snapshot: storedDoc})
 	})
 }
 
@@ -552,7 +714,7 @@ func (s *SQLStore) PutFnBy(ctx context.Context, id, actor string, fn func(cur ta
 		}
 		next.ID = id
 
-		nextDoc, boardDoc, err := marshalTaskDocuments(next)
+		stored, nextDoc, boardDoc, err := marshalTaskDocuments(next)
 		if err != nil {
 			return fmt.Errorf("marshal task: %w", err)
 		}
@@ -571,13 +733,13 @@ func (s *SQLStore) PutFnBy(ctx context.Context, id, actor string, fn func(cur ta
 				return fmt.Errorf("write sidecar %s: %w", sc.Kind, err)
 			}
 		}
-		if err := appendHistoryTx(ctx, s.db, tx, HistoryEntry{
+		if err := s.appendHistoryTx(ctx, tx, HistoryEntry{
 			TaskID: next.ID, Actor: actor, Kind: ChangeUpdated, Fields: changed,
 			Snapshot: string(nextDoc),
 		}); err != nil {
 			return err
 		}
-		result = next
+		result = stored
 		return nil
 	})
 	return result, err

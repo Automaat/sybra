@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -209,6 +210,9 @@ func (lm *LifecycleManager) refreshAppToken(ctx context.Context) {
 	}
 	if err := github.RefreshVerifierAppToken(ctx); err != nil {
 		a.logger.Warn("github.app.verifier-token.refresh", "err", err)
+	}
+	if err := a.agents.SyncGHAppToken(); err != nil {
+		a.logger.Warn("github.app.token.publish", "err", err)
 	}
 	if err := a.agents.SyncGHVerifierAppToken(); err != nil {
 		a.logger.Warn("github.app.verifier-token.publish", "err", err)
@@ -436,9 +440,8 @@ func (lm *LifecycleManager) prune() {
 	var protectedLogs map[string]bool
 	if a.cleanupProtected != nil && a.tasks != nil {
 		if findings, err := a.cleanupProtected.List(); err == nil {
-			if tasks, listErr := a.tasks.List(); listErr == nil {
-				protectedLogs = cleanup.ProtectedEvidenceLogPaths(a.logDir, tasks, findings)
-			}
+			tasks := loadProtectedEvidenceTasks(findings, a.tasks.Get)
+			protectedLogs = cleanup.ProtectedEvidenceLogPaths(a.logDir, tasks, findings)
 		}
 	}
 	r := logging.EnforceAgentLogRetention(a.logDir, logging.RetentionOptions{
@@ -451,12 +454,49 @@ func (lm *LifecycleManager) prune() {
 	logging.LogPruneReport(a.logger, r)
 }
 
+// loadProtectedEvidenceTasks resolves only tasks named by live cleanup
+// findings. Agent-log retention needs their LogFile fields, but loading every
+// task document would make the daily sweep grow with completed task history.
+func loadProtectedEvidenceTasks(findings []cleanup.Finding, get func(string) (task.Task, error)) []task.Task {
+	seen := make(map[string]bool)
+	out := make([]task.Task, 0, len(findings))
+	for i := range findings {
+		finding := findings[i]
+		if finding.State != cleanup.FindingOpen && finding.State != cleanup.FindingReattached {
+			continue
+		}
+		id := strings.TrimSpace(finding.EvidenceTaskID())
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		t, err := get(id)
+		if err == nil {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
 // registerMetricsObservers wires OTel observable gauge callbacks to live
 // subsystem state. No-op when metrics are disabled.
 func (lm *LifecycleManager) registerMetricsObservers() {
 	a := lm.app
+	if a.database != nil {
+		metrics.RegisterDatabasePoolStats(func() metrics.DatabasePoolStats {
+			stats := a.database.SQL().Stats()
+			return metrics.DatabasePoolStats{
+				MaxOpenConnections:  int64(stats.MaxOpenConnections),
+				OpenConnections:     int64(stats.OpenConnections),
+				InUse:               int64(stats.InUse),
+				Idle:                int64(stats.Idle),
+				WaitCount:           stats.WaitCount,
+				WaitDurationSeconds: stats.WaitDuration.Seconds(),
+			}
+		})
+	}
 	metrics.RegisterTasksByStatus(func() map[string]int64 {
-		tasks, err := a.tasks.List()
+		tasks, err := a.tasks.ListBoard()
 		if err != nil {
 			return nil
 		}

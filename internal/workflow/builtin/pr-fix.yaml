@@ -55,12 +55,30 @@ steps:
           operator: equals
           value: continue
         goto: push_fixed_branch
+      # Every exit that returns the task to in-review having pushed nothing
+      # goes through the thread gate. That covers a no-op or flake verdict -
+      # the shape of an agent whose own thread fetch came back empty and so
+      # concluded there was nothing to answer - and also the demoted park,
+      # where the agent asked for a human and route_pr_fix_result overrode it
+      # because the live PR looked green. All three hand the task back for the
+      # monitor to re-dispatch on the same threads, so none may skip the gate.
+      # A genuinely merged PR is spared inside the step itself.
       - when:
           field: task.status
           operator: equals
           value: in-review
-        goto: ""
+        goto: verify_noop_review_threads
       - goto: push_fixed_branch
+
+  # Same gate as verify_review_threads, on the no-commit exit: it either
+  # confirms the "nothing to do" verdict and ends the workflow, or flips the
+  # task to human-required. Either way the workflow ends here - a no-op run
+  # has no branch to push and no PR state to relink.
+  - id: verify_noop_review_threads
+    name: Verify Review Threads Answered (No-Op)
+    type: verify_review_threads
+    next:
+      - goto: ""
 
   # Bounded, single-shot follow-up: route_pr_fix_result redirects here only
   # when the pr-fix agent named specific non-merge test failures instead of
@@ -135,7 +153,7 @@ steps:
           field: task.status
           operator: equals
           value: in-review
-        goto: ""
+        goto: verify_noop_review_threads
       - goto: push_fixed_branch
 
   # Agents are asked to push, but their prose is not a publication proof. A
@@ -182,6 +200,24 @@ steps:
   - id: detect_tampering
     name: Detect Test Tampering
     type: detect_tampering
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: verify_review_threads
+
+  # Mechanical check (no LLM): the comments path lets the agent enumerate the
+  # PR's review threads itself, so a failed or stale enumeration would let it
+  # answer a fraction of the feedback and still report success. Re-fetches the
+  # threads it was briefed on and flips to human-required when any is still
+  # unanswered, instead of returning the task to in-review for the monitor to
+  # re-dispatch until the status-bounce guard pauses it. No-ops on every
+  # dispatch that carried no brief, i.e. every non-comments fix.
+  - id: verify_review_threads
+    name: Verify Review Threads Answered
+    type: verify_review_threads
     next:
       - when:
           field: task.status

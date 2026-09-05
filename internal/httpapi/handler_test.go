@@ -2,7 +2,9 @@ package httpapi_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -12,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Automaat/sybra/internal/db"
 	"github.com/Automaat/sybra/internal/httpapi"
 )
 
@@ -32,6 +35,26 @@ func (s *testSvc) FailWith() error { return &testError{"boom"} }
 // the same %w chain stripErrorResult walks in production.
 func (s *testSvc) FailWithNotExist() error {
 	return fmt.Errorf("task nope not found: %w", os.ErrNotExist)
+}
+
+func (s *testSvc) FailWithDeadline() error {
+	return fmt.Errorf("iterate tasks: %w", db.Contended(context.DeadlineExceeded))
+}
+
+func (s *testSvc) FailWithBusy() error {
+	return db.Contended(errors.New("begin: database is locked (5) (SQLITE_BUSY)"))
+}
+
+func (s *testSvc) FailWithPgDeadlock() error {
+	return db.Contended(errors.New("ERROR: deadlock detected (SQLSTATE 40P01)"))
+}
+
+func (s *testSvc) FailWithPgSerialize() error {
+	return db.Contended(errors.New("ERROR: could not serialize access due to concurrent update (SQLSTATE 40001)"))
+}
+
+func (s *testSvc) FailWithRemoteTimeout() error {
+	return fmt.Errorf("gh api commits: %w", context.DeadlineExceeded)
 }
 func (s *testSvc) ReturnAndFail(v string) (string, error) {
 	return "", &testError{v}
@@ -71,7 +94,7 @@ func setup(t *testing.T) (*http.ServeMux, *httptest.Server, *bytes.Buffer) {
 	mux := http.NewServeMux()
 	httpapi.Mount(mux, map[string]httpapi.Service{
 		"TestSvc": httpapi.NewService(&testSvc{},
-			"Echo", "Add", "Multi", "Void", "Fail", "FailWith", "FailWithNotExist", "ReturnAndFail", "ObjIn",
+			"Echo", "Add", "Multi", "Void", "Fail", "FailWith", "FailWithNotExist", "FailWithDeadline", "FailWithBusy", "FailWithPgDeadlock", "FailWithPgSerialize", "FailWithRemoteTimeout", "ReturnAndFail", "ObjIn",
 			"ClientFail400", "ClientFail409",
 			// AdminOnly is intentionally absent from the allowlist.
 		),
@@ -473,5 +496,51 @@ func TestHandler_OversizedBodyRejected(t *testing.T) {
 		if code != string(httpapi.ErrCodeTooLarge) {
 			t.Fatalf("expected code %q, got %q", httpapi.ErrCodeTooLarge, code)
 		}
+	}
+}
+
+func TestHandler_ContentionMapsTo503(t *testing.T) {
+	for _, method := range []string{"FailWithDeadline", "FailWithBusy", "FailWithPgDeadlock", "FailWithPgSerialize"} {
+		t.Run(method, func(t *testing.T) {
+			_, srv, logBuf := setup(t)
+
+			// Given a service call the backend made wait past its budget
+			// When the board issues it
+			resp := post(t, srv, "TestSvc", method)
+			defer resp.Body.Close()
+
+			// Then the caller is told to retry, not that the server is broken
+			if resp.StatusCode != http.StatusServiceUnavailable {
+				t.Fatalf("status = %d, want 503", resp.StatusCode)
+			}
+			msg, code := decodeErr(t, resp)
+			if code != string(httpapi.ErrCodeUnavailable) {
+				t.Fatalf("code = %q, want %q", code, httpapi.ErrCodeUnavailable)
+			}
+			if strings.Contains(msg, "internal error") {
+				t.Fatalf("client message = %q, want a retry hint", msg)
+			}
+			if logs := logBuf.String(); !strings.Contains(logs, "httpapi.call.contended") {
+				t.Fatalf("contention was not logged server-side; got: %s", logs)
+			}
+		})
+	}
+}
+
+func TestHandler_RemoteTimeoutIsNotContention(t *testing.T) {
+	_, srv, _ := setup(t)
+
+	// Given a slow remote, not a busy database
+	// When a bound method surfaces its client timeout
+	resp := post(t, srv, "TestSvc", "FailWithRemoteTimeout")
+	defer resp.Body.Close()
+
+	// Then it stays a fault, so an agent does not retry an unreachable remote forever
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", resp.StatusCode)
+	}
+	_, code := decodeErr(t, resp)
+	if code != string(httpapi.ErrCodeInternal) {
+		t.Fatalf("code = %q, want %q", code, httpapi.ErrCodeInternal)
 	}
 }

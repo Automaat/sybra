@@ -335,6 +335,7 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 		wfExec = &Execution{Variables: maps.Clone(ctx.Vars)}
 	}
 	prepareTestVerdictAttemptVars(wfExec, step.ID, ctx.Task.Body)
+	prepareReviewVerdictAttemptVars(wfExec, step)
 	// Seed the sidecar dir before anything renders a template. Setting it only
 	// after dispatch would leave the first run of a verifier role resolving
 	// {{sidecardir .Vars}} to the worktree — which that role cannot write —
@@ -515,9 +516,12 @@ func resolveRunAgentModel(model string, ctx TemplateContext) string {
 func (e *Engine) persistStartedAgent(taskID string, step *Step, wfExec *Execution, agentID, provider, startedDir, baselineRef, cleanRetryKey, cleanRetryRef, dir string) error {
 	if startedDir != "" && (step.Config.NeedsWorktree || dir != "") {
 		wfExec.SetVar(WorkflowVarDir, startedDir)
-		if sidecar := e.resolveSidecarDir(taskID); sidecar != "" {
-			wfExec.SetVar(WorkflowVarSidecarDir, sidecar)
-		}
+	}
+	// Sidecar imports run on completion for planner/reviewer roles that may not
+	// own a worktree-backed _dir at all. Persist the writable sidecar dir
+	// independently so {{sidecardir .Vars}} still resolves after the start path.
+	if sidecar := e.resolveSidecarDir(taskID); sidecar != "" {
+		wfExec.SetVar(WorkflowVarSidecarDir, sidecar)
 	}
 	if baselineRef != "" {
 		wfExec.SetVar(tamperBaselineVar(step.ID), baselineRef)

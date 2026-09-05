@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/taskstatus"
 )
@@ -52,6 +53,15 @@ func newPRWorktree(t *testing.T, branch string) (bare, wtPath string) {
 	return bare, wtPath
 }
 
+func remoteBranchSHA(t *testing.T, wtPath, branch string) string {
+	t.Helper()
+	out, err := exec.Command("git", "-C", wtPath, "ls-remote", "origin", "refs/heads/"+branch).CombinedOutput()
+	if err != nil {
+		t.Fatalf("git ls-remote: %v\n%s", err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
 func commitFile(t *testing.T, wtPath, name, msg string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(wtPath, name), []byte(msg+"\n"), 0o644); err != nil {
@@ -81,6 +91,43 @@ func headSHA(t *testing.T, wtPath string) string {
 func newPushBranchStep() *Step { return &Step{ID: "push_existing_pr", Type: StepPushBranch} }
 func newCreatePRStep() *Step   { return &Step{ID: "create_pr", Type: StepCreatePR} }
 
+func newSameNamedBranchCollisionWorktree(t *testing.T, repoOwner, repoName, forkOwner, branch string) (wtPath, originSHA, forkSHA string) {
+	t.Helper()
+
+	wtPath = t.TempDir()
+	runGit(t, wtPath, "init", "-b", "main")
+	runGit(t, wtPath, "config", "user.name", "Sybra Test")
+	runGit(t, wtPath, "config", "user.email", "test@example.com")
+	runGit(t, wtPath, "config", "remote.origin.url", "https://github.com/"+repoOwner+"/"+repoName+".git")
+	runGit(t, wtPath, "config", "remote.fork.url", "https://github.com/"+forkOwner+"/"+repoName+".git")
+	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("base\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, wtPath, "add", "README.md")
+	runGit(t, wtPath, "commit", "-m", "base")
+	baseSHA := headSHA(t, wtPath)
+
+	runGit(t, wtPath, "checkout", "-b", branch)
+	if err := os.WriteFile(filepath.Join(wtPath, "origin.txt"), []byte("origin\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, wtPath, "add", "origin.txt")
+	runGit(t, wtPath, "commit", "-m", "origin branch")
+	originSHA = headSHA(t, wtPath)
+
+	runGit(t, wtPath, "checkout", "-B", "fork-tmp", baseSHA)
+	if err := os.WriteFile(filepath.Join(wtPath, "fork.txt"), []byte("fork\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, wtPath, "add", "fork.txt")
+	runGit(t, wtPath, "commit", "-m", "fork branch")
+	forkSHA = headSHA(t, wtPath)
+
+	runGit(t, wtPath, "checkout", branch)
+	runGit(t, wtPath, "reset", "--hard", forkSHA)
+	return wtPath, originSHA, forkSHA
+}
+
 type fakePRHeadFetcher struct {
 	sha string
 	err error
@@ -88,6 +135,15 @@ type fakePRHeadFetcher struct {
 
 func (f *fakePRHeadFetcher) FetchPRHeadSHA(context.Context, string, int) (string, error) {
 	return f.sha, f.err
+}
+
+type fakePRMetaFetcher struct {
+	pr  github.PullRequest
+	err error
+}
+
+func (f *fakePRMetaFetcher) FetchPRMeta(context.Context, string, int) (github.PullRequest, error) {
+	return f.pr, f.err
 }
 
 type fakePRCreator struct {
@@ -1298,5 +1354,38 @@ func TestExecCreatePR_AdoptsExistingPROnAlreadyExistsConflict(t *testing.T) {
 	}
 	if ti.Status == "human-required" {
 		t.Errorf("must not escalate to human-required when the PR already exists: %s", tasks.Reason("t1"))
+	}
+}
+
+func TestExecPushBranch_RefusesPRReviewTask(t *testing.T) {
+	// Given a review task on another author's pull request branch
+	_, wtPath := newPRWorktree(t, "feat/other-author")
+	commitFile(t, wtPath, "change.txt", "chore: local work on the reviewed branch")
+	before := remoteBranchSHA(t, wtPath, "feat/other-author")
+
+	review := TaskInfo{
+		ID: "t1", Status: taskstatus.ReadyPR, Branch: "feat/other-author",
+		PRNumber: 7, ProjectID: "acme/widgets", Tags: []string{"review"},
+	}
+	tasks := newMemTasks()
+	tasks.Put(review)
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
+
+	// When the deterministic push step runs
+	out, err := engine.execPushBranch("t1", newPushBranchStep(), &Execution{Variables: map[string]string{}}, review)
+	if err != nil {
+		t.Fatalf("execPushBranch: %v", err)
+	}
+
+	// Then the branch is left where it was and the task waits for a human
+	if after := remoteBranchSHA(t, wtPath, "feat/other-author"); after != before {
+		t.Fatalf("reviewed branch moved on the remote: %s -> %s", before, after)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != taskstatus.HumanRequired {
+		t.Fatalf("task status = %q, want human-required", ti.Status)
+	}
+	if out.Status != "completed" {
+		t.Fatalf("step status = %q, want completed", out.Status)
 	}
 }

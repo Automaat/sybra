@@ -161,6 +161,36 @@ func (c *Config) DefaultTrashRetentionDays() int {
 // is unset.
 const DefaultSandboxRetentionHours = 24
 
+// DefaultBuildCacheIdleHours is how long a per-task Go build cache may sit
+// untouched before it is reclaimable regardless of its owning task's status.
+//
+// Task liveness is the wrong lifetime for this one resource. A build cache is
+// derived data: deleting it costs a cold rebuild and nothing else, no network
+// and no lost work. Meanwhile a task parked in human-required is not
+// terminal, so its cache — 1 to 10 GiB each here — was pinned for as long as
+// the task sat there, and 24 such tasks filled a disk while every safe bucket
+// reported nothing to reclaim.
+//
+// A week is long enough that a task picked back up the same sprint keeps its
+// warm cache, and short enough to bound what an abandoned one holds.
+const DefaultBuildCacheIdleHours = 168
+
+// BuildCacheIdle resolves how long a per-task Go build cache may sit unused
+// before it may be reclaimed. A negative Sandbox.BuildCacheIdleHours disables
+// idle reclaim, leaving these caches on the task-status lifetime alone.
+func (c *Config) BuildCacheIdle() (window time.Duration, disabled bool) {
+	hours := DefaultBuildCacheIdleHours
+	if c != nil {
+		switch {
+		case c.Sandbox.BuildCacheIdleHours < 0:
+			return 0, true
+		case c.Sandbox.BuildCacheIdleHours > 0:
+			hours = c.Sandbox.BuildCacheIdleHours
+		}
+	}
+	return time.Duration(hours) * time.Hour, false
+}
+
 // DefaultSandboxRetention resolves the configured sandbox retention window.
 // disabled reports whether age-based pruning should be skipped entirely
 // (Sandbox.RetentionHours < 0); window is meaningless when disabled is true.
@@ -427,6 +457,20 @@ const DefaultTestingMaxConcurrent = 3
 // code-author run. This numeric cap is a safety-net backstop only for loops
 // that keep surfacing distinct grounded defects without converging.
 const DefaultTestingMaxAttempts = 5
+
+// DefaultVerifyTimeoutMinutes bounds one verify_checks run when
+// TestingConfig.VerifyTimeoutMinutes is unset. Matches the value this budget
+// was compiled with before it became configurable.
+const DefaultVerifyTimeoutMinutes = 10
+
+// VerifyTimeout resolves the configured verify_checks budget.
+func (c *Config) VerifyTimeout() time.Duration {
+	minutes := DefaultVerifyTimeoutMinutes
+	if c != nil && c.Testing.VerifyTimeoutMinutes > 0 {
+		minutes = c.Testing.VerifyTimeoutMinutes
+	}
+	return time.Duration(minutes) * time.Minute
+}
 
 // TestingMaxConcurrent returns the configured cap or DefaultTestingMaxConcurrent.
 func (c *Config) TestingMaxConcurrent() int {
@@ -774,6 +818,29 @@ func defaultEvaluationSeed() EvaluationConfig {
 	}
 }
 
+func defaultProvidersConfig() ProvidersConfig {
+	return ProvidersConfig{
+		HealthCheck: ProviderHealthCheckConfig{
+			Enabled:                    true,
+			IntervalSeconds:            300,
+			AuthFailureCooldownSeconds: 900,
+		},
+		Claude:   ProviderEntryConfig{Enabled: true, RateLimitCooldownSeconds: 900},
+		Codex:    ProviderEntryConfig{Enabled: true, RateLimitCooldownSeconds: 900},
+		Copilot:  ProviderEntryConfig{Enabled: true, RateLimitCooldownSeconds: 900},
+		OpenCode: ProviderEntryConfig{Enabled: true, RateLimitCooldownSeconds: 900},
+		Limits: ProviderLimitsConfig{
+			Enabled:                 true,
+			SessionThresholdPercent: 85,
+			WeeklyThresholdPercent:  90,
+			PreferUnderused:         true,
+			BackfillDays:            14,
+			MaxInFlightPerProvider:  0,
+		},
+		AutoFailover: true,
+	}
+}
+
 func defaultSeedConfig() *Config {
 	cfg := &Config{
 		SchemaVersion: CurrentSchemaVersion,
@@ -845,25 +912,7 @@ func defaultSeedConfig() *Config {
 			RestartDelaySeconds: 2,
 			CoalesceSeconds:     3600,
 		},
-		Providers: ProvidersConfig{
-			HealthCheck: ProviderHealthCheckConfig{
-				Enabled:         true,
-				IntervalSeconds: 300,
-			},
-			Claude:   ProviderEntryConfig{Enabled: true, RateLimitCooldownSeconds: 900},
-			Codex:    ProviderEntryConfig{Enabled: true, RateLimitCooldownSeconds: 900},
-			Copilot:  ProviderEntryConfig{Enabled: true, RateLimitCooldownSeconds: 900},
-			OpenCode: ProviderEntryConfig{Enabled: true, RateLimitCooldownSeconds: 900},
-			Limits: ProviderLimitsConfig{
-				Enabled:                 true,
-				SessionThresholdPercent: 85,
-				WeeklyThresholdPercent:  90,
-				PreferUnderused:         true,
-				BackfillDays:            14,
-				MaxInFlightPerProvider:  0,
-			},
-			AutoFailover: true,
-		},
+		Providers: defaultProvidersConfig(),
 		Cluster: ClusterConfig{
 			Role: ClusterRoleStandalone,
 		},
@@ -1862,6 +1911,9 @@ func applyProvidersDefaults(cfg *Config) {
 	}
 	if cfg.Providers.HealthCheck.IntervalSeconds < 60 {
 		cfg.Providers.HealthCheck.IntervalSeconds = 60
+	}
+	if cfg.Providers.HealthCheck.AuthFailureCooldownSeconds <= 0 {
+		cfg.Providers.HealthCheck.AuthFailureCooldownSeconds = 900
 	}
 	if cfg.Providers.Claude.RateLimitCooldownSeconds <= 0 {
 		cfg.Providers.Claude.RateLimitCooldownSeconds = 900

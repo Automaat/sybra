@@ -64,6 +64,8 @@ func digestRows(rows []string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+const unpublishableReason = "local work stays unpublished: the branch belongs to a pull request this task only reviews"
+
 func decide(s Snapshot, plan Plan) Plan {
 	if s.Lease.Required && (!s.Lease.Current || s.Lease.ID == "") {
 		return withAction(plan, ActionWait, "stale or missing attempt lease")
@@ -111,10 +113,16 @@ func decide(s Snapshot, plan Plan) Plan {
 	}
 
 	if s.Git.RemoteSHA == "" && s.Git.TaskWorkReachable {
+		if s.Git.PushForbidden {
+			return withDelivery(plan, ActionAdvance, unpublishableReason)
+		}
 		return withAction(plan, ActionPush, "reachable task work has no remote branch")
 	}
 	if s.Git.RemoteSHA != "" && s.Git.RemoteSHA != s.Git.HeadSHA {
 		if s.Git.Ahead > 0 {
+			if s.Git.PushForbidden {
+				return withDelivery(plan, ActionAdvance, unpublishableReason)
+			}
 			return withAction(plan, ActionPush, "local task work is ahead of the remote branch")
 		}
 		if s.Git.Behind > 0 {

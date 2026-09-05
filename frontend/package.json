@@ -25,7 +25,7 @@
     "@playwright/test": "1.62.1",
     "@skeletonlabs/skeleton": "4.15.2",
     "@skeletonlabs/skeleton-svelte": "4.15.2",
-    "@sveltejs/vite-plugin-svelte": "7.2.0",
+    "@sveltejs/vite-plugin-svelte": "7.3.0",
     "@tailwindcss/vite": "4.3.3",
     "@testing-library/jest-dom": "6.9.1",
     "@testing-library/svelte": "5.4.2",
@@ -33,7 +33,7 @@
     "@types/js-yaml": "4.0.9",
     "@types/jsdom": "28.0.3",
     "@types/node": "24.13.3",
-    "@vitest/coverage-v8": "4.1.10",
+    "@vitest/coverage-v8": "4.1.11",
     "jsdom": "29.1.1",
     "oxlint": "1.77.0",
     "svelte": "5.56.8",
@@ -41,7 +41,7 @@
     "tailwindcss": "4.3.3",
     "typescript": "6.0.3",
     "vite": "8.2.0",
-    "vitest": "4.1.10"
+    "vitest": "4.1.11"
   },
   "dependencies": {
     "@dagrejs/dagre": "^3.0.0",

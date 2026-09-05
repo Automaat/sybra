@@ -10,6 +10,7 @@ import (
 	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/providerid"
+	"github.com/Automaat/sybra/internal/prreview"
 	"github.com/Automaat/sybra/internal/taskstatus"
 	"github.com/Automaat/sybra/internal/workflow"
 )
@@ -238,11 +239,18 @@ type AgentRun struct {
 	// definitive terminal outcome (still running, or stalled/rate-limited and
 	// due for retry) — callers must not infer success from Outcome == "".
 	Outcome string `json:"outcome,omitempty"`
+	// ReviewSalvaged marks a review run that left a usable review behind even
+	// though it did not finish — the cost guardrail stops one mid-flight and
+	// its partial transcript is written to the task. The review budget counts
+	// rounds that reviewed something, and Outcome alone cannot tell this run
+	// apart from one that produced nothing.
+	ReviewSalvaged bool `json:"reviewSalvaged,omitempty"`
 	// EscalationReason records the guardrail reason that stopped the run
 	// ("cost" or "turns"). Empty for ordinary completions.
 	EscalationReason string    `json:"escalationReason,omitempty"`
 	StartedAt        time.Time `json:"startedAt"`
 	CostUSD          float64   `json:"costUsd"`
+	ToolFailures     int       `json:"toolFailures,omitempty"`
 	PremiumRequests  float64   `json:"premiumRequests,omitempty"`
 	Prompt           string    `json:"prompt,omitempty"`
 	Result           string    `json:"result"`
@@ -294,6 +302,20 @@ type AgentRun struct {
 	// TurnCount is zero when the child produced nothing, so the run holds no
 	// evidence about its instructions and must not spend a conformance budget.
 	TurnCount int `json:"turnCount,omitempty"`
+}
+
+// DocumentCompaction is the durable operator-visible receipt left when Sybra
+// has to discard historical text to keep a task document within its storage
+// bound. The counters are cumulative: a later write may compact the task
+// again, but it must never make an earlier loss invisible.
+type DocumentCompaction struct {
+	LastCompactedAt   time.Time `json:"lastCompactedAt"`
+	LargestBytesSeen  int       `json:"largestBytesSeen"`
+	DroppedAgentRuns  int       `json:"droppedAgentRuns,omitempty"`
+	DroppedRunCostUSD float64   `json:"droppedRunCostUsd,omitempty"`
+	TrimmedRunFields  int       `json:"trimmedRunFields,omitempty"`
+	TrimmedWorkflow   int       `json:"trimmedWorkflow,omitempty"`
+	BodyTruncated     bool      `json:"bodyTruncated,omitempty"`
 }
 
 // Attachment re-exports the persisted task attachment metadata type.
@@ -493,9 +515,10 @@ type Task struct {
 	// so route_test_result can exclude test-runner runs from prior cycles when
 	// counting toward TestingMaxAttempts. Nil means no re-dispatch has occurred
 	// and all test-runner runs count (correct for first-ever cycles).
-	TestingCycleStartedAt *time.Time   `json:"testingCycleStartedAt,omitempty"`
-	Attachments           []Attachment `json:"attachments"`
-	AgentRuns             []AgentRun   `json:"agentRuns"`
+	TestingCycleStartedAt *time.Time          `json:"testingCycleStartedAt,omitempty"`
+	Attachments           []Attachment        `json:"attachments"`
+	AgentRuns             []AgentRun          `json:"agentRuns"`
+	DocumentCompaction    *DocumentCompaction `json:"documentCompaction,omitempty"`
 	// EffectLog records durable intent/completion for observer-owned task
 	// status effects (pollers, monitor, recovery) that operate outside a live
 	// workflow execution.
@@ -567,6 +590,17 @@ func (t Task) DirName() string {
 		return t.ID
 	}
 	return t.Slug + "-" + t.ID
+}
+
+// TagReview marks a task created to review a pull request Sybra did not open.
+const TagReview = prreview.Tag
+
+// TagAdoptedPR marks a review-tagged task whose pull request Sybra itself opened.
+const TagAdoptedPR = prreview.TagAdopted
+
+// IsPRReview reports whether t reviews a linked pull request it must not write to.
+func (t Task) IsPRReview() bool {
+	return prreview.Is(t.PRNumber, t.Tags)
 }
 
 // isTamperFlagged reports whether a task's status/blocker combination

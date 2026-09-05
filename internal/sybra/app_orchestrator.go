@@ -240,7 +240,7 @@ func (a *App) maintenancePass(ctx context.Context) {
 	}
 	a.startWorktreeCleanup(ctx)
 	if a.sandboxes != nil && a.tasks != nil {
-		if tasks, err := a.tasks.List(); err == nil {
+		if tasks, err := a.tasks.ListBoard(); err == nil {
 			var hasAgent func(string) bool
 			if a.agents != nil {
 				hasAgent = a.agents.HasRunningAgentForTask
@@ -290,7 +290,7 @@ func (a *App) queueDrainPass(ctx context.Context) {
 	// tick rather than the fast one. Lists once here rather than inside the
 	// pass, so the recovery tick does not pay for a second full store scan.
 	if a.tasks != nil {
-		tasks, err := a.tasks.List()
+		tasks, err := a.tasks.ListActive()
 		if err != nil {
 			// Logged rather than swallowed: a silent skip here leaves tasks
 			// stranded exactly as before, with nothing in the log to say why.
@@ -310,7 +310,7 @@ func (a *App) reconcileRunnableBoardTasks(ctx context.Context) {
 	if a.workflowEngine == nil || a.tasks == nil || a.agents == nil {
 		return
 	}
-	tasks, err := a.tasks.List()
+	tasks, err := a.tasks.ListActive()
 	if err != nil {
 		a.logger.Warn("workflow.reconcile-runnable.list", "err", err)
 		return
@@ -384,6 +384,7 @@ func taskReviewRuns(t task.Task) []reviewbudget.Run {
 		runs[i] = reviewbudget.Run{
 			Role: t.AgentRuns[i].Role, StartedAt: t.AgentRuns[i].StartedAt,
 			Outcome: t.AgentRuns[i].Outcome, TurnCount: t.AgentRuns[i].TurnCount,
+			Salvaged: t.AgentRuns[i].ReviewSalvaged,
 		}
 	}
 	return runs
@@ -668,7 +669,7 @@ func (a *App) activeNonReviewPROwner(t task.Task) string {
 	if a.tasks == nil || t.ProjectID == "" || t.PRNumber == 0 {
 		return ""
 	}
-	tasks, err := a.tasks.List()
+	tasks, err := a.tasks.ListActive()
 	if err != nil {
 		a.logger.Warn("workflow.dispatch.inbound-review.owner-list", "task_id", t.ID, "err", err)
 		return ""
@@ -694,7 +695,7 @@ func (a *App) hasActiveUnlinkedPROwnerCandidate(t task.Task) bool {
 	if a.tasks == nil || t.ProjectID == "" {
 		return false
 	}
-	tasks, err := a.tasks.List()
+	tasks, err := a.tasks.ListActive()
 	if err != nil {
 		a.logger.Warn("workflow.dispatch.inbound-review.owner-list", "task_id", t.ID, "err", err)
 		return false
@@ -806,7 +807,7 @@ func (a *App) maybeStartOrchestrator(ctx context.Context) {
 		return
 	}
 
-	tasks, err := a.tasks.List()
+	tasks, err := a.tasks.ListActive()
 	if err != nil {
 		return
 	}

@@ -64,6 +64,31 @@ type Manager struct {
 	// cross-process transitions (where firedStatus is stale or unset).
 	firedMu     sync.RWMutex
 	firedStatus map[string]string
+
+	// statusActor records which subsystem submitted the transition that last
+	// fired onStatusHook, so a hook can tell one automation writing a task
+	// repeatedly from two automations contending over it. Empty for a
+	// transition observed on disk rather than submitted here.
+	actorMu     sync.RWMutex
+	statusActor map[string]string
+}
+
+// LastStatusActor returns the actor that submitted the transition currently
+// being reported to the status hook, or empty when the transition was observed
+// on disk and no actor is known.
+func (m *Manager) LastStatusActor(id string) string {
+	m.actorMu.RLock()
+	defer m.actorMu.RUnlock()
+	return m.statusActor[id]
+}
+
+func (m *Manager) recordStatusActor(id, actor string) {
+	m.actorMu.Lock()
+	defer m.actorMu.Unlock()
+	if m.statusActor == nil {
+		m.statusActor = make(map[string]string)
+	}
+	m.statusActor[id] = actor
 }
 
 // SetStatusChangeHook registers a callback fired on every status transition.
@@ -194,6 +219,7 @@ func (m *Manager) OnExternalUpdate(path string) {
 	m.recordFiredStatus(id, newStatus)
 	unlock()
 
+	m.recordStatusActor(id, "")
 	m.onStatusHook(id, prev, newStatus, t)
 }
 
@@ -290,6 +316,26 @@ func (m *Manager) NotifyLockedMutation(t Task) {
 
 // List returns all tasks (lock-free).
 func (m *Manager) List() ([]Task, error) { return m.persist.List() }
+
+// ListActive returns every non-terminal task. Database persistence applies
+// the filter before reading full documents; the file backend falls back to
+// its warm list cache and filters in memory.
+func (m *Manager) ListActive() ([]Task, error) {
+	if p, ok := m.persist.(interface{ ListActive() ([]Task, error) }); ok {
+		return p.ListActive()
+	}
+	tasks, err := m.persist.List()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Task, 0, len(tasks))
+	for i := range tasks {
+		if !IsTerminalStatus(tasks[i].Status) {
+			out = append(out, tasks[i])
+		}
+	}
+	return out, nil
+}
 
 // ListBoard uses a persistence-native compact projection when available.
 // File persistence falls back to its cached list and strips the same heavy

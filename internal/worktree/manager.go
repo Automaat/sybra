@@ -267,6 +267,21 @@ func (m *Manager) ensureBranch(t task.Task, branch string) {
 	}
 }
 
+func (m *Manager) skipReviewPush(t task.Task, branch string) bool {
+	if !t.IsPRReview() {
+		return false
+	}
+	m.logger.Info("worktree.push-skipped", "task_id", t.ID, "branch", branch, "pr", t.PRNumber, "reason", "pr review task")
+	return true
+}
+
+func (m *Manager) pushPrepared(ctx context.Context, t task.Task, wtPath, branch string) {
+	if m.skipReviewPush(t, branch) {
+		return
+	}
+	m.logPushSync(t.ID, branch, project.PushSync(ctx, wtPath, branch))
+}
+
 func (m *Manager) logPushSync(taskID, branch string, err error) {
 	if err == nil {
 		return

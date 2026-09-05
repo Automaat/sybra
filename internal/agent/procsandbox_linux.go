@@ -158,10 +158,6 @@ func sandboxWrapperName() string { return "bwrap" }
 // store, so object staging is safe and required on this platform.
 func sandboxUsesGitObjectOverlay() bool { return true }
 
-func materializeSandboxProfile() (string, error) {
-	return "", nil
-}
-
 func canonicalizeRoot(root string) (string, error) {
 	if strings.TrimSpace(root) == "" {
 		return "", fmt.Errorf("sandbox: empty root")
@@ -306,13 +302,22 @@ func sandboxSyncShell(bwrapArgs []string, cfg *RunConfig) (wrappedName string, w
 		`    done`,
 		`  done`,
 		`}`,
+		// Snapshot the overlay's starting point, not the durable ref after the
+		// command. If another process advances the shared branch while the
+		// sandbox runs, an unchanged overlay must not rewind it; a changed
+		// overlay publishes only when the durable ref still matches this base.
+		`base_ref=$(cat ` + shellQuote(cfg.sandbox.gitOverlayRefFile) + ` 2>/dev/null || true)`,
 		`"$@"`,
 		`status=$?`,
 		`sync_status=0`,
 		`if ! sync_git_objects ` + shellQuote(cfg.sandbox.gitOverlayObjectDir) + ` ` + shellQuote(cfg.sandbox.gitObjectDir) + `; then sync_status=$?; fi`,
 		`new_ref=$(cat ` + shellQuote(cfg.sandbox.gitOverlayRefFile) + ` 2>/dev/null || true)`,
 		`if [ "$sync_status" -eq 0 ] && [ -n "$new_ref" ] && git -C ` + shellQuote(cfg.sandbox.worktree) + ` cat-file -e "$new_ref^{commit}" 2>/dev/null; then`,
-		`  git -C ` + shellQuote(cfg.sandbox.worktree) + ` update-ref ` + shellQuote(cfg.sandbox.gitBranchRef) + ` "$new_ref" || sync_status=$?`,
+		`  if [ -z "$base_ref" ]; then`,
+		`    sync_status=1`,
+		`  elif [ "$new_ref" != "$base_ref" ]; then`,
+		`    git -C ` + shellQuote(cfg.sandbox.worktree) + ` update-ref ` + shellQuote(cfg.sandbox.gitBranchRef) + ` "$new_ref" "$base_ref" || sync_status=$?`,
+		`  fi`,
 		`fi`,
 		`if [ "$status" -eq 0 ] && [ "$sync_status" -ne 0 ]; then status=$sync_status; fi`,
 		`exit "$status"`,

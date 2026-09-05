@@ -15,30 +15,6 @@ func TestSandboxExecAvailable(t *testing.T) {
 	}
 }
 
-func TestMaterializeSandboxProfile(t *testing.T) {
-	path, err := materializeSandboxProfile()
-	if err != nil {
-		t.Fatalf("materializeSandboxProfile: %v", err)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read materialized profile: %v", err)
-	}
-	if !strings.Contains(string(data), `(param "WORKTREE")`) {
-		t.Fatalf("materialized profile missing WORKTREE param: %s", data)
-	}
-
-	// Repeated calls within the same process return the same cached path
-	// rather than re-writing a fresh temp file each time.
-	path2, err := materializeSandboxProfile()
-	if err != nil {
-		t.Fatalf("materializeSandboxProfile (2nd): %v", err)
-	}
-	if path != path2 {
-		t.Fatalf("materializeSandboxProfile returned different paths across calls: %q vs %q", path, path2)
-	}
-}
-
 func TestCanonicalizeRoot_ResolvesTmpSymlink(t *testing.T) {
 	// /tmp is a symlink to /private/tmp on darwin — a caller passing the
 	// unresolved form must get back the canonical form, or a seatbelt
@@ -106,25 +82,25 @@ func TestWrapInvocation_EnforceModeWraps(t *testing.T) {
 	if !sandboxExecAvailable() {
 		t.Skip("sandbox-exec not available")
 	}
-	profile, err := materializeSandboxProfile()
-	if err != nil {
-		t.Fatalf("materializeSandboxProfile: %v", err)
-	}
 	cfg := &RunConfig{sandbox: sandboxSpec{
 		mode:        "enforce",
 		worktree:    "/private/tmp/wt",
 		sandboxHome: "/private/tmp/home",
 		tmp:         "/private/tmp",
 		tmpAlias:    `^/private/tmp/claude-[^/]+-cwd(/.*)?$`,
-		profilePath: profile,
 	}}
 	name, args := wrapInvocation("claude", []string{"-p", "hi"}, cfg)
 	if name != sandboxExecPath {
 		t.Fatalf("wrapInvocation name = %q, want sandbox-exec path %q", name, sandboxExecPath)
 	}
+	if len(args) < 2 {
+		t.Fatalf("wrapInvocation args = %v, want embedded profile via -p", args)
+	}
+	if args[0] != "-p" || args[1] != string(agentSandboxProfile) {
+		t.Fatalf("wrapInvocation did not pass the embedded profile via -p: %v", args)
+	}
 	joined := strings.Join(args, " ")
 	for _, want := range []string{
-		"-f " + profile,
 		"WORKTREE=/private/tmp/wt",
 		"SANDBOX_HOME=/private/tmp/home",
 		"TMP=/private/tmp",

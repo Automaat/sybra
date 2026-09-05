@@ -83,6 +83,7 @@ type Agent struct {
 	CacheCreationInputTokens int     `json:"cacheCreationInputTokens,omitempty"`
 	CacheReadInputTokens     int     `json:"cacheReadInputTokens,omitempty"`
 	ReasoningTokens          int     `json:"reasoningTokens,omitempty"`
+	ToolFailures             int     `json:"toolFailures,omitempty"`
 	// PremiumRequests is Copilot's billing unit (AI credits). Sybra keeps the
 	// raw count alongside the estimated USD equivalent persisted on task runs.
 	PremiumRequests float64   `json:"premiumRequests,omitempty"`
@@ -233,7 +234,8 @@ type Agent struct {
 	// goroutines reaching their terminal sites for the same agent (e.g.
 	// runner_convo and runner_convo_survive both firing when the process exits
 	// while a reattach tail is still live) only advance the workflow once.
-	completedOnce sync.Once
+	completedOnce    sync.Once
+	remotelyExecuted bool
 	// costSessionID and costBaseUSD back AddResultStats' per-session cost
 	// bookkeeping. Providers report CostUSD as a cumulative total for the
 	// current session (not a per-turn delta), so a repeated session id must
@@ -818,6 +820,23 @@ func (a *Agent) SetSessionID(id string) {
 }
 
 // GetSessionID returns the current provider session ID.
+// SetRemotelyExecuted marks a run whose provider process lives on another
+// host, so effects describing this host's provider state are not taken from
+// it.
+func (a *Agent) SetRemotelyExecuted() {
+	a.mu.Lock()
+	a.remotelyExecuted = true
+	a.mu.Unlock()
+}
+
+// RemotelyExecuted reports whether this run's provider process ran on another
+// host.
+func (a *Agent) RemotelyExecuted() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.remotelyExecuted
+}
+
 func (a *Agent) GetSessionID() string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -1566,6 +1585,20 @@ func (a *Agent) GetReasoningTokens() int {
 }
 
 // GetLogPath returns the current output log path.
+// CountToolFailure records one failed tool call on the run.
+func (a *Agent) CountToolFailure() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.ToolFailures++
+}
+
+// GetToolFailures reports how many tool calls failed during the run.
+func (a *Agent) GetToolFailures() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.ToolFailures
+}
+
 func (a *Agent) GetLogPath() string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -2163,14 +2196,19 @@ type RunConfig struct {
 	// SYBRA_CONTROL_HOME, but must never be able to rewrite the operator's real
 	// config.yaml by inheriting ~/.sybra as their default home.
 	IsolateHome bool
-	// DisableProviderFailover keeps provider selection fixed for A/B variants:
-	// an unhealthy/limited provider fails the run instead of silently becoming a
-	// different provider while retaining stale variant attribution.
+	// DisableProviderFailover keeps provider selection fixed when the provider
+	// is part of an external execution contract (for example an agentd RunSpec).
+	// Local workflow and A/B-attributed runs leave this false: attribution records
+	// the original assignment while runtime routing separately records failover.
 	DisableProviderFailover bool
 	// ResumeSessionID, when set, passes --resume to the claude CLI so the
 	// agent continues a prior conversation instead of starting from scratch.
 	// Populated from the task's last AgentRun.SessionID on restart.
 	ResumeSessionID string
+	// ResumeSessionProvider names the provider whose local session store owns
+	// ResumeSessionID. Final dispatch drops the ID if health/limit routing picks
+	// a different provider after the session was selected.
+	ResumeSessionProvider string
 	// ExtraEnv is a list of "KEY=VALUE" strings appended to the subprocess
 	// environment. Used to inject sandbox credentials (SANDBOX_URL, KUBECONFIG)
 	// and, for every task-scoped run, the trusted SYBRA_HOME/SYBRA_CONTROL_HOME

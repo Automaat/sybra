@@ -1864,7 +1864,10 @@ func TestDispatchInboundReview_EmptyHeadIsLoggedNotSilent(t *testing.T) {
 }
 
 func reviewRun(started time.Time) task.AgentRun {
-	return task.AgentRun{AgentID: "a", Role: string(agent.RoleReview), StartedAt: started}
+	return task.AgentRun{
+		AgentID: "a", Role: string(agent.RoleReview), StartedAt: started,
+		Outcome: task.RunOutcomeSuccess,
+	}
 }
 
 // The blast-radius cap. Every other gate assumes something: the per-head budget

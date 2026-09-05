@@ -20,8 +20,9 @@ func TestSetPRSurfaceNamesEveryMissingMember(t *testing.T) {
 		t.Fatal("setPRSurfaceForTest accepted an entirely empty surface")
 	}
 	for _, want := range []string{
-		"Linker", "ReviewRequester", "StateFetcher", "HeadFetcher", "Creator",
-		"Closer", "Finder", "AnyStateFinder", "ExistenceChecker", "ContentGenerator",
+		"Linker", "ReviewRequester", "StateFetcher", "ThreadFetcher", "HeadFetcher",
+		"MetaFetcher", "Creator", "Closer", "Finder", "AnyStateFinder",
+		"ExistenceChecker", "ContentGenerator",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not name the missing %s", err, want)
@@ -59,7 +60,9 @@ func TestSetPRSurfaceWiresEveryField(t *testing.T) {
 		"prLinker":         e.pr.Linker,
 		"prReviewers":      e.pr.ReviewRequester,
 		"prStates":         e.pr.StateFetcher,
+		"prThreadFetcher":  e.pr.ThreadFetcher,
 		"prHeads":          e.pr.HeadFetcher,
+		"prMeta":           e.pr.MetaFetcher,
 		"prCreator":        e.pr.Creator,
 		"prCloser":         e.pr.Closer,
 		"prFinder":         e.pr.Finder,
@@ -89,6 +92,9 @@ func (stubPRSurface) FetchPRState(string, int) (github.PRState, error) { return 
 func (stubPRSurface) FetchPRHeadSHA(context.Context, string, int) (string, error) {
 	return "", nil
 }
+func (stubPRSurface) FetchPRMeta(context.Context, string, int) (github.PullRequest, error) {
+	return github.PullRequest{}, nil
+}
 func (stubPRSurface) CreatePR(context.Context, string, PRCreateRequest) (number int, headSHA string, err error) {
 	return 0, "", nil
 }
@@ -100,6 +106,9 @@ func (stubPRSurface) FindPRForBranchAnyState(context.Context, string, string) (n
 	return 0, "", false, nil
 }
 func (stubPRSurface) PRExists(context.Context, string, int) (bool, error) { return false, nil }
+func (stubPRSurface) FetchReviewThreads(context.Context, string, int) ([]github.ReviewThread, error) {
+	return nil, nil
+}
 func (stubPRSurface) GeneratePRContent(context.Context, string, string, []string) (title, body string, err error) {
 	return "", "", nil
 }
@@ -110,7 +119,9 @@ func completePRSurface() PRSurface {
 		Linker:           s,
 		ReviewRequester:  s,
 		StateFetcher:     s,
+		ThreadFetcher:    s,
 		HeadFetcher:      s,
+		MetaFetcher:      s,
 		Creator:          s,
 		Closer:           s,
 		Finder:           s,

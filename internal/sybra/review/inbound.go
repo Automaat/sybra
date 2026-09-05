@@ -20,11 +20,11 @@ import (
 	"github.com/Automaat/sybra/internal/worktree"
 )
 
-func (r *Handler) createReviewTask(pr github.PullRequest, projectID string) {
-	r.createReviewTaskWithTriage(pr, projectID, r.triageReview)
+func (r *Handler) createReviewTask(viewer string, pr github.PullRequest, projectID string) {
+	r.createReviewTaskWithTriage(viewer, pr, projectID, r.triageReview)
 }
 
-func (r *Handler) createReviewTaskWithTriage(pr github.PullRequest, projectID string, triage func(task.Task)) {
+func (r *Handler) createReviewTaskWithTriage(viewer string, pr github.PullRequest, projectID string, triage func(task.Task)) {
 	title := "Review: " + pr.Title
 	body := fmt.Sprintf("%s\n\nAuthor: @%s", pr.URL, pr.Author)
 
@@ -33,13 +33,13 @@ func (r *Handler) createReviewTaskWithTriage(pr github.PullRequest, projectID st
 	// a window where the initial file has no "review" tag, which lets
 	// simple-task-plan claim the task.created workflow slot before pr-review
 	// can match — causing triage loops and incorrect status transitions.
-	tags := []string{"review"}
+	tags := []string{task.TagReview}
 	u := task.Update{
 		Tags:      &tags,
 		ProjectID: task.Ptr(projectID),
 		PRNumber:  task.Ptr(pr.Number),
 	}
-	if projectHeadRepoMatches(projectID, pr.HeadRepo) && pr.HeadRefName != "" {
+	if projectHeadRepoMatches(projectID, pr.HeadRepo) && pr.HeadRefName != "" && selfAuthoredPR(pr, viewer) {
 		u.Branch = task.Ptr(pr.HeadRefName)
 	}
 	t, err := r.tasks.CreateFull(title, body, "headless", u)
@@ -95,76 +95,82 @@ func (r *Handler) StartFixReviewAgent(t task.Task) error {
 	if t.ProjectID == "" || t.PRNumber == 0 {
 		return fmt.Errorf("task %s has no linked PR", t.ID)
 	}
-
-	// Claim sole dispatch rights before touching anything else. This is the
-	// one caller of agent.Manager.Run in this package that used to skip the
-	// claim StartReviewAgent takes just below — reachable only from the
-	// Wails-bound ReviewService.StartFixReview (manual "Fix Review" click),
-	// it could race an automated fix-review dispatch already in flight for
-	// the same task via WorkflowEngine.DispatchEvent (which claims through
-	// agentAdapter.TryClaimDispatch, the same underlying agent.Manager).
-	// agents.Run itself performs no per-task guard, so without this claim
-	// both callers could start a second headless agent against the same
-	// worktree/branch concurrently.
-	if r.agents != nil {
-		claim, ok := r.agents.TryClaimDispatch(t.ID)
-		if !ok {
-			r.logger.Info("fix-review.agent-skip", "task_id", t.ID, "pr", t.PRNumber, "reason", "dispatch_in_progress")
-			return nil
-		}
-		defer claim.Release()
+	if r.WorkflowEngine == nil {
+		return errors.New("fix review workflow engine is not configured")
+	}
+	releasePRDispatch, ok := r.tryReservePRDispatch(t.ID)
+	if !ok {
+		return workflow.ErrDispatchInFlight
+	}
+	defer releasePRDispatch()
+	if r.WorkflowEngine.HasActiveWorkflow(t.ID) {
+		return workflow.ErrWorkflowAlreadyActive
 	}
 
-	posture, postureErr := agentorch.ResolveHeadlessPermissionMode(t, r.cfg)
-	if postureErr != nil {
-		return postureErr
+	// Exclude every agent dispatch before PrepareForFix mutates, sanitizes, or
+	// recreates the shared checkout. The workflow's run_agent step takes this
+	// same claim later, so release it only after preparation and immediately
+	// before durable workflow dispatch. Rechecking the workflow after acquiring
+	// the claim closes the race with a workflow that started after the first
+	// cheap pre-check: its agent either won this claim (and we returned above)
+	// or is parked before touching the worktree.
+	claim, ok := r.agents.TryClaimDispatch(t.ID)
+	if !ok {
+		return workflow.ErrDispatchInFlight
+	}
+	defer claim.Release()
+	if r.WorkflowEngine.HasActiveWorkflow(t.ID) {
+		return workflow.ErrWorkflowAlreadyActive
 	}
 
 	// context.Background(): StartFixReviewAgent is reached both from a Wails-bound
 	// ReviewService method (no ctx) and from an async triage goroutine spawned
 	// with a fixed func(task.Task) signature — no ctx to thread from either path.
 	dir, err := r.worktrees.PrepareForFix(context.Background(), t, t.PRNumber)
-	if err != nil {
+	claim.Release()
+	switch {
+	case errors.Is(err, worktree.ErrPreparationInFlight), errors.Is(err, worktree.ErrAgentRunning):
+		return workflow.ErrDispatchInFlight
+	case err != nil:
 		return fmt.Errorf("prepare worktree: %w", err)
 	}
+	return r.startPreparedFixReviewWorkflow(t, dir)
+}
 
-	prompt := fmt.Sprintf(
-		"Run /fix-review https://github.com/%s/pull/%d --auto\n\n"+
-			"IMPORTANT: when committing, use conventional commit format "+
-			"`fix(review): address PR review comments` (type(scope) required by repo hooks). "+
-			"Sign the commit with `git commit %s`. Push the branch when done.",
-		t.ProjectID, t.PRNumber, r.signingPolicy().CommitFlags(context.Background()),
-	) + reviewHoldFixSuffix(r.cfg)
-
-	ag, err := r.agents.Run(agent.RunConfig{
-		TaskID: t.ID,
-		Name:   agent.RoleFixReview.AgentName(t.Title),
-		Role:   agent.RoleFixReview,
-		Mode:   "headless",
-		Prompt: prompt,
-		Dir:    dir,
-		Model:  "opus",
-		// An effort the operator pinned on the task outranks the role
-		// baseline the Manager would otherwise resolve; empty stays empty so
-		// the Manager applies agent.role_effort and then the baseline.
-		ReasoningEffort:        t.ReasoningEffort,
-		HeadlessPermissionMode: posture,
-		SkipDispatchJitter:     true,
-		SandboxMode:            agentorch.ResolveSandboxMode(t, r.cfg),
-		// MaxTurns intentionally not inherited: fix-review agents need
-		// enough turns to fetch the PR, apply fixes, and commit.
-	})
-	if err != nil {
+// startPreparedFixReviewWorkflow dispatches the manual review-fix action
+// through the same durable workflow boundary as automatic PR comment fixes.
+// The run_agent step mints the workflow effect/intent required by remote
+// execution; calling agent.Manager.Run directly leaves a daemon run without
+// durable completion or recovery authority.
+func (r *Handler) startPreparedFixReviewWorkflow(t task.Task, dir string) error {
+	prompt := manualFixReviewPrompt(r.signingPolicy()) + reviewHoldFixSuffix(r.cfg)
+	vars := map[string]string{
+		"prompt":                            prompt + PRFixResultContract,
+		"pr_issue_kind":                     string(github.PRIssueComments),
+		"pr_issue_kinds":                    string(github.PRIssueComments),
+		workflow.WorkflowVarDir:             dir,
+		"pr_fix_result_contract":            PRFixResultContract,
+		workflow.WorkflowVarCommitSignFlags: r.signingPolicy().CommitFlags(context.Background()),
+	}
+	if r.cfg.ReviewHoldEnabled() {
+		vars[workflow.ReviewHoldParkVar] = "true"
+	}
+	// An operator-triggered fix runs the same agent against the same threads,
+	// so it needs the same ground truth: without a brief verify_review_threads
+	// skips, and a run whose thread fetch failed still reports clean.
+	if t.ProjectID != "" && t.PRNumber > 0 {
+		pr := github.PullRequest{Repository: t.ProjectID, Number: t.PRNumber}
+		if brief := fetchReviewThreadBrief(context.Background(), pr, r.agentLogin(context.Background())); brief.vars() != "" {
+			vars[workflow.PRReviewThreadBriefVar] = brief.vars()
+			vars[workflow.PRReviewAgentLoginVar] = brief.agentLogin
+			vars["prompt"] = prompt + "\n\n" + brief.prompt + PRFixResultContract
+		}
+	}
+	if err := r.WorkflowEngine.StartWorkflowWithVars(t.ID, prFixWorkflowID, vars); err != nil {
 		return err
 	}
-	if err := r.tasks.AddRunBy(t.ID, "review.inbound.start_fix_review_agent", task.AgentRun{
-		AgentID: ag.ID, Role: string(agent.RoleFixReview), Mode: "headless", State: string(agent.StateRunning), StartedAt: ag.StartedAt,
-		Prompt: prompt,
-	}); err != nil {
-		r.logger.Error("task.add-run", "task_id", t.ID, "err", err)
-	}
-	r.logAudit(audit.EventFixReviewStarted, t.ID, ag.ID, map[string]any{"pr": t.PRNumber, "prompt_hash": ag.GetPromptHash()})
-	r.logger.Info("fix-review.agent-started", "task_id", t.ID, "agent_id", ag.ID, "pr", t.PRNumber)
+	r.logAudit(audit.EventFixReviewStarted, t.ID, "", map[string]any{"pr": t.PRNumber, "workflow": prFixWorkflowID})
+	r.logger.Info("fix-review.workflow-started", "task_id", t.ID, "pr", t.PRNumber, "workflow", prFixWorkflowID)
 	return nil
 }
 
@@ -191,6 +197,11 @@ func (r *Handler) StartReviewAgent(t task.Task, force bool) error {
 	if current.ProjectID == "" || current.PRNumber == 0 {
 		return fmt.Errorf("task %s has no linked PR", current.ID)
 	}
+	releasePRDispatch, ok := r.tryReservePRDispatch(current.ID)
+	if !ok {
+		return workflow.ErrDispatchInFlight
+	}
+	defer releasePRDispatch()
 	if !force && reviewAgentAlreadyRan(current) {
 		r.logger.Info("review.agent-skip", "task_id", current.ID, "pr", current.PRNumber, "reason", "already_reviewed")
 		return nil
@@ -331,7 +342,7 @@ func reviewAgentAlreadyRan(t task.Task) bool {
 	})
 }
 
-func (r *Handler) maybeCreateReviewTasks(tasks []task.Task, reviewPRs []github.PullRequest) {
+func (r *Handler) maybeCreateReviewTasks(ctx context.Context, tasks []task.Task, reviewPRs []github.PullRequest) {
 	projects, err := r.projects.List()
 	if err != nil || len(projects) == 0 {
 		return
@@ -346,6 +357,10 @@ func (r *Handler) maybeCreateReviewTasks(tasks []task.Task, reviewPRs []github.P
 	}
 
 	matches := github.MatchReviewPRs(reviewPRs, projectMatchers)
+	viewer := ""
+	if len(matches) > 0 {
+		viewer = strings.TrimSpace(r.agentLogin(ctx))
+	}
 	for i := range matches {
 		if matches[i].PR.IsDraft {
 			continue
@@ -356,7 +371,7 @@ func (r *Handler) maybeCreateReviewTasks(tasks []task.Task, reviewPRs []github.P
 		if r.hasActiveLocalPROwner(tasks, matches[i].ProjectID, matches[i].PR.Number, matches[i].PR.HeadRefName, matches[i].PR.HeadRepo) {
 			continue
 		}
-		r.createReviewTask(matches[i].PR, matches[i].ProjectID)
+		r.createReviewTask(viewer, matches[i].PR, matches[i].ProjectID)
 	}
 }
 

@@ -100,6 +100,7 @@ type RunPatch struct {
 	// Lifecycle
 	State                 *string
 	Outcome               *string
+	ReviewSalvaged        *bool
 	EscalationReason      *string
 	Result                *string
 	LogFile               *string
@@ -110,6 +111,7 @@ type RunPatch struct {
 	// Cost/tokens
 	CostUSD         *float64
 	PremiumRequests *float64
+	ToolFailures    *int
 
 	// Verdict
 	Verdict                *string
@@ -145,6 +147,9 @@ func applyRunLifecycle(run *AgentRun, p RunPatch) {
 	if p.Outcome != nil && *p.Outcome != "" {
 		run.Outcome = *p.Outcome
 	}
+	if p.ReviewSalvaged != nil {
+		run.ReviewSalvaged = *p.ReviewSalvaged
+	}
 	if p.EscalationReason != nil && *p.EscalationReason != "" {
 		run.EscalationReason = *p.EscalationReason
 	}
@@ -171,6 +176,9 @@ func applyRunCostTokens(run *AgentRun, p RunPatch) {
 	}
 	if p.PremiumRequests != nil {
 		run.PremiumRequests = *p.PremiumRequests
+	}
+	if p.ToolFailures != nil {
+		run.ToolFailures = *p.ToolFailures
 	}
 }
 

@@ -119,6 +119,8 @@ type AgentRunInfo struct {
 	AgentID                string
 	Role                   string
 	Provider               string
+	Mode                   string
+	State                  string
 	RequestedSkill         string
 	SkillExecutionMode     string
 	SkillConformance       string
@@ -137,6 +139,9 @@ type AgentRunInfo struct {
 	// TurnCount is zero when the provider child emitted nothing, marking a run
 	// that never saw its instructions rather than one that defied them.
 	TurnCount int
+	// ReviewSalvaged mirrors task.AgentRun.ReviewSalvaged: a review that left
+	// a usable review behind without finishing.
+	ReviewSalvaged bool
 }
 
 // TaskProvider reads and updates tasks.
@@ -315,11 +320,22 @@ type PRStateFetcher interface {
 	FetchPRState(repo string, number int) (github.PRState, error)
 }
 
+// PRReviewThreadFetcher lists a PR's review threads.
+type PRReviewThreadFetcher interface {
+	FetchReviewThreads(ctx context.Context, repo string, number int) ([]github.ReviewThread, error)
+}
+
 // PRHeadFetcher looks up a PR's live head commit SHA. Used by `push_branch`
 // to verify a push landed before continuing. Engine operates with a nil
 // fetcher — the step then skips verification and trusts the push exit code.
 type PRHeadFetcher interface {
 	FetchPRHeadSHA(ctx context.Context, repo string, number int) (string, error)
+}
+
+// PRMetaFetcher resolves PR metadata needed when the workflow must identify the
+// authoritative head repo/ref behind an existing PR.
+type PRMetaFetcher interface {
+	FetchPRMeta(ctx context.Context, repo string, number int) (github.PullRequest, error)
 }
 
 // PushCredentialPreflighter validates that the current process can authenticate
@@ -772,6 +788,26 @@ func (e *Engine) SetAdmissionDecisionHook(hook func(TaskInfo, AdmissionDecision)
 	e.admissionDecisionHook = hook
 }
 
+// CurrentStepRunRole reports the current step's run_agent role, if any.
+func (e *Engine) CurrentStepRunRole(taskID string) string {
+	if taskID == "" {
+		return ""
+	}
+	t, err := e.tasks.GetTask(taskID)
+	if err != nil || t.Workflow == nil || t.Workflow.CurrentStep == "" {
+		return ""
+	}
+	def, err := e.resolveExecutionDefinition(taskID, t)
+	if err != nil {
+		return ""
+	}
+	step := def.StepByID(t.Workflow.CurrentStep)
+	if step == nil || step.Type != StepRunAgent {
+		return ""
+	}
+	return step.Config.Role
+}
+
 // Defs returns the workflow definition store.
 func (e *Engine) Defs() Repository { return e.store }
 
@@ -783,7 +819,9 @@ type PRSurface struct {
 	Linker           PRLinker
 	ReviewRequester  PRReviewRequester
 	StateFetcher     PRStateFetcher
+	ThreadFetcher    PRReviewThreadFetcher
 	HeadFetcher      PRHeadFetcher
+	MetaFetcher      PRMetaFetcher
 	PushPreflighter  PushCredentialPreflighter
 	Creator          PRCreator
 	Closer           PRCloser
@@ -834,7 +872,9 @@ func (s PRSurface) missing() []string {
 		namedDependency{"PR.Linker", s.Linker},
 		namedDependency{"PR.ReviewRequester", s.ReviewRequester},
 		namedDependency{"PR.StateFetcher", s.StateFetcher},
+		namedDependency{"PR.ThreadFetcher", s.ThreadFetcher},
 		namedDependency{"PR.HeadFetcher", s.HeadFetcher},
+		namedDependency{"PR.MetaFetcher", s.MetaFetcher},
 		namedDependency{"PR.Creator", s.Creator},
 		namedDependency{"PR.Closer", s.Closer},
 		namedDependency{"PR.Finder", s.Finder},
@@ -900,6 +940,12 @@ func (e *Engine) setPRStateFetcherForTest(f PRStateFetcher) { e.pr.StateFetcher 
 // push landed. Leaving it unset skips the verification.
 // Test seam: production wires this through setPRSurfaceForTest.
 func (e *Engine) setPRHeadFetcherForTest(f PRHeadFetcher) { e.pr.HeadFetcher = f }
+
+// setPRMetaFetcherForTest wires the PR metadata lookup used by human-required
+// PR recovery to resolve the authoritative head repo/ref before divergence
+// checks. Leaving it unset falls back to the worktree's configured push remote.
+// Test seam: production wires this through setPRSurfaceForTest.
+func (e *Engine) setPRMetaFetcherForTest(f PRMetaFetcher) { e.pr.MetaFetcher = f }
 
 // setPushCredentialPreflighterForTest wires the push-auth preflight used before
 // `push_branch` and `create_pr` attempt a real git push. Leaving it unset uses

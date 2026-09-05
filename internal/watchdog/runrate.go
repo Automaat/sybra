@@ -18,7 +18,7 @@ func (w *Watchdog) checkRunRate(now time.Time) {
 	if w.maxRunsPerWindow <= 0 || w.runWindow <= 0 {
 		return
 	}
-	tasks, err := w.tasks.List()
+	tasks, err := w.tasks.ListActive()
 	if err != nil {
 		w.logger.Warn("watchdog.runrate.list", "err", err)
 		return

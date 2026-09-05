@@ -37,7 +37,7 @@ type SQLStore struct {
 	local sync.Map
 
 	mu sync.Mutex
-	tx *sql.Tx
+	tx *db.WriteTx
 }
 
 // lockKeyFor derives the advisory key for one project. Distinct from every
@@ -90,7 +90,7 @@ func (s *SQLStore) Lock(id string) (func(), error) {
 	localMu.Lock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), projectQueryTimeout)
-	tx, err := s.db.SQL().BeginTx(ctx, nil)
+	tx, err := s.db.BeginWriteTx(ctx)
 	if err != nil {
 		cancel()
 		localMu.Unlock()
@@ -121,7 +121,7 @@ func (s *SQLStore) Lock(id string) (func(), error) {
 }
 
 // active returns the transaction a locked cycle is running in, or nil.
-func (s *SQLStore) active() *sql.Tx {
+func (s *SQLStore) active() *db.WriteTx {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.tx
@@ -207,7 +207,7 @@ func (s *SQLStore) List() ([]Project, error) {
 		out = append(out, p)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate projects: %w", err)
+		return nil, fmt.Errorf("iterate projects: %w", db.Contended(err))
 	}
 	return out, nil
 }

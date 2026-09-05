@@ -37,17 +37,22 @@ func (m *Manager) RunVerificationCommand(ctx context.Context, cfg RunConfig, nam
 	// The command runs under sh today, which takes its temp root from TMPDIR,
 	// but a project's own verify entry can invoke zsh — and then it needs the
 	// same writable prefix an agent shell gets (#3377).
-	m.injectShellTempPrefix(&cfg)
+	if err := m.injectShellTempPrefix(&cfg); err != nil {
+		return err
+	}
 	if err := isolateVerifierGitCredentials(&cfg); err != nil {
 		return err
 	}
 	if err := m.injectGolangciCache(&cfg); err != nil {
 		return err
 	}
+	cfg.SandboxMode = "enforce"
+	if err := m.injectMiseDataDir(&cfg); err != nil {
+		return err
+	}
 	if err := m.injectSharedBuildCache(&cfg); err != nil {
 		return err
 	}
-	cfg.SandboxMode = "enforce"
 	cfg.SandboxReadMode = "enforce"
 	if err := m.injectProcessSandbox(&cfg); err != nil { //nolint:contextcheck // sandbox Git discovery intentionally uses the manager lifecycle context, matching provider dispatch.
 		return err

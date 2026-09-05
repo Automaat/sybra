@@ -270,6 +270,16 @@ steps:
     name: Route on Review Verdict
     type: route_review_verdict
     next:
+      # Stop when this step just escalated. It hands a task to a human when a
+      # review round produced no verdict after its retries, and without this
+      # the empty verdict falls through to the fix edge below and sends an
+      # agent after the previous round's findings on an already-parked task.
+      # require_code_review carries the same stop for the same reason.
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
       - when:
           field: vars.review_verdict
           operator: equals
@@ -347,6 +357,11 @@ steps:
           field: task.status
           operator: equals
           value: human-required
+        goto: ""
+      - when:
+          field: task.status
+          operator: equals
+          value: ready-pr
         goto: ""
       - goto: detect_tampering
 

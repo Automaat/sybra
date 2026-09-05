@@ -86,6 +86,17 @@ func TestTaskCumulativeCostUSD(t *testing.T) {
 	}
 }
 
+func TestTaskRecordedCumulativeCostUSDIncludesCompactedRuns(t *testing.T) {
+	t.Parallel()
+	record := task.Task{
+		AgentRuns:          []task.AgentRun{{CostUSD: 4.5}},
+		DocumentCompaction: &task.DocumentCompaction{DroppedRunCostUSD: 8.25},
+	}
+	if got := taskRecordedCumulativeCostUSD(record); got != 12.75 {
+		t.Fatalf("taskRecordedCumulativeCostUSD() = %.2f, want 12.75", got)
+	}
+}
+
 // TestStartAgentWithAssignment_TaskCostExceededBlocksDispatch verifies the
 // per-task cumulative USD budget gate: once a task's recorded AgentRuns.CostUSD
 // sum meets agent.max_task_cost_usd, StartAgentWithAssignment must refuse to

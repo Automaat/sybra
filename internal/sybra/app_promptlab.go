@@ -122,7 +122,7 @@ func (c *promptLabCoordinator) tick(ctx context.Context) {
 // this coordinator builds and applies the blocklist itself rather than
 // assuming that precedent covers it too.
 func (c *promptLabCoordinator) fileScrubbedProposals(ctx context.Context, result promptlab.RunResult) ([]task.Task, error) {
-	existing, err := c.tasks.List()
+	existing, err := c.tasks.ListBoard()
 	if err != nil {
 		return nil, err
 	}

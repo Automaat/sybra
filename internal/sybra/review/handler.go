@@ -17,6 +17,7 @@ import (
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/errclass"
 	"github.com/Automaat/sybra/internal/experience"
@@ -83,6 +84,11 @@ type Handler struct {
 	// IDs must not write these maps concurrently.
 	failureMu sync.Mutex
 	wtDropped map[string]struct{}
+	// prDispatchMu/prDispatching serialize PR checkout preparation through its
+	// agent/workflow handoff. The agent dispatch claim cannot span a workflow
+	// launch because run_agent acquires that claim itself.
+	prDispatchMu  sync.Mutex
+	prDispatching map[string]struct{}
 	// mergePR performs the actual squash-merge; overridable in tests.
 	// nil falls back to github.MergePR.
 	mergePR func(repo string, number int) error
@@ -220,6 +226,18 @@ func (r *Handler) agentLogin(ctx context.Context) string {
 		return r.viewerLoginFn()
 	}
 	return github.ViewerLoginCtx(ctx)
+}
+
+func selfAuthoredPR(pr github.PullRequest, viewer string) bool {
+	return github.SameActor(pr.Author, viewer)
+}
+
+func (r *Handler) foreignPR(ctx context.Context, pr github.PullRequest) bool {
+	viewer := strings.TrimSpace(r.agentLogin(ctx))
+	if viewer == "" || strings.TrimSpace(pr.Author) == "" {
+		return false
+	}
+	return !selfAuthoredPR(pr, viewer)
 }
 
 // pollFast/pollSlow resolve the review poll cadence from config (github.*),
@@ -396,7 +414,7 @@ func (r *Handler) pollKnownTaskPRs(ctx context.Context) time.Duration {
 	if !r.runsSybraPRs() {
 		return r.nextInterval(false, false)
 	}
-	tasks, err := r.tasks.List()
+	tasks, err := r.tasks.ListActive()
 	if err != nil {
 		return r.nextInterval(false, false)
 	}
@@ -455,7 +473,7 @@ func (r *Handler) pollKnownTaskPRs(ctx context.Context) time.Duration {
 		r.advanceClosedTaskPRs(ctx, monitoredPRs, closedMatchers)
 	}
 
-	r.scanForReverts(ctx, tasks)
+	r.scanForReverts(ctx)
 	r.resolveAddressedCopilotThreads(ctx, tasks, monitoredPRs)
 	r.reconcilePRPhases(ctx, tasks, monitoredPRs)
 	reconciledReady := r.reconcileHumanRequiredBlockers(tasks, monitoredPRs)
@@ -501,7 +519,7 @@ func (r *Handler) mergeReconciledReady(ctx context.Context, reconciledReady, iss
 func (r *Handler) pollAndMonitorPRs(ctx context.Context) time.Duration {
 	// Load tasks up-front so stale review-task reconciliation runs even
 	// when FetchReviews fails (transient errors, rate limits, etc.).
-	tasks, err := r.tasks.List()
+	tasks, err := r.tasks.ListActive()
 	if err != nil {
 		return r.nextInterval(false, false)
 	}
@@ -650,7 +668,7 @@ func (r *Handler) processSybraPRPoll(ctx context.Context, tasks []task.Task, sum
 		r.advanceClosedTaskPRs(ctx, monitoredPRs, closedMatchers)
 	}
 
-	r.scanForReverts(ctx, tasks)
+	r.scanForReverts(ctx)
 	r.resolveAddressedCopilotThreads(ctx, tasks, monitoredPRs)
 	r.reconcilePRPhases(ctx, tasks, monitoredPRs)
 	// monitoredPRs here is the author:@me search result (r.monitoredPRs), which
@@ -664,8 +682,7 @@ func (r *Handler) processSybraPRPoll(ctx context.Context, tasks []task.Task, sum
 }
 
 func (r *Handler) processAssignedPRPoll(ctx context.Context, tasks []task.Task, summary github.ReviewSummary) bool {
-	_ = ctx
-	r.maybeCreateReviewTasks(tasks, summary.ReviewRequested)
+	r.maybeCreateReviewTasks(ctx, tasks, summary.ReviewRequested)
 	// reconcileReviewTask's gh calls (FetchMyReviewState, FetchPRState,
 	// FetchPRHeadSHA) use the package's legacy ctx-less runGHAPIWith path,
 	// shared by many other github package callers; re-plumbing ctx through
@@ -811,6 +828,13 @@ func (r *Handler) logPollSummary(monitoredPRs []github.PullRequest, eligible, is
 	r.logger.Info("reviews.poll", "monitored", len(monitoredPRs), "monitored_prs", nums, "eligible", eligible, "issues", issues)
 }
 
+// taskIsPaused reports whether a task was deliberately quarantined and is
+// waiting on a human, as opposed to blocked by something a later automation
+// can clear on its own.
+func taskIsPaused(t task.Task) bool {
+	return t.Status == task.StatusBlocked && t.AutonomyOutcome == autonomy.OutcomeQuarantined
+}
+
 func (r *Handler) handleTaskPRIssues(ctx context.Context, taskID string, issues []github.PRIssue) {
 	kinds := make([]string, 0, len(issues))
 	for i := range issues {
@@ -832,6 +856,23 @@ func (r *Handler) handleTaskPRIssues(ctx context.Context, taskID string, issues 
 	// after we've prepped a worktree and emitted audit noise.
 	if r.WorkflowEngine != nil && r.WorkflowEngine.HasActiveWorkflow(taskID) {
 		r.logger.Info("reviews.dispatch.gate", "task_id", taskID, "gate", "active_workflow")
+		return
+	}
+	// A task paused for a suspected loop must stay paused. The pause is
+	// written by whichever path observed the transition; without this gate a
+	// dispatch from here starts work seconds later and writes the task back to
+	// in-progress, erasing both the pause and the record that it happened.
+	t, err := r.tasks.Get(taskID)
+	if err != nil {
+		// Fail closed, the way every other read of this row here does. The
+		// status hook writes a pause moments before this runs, so contention
+		// on that row is likeliest exactly when a pause has just landed, and
+		// dispatching through the error is the defect this gate exists for.
+		r.logger.Info("reviews.dispatch.gate", "task_id", taskID, "gate", "task_unreadable", "err", err)
+		return
+	}
+	if taskIsPaused(t) {
+		r.logger.Info("reviews.dispatch.gate", "task_id", taskID, "gate", "paused")
 		return
 	}
 
@@ -1429,10 +1470,17 @@ const (
 // the default branch, flips the task outcome to "reverted", and emits
 // pr.reverted (the change-failure signal). Rate-limited and bounded: one gh call
 // per repo with eligible tasks, every revertScanInterval, with each call killed
-// after landingEnrichTimeout. Reuses the already-listed tasks (no extra read).
-func (r *Handler) scanForReverts(ctx context.Context, tasks []task.Task) {
+// after landingEnrichTimeout. The history scan uses the compact board
+// projection and only runs when the interval elapses; normal PR polls list
+// active full documents without dragging closed-task history through memory.
+func (r *Handler) scanForReverts(ctx context.Context) {
 	now := time.Now()
 	if !r.lastRevertScan.IsZero() && now.Sub(r.lastRevertScan) < revertScanInterval {
+		return
+	}
+	tasks, err := r.tasks.ListBoard()
+	if err != nil {
+		r.logger.Warn("pr-monitor.revert-list", "err", err)
 		return
 	}
 
@@ -2010,7 +2058,7 @@ func (r *Handler) adoptTasklessPRs(tasks []task.Task, prs []github.PullRequest) 
 				continue
 			}
 		}
-		tags := []string{"review"}
+		tags := []string{task.TagReview, task.TagAdoptedPR}
 		t, err := r.tasks.CreateFull(pr.Title, pr.URL+"\n\nAdopted orphaned Sybra PR (its tracking task was lost).", "headless", task.Update{
 			Tags:      &tags,
 			ProjectID: task.Ptr(pr.Repository),

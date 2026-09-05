@@ -22,6 +22,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Automaat/sybra/internal/db"
 	"github.com/Automaat/sybra/internal/fsutil"
 )
 
@@ -308,6 +309,9 @@ func stripErrorResult(out []reflect.Value, w http.ResponseWriter, logger *slog.L
 		// The raw error names a lock path and stays server-side.
 		logger.Info("httpapi.call.locked", "service", svcName, "method", methodName, "err", callErr)
 		respondError(w, logger, http.StatusServiceUnavailable, ErrCodeUnavailable, "resource is locked; retry")
+	case db.IsContention(callErr):
+		logger.Warn("httpapi.call.contended", "service", svcName, "method", methodName, "err", callErr)
+		respondError(w, logger, http.StatusServiceUnavailable, ErrCodeUnavailable, "backend is busy; retry")
 	default:
 		logger.Warn("httpapi.call.error", "service", svcName, "method", methodName, "err", callErr)
 		respondError(w, logger, http.StatusInternalServerError, ErrCodeInternal, "internal error")

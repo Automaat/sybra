@@ -1061,11 +1061,19 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 			extra.Escalation = task.OperatorDecisionEvidence("operator.manual_status_change", display)
 			extra.AutonomyOutcome = task.HumanRequiredOutcome()
 		}
+		resume := s.haltedResumeStatus(id)
+		if resume != "" && resume != string(status) && !task.IsTerminalStatus(status) {
+			extra.StatusReason = task.Ptr(haltedUnblockReason(resume))
+		}
 		result, applyErr := s.tasks.Apply(task.TransitionIntent{
 			TaskID: id, ToStatus: status, Actor: "svc.tasks.update",
 			Extra: extra, OperatorOverride: true,
 		})
 		t, err = result.Task, applyErr
+		if applyErr == nil && resume != "" && resume != string(status) && !task.IsTerminalStatus(status) {
+			s.logger.Warn("svc.tasks.halted-unblock",
+				"task_id", id, "requested", string(status), "resume_status", resume)
+		}
 	} else {
 		t, err = s.tasks.UpdateMapBy(id, "svc.tasks.update", updates)
 	}
@@ -1658,16 +1666,28 @@ func (s *TaskService) enrichFromIssue(taskID, repo string, number int) {
 // way. Driven from the maintenance pass so recovery is continuous rather than a
 // one-shot at startup.
 func (s *TaskService) ReconcilePendingEnrichment() {
-	all, err := s.tasks.List()
+	all, err := s.tasks.ListActive()
 	if err != nil {
 		s.logger.Error("enrich-reconcile.list", "err", err)
 		return
 	}
+	pending, retried := 0, 0
+	defer func() {
+		// A stub can only leave this state through here, so a set that never
+		// shrinks is the one symptom worth seeing. It stayed invisible for a
+		// day when this pass could not even list: the marker holds a task out
+		// of dispatch by design, so nothing downstream complains and the board
+		// simply looks idle.
+		if pending > 0 {
+			s.logger.Info("enrich-reconcile.pending", "tasks", pending, "retried", retried)
+		}
+	}()
 	for i := range all {
 		t := all[i]
 		if !slices.Contains(t.Tags, enrichPendingTag) {
 			continue
 		}
+		pending++
 		// The user took the task out of the queue (e.g. cancelled/done); don't
 		// spend a GitHub fetch reviving it.
 		if task.IsTerminalStatus(t.Status) {
@@ -1704,6 +1724,7 @@ func (s *TaskService) ReconcilePendingEnrichment() {
 		}
 		id := t.ID
 		s.enrichRetryCooldown.Store(id, time.Now().Add(enrichPendingRetryCooldown))
+		retried++
 		s.logger.Info("enrich-reconcile.retry", "task_id", id, "title", t.Title)
 		if prRepo != "" {
 			repo, number := prRepo, prNumber
@@ -1790,7 +1811,7 @@ func (s *TaskService) expandUmbrellaStub(taskID, repo string, issue github.Issue
 // expandUmbrellaStub, whether that failure already has a durable tracker to
 // point at (see recordExpandFailure) or whether this stub is the only record.
 func (s *TaskService) umbrellaTrackerExistsElsewhere(taskID, issueURL string) bool {
-	all, err := s.tasks.List()
+	all, err := s.tasks.ListBoard()
 	if err != nil {
 		// Unreadable store: assume a tracker exists. Claiming this stub as the
 		// only record would mint a second TaskTypeUmbrella task for the same
@@ -1903,7 +1924,7 @@ func (s *TaskService) claimIngestBranch(projectID, branch, excludeTaskID string)
 	if branch == "" {
 		return "", false
 	}
-	all, err := s.tasks.List()
+	all, err := s.tasks.ListActive()
 	if err != nil {
 		s.logger.Warn("ingest.branch-guard.list", "err", err)
 		return "", false
@@ -1945,4 +1966,20 @@ func (s *TaskService) viewerLinkedPRCount(prs []github.PullRequest) int {
 		}
 	}
 	return count
+}
+
+// haltedResumeStatus names the status that resumes a task whose workflow a
+// circuit-breaker trip halted, or "" when it is not halted.
+func (s *TaskService) haltedResumeStatus(id string) string {
+	if s.workflowEngine == nil {
+		return ""
+	}
+	return s.workflowEngine.HaltedResumeStatus(id)
+}
+
+// haltedUnblockReason tells the operator why the status they chose will not
+// start anything, and which one will.
+func haltedUnblockReason(resume string) string {
+	return "workflow halted by its circuit breaker — this status does not dispatch it; set the task to " +
+		resume + " to resume the step it stopped on"
 }

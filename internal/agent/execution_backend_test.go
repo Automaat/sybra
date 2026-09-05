@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/testutil/backendconformance"
 )
@@ -567,4 +569,145 @@ printf '%s\n' '{"type":"result","subtype":"success","result":"done","session_id"
 	if len(events) != 3 || events[0].Kind != ExecutionOutput || events[1].Kind != ExecutionOutput || events[2].Kind != ExecutionCompleted {
 		t.Fatalf("recovered events = %+v, want assistant, result, Completed", events)
 	}
+}
+
+func TestEmitExecutionEvent_BanksCostFromAPreParsedRemoteResult(t *testing.T) {
+	// Given the terminal result of a run placed on another machine, which the
+	// daemon forwards as this package's own StreamEvent
+	m, _ := newTestManager(t)
+	a := &Agent{ID: "a1", Provider: providerid.Codex}
+	forwarded, err := json.Marshal(StreamEvent{
+		Type: "result", Subtype: "success", SessionID: "remote-session",
+		CostUSD: 0.42, InputTokens: 1200, OutputTokens: 340,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lastEmit := time.Time{}
+
+	// When the leader receives it
+	m.emitExecutionEvent(t.Context(), ExecutionHandle("h1"), ExecutionEvent{
+		Kind: ExecutionOutput, Provider: providerid.Codex,
+		Output: forwarded, OutputParsed: true,
+	}, a, 0, &lastEmit)
+
+	// Then the run's spend lands on the agent, so the board and the cumulative
+	// task budget both see it
+	if got := a.GetCostUSD(); got != 0.42 {
+		t.Fatalf("CostUSD = %v, want 0.42", got)
+	}
+	if in, out := a.GetInputTokens(), a.GetOutputTokens(); in != 1200 || out != 340 {
+		t.Fatalf("tokens = %d/%d, want 1200/340", in, out)
+	}
+	if a.GetSessionID() != "remote-session" {
+		t.Fatalf("session = %q, want remote-session", a.GetSessionID())
+	}
+}
+
+func TestEmitExecutionEvent_RemoteOutputLeavesThisHostAlone(t *testing.T) {
+	// Given a follower's assistant event large enough to breach this host's
+	// live cost ceiling, carrying that host's provider quota
+	var snapshots int
+	m, _ := newTestManager(t, ManagerConfig{
+		LimitSink: func(limits.Snapshot) { snapshots++ },
+	})
+	m.SetGuardrails(Guardrails{MaxCostUSD: 0.01})
+	a := &Agent{ID: "a1", Provider: providerid.Claude}
+	forwarded, err := json.Marshal(StreamEvent{
+		Type: "assistant", Content: "work", InputTokens: 2_000_000, OutputTokens: 2_000_000,
+		LimitSnapshot: &limits.Snapshot{Provider: providerid.Codex, RateLimitReachedType: "weekly"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lastEmit := time.Time{}
+
+	// When the leader applies it
+	m.emitExecutionEvent(t.Context(), ExecutionHandle("h1"), ExecutionEvent{
+		Kind: ExecutionOutput, Provider: providerid.Claude,
+		Output: forwarded, OutputParsed: true,
+	}, a, 0, &lastEmit)
+
+	// Then it does not record another host's quota against this host's
+	// dispatch gate
+	if snapshots != 0 {
+		t.Fatalf("recorded %d follower quota snapshots against this host", snapshots)
+	}
+}
+
+func TestEmitExecutionEvent_StopsARemoteRunAtItsCostCeiling(t *testing.T) {
+	// Given a run whose process lives on a worker, streaming past this run's
+	// cost ceiling
+	m, _ := newTestManager(t)
+	m.SetGuardrails(Guardrails{MaxCostUSD: 0.01})
+	backend := &stopRecordingBackend{}
+	// The manager has since been pointed at a different backend, which does
+	// not know this run's handle.
+	swapped := &stopRecordingBackend{}
+	m.SetExecutionBackend(swapped)
+	a := &Agent{ID: "a1", Provider: providerid.Claude, Model: "sonnet"}
+	m.mu.Lock()
+	m.agents[a.ID] = a
+	m.executionAgents[ExecutionHandle("h1")] = a.ID
+	m.activeExecutions[a.ID] = activeExecution{backend: backend, lastEmit: new(time.Time)}
+	m.mu.Unlock()
+	forwarded, err := json.Marshal(StreamEvent{
+		Type: "assistant", Content: "work", InputTokens: 2_000_000, OutputTokens: 2_000_000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// When the leader applies the event that breaches it
+	m.EmitExecutionEvent(t.Context(), ExecutionHandle("h1"), ExecutionEvent{
+		Kind: ExecutionOutput, Provider: providerid.Claude,
+		Output: forwarded, OutputParsed: true,
+	})
+
+	// Then the worker is told to stop, rather than the leader alone believing
+	// a process it cannot reach has halted
+	if got := backend.stopped(); got != 1 {
+		t.Fatalf("the run's own backend saw %d stops, want 1", got)
+	}
+	if got := swapped.stopped(); got != 0 {
+		t.Fatalf("a backend that never started this run saw %d stops, want 0", got)
+	}
+	if !a.WasStopped() || a.GetEscalationReason() != EscalationReasonCost {
+		t.Fatalf("agent stopped=%v reason=%q, want a cost stop", a.WasStopped(), a.GetEscalationReason())
+	}
+}
+
+type stopRecordingBackend struct {
+	mu    sync.Mutex
+	stops int
+}
+
+func (b *stopRecordingBackend) Start(context.Context, ExecutionStart) (ExecutionHandle, error) {
+	return "", nil
+}
+
+func (b *stopRecordingBackend) Stop(context.Context, ExecutionHandle) error {
+	b.mu.Lock()
+	b.stops++
+	b.mu.Unlock()
+	return nil
+}
+
+func (b *stopRecordingBackend) stopped() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.stops
+}
+
+func (b *stopRecordingBackend) Steer(context.Context, ExecutionHandle, string) error { return nil }
+func (b *stopRecordingBackend) RespondApproval(context.Context, ExecutionHandle, string, bool) error {
+	return nil
+}
+
+func (b *stopRecordingBackend) Inspect(context.Context, ExecutionHandle) (ExecutionInspection, error) {
+	return ExecutionInspection{}, nil
+}
+
+func (b *stopRecordingBackend) Recover(context.Context, ExecutionHandle, ExecutionEventSink) error {
+	return ErrExecutionControlUnsupported
 }

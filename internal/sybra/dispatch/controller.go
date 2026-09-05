@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -165,7 +166,8 @@ func (c *Controller) Acquire(ctx context.Context, intent agent.AttemptIntent) (a
 		changed := expireLeases(s, now)
 		if rec := findIntent(s, intent.IntentID); rec != nil {
 			if !replayIntentMatches(rec.Intent, intent) {
-				return changed, fmt.Errorf("%w: %s", ErrIntentReplayMismatch, intent.IntentID)
+				return changed, fmt.Errorf("%w: %s (%s)", ErrIntentReplayMismatch, intent.IntentID,
+					replayMismatchDetail(rec.Intent, intent))
 			}
 			switch rec.Status {
 			case StatusAcquired, StatusBound:
@@ -272,7 +274,8 @@ func (c *Controller) Adopt(ctx context.Context, intent agent.AttemptIntent, leas
 			return changed, staleVersion(rec, lease)
 		}
 		if !replayIntentMatches(rec.Intent, intent) {
-			return changed, fmt.Errorf("%w: %s", ErrIntentReplayMismatch, intent.IntentID)
+			return changed, fmt.Errorf("%w: %s (%s)", ErrIntentReplayMismatch, intent.IntentID,
+				replayMismatchDetail(rec.Intent, intent))
 		}
 		if rec.Status == StatusCompleted {
 			return changed, fmt.Errorf("%w: lease %s is complete", ErrStaleLease, lease.ID)
@@ -444,22 +447,76 @@ func normalizeIntent(intent agent.AttemptIntent) (agent.AttemptIntent, error) {
 	return intent, nil
 }
 
-// replayIntentMatches accepts the one legacy verifier shape written before
-// verifier admission was keyed to the canonical worktree. Those records used
-// the disposable clone as Worktree, so a restart replays the same workflow
-// effect with a different path. Verifiers are observe-only and every other
-// identity field must still match; mutating attempts remain exact.
+// replayIntentMatches reports whether a replay names the attempt a claimed
+// effect already covers.
 func replayIntentMatches(stored, replay agent.AttemptIntent) bool {
-	if reflect.DeepEqual(stored, replay) {
-		return true
+	return reflect.DeepEqual(replayIdentity(stored), replayIdentity(replay))
+}
+
+// replayIdentity drops what a retry may legitimately resolve again and keeps
+// every other field, so a replay still has to match on all of them.
+//
+// The provider is a dispatch decision, not identity — provider health, rate
+// limits and A/B routing all move it between one attempt and the next, and
+// comparing it made every retry that failed over refuse its own claimed
+// effect and spend the retry budget on the guard instead of on the error that
+// opened it. The stored record keeps the provider it was claimed for: the
+// process that owns a live lease is still running under that provider, and
+// admission counts it there.
+//
+// A disposable verifier reads its own clone, so its worktree path changes per
+// attempt while the attempt stays the same. That exemption predates this and
+// covers records written before verifier admission was keyed to the canonical
+// worktree; verifiers are observe-only, and a mutating attempt stays exact.
+// replayMismatchDetail names the fields a replay disagrees on.
+//
+// Without it the refusal says only that two intents differ, and finding out
+// which field cost two separate investigations: the guard is the last thing
+// standing between a task and its next attempt, so the one fact needed to fix
+// it is the one the message left out.
+func replayMismatchDetail(stored, replay agent.AttemptIntent) string {
+	a, b := replayIdentity(stored), replayIdentity(replay)
+	var diffs []string
+	add := func(field, was, now string) {
+		if was != now {
+			diffs = append(diffs, fmt.Sprintf("%s %q != %q", field, was, now))
+		}
 	}
-	if stored.Access != agent.AttemptAccessObserve || replay.Access != agent.AttemptAccessObserve ||
-		!stored.Role.IsVerifier() || !replay.Role.IsVerifier() {
-		return false
+	add("task", a.TaskID, b.TaskID)
+	add("worktree", a.Worktree, b.Worktree)
+	add("access", string(a.Access), string(b.Access))
+	add("role", string(a.Role), string(b.Role))
+	add("capability_certified", strconv.FormatBool(a.CapabilityCertified), strconv.FormatBool(b.CapabilityCertified))
+	if len(diffs) == 0 {
+		return "no field differs; the comparison itself changed"
 	}
-	stored.Worktree = ""
-	replay.Worktree = ""
-	return reflect.DeepEqual(stored, replay)
+	return strings.Join(diffs, ", ")
+}
+
+func replayIdentity(intent agent.AttemptIntent) agent.AttemptIntent {
+	intent.Provider = ""
+	// The generations move for the same reason the provider does: they are
+	// resolved again per attempt, not carried from the claim. Manager fills a
+	// zero TaskGeneration with the task's current value before building the
+	// intent, and every write to a task bumps that — including the writes a
+	// failed replay itself causes. So a replay's intent reported the
+	// generation now while the stored one reported the generation then, they
+	// could not match, and each refusal moved them further apart: 389 against
+	// 392, then 398, then 404, until the circuit breaker tripped on the guard
+	// rather than on any dispatch fault.
+	//
+	// Nothing is given up by dropping them here. Staleness is enforced against
+	// the live value in Manager.resolveAttemptGeneration, which rejects an
+	// attempt whose generation has moved on, and remote execution is fenced
+	// separately by executioncontract.GenerationFence. This comparison only
+	// ever asked whether two records describe the same attempt, and the
+	// IntentID, task, worktree, access, role and capability flag answer that.
+	intent.TaskGeneration = 0
+	intent.WorktreeGeneration = 0
+	if intent.Access == agent.AttemptAccessObserve && intent.Role.IsVerifier() {
+		intent.Worktree = ""
+	}
+	return intent
 }
 
 func expireLeases(s *diskState, now time.Time) bool {

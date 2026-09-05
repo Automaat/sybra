@@ -214,6 +214,14 @@ steps:
           operator: equals
           value: human-required
         goto: ""
+      # verify_checks can prove the failure belongs to an untouched package
+      # and move the task directly to ready-pr. End this implementation
+      # workflow so the status-change cascade can start simple-task-pr.
+      - when:
+          field: task.status
+          operator: equals
+          value: ready-pr
+        goto: ""
       - when:
           field: task.pr_number
           operator: not_equals

@@ -631,6 +631,9 @@ func convertPRs(nodes []gqlPR, viewer string) []PullRequest {
 	return prs
 }
 
+// SameActor reports whether two logins name one actor, ignoring case and "[bot]".
+func SameActor(a, b string) bool { return sameActor(a, b) }
+
 func isBot(typeName, login string) bool {
 	return typeName == "Bot" || strings.Contains(login, "[bot]")
 }

@@ -987,7 +987,15 @@ func TestExecVerifyChecks_GoInfraFailureBlocks(t *testing.T) {
 	}
 }
 
-func TestExecVerifyChecks_UnrelatedGoPackageFailureBlocks(t *testing.T) {
+// TestExecVerifyChecks_UnrelatedGoPackageFailureOpensPR pins that a task is
+// not stopped by a break the gate has already attributed elsewhere.
+//
+// classifyUnrelatedVerifyGoFailure reads the diff, reads the failing packages,
+// and confirms they do not intersect — its own reason ends "not this diff".
+// Blocking on that asked an operator to unstick a task the evidence had just
+// cleared, and left the real break to stop the next task the same way: three
+// tasks were blocked in one day by three different pre-existing failures.
+func TestExecVerifyChecks_UnrelatedGoPackageFailureOpensPR(t *testing.T) {
 	t.Parallel()
 	wt := makeBaseRepo(t, map[string]string{
 		"go.mod":                          "module example.com/verifyrepo\n\ngo 1.26.5\n",
@@ -1007,18 +1015,51 @@ func TestExecVerifyChecks_UnrelatedGoPackageFailureBlocks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if out.Output != "blocked" {
-		t.Fatalf("Output = %q, want blocked", out.Output)
+	if out.Output != "unrelated failure — opened pr" {
+		t.Fatalf("Output = %q, want the unrelated-failure PR route", out.Output)
 	}
 	ti := mustGetTaskInfo(t, tasks, "t1")
-	if ti.Status != "blocked" {
-		t.Fatalf("status = %q, want blocked", ti.Status)
+	if ti.Status != taskstatus.ReadyPR {
+		t.Fatalf("status = %q, want ready-pr", ti.Status)
 	}
+	// The break still has to be visible: nothing blocks on it now, so the
+	// reason is the only place a human learns which package is broken.
 	if !strings.Contains(ti.StatusReason, "untouched Go package(s): internal/agent") {
 		t.Fatalf("reason = %q, want untouched package classification", ti.StatusReason)
 	}
 	if wf.Variables["step.verify_checks.auto_fix"] != "" {
 		t.Fatalf("auto-fix counter = %q, want empty for unrelated failure", wf.Variables["step.verify_checks.auto_fix"])
+	}
+}
+
+// TestExecVerifyChecks_UnrelatedFailureWithoutPRRouteStopsShortOfBlocked pins
+// the legacy escalation for an operator who turned the PR route off: still not
+// blocked, because the diff is still not what failed.
+func TestExecVerifyChecks_UnrelatedFailureWithoutPRRouteStopsShortOfBlocked(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{
+		"go.mod":                          "module example.com/verifyrepo\n\ngo 1.26.5\n",
+		"internal/agent/agent.go":         "package agent\n\nfunc Ready() bool { return true }\n",
+		"internal/promptlab/promptlab.go": "package promptlab\n\nfunc Title() string { return \"a\" }\n",
+	})
+	writeRepoFile(t, wt, "internal/promptlab/promptlab.go", "package promptlab\n\nfunc Title() string { return \"b\" }\n")
+	gitRun(t, wt, "add", ".")
+	gitRun(t, wt, "commit", "-m", "feat: change promptlab")
+
+	cmd := `go test ./... >/dev/null 2>&1; printf '# example.com/verifyrepo/internal/agent\n--- FAIL: TestSomething (60.00s)\nFAIL\texample.com/verifyrepo/internal/agent\t60.064s\nFAIL\n' >&2; exit 1`
+	engine, tasks := newVerifyChecksEngine(t, wt, []string{cmd})
+	engine.SetOpenPROnUnrunnableGate(false)
+	tasks.Put(TaskInfo{ID: "t1", Status: taskstatus.InProgress})
+
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), implementedExec(), TaskInfo{ID: "t1", Status: taskstatus.InProgress})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "flagged" {
+		t.Fatalf("Output = %q, want flagged", out.Output)
+	}
+	if ti := mustGetTaskInfo(t, tasks, "t1"); ti.Status != taskstatus.HumanRequired {
+		t.Fatalf("status = %q, want human-required", ti.Status)
 	}
 }
 
@@ -2098,8 +2139,74 @@ func TestBuiltinSimpleTaskImplement_VerifyChecksWiring(t *testing.T) {
 	if got, _ := ResolveTransition(gates.Next, map[string]string{"task.status": "human-required"}); got != "" {
 		t.Errorf("flagged parallel_gates goto = %q, want end", got)
 	}
+	if got, _ := ResolveTransition(gates.Next, map[string]string{"task.status": string(taskstatus.ReadyPR)}); got != "" {
+		t.Errorf("unrelated-failure parallel_gates goto = %q, want end", got)
+	}
 	if got, _ := ResolveTransition(gates.Next, map[string]string{"task.status": "in-progress"}); got != "set_ready_review" {
 		t.Errorf("clean parallel_gates goto = %q, want set_ready_review", got)
+	}
+}
+
+func TestAdvanceStep_UnrelatedVerifyFailureCompletesCurrentWorkflowAtReadyPR(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		workflowID string
+		stepID     string
+	}{
+		{workflowID: "simple-task-implement", stepID: "parallel_gates"},
+		{workflowID: "prompt-lab-author", stepID: "verify_checks"},
+		{workflowID: "simple-task-best-of-n-implement", stepID: "verify_checks"},
+		{workflowID: "simple-task-review", stepID: "verify_checks"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.workflowID, func(t *testing.T) {
+			defs, err := BuiltinDefinitions()
+			if err != nil {
+				t.Fatalf("BuiltinDefinitions: %v", err)
+			}
+			store, err := NewStore(t.TempDir())
+			if err != nil {
+				t.Fatalf("NewStore: %v", err)
+			}
+			var found bool
+			for i := range defs {
+				if defs[i].ID == tc.workflowID {
+					if err := store.Save(defs[i]); err != nil {
+						t.Fatalf("Save(%s): %v", tc.workflowID, err)
+					}
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("builtin %s not found", tc.workflowID)
+			}
+
+			tasks := newMemTasks()
+			tasks.Put(TaskInfo{
+				ID:     "t1",
+				Status: taskstatus.ReadyPR,
+				Workflow: &Execution{
+					WorkflowID:  tc.workflowID,
+					CurrentStep: tc.stepID,
+					State:       ExecRunning,
+					Variables:   map[string]string{},
+				},
+			})
+			engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
+			if err := engine.AdvanceStep("t1", StepOutput{StepID: tc.stepID, Status: "completed", Output: "unrelated failure — opened pr"}); err != nil {
+				t.Fatalf("AdvanceStep: %v", err)
+			}
+
+			got := mustGetTaskInfo(t, tasks, "t1")
+			if got.Status != taskstatus.ReadyPR {
+				t.Fatalf("status = %q, want ready-pr", got.Status)
+			}
+			if got.Workflow == nil || got.Workflow.State != ExecCompleted || got.Workflow.CurrentStep != "" {
+				t.Fatalf("workflow = %+v, want completed terminal handoff", got.Workflow)
+			}
+		})
 	}
 }
 

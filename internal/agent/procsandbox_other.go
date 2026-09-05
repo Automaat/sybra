@@ -15,11 +15,6 @@ func sandboxWrapperName() string { return "host sandbox wrapper" }
 
 func sandboxUsesGitObjectOverlay() bool { return false }
 
-// materializeSandboxProfile has nothing to materialize on non-darwin.
-func materializeSandboxProfile() (string, error) {
-	return "", fmt.Errorf("sandbox: OS-level sandbox unsupported on this host")
-}
-
 // canonicalizeRoot is unused on non-darwin (injectProcessSandbox never
 // reaches canonicalization here: sandboxExecAvailable is always false, so
 // enforce mode fails closed before any root is resolved).

@@ -37,6 +37,8 @@ const GhShimRawFieldReason = "Blocked by Sybra: gh does not read a file into a -
 	"so this would post the literal path as the body. " +
 	"Use -F/--field for the same key to read the file, or pass the text inline."
 
+const ghAuthFileEnv = "SYBRA_GH_APP_TOKEN_FILE"
+
 //nolint:dupword // Nested shell conditionals legitimately end with adjacent fi tokens.
 const ghShimScript = `#!/bin/sh
 if [ "$1" = "pr" ] && [ "$2" = "review" ]; then
@@ -201,6 +203,10 @@ if [ '%[4]s' = verifier ]; then
 		token="$(cat "$token_file" 2>/dev/null || true)"
 	fi
 fi
+if [ '%[4]s' != verifier ] && [ -n "$SYBRA_GH_APP_TOKEN_FILE" ] && [ -f "$SYBRA_GH_APP_TOKEN_FILE" ]; then
+	managed_token="$(cat "$SYBRA_GH_APP_TOKEN_FILE" 2>/dev/null || true)"
+	[ -z "$managed_token" ] || token="$managed_token"
+fi
 if [ -z "$token" ] && [ '%[4]s' != verifier ]; then
 	if [ -n '%[3]s' ] && [ -x '%[3]s' ]; then
 		token="$('%[3]s' github-app-token 2>/dev/null || true)"
@@ -235,6 +241,10 @@ get)
 	case "$protocol:$host" in
 	https:github.com)
 		token=${GH_TOKEN:-$GITHUB_TOKEN}
+		if [ -n "$SYBRA_GH_APP_TOKEN_FILE" ] && [ -f "$SYBRA_GH_APP_TOKEN_FILE" ]; then
+			managed_token="$(cat "$SYBRA_GH_APP_TOKEN_FILE" 2>/dev/null || true)"
+			[ -z "$managed_token" ] || token="$managed_token"
+		fi
 		if [ -z "$token" ]; then
 			if [ -n '%[1]s' ] && [ -x '%[1]s' ]; then
 				token="$('%[1]s' github-app-token 2>/dev/null || true)"
@@ -398,6 +408,9 @@ func (m *Manager) injectGhShim(cfg *RunConfig) {
 		return
 	}
 	cfg.ExtraEnv = prependPATH(cfg.ExtraEnv, m.ghShimDir)
+	tokenPath := filepath.Join(m.ghShimDir, ".token")
+	cfg.ExtraEnv = append(stripEnvKeys(cfg.ExtraEnv, ghAuthFileEnv), ghAuthFileEnv+"="+tokenPath)
+	cfg.ReadOnlyPaths = append(cfg.ReadOnlyPaths, m.ghShimDir)
 	cfg.ExtraEnv = injectGitCredentialHelperEnv(cfg.ExtraEnv)
 }
 
@@ -458,6 +471,32 @@ func ambientEnvValue(env []string, key, fallback string) string {
 		}
 	}
 	return strings.TrimSpace(value)
+}
+
+func (m *Manager) syncGHAppToken() error {
+	if m.ghShimDir == "" {
+		return nil
+	}
+	m.mu.RLock()
+	tokenFn := m.ghAppToken
+	m.mu.RUnlock()
+	token := ""
+	if tokenFn != nil {
+		token = tokenFn()
+	}
+	path := filepath.Join(m.ghShimDir, ".token")
+	if err := fsutil.AtomicWriteMode(path, []byte(token), 0o600); err != nil {
+		return fmt.Errorf("write GitHub token: %w", err)
+	}
+	return nil
+}
+
+// SyncGHAppToken publishes the current author token for already-running
+// agents. The gh and Git credential shims read this file on every invocation,
+// so rotation never leaves a long implementation run pinned to an expired
+// process-environment snapshot or dependent on the task-local SYBRA_HOME.
+func (m *Manager) SyncGHAppToken() error {
+	return m.syncGHAppToken()
 }
 
 func (m *Manager) syncGHVerifierAppToken() error {

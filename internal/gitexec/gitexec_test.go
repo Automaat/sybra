@@ -15,11 +15,13 @@ import (
 func TestEnvironmentModes(t *testing.T) {
 	bin := t.TempDir()
 	writeFakeGit(t, bin, `
-printf '%s|%s|%s\n' "${GITEXEC_AMBIENT-unset}" "${GITEXEC_VALUE-unset}" "$GIT_TERMINAL_PROMPT"
+printf '%s|%s|%s|%s|%s\n' "${GITEXEC_AMBIENT-unset}" "${GITEXEC_VALUE-unset}" "$GIT_TERMINAL_PROMPT" "${GIT_OBJECT_DIRECTORY-unset}" "${GIT_DIR-unset}"
 `)
 	t.Setenv("PATH", bin)
 	t.Setenv("GITEXEC_AMBIENT", "inherited")
 	t.Setenv("GITEXEC_VALUE", "ambient")
+	t.Setenv("GIT_OBJECT_DIRECTORY", "/ambient/object-dir")
+	t.Setenv("GIT_DIR", "/ambient/git-dir")
 
 	tests := []struct {
 		name string
@@ -28,17 +30,22 @@ printf '%s|%s|%s\n' "${GITEXEC_AMBIENT-unset}" "${GITEXEC_VALUE-unset}" "$GIT_TE
 	}{
 		{
 			name: "inherited",
-			want: "inherited|ambient|0",
+			want: "inherited|ambient|0|unset|unset",
 		},
 		{
 			name: "augmented",
 			opts: Options{ExtraEnv: []string{"GITEXEC_VALUE=augmented", "GIT_TERMINAL_PROMPT=1"}},
-			want: "inherited|augmented|0",
+			want: "inherited|augmented|0|unset|unset",
 		},
 		{
 			name: "isolated",
 			opts: Options{Env: []string{"GITEXEC_VALUE=isolated"}},
-			want: "unset|isolated|0",
+			want: "unset|isolated|0|unset|unset",
+		},
+		{
+			name: "explicit repo env preserved",
+			opts: Options{ExtraEnv: []string{"GIT_OBJECT_DIRECTORY=/explicit/object-dir", "GIT_DIR=/explicit/git-dir"}},
+			want: "inherited|ambient|0|/explicit/object-dir|/explicit/git-dir",
 		},
 	}
 	for _, tt := range tests {

@@ -13,7 +13,7 @@ import (
 // taskAPI is the slice of task.Manager the remediator + service needs. Keeps
 // fakes in tests one-line shims and avoids accidental coupling.
 type taskAPI interface {
-	List() ([]task.Task, error)
+	ListActive() ([]task.Task, error)
 	Get(id string) (task.Task, error)
 	UpdateBy(id, actor string, u task.Update) (task.Task, error)
 	ApplyStatusEffect(id string, eff task.StatusEffect) (task.Task, error)

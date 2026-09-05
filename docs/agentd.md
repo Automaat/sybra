@@ -135,6 +135,13 @@ new placements; diagnostics show their state, active and available capacity,
 and placement results carry per-candidate rejection reasons. A caller must opt
 in explicitly when no eligible daemon may fall back to local execution.
 
+PR review runs additionally require the `verifier_auth=true` worker
+capability. The shipped daemon does not advertise it yet because it has no
+restricted GitHub App verifier-token integration; those runs therefore fall
+back to the leader instead of consuming retries on a worker that cannot start
+them. Do not advertise the capability from a custom worker unless it supplies
+the same restricted verifier credential and isolation as the leader.
+
 ## Operations runbook
 
 ### Enroll and rotate credentials

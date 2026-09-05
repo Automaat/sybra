@@ -115,6 +115,13 @@ func (e *Engine) spawnParallelChild(taskID string, parent, child *Step, wfExec *
 	// so {{.Step.ID}} et al. resolve correctly inside the prompt template.
 	childCtx := parentCtx
 	childCtx.Step = *child
+	if sidecar := e.resolveSidecarDir(taskID); sidecar != "" {
+		wfExec.SetVar(WorkflowVarSidecarDir, sidecar)
+		if childCtx.Vars == nil {
+			childCtx.Vars = map[string]string{}
+		}
+		childCtx.Vars[WorkflowVarSidecarDir] = sidecar
+	}
 
 	mode := resolveRunAgentMode(child.Config.Mode, childCtx)
 	if admit, reason := e.agents.AdmitDispatch(taskID, child.Config.Role, mode); !admit {

@@ -125,7 +125,7 @@ jobs:
     # skips and sqlite-only SQL reaches an operator's postgres box unreviewed.
     services:
       postgres:
-        image: postgres:17@sha256:7958605b474b3d264a969cb3a123d6aa00ad1e1fe9da8a69984dabb704d93317
+        image: postgres:17@sha256:67f41722b7a8cbdb868a44a4995c846eddfdc2973bccb291ce937dce88ad5675
         env:
           POSTGRES_USER: sybra
           POSTGRES_PASSWORD: sybra
@@ -690,7 +690,7 @@ jobs:
 
       - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
 
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
       # The agent image is multi-GB and gets built, loaded into dockerd, then
       # imported into the k3d node — three copies. A stock runner does not have

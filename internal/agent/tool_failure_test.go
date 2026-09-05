@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -184,4 +185,37 @@ func readLastToolFailure(t *testing.T, path string) ToolCallFailureRecord {
 		t.Fatalf("no %s record in %s", toolFailureEventType, path)
 	}
 	return last
+}
+
+func TestRecordToolCallFailure_CountsOnTheRun(t *testing.T) {
+	m, _ := newTestManager(t, ManagerConfig{})
+	a := &Agent{ID: "a1", TaskID: "t1"}
+
+	if got := a.GetToolFailures(); got != 0 {
+		t.Fatalf("fresh run reports %d tool failures, want 0", got)
+	}
+	m.recordToolCallFailure(a, ToolCallFailureRecord{ToolName: "Bash", Source: "provider-tool-result-error"})
+	m.recordToolCallFailure(a, ToolCallFailureRecord{ToolName: "Bash", Source: "provider-tool-result-error"})
+	m.recordToolCallFailure(a, ToolCallFailureRecord{ToolName: "Read", Source: "provider-tool-result-error"})
+
+	if got := a.GetToolFailures(); got != 3 {
+		t.Errorf("tool failures = %d, want 3", got)
+	}
+}
+
+func TestRecordToolCallFailure_NilAgentDoesNotPanic(t *testing.T) {
+	m, _ := newTestManager(t, ManagerConfig{})
+	m.recordToolCallFailure(nil, ToolCallFailureRecord{ToolName: "Bash", Source: "provider-tool-result-error"})
+}
+
+func TestCountToolFailure_IsSafeUnderConcurrency(t *testing.T) {
+	a := &Agent{ID: "a1"}
+	var wg sync.WaitGroup
+	for range 50 {
+		wg.Go(a.CountToolFailure)
+	}
+	wg.Wait()
+	if got := a.GetToolFailures(); got != 50 {
+		t.Errorf("tool failures = %d, want 50", got)
+	}
 }
