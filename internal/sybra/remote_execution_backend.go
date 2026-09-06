@@ -420,11 +420,7 @@ func (b *leaderExecutionBackend) relay(ctx context.Context, handle agent.Executi
 					}
 					completed = true
 					ackCtx := context.WithoutCancel(ctx)
-					if sessionID, sessionErr := b.currentSession(ackCtx, run); sessionErr != nil {
-						if b.app.logger != nil {
-							b.app.logger.Warn("cluster.remote.ack-owner", "run_id", run.runID, "err", sessionErr)
-						}
-					} else if ackErr := b.app.workerControl.AckEvents(ackCtx, sessionID, run.runID, after); ackErr != nil {
+					if _, ackErr := b.app.acknowledgeRemoteResult(ackCtx, run.runID); ackErr != nil && !errors.Is(ackErr, workercontrol.ErrCompletionUnproven) {
 						if b.app.logger != nil {
 							b.app.logger.Warn("cluster.remote.ack", "run_id", run.runID, "err", ackErr)
 						}
@@ -456,6 +452,11 @@ func (b *leaderExecutionBackend) relay(ctx context.Context, handle agent.Executi
 }
 
 func (b *leaderExecutionBackend) completeAfterHandback(ctx context.Context, handle agent.ExecutionHandle, run *remoteExecution, event executioncontract.EventEnvelope) bool {
+	receipt := workercontrol.TerminalReceipt(event)
+	emitCompletion := func(completion agent.ExecutionEvent) {
+		completion.RemoteCompletionReceipt = receipt
+		run.emit(ctx, handle, completion)
+	}
 	var terminal struct {
 		State             executioncontract.TerminalState `json:"state"`
 		Error             string                          `json:"error"`
@@ -465,11 +466,11 @@ func (b *leaderExecutionBackend) completeAfterHandback(ctx context.Context, hand
 		AdmissionDeferred bool                            `json:"admissionDeferred,omitempty"`
 	}
 	if err := json.Unmarshal(event.Payload, &terminal); err != nil {
-		run.emit(ctx, handle, agent.ExecutionEvent{Kind: agent.ExecutionCompleted, Err: err})
+		emitCompletion(agent.ExecutionEvent{Kind: agent.ExecutionCompleted, Err: err})
 		return true
 	}
 	if terminal.State != executioncontract.TerminalSucceeded && terminal.State != executioncontract.TerminalFailed && terminal.State != executioncontract.TerminalCanceled {
-		run.emit(ctx, handle, agent.ExecutionEvent{Kind: agent.ExecutionCompleted, Err: fmt.Errorf("invalid remote terminal state %q", terminal.State)})
+		emitCompletion(agent.ExecutionEvent{Kind: agent.ExecutionCompleted, Err: fmt.Errorf("invalid remote terminal state %q", terminal.State)})
 		return true
 	}
 	if terminal.State == executioncontract.TerminalSucceeded &&
@@ -482,6 +483,9 @@ func (b *leaderExecutionBackend) completeAfterHandback(ctx context.Context, hand
 		for {
 			status, err := b.app.workerControl.RemoteRunStatus(ctx, run.runID)
 			if err != nil || status.ArtifactState == "imported" || status.ArtifactState == "rejected" {
+				if err != nil {
+					receipt = "" // A failed observation is not a settled handback.
+				}
 				if err != nil || status.ArtifactState == "rejected" {
 					terminal.State = executioncontract.TerminalFailed
 					if terminal.Error != "" {
@@ -498,6 +502,7 @@ func (b *leaderExecutionBackend) completeAfterHandback(ctx context.Context, hand
 					return false
 				}
 				terminal.State, terminal.Error = executioncontract.TerminalCanceled, ctx.Err().Error()
+				receipt = "" // A later handback must not validate this observer timeout.
 				break artifactWait
 			case <-time.After(100 * time.Millisecond):
 				continue
@@ -521,7 +526,7 @@ func (b *leaderExecutionBackend) completeAfterHandback(ctx context.Context, hand
 		completionErr = errors.Join(completionErr, fmt.Errorf("remote artifact handback: %s",
 			firstNonBlank(terminal.ArtifactError, "delivery did not complete")))
 	}
-	run.emit(ctx, handle, agent.ExecutionEvent{Kind: agent.ExecutionCompleted, Err: completionErr, PermanentFailure: terminal.Permanent, AdmissionDeferred: terminal.AdmissionDeferred && terminal.State == executioncontract.TerminalFailed})
+	emitCompletion(agent.ExecutionEvent{Kind: agent.ExecutionCompleted, Err: completionErr, PermanentFailure: terminal.Permanent, AdmissionDeferred: terminal.AdmissionDeferred && terminal.State == executioncontract.TerminalFailed})
 	return true
 }
 

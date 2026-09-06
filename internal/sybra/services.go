@@ -81,6 +81,7 @@ func (a *App) coreAppHTTPServices() map[string]httpapi.Service {
 			"GetLifecyclePhases",
 			"GetAutonomyTrend",
 			"GetLearningDigestStatus",
+			"ReconcileRemoteResults",
 			// Both act on the host serving this board: one shells out to the
 			// claude CLI, the other grabs an OS-wide key. Loopback-only below.
 			"RunLearningDigestNow",
@@ -101,6 +102,7 @@ func (a *App) coreAppHTTPServices() map[string]httpapi.Service {
 			"ListBackgroundOps",
 			"ListNotifications",
 		).WithLocalOnly(
+			"ReconcileRemoteResults",
 			"RunLearningDigestNow",
 			"RegisterSpotlightHotkey",
 		),

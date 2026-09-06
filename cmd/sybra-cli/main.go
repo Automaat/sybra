@@ -2877,6 +2877,7 @@ func usageProjectAndOps() {
   project delete <id>
 
   cluster nodes
+  cluster reconcile-results [--apply] [--after CURSOR] [--limit 1-100]
   cluster reassign <task-id> --node <name>   ("local" brings it back to the leader)
   cluster gen-cert --host <name> [--host ...] [--out DIR]
            self-signed follower cert + the tls_pin the leader must trust

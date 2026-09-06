@@ -59,6 +59,7 @@ export {
     MonitorReportBinding,
     PromptLabRunDTO,
     ProviderRoutingSettings,
+    RemoteResultRecoveryReport,
     RuntimeInfo,
     TamperFindingDTO,
     TamperReportDTO,

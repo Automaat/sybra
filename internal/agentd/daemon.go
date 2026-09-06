@@ -836,7 +836,12 @@ func (d *Daemon) emitCompletion(runID string, payload any) error {
 	return nil
 }
 
-func (d *Daemon) emitAdmissionFailure(runID string, payload any) error {
+func (d *Daemon) emitAdmissionFailure(runID string, payload map[string]any) error {
+	// No provider run was admitted, so no artifact can arrive later. Publish
+	// the existing terminal artifact disposition explicitly; a missing field
+	// is ambiguous to older-result recovery and must remain unacknowledged.
+	payload["artifactState"] = executioncontract.ArtifactsFailed
+	payload["artifactError"] = "no artifact produced before admission"
 	return d.emitWith(runID, executioncontract.EventTerminal, payload, d.spool.appendAdmissionEvent)
 }
 

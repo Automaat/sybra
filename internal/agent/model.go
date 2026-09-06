@@ -234,8 +234,9 @@ type Agent struct {
 	// goroutines reaching their terminal sites for the same agent (e.g.
 	// runner_convo and runner_convo_survive both firing when the process exits
 	// while a reattach tail is still live) only advance the workflow once.
-	completedOnce    sync.Once
-	remotelyExecuted bool
+	completedOnce           sync.Once
+	remotelyExecuted        bool
+	remoteCompletionReceipt string
 	// costSessionID and costBaseUSD back AddResultStats' per-session cost
 	// bookkeeping. Providers report CostUSD as a cumulative total for the
 	// current session (not a per-turn delta), so a repeated session id must

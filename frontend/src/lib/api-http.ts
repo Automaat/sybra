@@ -9,6 +9,7 @@ import type { Issue, RenovatePR, ReviewSummary } from '../../bindings/github.com
 import type { LoopAgent } from '../../bindings/github.com/Automaat/sybra/internal/loopagent/models.js'
 import type { AppSettings, ClusterNodeDTO, TriageResultDTO, TrashPruneReportDTO, UmbrellaExpandDTO, TaskHistoryEntryDTO, MapDuplicateIncidentsDTO, HarnessEvolutionRunDTO, PromptLabRunDTO, CodexModel, ConfigPathExplanation, CopilotModel, LoopAgentRun, MonitorReportBinding, RuntimeInfo, TamperReportDTO, TaskArtifactDTO, TaskAuditEventDTO, TaskSetupLogDTO, VersionInfo, AgentQueueSnapshot as AgentQueueSnapshotData } from '../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
 import type { Notification } from '../../bindings/github.com/Automaat/sybra/internal/notification/models.js'
+import type { RemoteResultRecoveryReport } from '../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
 import type { StatsResponse } from '../../bindings/github.com/Automaat/sybra/internal/stats/models.js'
 import type { Meta, ProgressEntry } from '../../bindings/github.com/Automaat/sybra/internal/artifact/models.js'
 import type { Event as AuditEvent, Query as AuditQuery } from '../../bindings/github.com/Automaat/sybra/internal/audit/models.js'
@@ -125,6 +126,7 @@ export function GetEvaluationReport(): Promise<EvaluationReportData> { return ca
 export function GetLifecyclePhases(): Promise<PhaseReportData> { return call('App', 'GetLifecyclePhases') }
 export function GetAutonomyTrend(): Promise<AutonomyTrend> { return call('App', 'GetAutonomyTrend') }
 export function GetLearningDigestStatus(): Promise<LearningDigestStatus> { return call('App', 'GetLearningDigestStatus') }
+export function ReconcileRemoteResults(apply = false, after = '', limit = 100): Promise<RemoteResultRecoveryReport> { return call('App', 'ReconcileRemoteResults', apply, after, limit) }
 export function RunLearningDigestNow(): Promise<Digest> { return call('App', 'RunLearningDigestNow') }
 export function ListBackgroundOps(): Promise<Array<any>> { return call('App', 'ListBackgroundOps') }
 export function ListNotifications(): Promise<Array<Notification>> { return call('App', 'ListNotifications') }

@@ -411,6 +411,17 @@ The `deploy/` artifacts live in **this repo** on purpose: autoupdate rebuilds
 from the sybra checkout, so the unit + build script are versioned alongside the
 code they build. home-nas just installs them.
 
+## Remote result acknowledgement recovery
+
+For a local-leader/remote-worker deployment, run
+`sybra-cli --json cluster reconcile-results` on the **leader** first. It is a
+read-only dry run; `--apply` acknowledges only exact durable completion
+receipts and preserves ambiguous older results. See
+[the recovery runbook](../docs/remote-result-recovery.md) for paging, proof
+requirements, rollout order, and the distinction between worker transport
+durability and canonical completion. Never start a second board on the worker
+host as a recovery step.
+
 ## Deploying a follower (leader-follower mode)
 
 A follower is the *same* unit and the *same* build — only its config and env

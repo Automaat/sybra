@@ -90,6 +90,7 @@ func (a *App) newAgentCompletionHandler(emit func(string, any)) *completion.Hand
 		// a.humanReview may be nil (feature disabled) — the method value
 		// still binds cleanly and onComplete guards for a nil receiver.
 		HumanReviewComplete: a.humanReview.onComplete,
+		RunResultPersisted:  a.remoteResultPersisted,
 	}
 	// a.workflowEngine is declared *workflow.Engine, so a nil pointer would
 	// become a non-nil CompletionWorkflow interface (typed-nil gotcha) and

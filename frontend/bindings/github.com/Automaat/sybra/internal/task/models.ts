@@ -86,6 +86,12 @@ export class AgentRun {
     "outcome"?: string;
 
     /**
+     * RemoteCompletionReceipt is persisted with this run's terminal result and
+     * cost. Empty legacy values are not proof that a worker result was consumed.
+     */
+    "remoteCompletionReceipt"?: string;
+
+    /**
      * ReviewSalvaged marks a review run that left a usable review behind even
      * though it did not finish — the cost guardrail stops one mid-flight and
      * its partial transcript is written to the task. The review budget counts

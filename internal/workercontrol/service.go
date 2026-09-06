@@ -829,27 +829,6 @@ func (s *Service) ReplayEvents(ctx context.Context, runID string, after uint64, 
 	return events, rows.Err()
 }
 
-func (s *Service) AckEvents(ctx context.Context, sessionID, runID string, through uint64) error {
-	return s.db.InTx(ctx, func(tx *sql.Tx) error {
-		if err := s.requireSessionTx(ctx, tx, sessionID, true); err != nil {
-			return err
-		}
-		var delivered uint64
-		if err := tx.QueryRowContext(ctx, s.db.Rebind(`SELECT last_event_sequence FROM remote_runs WHERE run_id = ? AND session_id = ?`), runID, sessionID).Scan(&delivered); err != nil {
-			return err
-		}
-		if through > delivered {
-			return invalidf("event acknowledgement exceeds durable cursor")
-		}
-		now := db.TimeValue(s.now().UTC())
-		if _, err := tx.ExecContext(ctx, s.db.Rebind(`UPDATE worker_events SET acknowledged_at = COALESCE(acknowledged_at, ?) WHERE run_id = ? AND sequence <= ?`), now, runID, through); err != nil {
-			return err
-		}
-		_, err := tx.ExecContext(ctx, s.db.Rebind(`UPDATE remote_runs SET last_event_ack = CASE WHEN last_event_ack < ? THEN ? ELSE last_event_ack END WHERE run_id = ?`), through, through, runID)
-		return err
-	})
-}
-
 func (s *Service) UploadArtifact(ctx context.Context, upload ArtifactUpload) error {
 	if err := upload.Manifest.Validate(); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidRequest, err)

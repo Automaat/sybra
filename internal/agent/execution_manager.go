@@ -227,6 +227,9 @@ func (m *Manager) emitExecutionEvent(ctx context.Context, _ ExecutionHandle, eve
 		}
 		return false
 	case ExecutionCompleted:
+		a.mu.Lock()
+		a.remoteCompletionReceipt = event.RemoteCompletionReceipt
+		a.mu.Unlock()
 		if event.AdmissionDeferred {
 			a.SetEscalationReason(EscalationReasonAdmissionDeferred)
 		}
