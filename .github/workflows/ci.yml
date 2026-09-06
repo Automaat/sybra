@@ -764,3 +764,76 @@ jobs:
           SMOKE_SKIP_BUILD: "1"
           SMOKE_CLUSTER: sybra-ci
         run: mise run smoke:k3d
+
+  worker-release:
+    name: Publish verified worker (${{ matrix.arch }})
+    # Build and attest in the original push workflow: workflow_run would give
+    # the attestation the default branch's later SHA, not necessarily the
+    # completed CI run's checked-out source. No PR can publish a release.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs:
+      - test-go
+      - test-go-darwin
+      - test-go-e2e
+      - test-go-db
+      - test-frontend
+      - lint-go
+      - lint-nilaway
+      - lint-dockerfile
+      - check-wailsjs
+      - check-api-shim-sync
+      - check-no-home-fallback
+      - check-repo-hygiene
+      - check-atomic-writes
+      - check-consolidated-primitives
+      - check-no-viewer-user-endpoint
+      - check-gh-exec-gate
+      - check-provider-exec-gate
+      - check-git-exec-gate
+      - check-no-direct-status-write
+      - check-no-direct-workflow-write
+      - test-release-scripts
+      - test-deploy-scripts
+      - autonomy-slo
+      - build
+      - doc-version-sync
+      - go-mod-integrity
+      - npm-lockfile-integrity
+      - security
+      - e2e
+      - smoke-k3d
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
+      - uses: ./.github/actions/go-test-cache
+        with:
+          suite: worker-release-${{ matrix.arch }}
+      - name: Build immutable worker and bootstrap updater
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          mkdir -p dist
+          go build -trimpath -ldflags "-X github.com/Automaat/sybra/internal/version.Version=$GITHUB_SHA" -o dist/sybra-agentd ./cmd/sybra-agentd
+          go build -trimpath -ldflags "-X github.com/Automaat/sybra/internal/version.Version=$GITHUB_SHA" -o dist/sybra-worker-update ./cmd/sybra-worker-update
+      - name: Attest exact source and binary digests
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-path: dist/*
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sybra-worker-linux-${{ matrix.arch }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 90

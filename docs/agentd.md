@@ -149,6 +149,10 @@ For a local-brain / remote-execution-only installation, use the
 worker releases and supervision from the optional old remote board, follows
 the actual desktop listener, and adds readiness/backlog diagnostics.
 
+For automatic CI-attested worker releases selected by that local leader, see
+[standalone worker updates](worker-updates.md). The deployment helper owns only
+staging, drain holds, restart, health verification, and rollback.
+
 ### Enroll and rotate credentials
 
 1. Create a dedicated leader bearer token and expose it to the daemon through
