@@ -151,18 +151,8 @@ func PrepareWithBaseBundle(ctx context.Context, root, source string, spec execut
 			return Layout{}, err
 		}
 	}
-	// Remote workspaces must be able to create handback commits without
-	// depending on the daemon account's operator identity or signing setup.
-	// These repository-local values stay inside the disposable checkout.
-	for key, value := range map[string]string{
-		"user.name":      "Sybra Agent",
-		"user.email":     "sybra-agent@example.invalid",
-		"commit.gpgsign": "false",
-		"tag.gpgsign":    "false",
-	} {
-		if err := gitexec.Run(ctx, gitexec.Options{Dir: worktree}, "config", "--local", key, value); err != nil {
-			return Layout{}, fmt.Errorf("agent workspace: configure git identity: %w", err)
-		}
+	if err := configureAgentIdentity(ctx, worktree); err != nil {
+		return Layout{}, err
 	}
 	layout := Layout{RunRoot: tmp, Worktree: worktree, Sidecar: filepath.Join(tmp, "sidecar"), Artifact: filepath.Join(tmp, "artifact"), WorkingMemory: worktree}
 	for _, declared := range spec.Workspace.Roots {
@@ -188,6 +178,23 @@ func PrepareWithBaseBundle(ctx context.Context, root, source string, spec execut
 		return Layout{}, err
 	}
 	return final, nil
+}
+
+func configureAgentIdentity(ctx context.Context, worktree string) error {
+	// Remote workspaces must be able to create handback commits without
+	// depending on the daemon account's operator identity or signing setup.
+	// These repository-local values stay inside the disposable checkout.
+	for key, value := range map[string]string{
+		"user.name":      "Sybra Agent",
+		"user.email":     "sybra-agent@example.invalid",
+		"commit.gpgsign": "false",
+		"tag.gpgsign":    "false",
+	} {
+		if err := gitexec.Run(ctx, gitexec.Options{Dir: worktree}, "config", "--local", key, value); err != nil {
+			return fmt.Errorf("agent workspace: configure git identity: %w", err)
+		}
+	}
+	return nil
 }
 
 func importReviewBase(ctx context.Context, worktree, bundlePath string, spec executioncontract.RunSpec) error {
