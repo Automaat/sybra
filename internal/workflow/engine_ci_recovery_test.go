@@ -1,6 +1,10 @@
 package workflow
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/Automaat/sybra/internal/taskstatus"
+)
 
 func TestCIAcceptedReviewKeepsInputsAfterRouteWriteFailure(t *testing.T) {
 	store := newInlineTestStore(t, "review-inputs", `id: review-inputs
@@ -23,7 +27,7 @@ steps:
 	e.SetWorktreeGetter(&fakeWorktreeGetter{path: wt, ok: true})
 	rec := newFakeEvidenceRecorder()
 	e.SetEvidenceRecorder(rec)
-	task := TaskInfo{ID: "t1", Status: "ready-review", AgentMode: "headless", Body: "Implement original contract"}
+	task := TaskInfo{ID: "t1", Status: taskstatus.ReadyReview, AgentMode: "headless", Body: "Implement original contract"}
 	tasks.Put(task)
 	done := make(chan error, 1)
 	go func() { done <- e.StartWorkflow(task.ID, "review-inputs") }()

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/clock"
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
@@ -53,8 +54,8 @@ func TestParallelAdmissionRefusalResumesWithFreshSlotIdentity(t *testing.T) {
 			engine.SetClock(fc)
 			wf := &Execution{WorkflowID: "test-parallel", CurrentStep: "plan", State: ExecWaiting,
 				ParallelInflight: map[string]*ParallelChildren{"plan": {ParentStepID: "plan", Children: map[string]*ChildStatus{
-					"plan_a": {Status: "pending", AgentID: "refused", Provider: "claude"},
-					"plan_b": {Status: "completed", AgentID: "done", Provider: "codex"},
+					"plan_a": {Status: "pending", AgentID: "refused", Provider: providerid.Claude},
+					"plan_b": {Status: "completed", AgentID: "finished-agent", Provider: providerid.Codex},
 				}}}}
 			old := EffectID{Generation: 1, StepID: "plan", Pos: effectPosStepAction}
 			wf.RecordEffectIntent(old, fc.Now())

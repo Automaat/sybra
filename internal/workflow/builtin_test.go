@@ -1878,7 +1878,7 @@ func TestBuiltinBestOfN_OptInTriggerPriority(t *testing.T) {
 		t.Fatalf("untagged in-progress task matched %q, want simple-task-implement", id)
 	}
 
-	tagged := TaskInfo{ID: "t2", Status: "in-progress", Tags: []string{"backend", "best-of-n"}}
+	tagged := TaskInfo{ID: "t2", Status: taskstatus.InProgress, Tags: []string{"backend", "best-of-n"}}
 	if got := engine.MatchWorkflow(tagged, "task.status_changed"); got == nil || got.ID != "simple-task-best-of-n-implement" {
 		id := "<nil>"
 		if got != nil {

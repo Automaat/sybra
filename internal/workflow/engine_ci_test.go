@@ -9,6 +9,7 @@ import (
 	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 type fakeCICheckGetter struct {
@@ -43,7 +44,7 @@ func TestStartCIDraftNeverLinksBeforeLocalGates(t *testing.T) {
 			_, wt := newPRWorktree(t, "feat/early-ci")
 			commitFile(t, wt, "change.txt", "change")
 			tasks := newMemTasks()
-			task := TaskInfo{ID: "t1", Status: "in-progress", Branch: "feat/early-ci", ProjectID: "o/r", ProjectType: "pet"}
+			task := TaskInfo{ID: "t1", Status: taskstatus.InProgress, Branch: "feat/early-ci", ProjectID: "o/r", ProjectType: "pet"}
 			tasks.Put(task)
 			e := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 			e.SetWorktreeGetter(&fakeWorktreeGetter{path: wt, ok: true})
@@ -126,7 +127,7 @@ func TestCIDraftPublicationRequiresHeadAndEvidenceButOrdinaryFixPushDoesNot(t *t
 	_, wt := newPRWorktree(t, "feat/publish")
 	e, tasks, rec := newRequireEvidenceEngine(t, wt)
 	enableTestCI(e)
-	task := TaskInfo{ID: "t1", Status: "ready-pr", ProjectID: "o/r", ProjectType: "pet"}
+	task := TaskInfo{ID: "t1", Status: taskstatus.ReadyPR, ProjectID: "o/r", ProjectType: "pet"}
 	tasks.Put(task)
 	creator := &readyPRCreator{}
 	e.SetPRCreator(creator)

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/clock"
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
@@ -17,8 +18,8 @@ func TestAdmissionBestOfNDeferralWithLiveSibling(t *testing.T) {
 			engine.SetClock(fc)
 			wf := &Execution{WorkflowID: "bestofn-test", CurrentStep: "attempts", State: ExecWaiting, BestOfNInflight: map[string]*BestOfNInflight{
 				"attempts": {ParentStepID: "attempts", Attempts: map[string]*AttemptStatus{
-					"attempt_1": {AttemptID: "attempt_1", Status: "pending", AgentID: "refused", Provider: "claude"},
-					"attempt_2": {AttemptID: "attempt_2", Status: "pending", AgentID: "sibling", Provider: "codex"},
+					"attempt_1": {AttemptID: "attempt_1", Status: "pending", AgentID: "refused", Provider: providerid.Claude},
+					"attempt_2": {AttemptID: "attempt_2", Status: "pending", AgentID: "sibling", Provider: providerid.Codex},
 				}},
 			}}
 			old := EffectID{Generation: 1, StepID: "attempts", Pos: effectPosStepAction}
@@ -150,11 +151,15 @@ func TestAdmissionParallelPublicationPreservesFastRefusal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	child := got.Workflow.ParallelInflight["plan"].Children["plan_a"]
-	if child.AdmissionGeneration != 1 || child.AgentID != "" {
+	if got.Workflow == nil || got.Workflow.ParallelInflight["plan"] == nil {
+		t.Fatal("parallel publication disappeared")
+	}
+	parent := got.Workflow.ParallelInflight["plan"]
+	child := parent.Children["plan_a"]
+	if child == nil || child.AdmissionGeneration != 1 || child.AgentID != "" {
 		t.Fatalf("parallel publication overwrote refusal: %+v", child)
 	}
-	if got.Workflow.ParallelInflight["plan"].Children["plan_b"].AgentID == "" {
+	if sibling := parent.Children["plan_b"]; sibling == nil || sibling.AgentID == "" {
 		t.Fatal("second sibling disappeared")
 	}
 }

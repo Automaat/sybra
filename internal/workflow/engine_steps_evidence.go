@@ -248,7 +248,7 @@ func taskWasTested(runs []AgentRunInfo) bool {
 // vouch for it (unreadable/corrupt store), so it blocks rather than silently
 // treating unreadable proof as no proof at all — see evidence.Store.Load.
 func (e *Engine) execRequireEvidence(taskID string, step *Step, t TaskInfo) (StepOutput, error) {
-	policy, err := e.ciPolicy(taskID)
+	policy, err := e.ciPolicy(e.ctx, taskID)
 	if err != nil {
 		return StepOutput{}, err
 	}
@@ -271,7 +271,7 @@ func (e *Engine) execRequireEvidence(taskID string, step *Step, t TaskInfo) (Ste
 		return stepDone(step, "skipped: no evidence baseline recorded")
 	}
 
-	headSHA := e.currentHeadSHA(taskID)
+	headSHA := e.currentHeadSHA(e.ctx, taskID)
 	if headSHA == "" {
 		if strict {
 			return e.blockRequireEvidence(taskID, step, t, "worktree HEAD unresolved")
@@ -332,7 +332,7 @@ func (e *Engine) fireEvidenceDecision(t TaskInfo, d EvidenceDecision) {
 
 // currentHeadSHA resolves the task worktree's current HEAD commit. Empty when
 // no WorktreeGetter is wired or the task has no worktree.
-func (e *Engine) currentHeadSHA(taskID string) string {
+func (e *Engine) currentHeadSHA(ctx context.Context, taskID string) string {
 	if e.execution.Worktrees == nil {
 		return ""
 	}
@@ -340,7 +340,7 @@ func (e *Engine) currentHeadSHA(taskID string) string {
 	if !ok {
 		return ""
 	}
-	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
+	ctx, cancel := context.WithTimeout(ctx, shellTimeout)
 	defer cancel()
 	return revParseCommit(ctx, wtPath, "HEAD")
 }

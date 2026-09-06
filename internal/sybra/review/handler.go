@@ -90,7 +90,7 @@ type Handler struct {
 	prDispatchMu  sync.Mutex
 	prDispatching map[string]struct{}
 	// mergePR performs the actual squash-merge; overridable in tests.
-	// nil falls back to github.MergePR.
+	// nil falls back to github.MergePRAtHead, pinned to the observed PR head.
 	mergePR func(repo string, number int) error
 	// fetchCIGate is uncached and binds explicit required checks to a PR head.
 	fetchCIGate func(context.Context, string, int, []string) (github.CommitGate, error)
@@ -2231,7 +2231,7 @@ func (r *Handler) maybeArmNativeAutoMerge(ctx context.Context, tasks []task.Task
 			metrics.AutoMergeAttempt(ctx, "suppressed", string(backoff.Class(pr.Repository, pr.Number)))
 			continue
 		}
-		res := r.tryArmNativeAutoMerge(*t, github.PRIssue{
+		res := r.tryArmNativeAutoMerge(ctx, *t, github.PRIssue{
 			Kind:   github.PRIssueReadyToMerge,
 			TaskID: t.ID,
 			PR:     *pr,

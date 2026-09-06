@@ -408,15 +408,9 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	if err != nil {
 		return err
 	}
-	for _, output := range step.Config.sidecarImports() {
-		from, renderErr := RenderTemplate(output.From, ctx)
-		if renderErr != nil {
-			return renderErr
-		}
-		assignment.RemoteOutputs = append(assignment.RemoteOutputs, executioncontract.ExpectedOutput{Name: output.Kind, Kind: output.Kind,
-			Root: executioncontract.RootSidecar, Path: filepath.Base(from), Required: output.Required, Sensitivity: executioncontract.SensitivityInternal})
+	if err := bindRemoteSidecarOutputs(step, ctx, &assignment); err != nil {
+		return err
 	}
-	assignment.RemoteSidecarDir = ctx.Vars[WorkflowVarSidecarDir]
 	cleanRetryKey := watchdogHangCleanRetryKey(step.ID)
 	cleanRetryRef := wfExec.Variables[cleanRetryKey]
 	captureTamperDeletionAllowlist(wfExec, step.ID, step.Config.Role, ctx.Task)
@@ -454,6 +448,19 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	}
 	agentStarted = true
 	return e.persistStartedAgent(taskID, step, wfExec, agentID, provider, startedDir, baselineRef, cleanRetryKey, cleanRetryRef, dir)
+}
+
+func bindRemoteSidecarOutputs(step *Step, ctx TemplateContext, assignment *AgentAssignment) error {
+	for _, output := range step.Config.sidecarImports() {
+		from, err := RenderTemplate(output.From, ctx)
+		if err != nil {
+			return err
+		}
+		assignment.RemoteOutputs = append(assignment.RemoteOutputs, executioncontract.ExpectedOutput{Name: output.Kind, Kind: output.Kind,
+			Root: executioncontract.RootSidecar, Path: filepath.Base(from), Required: output.Required, Sensitivity: executioncontract.SensitivityInternal})
+	}
+	assignment.RemoteSidecarDir = ctx.Vars[WorkflowVarSidecarDir]
+	return nil
 }
 
 func bestOfNAttemptReadRoots(wfExec *Execution) []string {

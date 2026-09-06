@@ -67,7 +67,7 @@ func TestFactoryCIRequiresCurrentHeadAndSuccessfulNamedChecks(t *testing.T) {
 				t.Fatal("CI project attempted native auto-merge")
 				return false, nil
 			}
-			if result := r.tryArmNativeAutoMerge(owner, github.PRIssue{PR: pr}, ""); result.attempted || result.armed {
+			if result := r.tryArmNativeAutoMerge(t.Context(), owner, github.PRIssue{PR: pr}, ""); result.attempted || result.armed {
 				t.Fatalf("native auto-merge escaped exact-head gate: %+v", result)
 			}
 		})

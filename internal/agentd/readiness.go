@@ -1,11 +1,10 @@
 package agentd
 
 import (
-	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/pressure"
 )
 
@@ -41,16 +40,10 @@ func probeStorage(root string) error {
 	if err != nil {
 		return err
 	}
-	source := file.Name()
-	target := filepath.Clean(source + ".ready")
-	defer func() { _ = os.Remove(source); _ = os.Remove(target) }()
-	_, writeErr := fmt.Fprintln(file, "ready")
-	closeErr := file.Close()
-	if writeErr != nil {
-		return writeErr
+	target := file.Name()
+	defer func() { _ = os.Remove(target) }()
+	if err := file.Close(); err != nil {
+		return err
 	}
-	if closeErr != nil {
-		return closeErr
-	}
-	return os.Rename(source, target)
+	return fsutil.AtomicWrite(target, []byte("ready\n"))
 }

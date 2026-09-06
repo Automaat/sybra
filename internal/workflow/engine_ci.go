@@ -15,18 +15,18 @@ type prReadyMarker interface {
 	MarkReady(context.Context, string, int) error
 }
 
-func (e *Engine) ciPolicy(taskID string) (*project.CIConfig, error) {
+func (e *Engine) ciPolicy(ctx context.Context, taskID string) (*project.CIConfig, error) {
 	getter, ok := e.execution.Checks.(ciConfigGetter)
 	if !ok {
 		return &project.CIConfig{}, nil
 	}
-	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
+	ctx, cancel := context.WithTimeout(ctx, shellTimeout)
 	defer cancel()
 	return getter.CIConfig(ctx, taskID)
 }
 
 func (e *Engine) ciEnabled(taskID string) bool {
-	cfg, err := e.ciPolicy(taskID)
+	cfg, err := e.ciPolicy(e.ctx, taskID)
 	// Unknown policy must never loosen verification. Mutation steps read the
 	// error-bearing snapshot themselves and stop before external effects.
 	return err != nil || (cfg != nil && cfg.Enabled)
@@ -37,7 +37,7 @@ func (e *Engine) ciEnabled(taskID string) bool {
 // monitor and skips the pre-PR review path. Branch identity makes creation
 // idempotent across restarts; the ordinary PR-tail adopts it after local gates.
 func (e *Engine) execStartCI(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error) {
-	cfg, err := e.ciPolicy(taskID)
+	cfg, err := e.ciPolicy(e.ctx, taskID)
 	if err != nil {
 		return StepOutput{}, err
 	}
@@ -81,7 +81,7 @@ func (e *Engine) publishCIDraft(taskID string, t TaskInfo, number int) error {
 	if !meta.IsDraft {
 		return nil
 	}
-	if head := e.currentHeadSHA(taskID); head == "" || meta.HeadSHA != head {
+	if head := e.currentHeadSHA(ctx, taskID); head == "" || meta.HeadSHA != head {
 		return &ClientError{status: 409, msg: "CI draft head differs from locally verified revision"}
 	}
 	fresh, err := e.tasks.GetTask(taskID)

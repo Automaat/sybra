@@ -37,6 +37,9 @@ func (e *Engine) deferWorkerAdmission(taskID, agentID string) {
 		return
 	}
 	wf := t.Workflow.Clone()
+	if wf == nil {
+		return
+	}
 	// Recheck exact ownership after taking the task lock. A generic pending
 	// effect is not proof that this particular agent owns it (duplicate events
 	// can arrive while the replacement effect is pending).

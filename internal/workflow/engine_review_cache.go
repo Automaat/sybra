@@ -27,9 +27,9 @@ func (e *Engine) bindVerificationInput(taskID string, step *Step, wf *Execution,
 	if step.Config.Role != reviewAgentRole && step.Config.Role != testRunnerRole {
 		return nil
 	}
-	wf.SetVar(verificationInputKey(step.ID, "head"), e.currentHeadSHA(taskID))
+	wf.SetVar(verificationInputKey(step.ID, "head"), e.currentHeadSHA(e.ctx, taskID))
 	wf.SetVar(verificationInputKey(step.ID, "contract"), e.verificationContractDigest(t))
-	policy, err := e.ciPolicy(taskID)
+	policy, err := e.ciPolicy(e.ctx, taskID)
 	if err != nil {
 		return err
 	}
@@ -53,6 +53,6 @@ func (e *Engine) reusableReview(t TaskInfo) bool {
 		return false
 	}
 	entry, ok := ce.ByCriterion(evidenceCriterionReview)
-	return ok && entry.Passed() && entry.FinalRev != "" && entry.FinalRev == e.currentHeadSHA(t.ID) &&
+	return ok && entry.Passed() && entry.FinalRev != "" && entry.FinalRev == e.currentHeadSHA(e.ctx, t.ID) &&
 		entry.ContractDigest != "" && entry.ContractDigest == e.verificationContractDigest(t)
 }
