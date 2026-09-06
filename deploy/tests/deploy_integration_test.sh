@@ -554,8 +554,8 @@ scenario_agentd_refresh() {
   export SYBRA_AGENTD_BINARY="$root/sybra-agentd"
   export SYBRA_AGENTD_STANDALONE="$root/standalone.conf"
   export FAKE_SYSTEMCTL_LOG="$root/systemctl.log"
-  export FAKE_AGENTD_FAILED=0
-  export FAKE_AGENTD_LOAD_STATE=loaded
+  export FAKE_AGENTD_RESET_FAIL=0
+  export FAKE_AGENTD_RESTART_FAIL=0
 
   # Server-only hosts must remain a silent no-op even if a stale unit happens
   # to be enabled: the daemon config is the operator's opt-in boundary.
@@ -577,16 +577,27 @@ scenario_agentd_refresh() {
   export FAKE_AGENTD_ENABLED=1
   bash "$DEPLOY_BIN/sybra-refresh-agentd.sh"
   assert_contains "agentd-refresh: enabled daemon restarts asynchronously" "$(cat "$FAKE_SYSTEMCTL_LOG")" "--no-block restart sybra-agentd.service"
-  assert_eq "agentd-refresh: loaded auto-restart worker resets even when is-failed is false" \
+  assert_eq "agentd-refresh: resets the budget before restarting regardless of active state" \
     $'reset-failed sybra-agentd.service\n--no-block restart sybra-agentd.service' "$(cat "$FAKE_SYSTEMCTL_LOG")"
 
   local previous_calls
   previous_calls="$(cat "$FAKE_SYSTEMCTL_LOG")"
-  export FAKE_AGENTD_FAILED=1
-  bash "$DEPLOY_BIN/sybra-refresh-agentd.sh"
-  assert_eq "agentd-refresh: failed cohost worker gets a fresh start budget" \
+  export FAKE_AGENTD_RESET_FAIL=1
+  if bash "$DEPLOY_BIN/sybra-refresh-agentd.sh"; then
+    pass "agentd-refresh: unloaded-unit reset failure still permits starting"
+  else
+    fail "agentd-refresh: unloaded-unit reset failure prevented starting"
+  fi
+  assert_eq "agentd-refresh: reset failure still attempts the explicit restart" \
     "$previous_calls"$'\nreset-failed sybra-agentd.service\n--no-block restart sybra-agentd.service' \
     "$(cat "$FAKE_SYSTEMCTL_LOG")"
+
+  export FAKE_AGENTD_RESTART_FAIL=1
+  if bash "$DEPLOY_BIN/sybra-refresh-agentd.sh"; then
+    fail "agentd-refresh: restart failure was ignored"
+  else
+    pass "agentd-refresh: restart failure remains fatal"
+  fi
 
   previous_calls="$(cat "$FAKE_SYSTEMCTL_LOG")"
   : >"$SYBRA_AGENTD_STANDALONE"

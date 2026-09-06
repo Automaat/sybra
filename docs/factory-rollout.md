@@ -55,8 +55,10 @@ by quota. Repeated error-log records are not unique failed runs.
    existing environment files, sandbox enforcement, and durable state paths.
    Clear an old start-limit failure with `systemctl reset-failed sybra-agentd`,
    then restart the worker. The co-hosted board's post-healthcheck refresh hook
-   remains supported without a lifetime dependency, and resets a failed
-   co-hosted worker's start budget once a healthy agentd-capable release exists.
+   remains supported without a lifetime dependency, and resets a co-hosted
+   worker's start budget once a healthy agentd-capable release exists. An
+   unloaded-unit reset failure is logged but does not prevent the explicit
+   restart, whose failure still propagates to the caller.
 4. On the laptop, install [the tunnel reconciler](../deploy/bin/sybra-leader-tunnel.sh)
    and adapt [the launchd template](../deploy/launchd/dev.sybra.agentd-tunnel.plist.example)
    with absolute paths, the actual leader home, and an SSH host alias. Replace

@@ -5,14 +5,13 @@ case "${1:-}" in
   is-enabled)
     [[ "${FAKE_AGENTD_ENABLED:-0}" == "1" ]]
     ;;
-  is-failed)
-    [[ "${FAKE_AGENTD_FAILED:-0}" == "1" ]]
-    ;;
-  show)
-    printf '%s\n' "${FAKE_AGENTD_LOAD_STATE:-loaded}"
-    ;;
-  --no-block|reset-failed)
+  reset-failed)
     printf '%s\n' "$*" >>"${FAKE_SYSTEMCTL_LOG:?}"
+    [[ "${FAKE_AGENTD_RESET_FAIL:-0}" != "1" ]]
+    ;;
+  --no-block)
+    printf '%s\n' "$*" >>"${FAKE_SYSTEMCTL_LOG:?}"
+    [[ "${FAKE_AGENTD_RESTART_FAIL:-0}" != "1" ]]
     ;;
   *)
     exit 1

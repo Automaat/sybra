@@ -21,11 +21,12 @@ if [[ -f "$CONFIG" && -x "$BINARY" ]] && systemctl is-enabled --quiet "$UNIT"; t
   # An independently starting worker may exhaust its start budget while the
   # board builds its first agentd-capable release. A healthy new release is a
   # fresh start opportunity; do not leave that worker permanently rate-limited.
-  # The final retry delay is activating/auto-restart, not failed, so checking
-  # is-failed alone misses the last-start race. Never-loaded units have no
-  # budget to reset; loaded units may need one regardless of their active state.
-  if [[ "$(systemctl show --property=LoadState --value "$UNIT")" == "loaded" ]]; then
-    systemctl reset-failed "$UNIT"
+  # The final retry delay is activating/auto-restart, not failed. Do not query
+  # LoadState first either: an inactive unit can be unloaded between commands.
+  # An unloaded unit has no retained budget; still require the explicit restart
+  # below to succeed. Other reset errors remain visible instead of being hidden.
+  if ! systemctl reset-failed "$UNIT"; then
+    echo "[sybra-agentd] start-budget reset unavailable; attempting explicit restart" >&2
   fi
   systemctl --no-block restart "$UNIT"
 fi
