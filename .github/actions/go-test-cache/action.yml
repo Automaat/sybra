@@ -18,8 +18,8 @@ runs:
         path: |
           ${{ steps.go-env.outputs.build }}
           ${{ steps.go-env.outputs.modules }}
-        key: go-test-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.go-env.outputs.version }}-${{ inputs.suite }}-${{ hashFiles('go.sum', 'mise.toml') }}-${{ github.sha }}
+        key: go-test-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.go-env.outputs.version }}-${{ inputs.suite }}-${{ hashFiles('go.mod', 'go.sum', 'mise.toml') }}-${{ github.sha }}
         restore-keys: |
-          go-test-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.go-env.outputs.version }}-${{ inputs.suite }}-${{ hashFiles('go.sum', 'mise.toml') }}-
+          go-test-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.go-env.outputs.version }}-${{ inputs.suite }}-${{ hashFiles('go.mod', 'go.sum', 'mise.toml') }}-
       env:
         SEGMENT_DOWNLOAD_TIMEOUT_MINS: '2'

@@ -1,9 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -113,8 +115,14 @@ func TestWorkflowKeepsCompleteFailClosedGate(t *testing.T) {
 	if !strings.Contains(children[len(children)-1].Run, "go list -race -tags e2e ./internal/sybra/...") {
 		t.Fatal("child package discovery must use the same build constraints as execution")
 	}
-	for _, shardResult := range []string{"success", "failure", "cancelled", "skipped", ""} {
-		for _, packageResult := range []string{"success", "failure", "cancelled", "skipped", ""} {
+	// GitHub wire values, not Sybra task statuses. Decode the external fixture
+	// just as our GitHub integration tests do for check conclusions.
+	var results []string
+	if err := json.Unmarshal([]byte(`["success","failure","cancelled","skipped",""]`), &results); err != nil {
+		t.Fatal(err)
+	}
+	for _, shardResult := range results {
+		for _, packageResult := range results {
 			cmd := exec.Command("bash", "-e", "-c", gate.Steps[0].Run)
 			cmd.Env = append(os.Environ(), "SHARDS_RESULT="+shardResult, "PACKAGES_RESULT="+packageResult)
 			passed := cmd.Run() == nil
@@ -122,5 +130,31 @@ func TestWorkflowKeepsCompleteFailClosedGate(t *testing.T) {
 				t.Fatalf("incorrect gate for %q / %q", shardResult, packageResult)
 			}
 		}
+	}
+}
+
+func TestRunPatternExecutesAllDescendants(t *testing.T) {
+	dir := t.TempDir()
+	for name, content := range map[string]string{
+		"go.mod": "module example.invalid/shard-probe\n\ngo 1.26\n",
+		"shard_test.go": `package probe
+import "testing"
+func TestSelected(t *testing.T) {
+ t.Run("child", func(t *testing.T) {
+  t.Run("grandchild", func(t *testing.T) { t.Fatal("selected descendant executed") })
+ })
+}
+func TestSelectedExtra(t *testing.T) { t.Fatal("unselected prefix executed") }
+`,
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cmd := exec.CommandContext(t.Context(), "go", "test", "-count=1", "-run", runPattern([]string{"TestSelected"}), ".")
+	cmd.Dir = dir
+	output, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "selected descendant executed") || strings.Contains(string(output), "unselected prefix executed") {
+		t.Fatalf("go test did not apply component-wise subtest matching: %v\n%s", err, output)
 	}
 }
