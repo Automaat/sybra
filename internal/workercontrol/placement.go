@@ -273,12 +273,12 @@ func (s *Service) placementSessionsTx(ctx context.Context, tx *sql.Tx, request P
 	if err := activeRows.Close(); err != nil {
 		return nil, err
 	}
+	held, err := s.updateHeldWorkersTx(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
 	for i := range out {
-		held, err := s.updateHeldTx(ctx, tx, out[i].sessionID)
-		if err != nil {
-			return nil, err
-		}
-		out[i].updateHeld = held
+		out[i].updateHeld = held[out[i].workerID]
 		out[i].active = activeBySession[out[i].sessionID]
 		out[i].candidate = scorePlacement(out[i], request)
 	}

@@ -34,6 +34,25 @@ type WorkerRelease struct {
 	Protocol executioncontract.Version `json:"protocol"`
 }
 
+// Called after placement locks its sessions, just like the reservation count.
+// A fresh statement observes a hold committed while waiting for those locks.
+func (s *Service) updateHeldWorkersTx(ctx context.Context, tx *sql.Tx) (map[string]bool, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT worker_id FROM worker_update_holds`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	held := make(map[string]bool)
+	for rows.Next() {
+		var workerID string
+		if err := rows.Scan(&workerID); err != nil {
+			return nil, err
+		}
+		held[workerID] = true
+	}
+	return held, rows.Err()
+}
+
 // UpdateHold is separate from worker_disabled: finishing an update must never
 // undo an operator's disable/drain decision. Holds have no automatic expiry;
 // an interrupted updater resumes its durable journal or rolls back first.
