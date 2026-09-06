@@ -42,6 +42,32 @@ func TestWorkerControlRouteRequiresAuthentication(t *testing.T) {
 	}
 }
 
+func TestWorkerUpdateRoutesRequireOperatorToken(t *testing.T) {
+	worker := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	handler := httpserve.Handler(httpserve.Options{Logger: testLogger(), WorkerControl: worker}, "operator-secret", nil)
+	for _, path := range []string{"/worker/v1/release", "/worker/v1/update/begin", "/worker/v1/update/check", "/worker/v1/update/held", "/worker/v1/update/finish"} {
+		for _, token := range []string{"", "run-scoped-token", "operator-secret"} {
+			method := http.MethodPost
+			if strings.HasSuffix(path, "/release") {
+				method = http.MethodGet
+			}
+			request := httptest.NewRequest(method, path, http.NoBody)
+			if token != "" {
+				request.Header.Set("Authorization", "Bearer "+token)
+			}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			want := http.StatusUnauthorized
+			if token == "operator-secret" {
+				want = http.StatusNoContent
+			}
+			if response.Code != want {
+				t.Errorf("%s status=%d want=%d", path, response.Code, want)
+			}
+		}
+	}
+}
+
 func bundle() fstest.MapFS {
 	return fstest.MapFS{
 		"index.html":     &fstest.MapFile{Data: []byte("<html>app</html>")},

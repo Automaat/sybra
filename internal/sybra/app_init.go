@@ -56,6 +56,7 @@ import (
 	"github.com/Automaat/sybra/internal/taskstatus"
 	"github.com/Automaat/sybra/internal/toolledger"
 	"github.com/Automaat/sybra/internal/umbrella"
+	buildversion "github.com/Automaat/sybra/internal/version"
 	"github.com/Automaat/sybra/internal/watcher"
 	"github.com/Automaat/sybra/internal/workercontrol"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -2032,6 +2033,7 @@ func (a *App) initDatabase(ctx context.Context) error {
 		return fmt.Errorf("run grants: %w", err)
 	}
 	a.workerControl = workercontrol.NewWithGrantStore(database, runGrants)
+	a.workerControl.SetUpdateRevision(buildversion.CleanRevision())
 	a.workerControl.SetGrantAuditSink(func(event agentgrant.AuditEvent) {
 		eventType := audit.EventRunGrantUsed
 		switch event.Kind {

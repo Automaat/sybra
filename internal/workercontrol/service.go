@@ -88,6 +88,7 @@ type Diagnostics struct {
 	LeaseExpiresAt time.Time `json:"leaseExpiresAt"`
 	LastCommandAck uint64    `json:"lastCommandAck"`
 	ActiveRuns     int       `json:"activeRuns"`
+	UpdateHeld     bool      `json:"updateHeld"`
 	PendingEvents  int       `json:"pendingEvents"`
 	// Heartbeat-reported worker backlog, distinct from leader-unacked events.
 	BufferedEvents             int64    `json:"bufferedEvents"`
@@ -121,6 +122,7 @@ type Service struct {
 	notifyCh       chan struct{}
 	importArtifact func(context.Context, string) error
 	grants         *agentgrant.Store
+	updateRevision string
 }
 
 func New(database *db.DB) *Service {
@@ -523,13 +525,14 @@ func (s *Service) Enqueue(ctx context.Context, sessionID string, spec *execution
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		if envelope.Type != executioncontract.CommandStart {
-			var ownerSession string
-			if err := tx.QueryRowContext(ctx, s.db.Rebind(`SELECT session_id FROM remote_runs WHERE run_id = ?`), envelope.RunID).Scan(&ownerSession); err != nil {
-				return fmt.Errorf("worker control: command target: %w", err)
+		if envelope.Type == executioncontract.CommandStart {
+			if err := s.requireNoUpdateHoldTx(ctx, tx, sessionID); err != nil {
+				return err
 			}
-			if ownerSession != sessionID {
-				return ErrStaleSession
+		}
+		if envelope.Type != executioncontract.CommandStart {
+			if err := s.requireCommandOwnerTx(ctx, tx, sessionID, envelope.RunID); err != nil {
+				return err
 			}
 		}
 		if spec != nil && envelope.Type == executioncontract.CommandStart {
@@ -586,6 +589,17 @@ func (s *Service) Enqueue(ctx context.Context, sessionID string, spec *execution
 	}
 	s.notify()
 	return Command{Sequence: sequence, Envelope: envelope}, nil
+}
+
+func (s *Service) requireCommandOwnerTx(ctx context.Context, tx *sql.Tx, sessionID, runID string) error {
+	var ownerSession string
+	if err := tx.QueryRowContext(ctx, s.db.Rebind(`SELECT session_id FROM remote_runs WHERE run_id = ?`), runID).Scan(&ownerSession); err != nil {
+		return fmt.Errorf("worker control: command target: %w", err)
+	}
+	if ownerSession != sessionID {
+		return ErrStaleSession
+	}
+	return nil
 }
 
 func (s *Service) validateCrossSessionReplay(ctx context.Context, tx *sql.Tx, sessionID string, sequence uint64, acknowledged bool, envelope executioncontract.CommandEnvelope) error {
@@ -1114,11 +1128,26 @@ func (s *Service) setWorkerDisabledTx(ctx context.Context, tx *sql.Tx, workerID 
 }
 
 func (s *Service) Diagnostics(ctx context.Context) ([]Diagnostics, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT s.worker_id, s.session_id, s.state, s.build_version, s.protocol_major,
+	return s.diagnostics(ctx, "")
+}
+
+func (s *Service) diagnostics(ctx context.Context, workerID string) ([]Diagnostics, error) {
+	query := `SELECT s.worker_id, s.session_id, s.state, s.build_version, s.protocol_major,
 		s.protocol_minor, s.lease_expires_at, s.last_command_ack, s.capabilities_json,
         (SELECT COUNT(*) FROM remote_runs r WHERE r.session_id = s.session_id AND r.state != 'terminal'),
-        (SELECT COUNT(*) FROM worker_events e JOIN remote_runs r ON r.run_id = e.run_id WHERE r.session_id = s.session_id AND e.acknowledged_at IS NULL)
-        FROM worker_sessions s ORDER BY s.worker_id, s.created_at DESC`)
+        (SELECT COUNT(*) FROM worker_events e JOIN remote_runs r ON r.run_id = e.run_id WHERE r.session_id = s.session_id AND e.acknowledged_at IS NULL),
+        (SELECT COUNT(*) FROM worker_update_holds h WHERE h.worker_id = s.worker_id)
+        FROM worker_sessions s`
+	var args []any
+	if workerID != "" {
+		query += ` WHERE s.worker_id = ? AND s.state IN ('active', 'disabled', 'draining') AND s.lease_expires_at > ?`
+		args = []any{workerID, db.TimeValue(s.now().UTC())}
+	}
+	query += ` ORDER BY s.worker_id, s.created_at DESC`
+	if workerID != "" {
+		query += ` LIMIT 2`
+	} // two live identities are an error, never silently pick one
+	rows, err := s.db.QueryContext(ctx, s.db.Rebind(query), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1128,9 +1157,10 @@ func (s *Service) Diagnostics(ctx context.Context) ([]Diagnostics, error) {
 		var item Diagnostics
 		var major, minor int
 		var lease int64
+		var updateHolds int
 		var capabilitiesJSON string
 		if err := rows.Scan(&item.WorkerID, &item.SessionID, &item.State, &item.BuildVersion, &major, &minor, &lease,
-			&item.LastCommandAck, &capabilitiesJSON, &item.ActiveRuns, &item.PendingEvents); err != nil {
+			&item.LastCommandAck, &capabilitiesJSON, &item.ActiveRuns, &item.PendingEvents, &updateHolds); err != nil {
 			return nil, err
 		}
 		item.Protocol = fmt.Sprintf("%d.%d", major, minor)
@@ -1151,6 +1181,11 @@ func (s *Service) Diagnostics(ctx context.Context) ([]Diagnostics, error) {
 		item.SpoolBytes, _ = strconv.ParseInt(parsed.one("spool_bytes"), 10, 64)
 		item.SpoolMaxBytes, _ = strconv.ParseInt(parsed.one("spool_max_bytes"), 10, 64)
 		item.AvailableCapacity = max(item.Capacity-item.ActiveRuns, 0)
+		item.UpdateHeld = updateHolds > 0
+		if item.UpdateHeld {
+			item.AvailableCapacity = 0
+			item.Alerts = append(item.Alerts, "update_hold")
+		}
 		if readiness := parsed.one("readiness"); readiness != "" && readiness != "ready" {
 			item.AvailableCapacity = 0
 			item.Alerts = append(item.Alerts, "readiness:"+readiness)

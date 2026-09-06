@@ -1,0 +1,11 @@
+[Unit]
+Description=Check the leader-selected standalone worker release
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=1min
+RandomizedDelaySec=15s
+Unit=sybra-worker-update.service
+
+[Install]
+WantedBy=timers.target

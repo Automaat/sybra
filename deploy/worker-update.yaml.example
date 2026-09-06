@@ -1,0 +1,12 @@
+# Root-owned, not writable by the worker account. Fill from this deployment;
+# do not copy another board's identity or worker ID.
+leader_url: http://127.0.0.1:18081
+leader_home_id: REPLACE_WITH_EXPECTED_HEALTH_HOME_ID
+token_env: SYBRA_AGENTD_TOKEN
+worker_id: REPLACE_WITH_LOCAL_AGENT_CONFIG_NODE_ID
+repository: Automaat/sybra
+release_root: /opt/sybra/worker-releases
+current_link: /opt/sybra/worker-current
+state_dir: /var/lib/sybra-worker-update
+agent_config: /etc/sybra/sybra-agentd.yaml
+service_user: sybra

@@ -79,6 +79,7 @@ type placementSession struct {
 	state               string
 	capabilities        capabilitySet
 	active              int
+	updateHeld          bool
 	candidate           PlacementCandidate
 }
 
@@ -272,7 +273,12 @@ func (s *Service) placementSessionsTx(ctx context.Context, tx *sql.Tx, request P
 	if err := activeRows.Close(); err != nil {
 		return nil, err
 	}
+	held, err := s.updateHeldWorkersTx(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
 	for i := range out {
+		out[i].updateHeld = held[out[i].workerID]
 		out[i].active = activeBySession[out[i].sessionID]
 		out[i].candidate = scorePlacement(out[i], request)
 	}
@@ -282,6 +288,9 @@ func (s *Service) placementSessionsTx(ctx context.Context, tx *sql.Tx, request P
 func scorePlacement(session placementSession, request PlacementRequest) PlacementCandidate {
 	c := PlacementCandidate{WorkerID: session.workerID, Eligible: true, Capacity: session.capabilities.capacity, Active: session.active}
 	reject := func(reason string) { c.Eligible = false; c.Reasons = append(c.Reasons, reason) }
+	if session.updateHeld {
+		reject("worker update hold active")
+	}
 	if session.state != "active" {
 		reject("worker is " + session.state)
 	}

@@ -27,7 +27,50 @@ func (s *Service) Handler() http.Handler {
 	mux.HandleFunc("POST /worker/v1/drain", s.handleDrain)
 	mux.HandleFunc("POST /worker/v1/disable", s.handleDisable)
 	mux.HandleFunc("GET /worker/v1/diagnostics", s.handleDiagnostics)
+	mux.HandleFunc("GET /worker/v1/release", s.handleWorkerRelease)
+	mux.HandleFunc("POST /worker/v1/update/begin", s.handleBeginUpdate)
+	mux.HandleFunc("POST /worker/v1/update/finish", s.handleFinishUpdate)
+	mux.HandleFunc("POST /worker/v1/update/check", s.handleCheckUpdate)
+	mux.HandleFunc("POST /worker/v1/update/held", s.handleUpdateOwnership)
 	return mux
+}
+
+func (s *Service) handleUpdateOwnership(w http.ResponseWriter, r *http.Request) {
+	var request UpdateRequest
+	if !decode(w, r, &request) {
+		return
+	}
+	respond(w, map[string]bool{"held": true}, s.CheckUpdateOwnership(r.Context(), request))
+}
+
+func (s *Service) handleWorkerRelease(w http.ResponseWriter, _ *http.Request) {
+	release, err := s.WorkerRelease()
+	respond(w, release, err)
+}
+
+func (s *Service) handleBeginUpdate(w http.ResponseWriter, r *http.Request) {
+	var request UpdateRequest
+	if !decode(w, r, &request) {
+		return
+	}
+	hold, err := s.BeginUpdate(r.Context(), request)
+	respond(w, hold, err)
+}
+
+func (s *Service) handleFinishUpdate(w http.ResponseWriter, r *http.Request) {
+	var request UpdateRequest
+	if !decode(w, r, &request) {
+		return
+	}
+	respond(w, map[string]bool{"released": true}, s.FinishUpdate(r.Context(), request))
+}
+
+func (s *Service) handleCheckUpdate(w http.ResponseWriter, r *http.Request) {
+	var request UpdateRequest
+	if !decode(w, r, &request) {
+		return
+	}
+	respond(w, map[string]bool{"ready": true}, s.CheckUpdate(r.Context(), request))
 }
 
 func (s *Service) handleWorkspaceBaseBundle(w http.ResponseWriter, r *http.Request) {
@@ -169,7 +212,7 @@ func (s *Service) handleDrain(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
-	diagnostics, err := s.Diagnostics(r.Context())
+	diagnostics, err := s.diagnostics(r.Context(), r.URL.Query().Get("workerId"))
 	respond(w, diagnostics, err)
 }
 
@@ -195,6 +238,10 @@ func respond(w http.ResponseWriter, value any, err error) {
 	if err != nil {
 		status, message := http.StatusInternalServerError, "internal server error"
 		switch {
+		case errors.Is(err, ErrUpdateHeld):
+			status, message = http.StatusConflict, err.Error()
+		case errors.Is(err, ErrUpdateUnavailable):
+			status, message = http.StatusServiceUnavailable, err.Error()
 		case errors.Is(err, ErrStaleSession), errors.Is(err, ErrLeaseExpired):
 			status = http.StatusConflict
 			message = err.Error()
