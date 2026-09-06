@@ -78,7 +78,7 @@ func (r *runner) serviceIdentity(data string) (int, error) {
 		// Accept the documented unit's env PATH wrapper or a direct invocation,
 		// never another script/config which happens to mention our worker ID.
 		if len(fields) == 5 && fields[0] == "/usr/bin/env" && strings.HasPrefix(fields[1], "PATH=") {
-			fields = fields[2:]
+			fields = slices.Delete(fields, 0, 2)
 		}
 		matched = slices.Equal(fields, []string{filepath.Join(r.cfg.CurrentLink, "sybra-agentd"), "-config", r.cfg.AgentConfig})
 	}

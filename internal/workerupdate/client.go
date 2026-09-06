@@ -95,7 +95,9 @@ func (c *leaderClient) current(ctx context.Context) (workercontrol.Diagnostics, 
 	var current []workercontrol.Diagnostics
 	for i := range rows {
 		row := &rows[i]
-		if row.WorkerID == c.cfg.WorkerID && row.LeaseExpiresAt.After(time.Now()) && (row.State == "active" || row.State == "disabled" || row.State == "draining") {
+		// The scoped endpoint fences leases with the leader's clock. A second
+		// check against this host's clock would reject valid sessions under skew.
+		if row.WorkerID == c.cfg.WorkerID && (row.State == "active" || row.State == "disabled" || row.State == "draining") {
 			current = append(current, *row)
 		}
 	}

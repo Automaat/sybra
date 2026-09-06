@@ -14,9 +14,20 @@ import (
 )
 
 var (
-	ErrUpdateHeld        = errors.New("worker control: update hold active")
+	ErrUpdateHeld        = errors.New("worker control: update hold condition not satisfied")
 	ErrUpdateUnavailable = errors.New("worker control: no approved worker release")
 )
+
+func (s *Service) requireNoUpdateHoldTx(ctx context.Context, tx *sql.Tx, sessionID string) error {
+	held, err := s.updateHeldTx(ctx, tx, sessionID)
+	if err != nil {
+		return err
+	}
+	if held {
+		return ErrUpdateHeld
+	}
+	return nil
+}
 
 type WorkerRelease struct {
 	Revision string                    `json:"revision"`

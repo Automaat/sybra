@@ -20,7 +20,7 @@ func trustedPath(path string) error {
 			return err
 		}
 		stat, ok := info.Sys().(*syscall.Stat_t)
-		if !ok || stat.Uid != 0 || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0022 != 0 {
+		if !ok || stat.Uid != 0 || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o022 != 0 {
 			return errors.New("worker updater: deployment inputs must be root-owned, non-symlink, and not group/world writable")
 		}
 		parent := filepath.Dir(path)
@@ -36,7 +36,7 @@ func (r *runner) save(j *journal) error {
 	if err != nil {
 		return err
 	}
-	return fsutil.AtomicWriteMode(r.journalPath(), data, 0600)
+	return fsutil.AtomicWriteMode(r.journalPath(), data, 0o600)
 }
 
 func (r *runner) journalPath() string { return filepath.Join(r.cfg.StateDir, "update.json") }

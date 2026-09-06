@@ -41,11 +41,11 @@ func setup(t *testing.T) *fixture {
 	cfg := Config{WorkerID: "test-worker", LeaderHomeID: strings.Repeat("a", 64), TokenEnv: "TEST_UPDATE_TOKEN", Repository: "example/project", ReleaseRoot: filepath.Join(dir, "releases"), StateDir: filepath.Join(dir, "state"), CurrentLink: filepath.Join(dir, "current"), AgentConfig: filepath.Join(dir, "agent.yaml"), ServiceUser: "sybra"}
 	t.Setenv(cfg.TokenEnv, "private-test-token")
 	for _, path := range []string{cfg.StateDir, filepath.Join(cfg.ReleaseRoot, oldSHA)} {
-		if err := os.MkdirAll(path, 0700); err != nil {
+		if err := os.MkdirAll(path, 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(cfg.ReleaseRoot, oldSHA, "sybra-agentd"), []byte("retained"), 0755); err != nil {
+	if err := os.WriteFile(filepath.Join(cfg.ReleaseRoot, oldSHA, "sybra-agentd"), []byte("retained"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(filepath.Join(cfg.ReleaseRoot, oldSHA), cfg.CurrentLink); err != nil {
@@ -53,7 +53,7 @@ func setup(t *testing.T) *fixture {
 	}
 	f := &fixture{service: workercontrol.New(dbtest.SQLite(t)), clock: time.Now()}
 	f.service.SetUpdateRevision(newSHA)
-	f.register(t, oldSHA)
+	f.register(t, t.Context(), oldSHA)
 	handler := f.service.Handler()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		if request.URL.Path == "/health" {
@@ -94,7 +94,7 @@ func setup(t *testing.T) *fixture {
 		case "run download":
 			stage := args[len(args)-1]
 			for _, name := range []string{"sybra-agentd", "sybra-worker-update"} {
-				if err := os.WriteFile(filepath.Join(stage, name), []byte("verified-fixture"), 0644); err != nil {
+				if err := os.WriteFile(filepath.Join(stage, name), []byte("verified-fixture"), 0o644); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -118,7 +118,7 @@ func setup(t *testing.T) *fixture {
 			return nil, nil
 		}
 	}
-	f.r.command = func(_ context.Context, name string, args ...string) error {
+	f.r.command = func(ctx context.Context, name string, args ...string) error {
 		f.commands = append(f.commands, append([]string{name}, args...))
 		if name == "/usr/sbin/runuser" {
 			if len(args) != 7 || args[0] != "-u" || args[1] != "sybra" || args[4] != "-check-config" {
@@ -137,16 +137,16 @@ func setup(t *testing.T) *fixture {
 			if err != nil {
 				t.Fatal(err)
 			}
-			f.register(t, revision)
+			f.register(t, ctx, revision)
 		}
 		return nil
 	}
 	return f
 }
 
-func (f *fixture) register(t *testing.T, revision string) {
+func (f *fixture) register(t *testing.T, ctx context.Context, revision string) {
 	t.Helper()
-	session, err := f.service.Register(t.Context(), workercontrol.RegisterRequest{
+	session, err := f.service.Register(ctx, workercontrol.RegisterRequest{
 		WorkerID: "test-worker", ResumeSessionID: f.session.SessionID,
 		Negotiation:  executioncontract.Negotiation{ProtocolMin: executioncontract.CurrentVersion(), ProtocolMax: executioncontract.CurrentVersion(), BuildVersion: revision},
 		Capabilities: []string{"capacity=2", "readiness=ready", "buffered_events=0", "pending_artifacts=0"},

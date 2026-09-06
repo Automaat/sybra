@@ -526,21 +526,13 @@ func (s *Service) Enqueue(ctx context.Context, sessionID string, spec *execution
 			return err
 		}
 		if envelope.Type == executioncontract.CommandStart {
-			held, err := s.updateHeldTx(ctx, tx, sessionID)
-			if err != nil {
+			if err := s.requireNoUpdateHoldTx(ctx, tx, sessionID); err != nil {
 				return err
-			}
-			if held {
-				return ErrUpdateHeld
 			}
 		}
 		if envelope.Type != executioncontract.CommandStart {
-			var ownerSession string
-			if err := tx.QueryRowContext(ctx, s.db.Rebind(`SELECT session_id FROM remote_runs WHERE run_id = ?`), envelope.RunID).Scan(&ownerSession); err != nil {
-				return fmt.Errorf("worker control: command target: %w", err)
-			}
-			if ownerSession != sessionID {
-				return ErrStaleSession
+			if err := s.requireCommandOwnerTx(ctx, tx, sessionID, envelope.RunID); err != nil {
+				return err
 			}
 		}
 		if spec != nil && envelope.Type == executioncontract.CommandStart {
@@ -597,6 +589,17 @@ func (s *Service) Enqueue(ctx context.Context, sessionID string, spec *execution
 	}
 	s.notify()
 	return Command{Sequence: sequence, Envelope: envelope}, nil
+}
+
+func (s *Service) requireCommandOwnerTx(ctx context.Context, tx *sql.Tx, sessionID, runID string) error {
+	var ownerSession string
+	if err := tx.QueryRowContext(ctx, s.db.Rebind(`SELECT session_id FROM remote_runs WHERE run_id = ?`), runID).Scan(&ownerSession); err != nil {
+		return fmt.Errorf("worker control: command target: %w", err)
+	}
+	if ownerSession != sessionID {
+		return ErrStaleSession
+	}
+	return nil
 }
 
 func (s *Service) validateCrossSessionReplay(ctx context.Context, tx *sql.Tx, sessionID string, sequence uint64, acknowledged bool, envelope executioncontract.CommandEnvelope) error {

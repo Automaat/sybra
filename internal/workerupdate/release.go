@@ -41,7 +41,7 @@ func (r *runner) verify(ctx context.Context, dir, revision string) error {
 		if err != nil {
 			return err
 		}
-		if err := os.Chmod(path, 0755); err != nil {
+		if err := os.Chmod(path, 0o755); err != nil {
 			return err
 		}
 	}
@@ -89,7 +89,7 @@ func (r *runner) stage(ctx context.Context, revision string, retry bool) error {
 	// One bounded stage per candidate: a persistent preflight error must not
 	// download another pair of binaries on every timer tick until disk is full.
 	stage := filepath.Join(r.cfg.ReleaseRoot, ".stage-"+revision)
-	if err := os.Mkdir(stage, 0755); err != nil && !errors.Is(err, os.ErrExist) {
+	if err := os.Mkdir(stage, 0o755); err != nil && !errors.Is(err, os.ErrExist) {
 		return err
 	}
 	if err := r.trust(stage); err != nil {
@@ -125,7 +125,7 @@ func (r *runner) stage(ctx context.Context, revision string, retry bool) error {
 	if err := r.verify(ctx, stage, revision); err != nil {
 		return err
 	}
-	if err := os.Chmod(stage, 0755); err != nil {
+	if err := os.Chmod(stage, 0o755); err != nil {
 		return err
 	}
 	if err := r.preflight(ctx, stage); err != nil {

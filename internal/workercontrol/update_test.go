@@ -31,6 +31,7 @@ func registerUpdateWorker(t *testing.T, service *Service, build, resume string) 
 
 func TestUpdateHoldPreservesOperatorStateAcrossRestarts(t *testing.T) {
 	dbtest.Each(t, func(t *testing.T, engine dbtest.Engine) {
+		t.Helper()
 		service := New(engine.Open(t))
 		service.SetUpdateRevision(updateNew)
 		session := registerUpdateWorker(t, service, updateOld, "")
@@ -97,6 +98,7 @@ func TestUpdateHoldPreservesOperatorStateAcrossRestarts(t *testing.T) {
 
 func TestUpdateHoldDrainsAcceptedWork(t *testing.T) {
 	dbtest.Each(t, func(t *testing.T, engine dbtest.Engine) {
+		t.Helper()
 		service := New(engine.Open(t))
 		service.SetUpdateRevision(updateNew)
 		session := registerUpdateWorker(t, service, updateOld, "")
@@ -138,6 +140,7 @@ func TestUpdateHoldDrainsAcceptedWork(t *testing.T) {
 
 func TestUpdateOwnershipSurvivesLeaseLossButNotRelease(t *testing.T) {
 	dbtest.Each(t, func(t *testing.T, engine dbtest.Engine) {
+		t.Helper()
 		service := New(engine.Open(t))
 		service.SetUpdateRevision(updateNew)
 		session := registerUpdateWorker(t, service, updateOld, "")
@@ -163,6 +166,7 @@ func TestUpdateOwnershipSurvivesLeaseLossButNotRelease(t *testing.T) {
 
 func TestUpdateHoldRacesPlacement(t *testing.T) {
 	dbtest.Each(t, func(t *testing.T, engine dbtest.Engine) {
+		t.Helper()
 		service := New(engine.Open(t))
 		service.SetUpdateRevision(updateNew)
 		session := registerUpdateWorker(t, service, updateOld, "")

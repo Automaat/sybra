@@ -19,9 +19,9 @@ func main() {
 	cfg, err := workerupdate.LoadConfig(*path)
 	if err == nil && !*check {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-		defer cancel()
 		var status string
 		status, err = workerupdate.RunOnce(ctx, cfg, *retry)
+		cancel()
 		if status != "" {
 			fmt.Println(status)
 		}
