@@ -457,10 +457,12 @@ func (b *leaderExecutionBackend) relay(ctx context.Context, handle agent.Executi
 
 func (b *leaderExecutionBackend) completeAfterHandback(ctx context.Context, handle agent.ExecutionHandle, run *remoteExecution, event executioncontract.EventEnvelope) bool {
 	var terminal struct {
-		State         executioncontract.TerminalState `json:"state"`
-		Error         string                          `json:"error"`
-		ArtifactState executioncontract.ArtifactState `json:"artifactState"`
-		Permanent     bool                            `json:"permanent,omitempty"`
+		State             executioncontract.TerminalState `json:"state"`
+		Error             string                          `json:"error"`
+		ArtifactState     executioncontract.ArtifactState `json:"artifactState"`
+		ArtifactError     string                          `json:"artifactError,omitempty"`
+		Permanent         bool                            `json:"permanent,omitempty"`
+		AdmissionDeferred bool                            `json:"admissionDeferred,omitempty"`
 	}
 	if err := json.Unmarshal(event.Payload, &terminal); err != nil {
 		run.emit(ctx, handle, agent.ExecutionEvent{Kind: agent.ExecutionCompleted, Err: err})
@@ -472,7 +474,9 @@ func (b *leaderExecutionBackend) completeAfterHandback(ctx context.Context, hand
 	}
 	if terminal.ArtifactState == executioncontract.ArtifactsPending ||
 		(terminal.ArtifactState == executioncontract.ArtifactsFailed && terminal.State == executioncontract.TerminalSucceeded) {
-		terminal.State, terminal.Error = executioncontract.TerminalFailed, "remote artifact handback did not complete"
+		terminal.State = executioncontract.TerminalFailed
+		terminal.Error = errors.Join(errors.New(firstNonBlank(terminal.Error, "remote artifact handback did not complete")),
+			errors.New(firstNonBlank(terminal.ArtifactError, "remote artifact delivery failed"))).Error()
 	}
 	if terminal.ArtifactState == executioncontract.ArtifactsReady {
 	artifactWait:
@@ -480,7 +484,12 @@ func (b *leaderExecutionBackend) completeAfterHandback(ctx context.Context, hand
 			status, err := b.app.workerControl.RemoteRunStatus(ctx, run.runID)
 			if err != nil || status.ArtifactState == "imported" || status.ArtifactState == "rejected" {
 				if err != nil || status.ArtifactState == "rejected" {
-					terminal.State, terminal.Error = executioncontract.TerminalFailed, "remote artifact import failed"
+					terminal.State = executioncontract.TerminalFailed
+					if terminal.Error != "" {
+						terminal.Error += "; remote artifact import failed"
+					} else {
+						terminal.Error = "remote artifact import failed"
+					}
 				}
 				break
 			}
@@ -507,7 +516,7 @@ func (b *leaderExecutionBackend) completeAfterHandback(ctx context.Context, hand
 	default:
 		completionErr = errors.New(firstNonBlank(terminal.Error, "remote execution failed"))
 	}
-	run.emit(ctx, handle, agent.ExecutionEvent{Kind: agent.ExecutionCompleted, Err: completionErr, PermanentFailure: terminal.Permanent})
+	run.emit(ctx, handle, agent.ExecutionEvent{Kind: agent.ExecutionCompleted, Err: completionErr, PermanentFailure: terminal.Permanent, AdmissionDeferred: terminal.AdmissionDeferred && terminal.State == executioncontract.TerminalFailed})
 	return true
 }
 

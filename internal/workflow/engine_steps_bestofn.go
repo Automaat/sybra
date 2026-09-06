@@ -203,7 +203,7 @@ func (e *Engine) spawnBestOfNAttempt(taskID string, step *Step, wfExec *Executio
 	}
 
 	assignment := AgentAssignment{
-		IntentID:         taskID + ":" + wfExec.WorkflowID + ":bestofn:" + step.ID + ":" + attemptID,
+		IntentID:         admissionIntentID(taskID+":"+wfExec.WorkflowID+":bestofn:"+step.ID+":"+attemptID, status.AdmissionGeneration),
 		AdmissionTaskKey: taskID + ":bestofn:" + attemptID,
 		VariantID:        attemptID,
 		AssignmentUnit:   "bestofn-attempt",

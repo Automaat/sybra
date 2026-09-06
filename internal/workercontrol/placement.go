@@ -285,6 +285,9 @@ func scorePlacement(session placementSession, request PlacementRequest) Placemen
 	if session.state != "active" {
 		reject("worker is " + session.state)
 	}
+	if readiness := session.capabilities.one("readiness"); readiness != "" && readiness != "ready" {
+		reject("worker readiness: " + readiness)
+	}
 	hardPin, affinity := strings.TrimSpace(request.NodeOverride), strings.TrimSpace(request.AssignedNode)
 	if hardPin != "" && session.workerID != hardPin {
 		reject("hard node pin targets another worker")

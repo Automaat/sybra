@@ -39,8 +39,11 @@ type Config struct {
 	WorkspaceRoot string            `yaml:"workspace_root"`
 	StateRoot     string            `yaml:"state_root"`
 	SpoolMaxBytes int64             `yaml:"spool_max_bytes"`
-	LeaseSeconds  int               `yaml:"lease_seconds,omitempty"`
-	PollSeconds   int               `yaml:"poll_seconds,omitempty"`
+	// MinDiskFreeBytes reserves storage for accepted runs and durable handback.
+	// Zero selects the default (1 GiB); negative values are invalid.
+	MinDiskFreeBytes int64 `yaml:"min_disk_free_bytes,omitempty"`
+	LeaseSeconds     int   `yaml:"lease_seconds,omitempty"`
+	PollSeconds      int   `yaml:"poll_seconds,omitempty"`
 	// WorkspaceRetentionHours bounds completed diagnostic handbacks that the
 	// leader never acknowledges (for example after reassignment).
 	WorkspaceRetentionHours int `yaml:"workspace_retention_hours,omitempty"`
@@ -96,6 +99,12 @@ func (c *Config) Validate() error {
 	minimumSpool := terminalEventBudgetBytes * int64(c.Capacity+1)
 	if c.SpoolMaxBytes < minimumSpool {
 		return fmt.Errorf("agentd config: spool_max_bytes must be at least %d for capacity %d", minimumSpool, c.Capacity)
+	}
+	if c.MinDiskFreeBytes < 0 {
+		return errors.New("agentd config: min_disk_free_bytes must be non-negative")
+	}
+	if c.MinDiskFreeBytes == 0 {
+		c.MinDiskFreeBytes = 1 << 30
 	}
 	for ref, envName := range c.SecretEnv {
 		if strings.TrimSpace(ref) == "" || strings.TrimSpace(envName) == "" || strings.TrimSpace(os.Getenv(envName)) == "" {

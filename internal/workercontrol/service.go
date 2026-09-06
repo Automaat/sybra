@@ -80,20 +80,25 @@ type WorkspaceBaseBundle struct {
 }
 
 type Diagnostics struct {
-	WorkerID          string    `json:"workerId"`
-	SessionID         string    `json:"sessionId"`
-	State             string    `json:"state"`
-	BuildVersion      string    `json:"buildVersion"`
-	Protocol          string    `json:"protocol"`
-	LeaseExpiresAt    time.Time `json:"leaseExpiresAt"`
-	LastCommandAck    uint64    `json:"lastCommandAck"`
-	ActiveRuns        int       `json:"activeRuns"`
-	PendingEvents     int       `json:"pendingEvents"`
-	Capacity          int       `json:"capacity"`
-	AvailableCapacity int       `json:"availableCapacity"`
-	SpoolBytes        int64     `json:"spoolBytes"`
-	SpoolMaxBytes     int64     `json:"spoolMaxBytes"`
-	Alerts            []string  `json:"alerts,omitempty"`
+	WorkerID       string    `json:"workerId"`
+	SessionID      string    `json:"sessionId"`
+	State          string    `json:"state"`
+	BuildVersion   string    `json:"buildVersion"`
+	Protocol       string    `json:"protocol"`
+	LeaseExpiresAt time.Time `json:"leaseExpiresAt"`
+	LastCommandAck uint64    `json:"lastCommandAck"`
+	ActiveRuns     int       `json:"activeRuns"`
+	PendingEvents  int       `json:"pendingEvents"`
+	// Heartbeat-reported worker backlog, distinct from leader-unacked events.
+	BufferedEvents             int64    `json:"bufferedEvents"`
+	PendingArtifacts           int64    `json:"pendingArtifacts"`
+	OldestBufferedEventSeconds int64    `json:"oldestBufferedEventSeconds"`
+	Readiness                  string   `json:"readiness"`
+	Capacity                   int      `json:"capacity"`
+	AvailableCapacity          int      `json:"availableCapacity"`
+	SpoolBytes                 int64    `json:"spoolBytes"`
+	SpoolMaxBytes              int64    `json:"spoolMaxBytes"`
+	Alerts                     []string `json:"alerts,omitempty"`
 }
 
 type RemoteRunStatus struct {
@@ -1156,16 +1161,34 @@ func (s *Service) Diagnostics(ctx context.Context) ([]Diagnostics, error) {
 			return nil, fmt.Errorf("decode capabilities for worker %q session %q: %w", item.WorkerID, item.SessionID, err)
 		}
 		parsed := parseCapabilities(capabilities)
+		item.Readiness = parsed.one("readiness")
+		item.BufferedEvents, _ = strconv.ParseInt(parsed.one("buffered_events"), 10, 64)
+		item.PendingArtifacts, _ = strconv.ParseInt(parsed.one("pending_artifacts"), 10, 64)
+		item.OldestBufferedEventSeconds, _ = strconv.ParseInt(parsed.one("oldest_buffered_event_seconds"), 10, 64)
+		item.BufferedEvents = max(item.BufferedEvents, 0)
+		item.PendingArtifacts = max(item.PendingArtifacts, 0)
+		item.OldestBufferedEventSeconds = max(item.OldestBufferedEventSeconds, 0)
 		item.Capacity = parsed.capacity
 		item.SpoolBytes, _ = strconv.ParseInt(parsed.one("spool_bytes"), 10, 64)
 		item.SpoolMaxBytes, _ = strconv.ParseInt(parsed.one("spool_max_bytes"), 10, 64)
 		item.AvailableCapacity = max(item.Capacity-item.ActiveRuns, 0)
+		if readiness := parsed.one("readiness"); readiness != "" && readiness != "ready" {
+			item.AvailableCapacity = 0
+			item.Alerts = append(item.Alerts, "readiness:"+readiness)
+		}
+		if item.State != "active" || !item.LeaseExpiresAt.After(s.now()) {
+			item.AvailableCapacity = 0
+			item.Alerts = append(item.Alerts, "worker_unavailable")
+		}
 		// max-max/5 is ceil(80% of max) without overflowing large counters.
 		if item.SpoolMaxBytes > 0 && item.SpoolBytes >= item.SpoolMaxBytes-item.SpoolMaxBytes/5 {
 			item.Alerts = append(item.Alerts, "spool_pressure")
 		}
 		if item.PendingEvents > 0 {
 			item.Alerts = append(item.Alerts, "unacknowledged_events")
+		}
+		if item.BufferedEvents > 0 || item.PendingArtifacts > 0 {
+			item.Alerts = append(item.Alerts, "worker_handback_backlog")
 		}
 		if item.Capacity > 0 && item.AvailableCapacity == 0 {
 			item.Alerts = append(item.Alerts, "capacity_saturated")

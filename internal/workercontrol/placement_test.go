@@ -372,6 +372,28 @@ func TestDiagnosticsSpoolPressureDoesNotOverflow(t *testing.T) {
 	}
 }
 
+func TestReadinessRejectsPlacementAndRecoversOnHeartbeat(t *testing.T) {
+	service := New(dbtest.SQLite(t))
+	capabilities := []string{"capacity=2", "provider=claude", "provider_health:claude=healthy", "sandbox=enforce"}
+	session := registerPlacementWorker(t, service, "unready-node", append(slices.Clone(capabilities), "readiness=storage_pressure"))
+	request := placementRequest(t, "run-readiness", "effect-readiness")
+	result, err := service.ScheduleStart(t.Context(), request)
+	if !errors.Is(err, ErrNoEligibleWorker) || len(result.Candidates) != 1 || !slices.Contains(result.Candidates[0].Reasons, "worker readiness: storage_pressure") {
+		t.Fatalf("unready placement = %+v, %v", result, err)
+	}
+	diagnostics, err := service.Diagnostics(t.Context())
+	if err != nil || len(diagnostics) != 1 || diagnostics[0].AvailableCapacity != 0 || !slices.Contains(diagnostics[0].Alerts, "readiness:storage_pressure") {
+		t.Fatalf("readiness diagnostics = %+v, %v", diagnostics, err)
+	}
+	if _, err := service.Heartbeat(t.Context(), session.SessionID, append(capabilities, "readiness=ready")); err != nil {
+		t.Fatal(err)
+	}
+	result, err = service.ScheduleStart(t.Context(), request)
+	if err != nil || result.WorkerID != "unready-node" {
+		t.Fatalf("recovered placement = %+v, %v", result, err)
+	}
+}
+
 func registerPlacementWorker(t *testing.T, service *Service, worker string, capabilities []string) Session {
 	t.Helper()
 	session, err := service.Register(t.Context(), RegisterRequest{

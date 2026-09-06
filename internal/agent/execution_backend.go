@@ -42,7 +42,10 @@ type ExecutionEvent struct {
 	Command               string
 	BackendOwnsCompletion bool
 	PermanentFailure      bool
-	Approval              *ApprovalRequest
+	// AdmissionDeferred means the worker refused the run before spawning a
+	// provider. It is infrastructure backpressure, not a coding attempt.
+	AdmissionDeferred bool
+	Approval          *ApprovalRequest
 	// OutputParsed marks Output as this package's own StreamEvent rather than
 	// the provider's wire format. A backend that runs the agent on another
 	// machine forwards already-parsed events, and re-parsing them as provider

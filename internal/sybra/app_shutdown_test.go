@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/httpapi"
+	"github.com/Automaat/sybra/internal/limits"
 )
 
 func TestWaitGroupContext(t *testing.T) {
@@ -147,6 +149,34 @@ func TestBeginShutdownCancelsAcceptedWork(t *testing.T) {
 	}
 	if got := a.lifecycleState(); got != lifecycleStateStopping {
 		t.Fatalf("lifecycle state = %v, want stopping", got)
+	}
+}
+
+func TestLimitsPollingStopsDuringDrain(t *testing.T) {
+	// Exercise initLimits itself: passing schedulerCtx directly to the poller
+	// would miss a regression in the production wiring that caused the hang.
+	cfg := &config.Config{}
+	cfg.Providers.Limits.Enabled = true
+	a := &App{logger: discardLogger(), cfg: cfg}
+	a.initLifecycle(t.Context())
+	t.Cleanup(a.beginShutdown)
+	store, err := limits.NewStore(filepath.Join(t.TempDir(), "limits.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Model drain racing startup. Cancel the scheduler before launching the
+	// backfill so this test never reads the operator's provider-session files.
+	// The old a.ctx wiring still hangs here, since accepted work remains live.
+	a.schedulerCancel()
+	a.initLimits(store, nil)
+	a.BeginDrain()
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	if !waitGroupContext(ctx, &a.wg) {
+		t.Fatal("limit polling did not stop during drain")
+	}
+	if a.ctx.Err() != nil {
+		t.Fatal("draining pollers canceled accepted agent work")
 	}
 }
 

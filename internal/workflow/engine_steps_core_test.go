@@ -101,6 +101,31 @@ func TestHandleAgentComplete_PermanentExecutionFailureBlocksWithoutRetry(t *test
 	}
 }
 
+func TestWorkerAdmissionDeferralDoesNotSpendCodingRetries(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
+	tasks.Put(TaskInfo{ID: "t1", Status: taskstatus.InProgress, AgentMode: "headless", Workflow: &Execution{
+		WorkflowID: "test-simple", CurrentStep: "triage", State: ExecWaiting,
+	}})
+	for i := range 5 {
+		agentID := fmt.Sprintf("unadmitted-%d", i)
+		setWorkflowAgentRoute(t, tasks, "t1", agentID, "triage")
+		engine.HandleAgentComplete("t1", AgentCompletion{AgentID: agentID, EscalationReason: "infrastructure_admission_deferred"})
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agents.CallCount() != 0 || got.Status != taskstatus.InProgress || got.Workflow.State != ExecWaiting || got.Workflow.CountStep("triage") != 0 || len(got.Workflow.AgentRoutes) != 0 {
+		t.Fatalf("deferral charged retries or dispatched immediately: %+v", got)
+	}
+	if !strings.Contains(got.StatusReason, "remote worker admission") || got.Workflow.Variables[workflowRetryAfterVar] == "" {
+		t.Fatalf("missing observable bounded wait: %+v", got.Workflow)
+	}
+}
+
 func TestHandleHumanAction_NotWaiting(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
