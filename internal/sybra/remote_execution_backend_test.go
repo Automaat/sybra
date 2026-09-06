@@ -407,6 +407,62 @@ func TestRemoteRelayCancellationDetachesWithoutCompleting(t *testing.T) {
 	}
 }
 
+func TestRemoteTerminalPreservesProviderAndArtifactFailures(t *testing.T) {
+	for _, state := range []executioncontract.TerminalState{executioncontract.TerminalSucceeded, executioncontract.TerminalFailed, executioncontract.TerminalCanceled} {
+		for _, artifactState := range []executioncontract.ArtifactState{executioncontract.ArtifactsFailed, executioncontract.ArtifactsPending} {
+			t.Run(string(state)+"/"+string(artifactState), func(t *testing.T) {
+				sink := &recordingExecutionSink{ready: make(chan struct{})}
+				backend := &leaderExecutionBackend{}
+				run := &remoteExecution{runID: "handback", sink: sink}
+				providerError := ""
+				primary := ""
+				switch state {
+				case executioncontract.TerminalSucceeded:
+					primary = "remote artifact handback did not complete"
+				case executioncontract.TerminalFailed:
+					providerError, primary = "provider process failed", "provider process failed"
+				case executioncontract.TerminalCanceled:
+					providerError, primary = context.Canceled.Error(), context.Canceled.Error()
+				}
+				event := remoteBackendEvent("handback", 1, executioncontract.EventTerminal, map[string]any{
+					"state": state, "error": providerError, "artifactState": artifactState, "artifactError": "artifact could not be collected",
+				})
+				if !backend.completeAfterHandback(t.Context(), "remote:handback", run, event) {
+					t.Fatal("terminal handback did not complete")
+				}
+				sink.mu.Lock()
+				defer sink.mu.Unlock()
+				if len(sink.events) != 1 || sink.events[0].Kind != agent.ExecutionCompleted || sink.events[0].Err == nil {
+					t.Fatalf("missing failed completion: %+v", sink.events)
+				}
+				err := sink.events[0].Err
+				if !strings.HasPrefix(err.Error(), primary) || !strings.Contains(err.Error(), "remote artifact handback: artifact could not be collected") {
+					t.Fatalf("provider/artifact context lost: %v", err)
+				}
+				if errors.Is(err, context.Canceled) != (state == executioncontract.TerminalCanceled) {
+					t.Fatalf("cancellation identity changed: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestRemoteFailedTerminalWithoutErrorUsesProviderDefault(t *testing.T) {
+	sink := &recordingExecutionSink{ready: make(chan struct{})}
+	backend := &leaderExecutionBackend{}
+	run := &remoteExecution{runID: "handback", sink: sink}
+	event := remoteBackendEvent("handback", 1, executioncontract.EventTerminal, map[string]any{
+		"state": executioncontract.TerminalFailed, "artifactState": executioncontract.ArtifactsFailed,
+	})
+	backend.completeAfterHandback(t.Context(), "remote:handback", run, event)
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	if len(sink.events) != 1 || sink.events[0].Err == nil ||
+		!strings.HasPrefix(sink.events[0].Err.Error(), "remote execution failed\nremote artifact handback:") {
+		t.Fatalf("provider default lost: %+v", sink.events)
+	}
+}
+
 func TestRemoteCanceledTerminalPreservesObservationDeadline(t *testing.T) {
 	sink := &recordingExecutionSink{ready: make(chan struct{})}
 	ctx, cancel := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))

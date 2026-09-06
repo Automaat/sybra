@@ -472,11 +472,10 @@ func (b *leaderExecutionBackend) completeAfterHandback(ctx context.Context, hand
 		run.emit(ctx, handle, agent.ExecutionEvent{Kind: agent.ExecutionCompleted, Err: fmt.Errorf("invalid remote terminal state %q", terminal.State)})
 		return true
 	}
-	if terminal.ArtifactState == executioncontract.ArtifactsPending ||
-		(terminal.ArtifactState == executioncontract.ArtifactsFailed && terminal.State == executioncontract.TerminalSucceeded) {
+	if terminal.State == executioncontract.TerminalSucceeded &&
+		(terminal.ArtifactState == executioncontract.ArtifactsPending || terminal.ArtifactState == executioncontract.ArtifactsFailed) {
 		terminal.State = executioncontract.TerminalFailed
-		terminal.Error = errors.Join(errors.New(firstNonBlank(terminal.Error, "remote artifact handback did not complete")),
-			errors.New(firstNonBlank(terminal.ArtifactError, "remote artifact delivery failed"))).Error()
+		terminal.Error = firstNonBlank(terminal.Error, "remote artifact handback did not complete")
 	}
 	if terminal.ArtifactState == executioncontract.ArtifactsReady {
 	artifactWait:
@@ -515,6 +514,12 @@ func (b *leaderExecutionBackend) completeAfterHandback(ctx context.Context, hand
 		}
 	default:
 		completionErr = errors.New(firstNonBlank(terminal.Error, "remote execution failed"))
+	}
+	if terminal.ArtifactState == executioncontract.ArtifactsFailed || terminal.ArtifactState == executioncontract.ArtifactsPending {
+		// Keep the provider outcome first (including cancellation identity),
+		// but never discard a second failure in collecting/delivering its work.
+		completionErr = errors.Join(completionErr, fmt.Errorf("remote artifact handback: %s",
+			firstNonBlank(terminal.ArtifactError, "delivery did not complete")))
 	}
 	run.emit(ctx, handle, agent.ExecutionEvent{Kind: agent.ExecutionCompleted, Err: completionErr, PermanentFailure: terminal.Permanent, AdmissionDeferred: terminal.AdmissionDeferred && terminal.State == executioncontract.TerminalFailed})
 	return true
