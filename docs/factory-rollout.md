@@ -41,12 +41,24 @@ by quota. Repeated error-log records are not unique failed runs.
    existing service environment; do not print the environment or token.
    Point `/opt/sybra/worker-current` at this release. Retain the previous target
    for rollback. Do not point it inside the full-board release-pruning tree.
-3. Install [the standalone drop-in](../deploy/systemd/sybra-agentd-standalone.conf)
-   as `/etc/systemd/system/sybra-agentd.service.d/standalone.conf`, reload systemd,
-   then restart `sybra-agentd`. The drop-in removes `PartOf=sybra.service` and
-   changes only the worker executable/working directory. Keep `KillMode=process`,
+3. Back up and upgrade [the base unit](../deploy/systemd/sybra-agentd.service)
+   at `/etc/systemd/system/sybra-agentd.service`, preserving any host-specific
+   environment files and survival settings. The new base has no board dependency.
+   **An old base cannot be repaired with empty `PartOf=`/`After=` lines in a
+   drop-in:** systemd dependency lists are additive and cannot be reset there.
+   Install [the standalone drop-in](../deploy/systemd/sybra-agentd-standalone.conf)
+   as `/etc/systemd/system/sybra-agentd.service.d/standalone.conf`; it changes only
+   the worker executable/working directory. Reload systemd, inspect
+   `systemctl show sybra-agentd -p PartOf -p After -p KillMode -p ExecStart`, and
+   confirm neither dependency property contains `sybra.service` (including
+   dependencies introduced by other host drop-ins). Keep `KillMode=process`,
    existing environment files, sandbox enforcement, and durable state paths.
-   Clear an old start-limit failure with `systemctl reset-failed sybra-agentd`.
+   Clear an old start-limit failure with `systemctl reset-failed sybra-agentd`,
+   then restart the worker. The co-hosted board's post-healthcheck refresh hook
+   remains supported without a lifetime dependency, and resets a co-hosted
+   worker's start budget once a healthy agentd-capable release exists. An
+   unloaded-unit reset failure is logged but does not prevent the explicit
+   restart, whose failure still propagates to the caller.
 4. On the laptop, install [the tunnel reconciler](../deploy/bin/sybra-leader-tunnel.sh)
    and adapt [the launchd template](../deploy/launchd/dev.sybra.agentd-tunnel.plist.example)
    with absolute paths, the actual leader home, and an SSH host alias. Replace
@@ -64,7 +76,8 @@ by quota. Repeated error-log records are not unique failed runs.
 
 Rollback: restore the prior worker release pointer and restart with the same
 state/config. To restore the old co-hosted service topology, drain first, remove
-only the standalone drop-in, reload systemd, and re-enable the old service.
+only the standalone drop-in, reload systemd, and re-enable the old service; its
+post-healthcheck hook again refreshes the worker onto the board's release.
 Never run both boards' automations against the same workload during rollback.
 
 Transient initial connection failures now retry with capped jittered backoff,
