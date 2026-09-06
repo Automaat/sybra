@@ -33,7 +33,7 @@ func TestActorNeverRequeuesAnUnrepairedCause(t *testing.T) {
 func TestActorPipelineKeepsFindingsWithoutModeFlip(t *testing.T) {
 	updater := &forbiddenUpdater{}
 	findings := []health.Finding{
-		{Category: health.CatTriageMismatch, Cause: health.CausePlanning, TaskID: "planning", Fingerprint: "planning"},
+		{Category: health.CatTriageMismatch, Cause: health.CausePlanning, TaskID: "planning-fixture", Fingerprint: "planning-fixture"},
 		{Category: health.CatInfrastructureEscalation, Cause: health.CauseInfrastructure, TaskID: "infra", Fingerprint: "infra"},
 		{Category: health.CatEscalationUnknown, Cause: health.CauseUnknown, TaskID: "legacy", Fingerprint: "legacy"},
 		{Category: health.CatIncidentRecovery, Cause: health.CauseIncidentRecurrence, TaskID: "incident", Fingerprint: "incident"},
