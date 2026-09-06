@@ -30,6 +30,10 @@ jobs:
 
       - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
 
+      - uses: ./.github/actions/go-test-cache
+        with:
+          suite: unit
+
       - name: Install Linux process sandbox
         run: |
           sudo apt-get update
@@ -42,7 +46,7 @@ jobs:
         run: cd frontend && npm ci && npm run build:desktop
 
       - name: Run Go tests
-        run: go test -race -timeout 5m ./...
+        run: go test -race -count=1 -timeout 5m ./...
 
   test-go-darwin:
     name: Go Sandbox Tests (macOS)
@@ -85,14 +89,22 @@ jobs:
             exit 1
           fi
 
-  test-go-e2e:
-    name: Go E2E Tests
+  test-go-e2e-shards:
+    name: Go E2E application (${{ matrix.shard }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
+
+      - uses: ./.github/actions/go-test-cache
+        with:
+          suite: e2e-app
 
       - name: Install Linux process sandbox
         run: |
@@ -120,7 +132,59 @@ jobs:
           exit 1
 
       - name: Run Go e2e tests
-        run: go test -race -tags e2e -p 1 -timeout 20m ./internal/sybra/...
+        run: go run ./scripts/gotestshard -index "${{ matrix.shard }}" -total 4
+
+  test-go-e2e-packages:
+    name: Go E2E child packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
+
+      - uses: ./.github/actions/go-test-cache
+        with:
+          suite: e2e-packages
+
+      - name: Install Linux process sandbox
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          sudo sysctl -w kernel.unprivileged_userns_clone=1
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          bwrap --ro-bind / / --dev /dev --proc /proc true
+
+      - name: Build frontend (needed for go:embed)
+        run: cd frontend && npm ci && npm run build:desktop
+
+      - name: Run every child package with E2E tags
+        shell: bash
+        run: |
+          # Capture go list's failure before filtering: process substitution
+          # would hide a discovery error and silently drop package coverage.
+          packages="$(go list -race -tags e2e ./internal/sybra/...)"
+          children=()
+          while IFS= read -r package; do
+            [[ "$package" == "github.com/Automaat/sybra/internal/sybra" ]] && continue
+            [[ -n "$package" ]] && children+=("$package")
+          done <<< "$packages"
+          (( ${#children[@]} > 0 ))
+          go test -race -count=1 -tags e2e -p 1 -timeout 20m "${children[@]}"
+
+  # Keep the protected check's exact name. always() makes a failed, skipped,
+  # or canceled dependency produce a failing gate instead of a skipped check.
+  test-go-e2e:
+    name: Go E2E Tests
+    runs-on: ubuntu-latest
+    if: ${{ always() }}
+    needs: [test-go-e2e-shards, test-go-e2e-packages]
+    steps:
+      - name: Require every E2E runner to succeed
+        env:
+          SHARDS_RESULT: ${{ needs.test-go-e2e-shards.result }}
+          PACKAGES_RESULT: ${{ needs.test-go-e2e-packages.result }}
+        run: test "$SHARDS_RESULT" = success && test "$PACKAGES_RESULT" = success
 
   test-go-db:
     name: Go Database Engine Tests
