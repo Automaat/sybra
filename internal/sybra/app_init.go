@@ -857,11 +857,7 @@ func (a *App) initStatusHook() {
 				data["human_kind"] = kind
 			}
 		}
-		if a.audit != nil {
-			if err := a.audit.Log(audit.Event{Timestamp: changed.UpdatedAt, Type: audit.EventTaskStatusChanged, TaskID: taskID, Data: data}); err != nil {
-				a.logger.Warn("audit.status-transition", "err", err)
-			}
-		}
+		a.auditStatusTransition(changed, data)
 		if a.maybeQuarantineStatusBounce(taskID, from, to, actor, changed.UpdatedAt) {
 			// Stop the agent the pause was meant to interrupt. Without this it
 			// runs on, and its completion advances the workflow onto a step
@@ -966,6 +962,14 @@ func (a *App) initStatusHook() {
 			}
 		}
 	})
+}
+
+func (a *App) auditStatusTransition(changed task.Task, data map[string]any) {
+	if a.audit != nil {
+		if err := a.audit.Log(audit.Event{Timestamp: changed.UpdatedAt, Type: audit.EventTaskStatusChanged, TaskID: changed.ID, Data: data}); err != nil {
+			a.logger.Warn("audit.status-transition", "err", err)
+		}
+	}
 }
 
 // observeIncidentBoundary runs under the Manager's commit lock: only bounded

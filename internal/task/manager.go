@@ -944,7 +944,7 @@ func (m *Manager) AddRunWithStatusBy(taskID, actor string, run AgentRun, status 
 	return nil
 }
 
-// UpdateRun updates fields on a specific agent run and emits task:updated.
+// copySidecars enriches a committed primary snapshot without replacing it.
 func copySidecars(dst *Task, src Task) {
 	dst.Plan, dst.PlanContract = src.Plan, src.PlanContract
 	dst.PlanCritique, dst.PlanResearch = src.PlanCritique, src.PlanResearch

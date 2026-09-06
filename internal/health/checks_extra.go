@@ -101,6 +101,8 @@ func checkTriageMismatch(events []audit.Event, now time.Time) []Finding {
 	for k, count := range escalated {
 		category := CatEscalationUnknown
 		switch k.cause {
+		case CauseUnknown, CauseIncidentRecurrence:
+			// An escalation is not an incident reopening; retain unknown.
 		case CausePlanning:
 			category = CatTriageMismatch
 		case CauseSpecification:

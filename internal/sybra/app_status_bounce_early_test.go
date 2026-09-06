@@ -1,9 +1,10 @@
 package sybra
 
 import (
-	"github.com/Automaat/sybra/internal/task"
 	"sync/atomic"
 	"testing"
+
+	"github.com/Automaat/sybra/internal/task"
 )
 
 func TestRegressionLateBoundaryCannotQuarantineNewEpisode(t *testing.T) {

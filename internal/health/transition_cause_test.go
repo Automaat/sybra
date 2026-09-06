@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 func transitionFixture(from, to, actor, code, owner, provenance string) audit.Event {
@@ -21,19 +22,19 @@ func TestClassifyTransitionRequiresStructuredEvidence(t *testing.T) {
 		event audit.Event
 		want  TransitionCause
 	}{
-		{"incident", transitionFixture("done", "todo", "monitor.incident.reopen", "", "", ""), CauseIncidentRecurrence},
-		{"cancelled incident", transitionFixture("cancelled", "todo", "monitor.incident.reopen", "", "", ""), CauseIncidentRecurrence},
-		{"ordinary reopen", transitionFixture("done", "todo", "cli.reopen", "", "", ""), CauseUnknown},
-		{"nonterminal incident actor", transitionFixture("in-review", "todo", "monitor.incident.reopen", "", "", ""), CauseUnknown},
-		{"machine", transitionFixture("testing", "blocked", "workflow", "runenv.unavailable", "machine", "control_plane"), CauseInfrastructure},
-		{"external transient", transitionFixture("testing", "blocked", "workflow", "github.unavailable", "external_transient", "github"), CauseInfrastructure},
-		{"planning", transitionFixture("planning", "human-required", "workflow", "planning.retry_exhausted", "specification", "control_plane"), CausePlanning},
-		{"specification", transitionFixture("testing", "human-required", "workflow", "requirements.missing", "specification", "operator"), CauseSpecification},
-		{"operator", transitionFixture("testing", "human-required", "workflow", "approval.required", "operator_authority", "control_plane"), CauseOperator},
-		{"legacy", transitionFixture("testing", "human-required", "workflow", "planning.retry_exhausted", "specification", "legacy"), CauseUnknown},
-		{"provider assertion", transitionFixture("testing", "human-required", "workflow", "planning.retry_exhausted", "specification", "provider"), CauseUnknown},
-		{"missing code", transitionFixture("testing", "human-required", "workflow", "", "specification", "control_plane"), CauseUnknown},
-		{"missing metadata", transitionFixture("testing", "human-required", "", "", "", ""), CauseUnknown},
+		{"incident", transitionFixture(string(taskstatus.Done), string(taskstatus.Todo), "monitor.incident.reopen", "", "", ""), CauseIncidentRecurrence},
+		{"cancelled incident", transitionFixture(string(taskstatus.Cancelled), string(taskstatus.Todo), "monitor.incident.reopen", "", "", ""), CauseIncidentRecurrence},
+		{"ordinary reopen", transitionFixture(string(taskstatus.Done), string(taskstatus.Todo), "cli.reopen", "", "", ""), CauseUnknown},
+		{"nonterminal incident actor", transitionFixture(string(taskstatus.InReview), string(taskstatus.Todo), "monitor.incident.reopen", "", "", ""), CauseUnknown},
+		{"machine", transitionFixture(string(taskstatus.Testing), string(taskstatus.Blocked), "workflow", "runenv.unavailable", "machine", "control_plane"), CauseInfrastructure},
+		{"external transient", transitionFixture(string(taskstatus.Testing), string(taskstatus.Blocked), "workflow", "github.unavailable", "external_transient", "github"), CauseInfrastructure},
+		{string(taskstatus.Planning), transitionFixture(string(taskstatus.Planning), string(taskstatus.HumanRequired), "workflow", "planning.retry_exhausted", "specification", "control_plane"), CausePlanning},
+		{"specification", transitionFixture(string(taskstatus.Testing), string(taskstatus.HumanRequired), "workflow", "requirements.missing", "specification", "operator"), CauseSpecification},
+		{"operator", transitionFixture(string(taskstatus.Testing), string(taskstatus.HumanRequired), "workflow", "approval.required", "operator_authority", "control_plane"), CauseOperator},
+		{"legacy", transitionFixture(string(taskstatus.Testing), string(taskstatus.HumanRequired), "workflow", "planning.retry_exhausted", "specification", "legacy"), CauseUnknown},
+		{"provider assertion", transitionFixture(string(taskstatus.Testing), string(taskstatus.HumanRequired), "workflow", "planning.retry_exhausted", "specification", "provider"), CauseUnknown},
+		{"missing code", transitionFixture(string(taskstatus.Testing), string(taskstatus.HumanRequired), "workflow", "", "specification", "control_plane"), CauseUnknown},
+		{"missing metadata", transitionFixture(string(taskstatus.Testing), string(taskstatus.HumanRequired), "", "", "", ""), CauseUnknown},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := ClassifyTransition(tc.event); got != tc.want {
@@ -46,9 +47,9 @@ func TestClassifyTransitionRequiresStructuredEvidence(t *testing.T) {
 func TestEscalationFindingsDoNotInferCauseFromHeadless(t *testing.T) {
 	events := []audit.Event{
 		{Type: audit.EventTriageCompleted, TaskID: "task-synthetic", Data: map[string]any{"agent_mode": "headless"}},
-		transitionFixture("planning", "human-required", "workflow", "planning.retry_exhausted", "specification", "control_plane"),
-		transitionFixture("testing", "blocked", "workflow", "runenv.unavailable", "machine", "control_plane"),
-		transitionFixture("testing", "human-required", "", "", "", ""),
+		transitionFixture(string(taskstatus.Planning), string(taskstatus.HumanRequired), "workflow", "planning.retry_exhausted", "specification", "control_plane"),
+		transitionFixture(string(taskstatus.Testing), string(taskstatus.Blocked), "workflow", "runenv.unavailable", "machine", "control_plane"),
+		transitionFixture(string(taskstatus.Testing), string(taskstatus.HumanRequired), "", "", "", ""),
 	}
 	got := checkTriageMismatch(events, time.Now())
 	if len(got) != 3 {
@@ -72,7 +73,7 @@ func TestStatusBounceSeparatesIncidentEpisodes(t *testing.T) {
 	now := time.Now()
 	var events []audit.Event
 	for range 4 {
-		events = append(events, transitionFixture("todo", "done", "workflow", "", "", ""), transitionFixture("done", "todo", "monitor.incident.reopen", "", "", ""))
+		events = append(events, transitionFixture(string(taskstatus.Todo), string(taskstatus.Done), "workflow", "", "", ""), transitionFixture(string(taskstatus.Done), string(taskstatus.Todo), "monitor.incident.reopen", "", "", ""))
 	}
 	for i := range events {
 		events[i].Timestamp = now.Add(time.Duration(i) * time.Minute)
@@ -101,10 +102,10 @@ func TestStatusBounceSeparatesIncidentEpisodes(t *testing.T) {
 func TestIncidentDoesNotHideBounceWithinOneEpisode(t *testing.T) {
 	now := time.Now()
 	events := []audit.Event{
-		transitionFixture("done", "todo", "monitor.incident.reopen", "", "", ""),
-		transitionFixture("in-review", "in-progress", "fixer", "", "", ""),
-		transitionFixture("in-progress", "in-review", "reviewer", "", "", ""),
-		transitionFixture("in-review", "in-progress", "fixer", "", "", ""),
+		transitionFixture(string(taskstatus.Done), string(taskstatus.Todo), "monitor.incident.reopen", "", "", ""),
+		transitionFixture(string(taskstatus.InReview), string(taskstatus.InProgress), "fixer", "", "", ""),
+		transitionFixture(string(taskstatus.InProgress), string(taskstatus.InReview), "reviewer", "", "", ""),
+		transitionFixture(string(taskstatus.InReview), string(taskstatus.InProgress), "fixer", "", "", ""),
 	}
 	for i := range events {
 		events[i].Timestamp = now.Add(time.Duration(i) * time.Minute)
