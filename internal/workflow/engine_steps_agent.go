@@ -433,6 +433,7 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	if err := e.bindVerificationInput(taskID, step, wfExec, ctx.Task); err != nil {
 		return err
 	}
+	e.bindReviewProgress(step, wfExec, ctx.Task, &assignment)
 
 	// The step-action effect intent is already persisted before execRunAgent is
 	// entered, so an untracked completion that lands while StartAgent is

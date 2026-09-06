@@ -20,6 +20,7 @@ import (
 	"github.com/Automaat/sybra/internal/executioncontract"
 	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/notes"
+	"github.com/Automaat/sybra/internal/reviewprogress"
 )
 
 const (
@@ -63,6 +64,8 @@ func BaseBundleRef(runID string) string {
 	digest := sha256.Sum256([]byte(runID))
 	return "refs/sybra/base-input/" + hex.EncodeToString(digest[:])
 }
+
+func ReviewBundleRef(runID string) string { return BaseBundleRef(runID) + "-review" }
 
 // Prepare clones the daemon-local source and checks out exactly BaseSHA. The
 // mutable BaseRef tip is verified only as ancestry; it is never checked out.
@@ -116,6 +119,9 @@ func PrepareWithBaseBundle(ctx context.Context, root, source string, spec execut
 		if err := gitexec.Run(ctx, gitexec.Options{Dir: worktree}, "fetch", bundlePath, importedRef+":"+importedRef); err != nil {
 			return Layout{}, fmt.Errorf("%w: import: %w", ErrInvalidBaseBundle, err)
 		}
+		if err := importReviewBase(ctx, worktree, bundlePath, spec); err != nil {
+			return Layout{}, err
+		}
 		_ = os.Remove(bundlePath)
 		resolved, err := gitexec.Output(ctx, gitexec.Options{Dir: worktree}, "rev-parse", "--verify", importedRef+"^{commit}")
 		if err != nil || resolved != spec.Workspace.BaseSHA {
@@ -140,18 +146,13 @@ func PrepareWithBaseBundle(ctx context.Context, root, source string, spec execut
 	if err := gitexec.Run(ctx, gitexec.Options{Dir: worktree}, "checkout", "--detach", spec.Workspace.BaseSHA); err != nil {
 		return Layout{}, fmt.Errorf("agent workspace: checkout immutable base: %w", err)
 	}
-	// Remote workspaces must be able to create handback commits without
-	// depending on the daemon account's operator identity or signing setup.
-	// These repository-local values stay inside the disposable checkout.
-	for key, value := range map[string]string{
-		"user.name":      "Sybra Agent",
-		"user.email":     "sybra-agent@example.invalid",
-		"commit.gpgsign": "false",
-		"tag.gpgsign":    "false",
-	} {
-		if err := gitexec.Run(ctx, gitexec.Options{Dir: worktree}, "config", "--local", key, value); err != nil {
-			return Layout{}, fmt.Errorf("agent workspace: configure git identity: %w", err)
+	if base := spec.Workspace.ReviewBase; base != nil {
+		if err := reviewprogress.PinBase(ctx, worktree, base.Ref, base.SHA); err != nil {
+			return Layout{}, err
 		}
+	}
+	if err := configureAgentIdentity(ctx, worktree); err != nil {
+		return Layout{}, err
 	}
 	layout := Layout{RunRoot: tmp, Worktree: worktree, Sidecar: filepath.Join(tmp, "sidecar"), Artifact: filepath.Join(tmp, "artifact"), WorkingMemory: worktree}
 	for _, declared := range spec.Workspace.Roots {
@@ -177,6 +178,39 @@ func PrepareWithBaseBundle(ctx context.Context, root, source string, spec execut
 		return Layout{}, err
 	}
 	return final, nil
+}
+
+func configureAgentIdentity(ctx context.Context, worktree string) error {
+	// Remote workspaces must be able to create handback commits without
+	// depending on the daemon account's operator identity or signing setup.
+	// These repository-local values stay inside the disposable checkout.
+	for key, value := range map[string]string{
+		"user.name":      "Sybra Agent",
+		"user.email":     "sybra-agent@example.invalid",
+		"commit.gpgsign": "false",
+		"tag.gpgsign":    "false",
+	} {
+		if err := gitexec.Run(ctx, gitexec.Options{Dir: worktree}, "config", "--local", key, value); err != nil {
+			return fmt.Errorf("agent workspace: configure git identity: %w", err)
+		}
+	}
+	return nil
+}
+
+func importReviewBase(ctx context.Context, worktree, bundlePath string, spec executioncontract.RunSpec) error {
+	base := spec.Workspace.ReviewBase
+	if base == nil {
+		return nil
+	}
+	ref := ReviewBundleRef(spec.RunID)
+	if err := gitexec.Run(ctx, gitexec.Options{Dir: worktree}, "fetch", bundlePath, ref+":"+ref); err != nil {
+		return fmt.Errorf("%w: import review base: %w", ErrInvalidBaseBundle, err)
+	}
+	sha, err := gitexec.Output(ctx, gitexec.Options{Dir: worktree}, "rev-parse", "--verify", ref+"^{commit}")
+	if err != nil || sha != base.SHA {
+		return fmt.Errorf("%w: review base differs", ErrInvalidBaseBundle)
+	}
+	return nil
 }
 
 func cloneAtRepositoryAnchor(ctx context.Context, source, worktree, anchor string) error {

@@ -660,6 +660,12 @@ export class StepConfig {
     "needsWorktree": boolean;
 
     /**
+     * ReviewProgressBase opts a review into independent progress checkpoints
+     * against this exact Git base ref. Empty leaves the review stateless.
+     */
+    "reviewProgressBase"?: string;
+
+    /**
      * wait_human
      */
     "humanActions": string[];
@@ -873,37 +879,37 @@ export class StepConfig {
      */
     static createFrom($$source: any = {}): StepConfig {
         const $$createField5_0 = $$createType27;
-        const $$createField7_0 = $$createType27;
-        const $$createField10_0 = $$createType29;
-        const $$createField20_0 = $$createType27;
+        const $$createField8_0 = $$createType27;
+        const $$createField11_0 = $$createType29;
         const $$createField21_0 = $$createType27;
-        const $$createField22_0 = $$createType31;
-        const $$createField23_0 = $$createType32;
-        const $$createField26_0 = $$createType27;
+        const $$createField22_0 = $$createType27;
+        const $$createField23_0 = $$createType31;
+        const $$createField24_0 = $$createType32;
+        const $$createField27_0 = $$createType27;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("allowedTools" in $$parsedSource) {
             $$parsedSource["allowedTools"] = $$createField5_0($$parsedSource["allowedTools"]);
         }
         if ("humanActions" in $$parsedSource) {
-            $$parsedSource["humanActions"] = $$createField7_0($$parsedSource["humanActions"]);
+            $$parsedSource["humanActions"] = $$createField8_0($$parsedSource["humanActions"]);
         }
         if ("check" in $$parsedSource) {
-            $$parsedSource["check"] = $$createField10_0($$parsedSource["check"]);
+            $$parsedSource["check"] = $$createField11_0($$parsedSource["check"]);
         }
         if ("clearSidecars" in $$parsedSource) {
-            $$parsedSource["clearSidecars"] = $$createField20_0($$parsedSource["clearSidecars"]);
+            $$parsedSource["clearSidecars"] = $$createField21_0($$parsedSource["clearSidecars"]);
         }
         if ("clearWorktreeGlobs" in $$parsedSource) {
-            $$parsedSource["clearWorktreeGlobs"] = $$createField21_0($$parsedSource["clearWorktreeGlobs"]);
+            $$parsedSource["clearWorktreeGlobs"] = $$createField22_0($$parsedSource["clearWorktreeGlobs"]);
         }
         if ("importSidecar" in $$parsedSource) {
-            $$parsedSource["importSidecar"] = $$createField22_0($$parsedSource["importSidecar"]);
+            $$parsedSource["importSidecar"] = $$createField23_0($$parsedSource["importSidecar"]);
         }
         if ("importSidecars" in $$parsedSource) {
-            $$parsedSource["importSidecars"] = $$createField23_0($$parsedSource["importSidecars"]);
+            $$parsedSource["importSidecars"] = $$createField24_0($$parsedSource["importSidecars"]);
         }
         if ("attemptProviders" in $$parsedSource) {
-            $$parsedSource["attemptProviders"] = $$createField26_0($$parsedSource["attemptProviders"]);
+            $$parsedSource["attemptProviders"] = $$createField27_0($$parsedSource["attemptProviders"]);
         }
         return new StepConfig($$parsedSource as Partial<StepConfig>);
     }

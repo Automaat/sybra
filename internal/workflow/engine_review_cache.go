@@ -3,6 +3,7 @@ package workflow
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/Automaat/sybra/internal/evidence"
 )
@@ -21,6 +22,16 @@ func (e *Engine) verificationContractDigest(t TaskInfo) string {
 
 func verificationInputKey(stepID, input string) string {
 	return "evidence." + stepID + "." + input
+}
+
+func (e *Engine) bindReviewProgress(step *Step, wf *Execution, t TaskInfo, assignment *AgentAssignment) {
+	if step.Config.Role != reviewAgentRole || step.Config.ReviewProgressBase == "" || wf == nil || wf.StartedAt.IsZero() {
+		return
+	}
+	data, _ := json.Marshal([]string{t.ID, wf.WorkflowID, wf.StartedAt.UTC().Format(time.RFC3339Nano), wf.DefinitionHash, step.ID})
+	assignment.ReviewLineage = evidence.Digest(string(data))
+	assignment.ReviewContractDigest = e.verificationContractDigest(t)
+	assignment.ReviewProgressBase = step.Config.ReviewProgressBase
 }
 
 func (e *Engine) bindVerificationInput(taskID string, step *Step, wf *Execution, t TaskInfo) error {

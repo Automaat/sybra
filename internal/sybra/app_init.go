@@ -43,6 +43,7 @@ import (
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/recovery"
+	"github.com/Automaat/sybra/internal/reviewprogress"
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/skillsync"
 	"github.com/Automaat/sybra/internal/stats"
@@ -696,9 +697,17 @@ func (a *App) onAgentComplete(ag *agent.Agent) {
 	if a.verification != nil {
 		lease, disposable = a.verification.LeaseForAgent(ag.ID)
 		if disposable {
+			validInput := true
 			if lease.WorkspaceDir != "" {
 				if err := a.verification.Finalize(context.Background(), lease, nil, agentOutputText(ag), lease.CertificateID); err != nil {
 					ag.SetExitErr(err)
+					validInput = false
+				}
+			}
+			if validInput && ag.EffectiveRole() == agent.RoleReview && ag.CanCaptureReviewProgress() {
+				closed := ag.GetExitErr() == nil && ag.GetState() == agent.StateStopped && ag.CompletedSuccessfully() && !ag.WasStopped() && ag.GetEscalationReason() == ""
+				if err := a.verification.CaptureProgress(context.Background(), lease, ag.ID, string(ag.EffectiveRole()), reviewerProgressPackets(ag), closed); err != nil {
+					a.logger.Warn("review.progress.capture", "agent_id", ag.ID, "err", err)
 				}
 			}
 		}
@@ -721,6 +730,22 @@ func (a *App) onAgentComplete(ag *agent.Agent) {
 		return
 	}
 	a.agentCompletion.OnComplete(ag)
+}
+
+func reviewerProgressPackets(ag *agent.Agent) []string {
+	outputs := ag.Output()
+	var packets []string
+	for i := range slices.Backward(outputs) {
+		if len(packets) >= 24 {
+			break
+		}
+		event := &outputs[i]
+		if event.Type == "assistant" && len(event.Content) <= reviewprogress.MaxBytes+len(reviewprogress.Start)+len(reviewprogress.End) && reviewprogress.IsCheckpoint(event.Content) {
+			packets = append(packets, event.Content)
+		}
+	}
+	slices.Reverse(packets)
+	return packets
 }
 
 func agentOutputText(ag *agent.Agent) string {

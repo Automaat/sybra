@@ -29,17 +29,18 @@ var (
 )
 
 type Lease struct {
-	ID             string    `json:"id"`
-	TaskID         string    `json:"taskId"`
-	Purpose        string    `json:"purpose"`
-	CanonicalDir   string    `json:"canonicalDir"`
-	WorkspaceDir   string    `json:"workspaceDir"`
-	ScratchDir     string    `json:"scratchDir"`
-	SourceSHA      string    `json:"sourceSha"`
-	SourceRefState string    `json:"sourceRefState"`
-	AgentID        string    `json:"agentId,omitempty"`
-	CertificateID  string    `json:"certificateId,omitempty"`
-	CreatedAt      time.Time `json:"createdAt"`
+	ID             string         `json:"id"`
+	TaskID         string         `json:"taskId"`
+	Purpose        string         `json:"purpose"`
+	CanonicalDir   string         `json:"canonicalDir"`
+	WorkspaceDir   string         `json:"workspaceDir"`
+	ScratchDir     string         `json:"scratchDir"`
+	SourceSHA      string         `json:"sourceSha"`
+	SourceRefState string         `json:"sourceRefState"`
+	AgentID        string         `json:"agentId,omitempty"`
+	CertificateID  string         `json:"certificateId,omitempty"`
+	CreatedAt      time.Time      `json:"createdAt"`
+	ProgressInput  *ProgressInput `json:"progressInput,omitempty"`
 }
 
 type Report struct {

@@ -131,6 +131,7 @@ steps:
     type: run_agent
     config:
       role: review
+      review_progress_base: refs/remotes/origin/main
       mode: headless
       provider: cross
       needs_worktree: true
@@ -189,6 +190,7 @@ steps:
     type: run_agent
     config:
       role: review
+      review_progress_base: refs/remotes/origin/main
       mode: headless
       # Routed through the A/B suite (review-expensive) for provider equality.
       # Historically pinned to claude because codex review failed ~2x more often

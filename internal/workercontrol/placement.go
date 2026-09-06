@@ -317,6 +317,9 @@ func scorePlacement(session placementSession, request PlacementRequest) Placemen
 	if request.RequireVerifierAuth && !session.capabilities.flags["verifier_auth"] {
 		reject("verifier authentication capability is required")
 	}
+	if request.Spec.Workspace.ReviewBase != nil && !session.capabilities.flags["review_progress"] {
+		reject("review checkpoint input verification capability is required")
+	}
 	if request.RequireRepositoryAnchor {
 		if !session.capabilities.flags["workspace_base_bundle"] {
 			reject("workspace base bundle capability is required")

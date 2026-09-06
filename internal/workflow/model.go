@@ -435,6 +435,9 @@ type StepConfig struct {
 	// internal/agent/procsandbox_*.go).
 	AllowedTools  []string `yaml:"allowed_tools,omitempty" json:"allowedTools"`
 	NeedsWorktree bool     `yaml:"needs_worktree,omitempty" json:"needsWorktree"`
+	// ReviewProgressBase opts a review into independent progress checkpoints
+	// against this exact Git base ref. Empty leaves the review stateless.
+	ReviewProgressBase string `yaml:"review_progress_base,omitempty" json:"reviewProgressBase,omitempty"`
 
 	// wait_human
 	HumanActions []string `yaml:"human_actions,omitempty" json:"humanActions"`

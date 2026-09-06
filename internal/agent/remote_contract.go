@@ -93,6 +93,7 @@ func RemoteRunSpec(start ExecutionStart, metadata RemoteRunMetadata) (executionc
 			DiscardWorkspaceChanges: start.Config.RemoteDiscardWorkspaceChanges,
 		},
 		Workspace: executioncontract.Workspace{
+			ReviewBase:   start.Config.ReviewBase,
 			RepositoryID: metadata.WorkspaceRepositoryID, BaseSHA: metadata.WorkspaceBaseSHA, BaseRef: metadata.WorkspaceBaseRef,
 			Roots: append([]executioncontract.LogicalRoot(nil), metadata.WorkspaceRoots...),
 		},
