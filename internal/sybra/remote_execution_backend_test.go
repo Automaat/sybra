@@ -70,6 +70,43 @@ func TestLeaderRunPlacementOwnsFollowerHomedCanonicalTask(t *testing.T) {
 	}
 }
 
+func TestLeaderExecutionBackendKeepsWorktreeLessRunLocal(t *testing.T) {
+	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	canonical := task.Task{
+		ID: "task-no-worktree", Title: "triage", ProjectID: "repo", Status: task.StatusInProgress,
+		CreatedAt: now, UpdatedAt: now, Generation: 4,
+		Workflow: &workflow.Execution{WorkflowID: "triage", CurrentStep: "classify", State: workflow.ExecWaiting},
+	}
+	if _, err := store.Put(canonical); err != nil {
+		t.Fatal(err)
+	}
+	backend := &leaderExecutionBackend{
+		app:   &App{tasks: task.NewManager(store, nil)},
+		local: acceptingLocalBackend{}, runs: make(map[agent.ExecutionHandle]*remoteExecution),
+	}
+	start := agent.ExecutionStart{
+		Spec: agent.ExecutionSpec{ID: "agent-no-worktree", TaskID: canonical.ID, Provider: providerid.Claude, Model: "sonnet"},
+		Config: agent.RunConfig{
+			TaskID: canonical.ID, Role: agent.RoleTriage, Mode: "headless", Prompt: "classify",
+			Dir: t.TempDir(), LocalOnly: true, IntentID: canonical.ID + ":triage:4:1:classify:0",
+			Provider: providerid.Claude, Model: "sonnet",
+		},
+		Sink: &recordingExecutionSink{ready: make(chan struct{})},
+	}
+
+	handle, err := backend.Start(t.Context(), start)
+	if err != nil {
+		t.Fatalf("Start() error = %v, want local execution", err)
+	}
+	if handle != "local:accepted" {
+		t.Fatalf("Start() handle = %q, want local:accepted", handle)
+	}
+}
+
 func TestRemotePlanDecisionsOutputImportsIntoCanonicalTask(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {

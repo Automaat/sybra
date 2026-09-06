@@ -2130,6 +2130,12 @@ type RunConfig struct {
 	// only the OS-level sandbox binds a run on every provider.
 	AllowedTools []string
 	Dir          string
+	// LocalOnly keeps this run on the manager's local execution backend even
+	// when its task belongs to a project eligible for remote placement. Set it
+	// when the run has no canonical git worktree: remote execution can only
+	// reproduce git-backed workspaces, while scratch directories and absolute
+	// local inspection paths exist on the leader alone.
+	LocalOnly bool
 	// IntentID makes a dispatch replay idempotent. TaskGeneration and
 	// WorktreeGeneration fence stale schedulers/recovery workers; zero is a
 	// valid legacy generation. AttemptAccess selects mutation or observation;

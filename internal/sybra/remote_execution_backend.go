@@ -92,7 +92,7 @@ func (b *leaderExecutionBackend) Start(ctx context.Context, start agent.Executio
 	if err != nil {
 		return "", err
 	}
-	if t.ProjectID == "" || t.NodeOverride == "local" {
+	if t.ProjectID == "" || t.NodeOverride == "local" || start.Config.LocalOnly {
 		if ok, reason := b.localAdmission(); !ok {
 			return "", fmt.Errorf("%w: %s", workflow.ErrResourcePressure, reason)
 		}
