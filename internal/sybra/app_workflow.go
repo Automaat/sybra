@@ -1266,6 +1266,10 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		if err != nil {
 			return "", "", "", err
 		}
+		// The fallback cwd is not a git workspace that a follower can
+		// reconstruct. Keep this run on the leader instead of handing the
+		// remote scheduler a temporary directory whose git-base probe must fail.
+		cfg.LocalOnly = true
 	}
 
 	canonicalDir := cfg.Dir
