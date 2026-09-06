@@ -248,3 +248,17 @@ func TestRemoteResultObservationCannotMintReceipt(t *testing.T) {
 		})
 	}
 }
+
+func TestRemoteResultMalformedTerminalCannotMintReceipt(t *testing.T) {
+	app := recoveryFixture(t)
+	event := seedRecoveryTerminal(t, app, "fixture-task", "malformed-run")
+	event.Payload = json.RawMessage(`{"state":"failed","artifactState":"failed","error":123}`)
+	sink := &recordingExecutionSink{ready: make(chan struct{})}
+	backend := &leaderExecutionBackend{app: app}
+	backend.completeAfterHandback(t.Context(), "malformed", &remoteExecution{runID: event.RunID, sink: sink}, event)
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	if len(sink.events) != 1 || sink.events[0].Err == nil || sink.events[0].RemoteCompletionReceipt != "" {
+		t.Fatalf("malformed terminal minted durable proof: %+v", sink.events)
+	}
+}

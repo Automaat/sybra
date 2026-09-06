@@ -466,6 +466,7 @@ func (b *leaderExecutionBackend) completeAfterHandback(ctx context.Context, hand
 		AdmissionDeferred bool                            `json:"admissionDeferred,omitempty"`
 	}
 	if err := json.Unmarshal(event.Payload, &terminal); err != nil {
+		receipt = ""
 		emitCompletion(agent.ExecutionEvent{Kind: agent.ExecutionCompleted, Err: err})
 		return true
 	}

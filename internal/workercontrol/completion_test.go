@@ -150,7 +150,13 @@ func TestTerminalReceiptRejectsMalformedAndBindsIdentity(t *testing.T) {
 			t.Fatal("receipt did not bind event identity/payload")
 		}
 	}
-	for _, payload := range []string{`{`, `{}`, `{"state":"unknown","artifactState":"failed"}`, `{"state":"failed","artifactState":"unknown"}`} {
+	for _, payload := range []string{
+		`{`, `{}`, `{"state":"unknown","artifactState":"failed"}`, `{"state":"failed","artifactState":"unknown"}`,
+		`{"state":"failed","artifactState":"failed","error":123}`,
+		`{"state":"failed","artifactState":"failed","artifactError":123}`,
+		`{"state":"failed","artifactState":"failed","permanent":"yes"}`,
+		`{"state":"failed","artifactState":"failed","admissionDeferred":"yes"}`,
+	} {
 		terminal.Payload = json.RawMessage(payload)
 		if TerminalReceipt(terminal) != "" {
 			t.Fatalf("malformed terminal minted a receipt: %s", payload)

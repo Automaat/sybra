@@ -23,8 +23,12 @@ func TerminalReceipt(event executioncontract.EventEnvelope) string {
 		return ""
 	}
 	var terminal struct {
-		State         executioncontract.TerminalState `json:"state"`
-		ArtifactState executioncontract.ArtifactState `json:"artifactState"`
+		State             executioncontract.TerminalState `json:"state"`
+		ArtifactState     executioncontract.ArtifactState `json:"artifactState"`
+		Error             string                          `json:"error"`
+		ArtifactError     string                          `json:"artifactError,omitempty"`
+		Permanent         bool                            `json:"permanent,omitempty"`
+		AdmissionDeferred bool                            `json:"admissionDeferred,omitempty"`
 	}
 	if json.Unmarshal(event.Payload, &terminal) != nil {
 		return ""
