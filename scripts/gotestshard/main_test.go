@@ -109,6 +109,10 @@ func TestWorkflowKeepsCompleteFailClosedGate(t *testing.T) {
 	if workflow.Jobs["test-go"].Name != "Go Tests" || workflow.Jobs["test-go-e2e-packages"].If != "" {
 		t.Fatal("unit gate or child-package coverage changed")
 	}
+	children := workflow.Jobs["test-go-e2e-packages"].Steps
+	if !strings.Contains(children[len(children)-1].Run, "go list -race -tags e2e ./internal/sybra/...") {
+		t.Fatal("child package discovery must use the same build constraints as execution")
+	}
 	for _, shardResult := range []string{"success", "failure", "cancelled", "skipped", ""} {
 		for _, packageResult := range []string{"success", "failure", "cancelled", "skipped", ""} {
 			cmd := exec.Command("bash", "-e", "-c", gate.Steps[0].Run)

@@ -163,7 +163,7 @@ jobs:
         run: |
           # Capture go list's failure before filtering: process substitution
           # would hide a discovery error and silently drop package coverage.
-          packages="$(go list -tags e2e ./internal/sybra/...)"
+          packages="$(go list -race -tags e2e ./internal/sybra/...)"
           children=()
           while IFS= read -r package; do
             [[ "$package" == "github.com/Automaat/sybra/internal/sybra" ]] && continue
