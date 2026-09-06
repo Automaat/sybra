@@ -6,6 +6,7 @@
 import { Create as $Create } from "@wailsio/runtime";
 
 export class Event {
+    "release"?: string;
     "ts": string;
     "type": string;
     "task_id"?: string;
@@ -28,12 +29,184 @@ export class Event {
      * Creates a new Event instance from a string or object.
      */
     static createFrom($$source: any = {}): Event {
-        const $$createField4_0 = $$createType0;
+        const $$createField5_0 = $$createType0;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("data" in $$parsedSource) {
-            $$parsedSource["data"] = $$createField4_0($$parsedSource["data"]);
+            $$parsedSource["data"] = $$createField5_0($$parsedSource["data"]);
         }
         return new Event($$parsedSource as Partial<Event>);
+    }
+}
+
+export class FactoryPhase {
+    "samples": number;
+    "median_seconds": number | null;
+    "p95_seconds": number | null;
+    "open": number;
+    "unknown": number;
+    "censored": number;
+    "unavailable": boolean;
+
+    /** Creates a new FactoryPhase instance. */
+    constructor($$source: Partial<FactoryPhase> = {}) {
+        if (!("samples" in $$source)) {
+            this["samples"] = 0;
+        }
+        if (!("median_seconds" in $$source)) {
+            this["median_seconds"] = null;
+        }
+        if (!("p95_seconds" in $$source)) {
+            this["p95_seconds"] = null;
+        }
+        if (!("open" in $$source)) {
+            this["open"] = 0;
+        }
+        if (!("unknown" in $$source)) {
+            this["unknown"] = 0;
+        }
+        if (!("censored" in $$source)) {
+            this["censored"] = 0;
+        }
+        if (!("unavailable" in $$source)) {
+            this["unavailable"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new FactoryPhase instance from a string or object.
+     */
+    static createFrom($$source: any = {}): FactoryPhase {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new FactoryPhase($$parsedSource as Partial<FactoryPhase>);
+    }
+}
+
+export class FactoryQuery {
+    "since": string;
+    "until": string;
+    "release"?: string;
+
+    /** Creates a new FactoryQuery instance. */
+    constructor($$source: Partial<FactoryQuery> = {}) {
+        if (!("since" in $$source)) {
+            this["since"] = "0001-01-01T00:00:00.000Z";
+        }
+        if (!("until" in $$source)) {
+            this["until"] = "0001-01-01T00:00:00.000Z";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new FactoryQuery instance from a string or object.
+     */
+    static createFrom($$source: any = {}): FactoryQuery {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new FactoryQuery($$parsedSource as Partial<FactoryQuery>);
+    }
+}
+
+export class FactoryReport {
+    "window": FactoryQuery;
+    "events": number;
+    "release_event_counts": { [_ in string]?: number };
+    "phases": { [_ in string]?: FactoryPhase };
+    "agent_runs": number;
+    "resolved_runs": number;
+    "failed_runs": number;
+    "stalled_runs": number;
+    "unknown_runs": number;
+    "retries_after_failure": number;
+    "unique_completed_tasks": number;
+    "reopened_tasks": number;
+    "observed_cost_usd": number;
+    "unknown_cost_runs": number;
+    "completed_task_window_cost_usd": number;
+    "completed_task_unknown_cost_runs": number;
+    "notes": string[];
+
+    /** Creates a new FactoryReport instance. */
+    constructor($$source: Partial<FactoryReport> = {}) {
+        if (!("window" in $$source)) {
+            this["window"] = (new FactoryQuery());
+        }
+        if (!("events" in $$source)) {
+            this["events"] = 0;
+        }
+        if (!("release_event_counts" in $$source)) {
+            this["release_event_counts"] = {};
+        }
+        if (!("phases" in $$source)) {
+            this["phases"] = {};
+        }
+        if (!("agent_runs" in $$source)) {
+            this["agent_runs"] = 0;
+        }
+        if (!("resolved_runs" in $$source)) {
+            this["resolved_runs"] = 0;
+        }
+        if (!("failed_runs" in $$source)) {
+            this["failed_runs"] = 0;
+        }
+        if (!("stalled_runs" in $$source)) {
+            this["stalled_runs"] = 0;
+        }
+        if (!("unknown_runs" in $$source)) {
+            this["unknown_runs"] = 0;
+        }
+        if (!("retries_after_failure" in $$source)) {
+            this["retries_after_failure"] = 0;
+        }
+        if (!("unique_completed_tasks" in $$source)) {
+            this["unique_completed_tasks"] = 0;
+        }
+        if (!("reopened_tasks" in $$source)) {
+            this["reopened_tasks"] = 0;
+        }
+        if (!("observed_cost_usd" in $$source)) {
+            this["observed_cost_usd"] = 0;
+        }
+        if (!("unknown_cost_runs" in $$source)) {
+            this["unknown_cost_runs"] = 0;
+        }
+        if (!("completed_task_window_cost_usd" in $$source)) {
+            this["completed_task_window_cost_usd"] = 0;
+        }
+        if (!("completed_task_unknown_cost_runs" in $$source)) {
+            this["completed_task_unknown_cost_runs"] = 0;
+        }
+        if (!("notes" in $$source)) {
+            this["notes"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new FactoryReport instance from a string or object.
+     */
+    static createFrom($$source: any = {}): FactoryReport {
+        const $$createField0_0 = $$createType1;
+        const $$createField2_0 = $$createType2;
+        const $$createField3_0 = $$createType4;
+        const $$createField16_0 = $$createType5;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("window" in $$parsedSource) {
+            $$parsedSource["window"] = $$createField0_0($$parsedSource["window"]);
+        }
+        if ("release_event_counts" in $$parsedSource) {
+            $$parsedSource["release_event_counts"] = $$createField2_0($$parsedSource["release_event_counts"]);
+        }
+        if ("phases" in $$parsedSource) {
+            $$parsedSource["phases"] = $$createField3_0($$parsedSource["phases"]);
+        }
+        if ("notes" in $$parsedSource) {
+            $$parsedSource["notes"] = $$createField16_0($$parsedSource["notes"]);
+        }
+        return new FactoryReport($$parsedSource as Partial<FactoryReport>);
     }
 }
 
@@ -42,6 +215,21 @@ export class Query {
     "Until": string;
     "Type": string;
     "TaskID": string;
+
+    /**
+     * Limit caps matching records at the storage boundary. Zero is unlimited.
+     */
+    "Limit": number;
+
+    /**
+     * Strict refuses unreadable records instead of silently omitting coverage.
+     */
+    "Strict": boolean;
+
+    /**
+     * MaxBytes bounds raw decoded input. Zero preserves the legacy read path.
+     */
+    "MaxBytes": number;
 
     /** Creates a new Query instance. */
     constructor($$source: Partial<Query> = {}) {
@@ -56,6 +244,15 @@ export class Query {
         }
         if (!("TaskID" in $$source)) {
             this["TaskID"] = "";
+        }
+        if (!("Limit" in $$source)) {
+            this["Limit"] = 0;
+        }
+        if (!("Strict" in $$source)) {
+            this["Strict"] = false;
+        }
+        if (!("MaxBytes" in $$source)) {
+            this["MaxBytes"] = 0;
         }
 
         Object.assign(this, $$source);
@@ -72,3 +269,8 @@ export class Query {
 
 // Private type creation functions
 const $$createType0 = $Create.Map($Create.Any, $Create.Any);
+const $$createType1 = FactoryQuery.createFrom;
+const $$createType2 = $Create.Map($Create.Any, $Create.Any);
+const $$createType3 = FactoryPhase.createFrom;
+const $$createType4 = $Create.Map($Create.Any, $$createType3);
+const $$createType5 = $Create.Array($Create.Any);

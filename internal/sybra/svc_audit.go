@@ -1,6 +1,9 @@
 package sybra
 
 import (
+	"errors"
+	"time"
+
 	"github.com/Automaat/sybra/internal/audit"
 )
 
@@ -10,7 +13,8 @@ import (
 // of daily files under the server's home, so a client reading its own copy
 // would answer questions about the wrong machine. `audit` and `stats
 // lifecycle` both reduce the same event stream, so both go through this one
-// query rather than a report endpoint each.
+// query. Factory reports additionally reduce on the server so their response
+// is bounded and contains no task/project content.
 type AuditService struct {
 	audit audit.Store
 }
@@ -25,4 +29,23 @@ func (s *AuditService) QueryAuditEvents(q audit.Query) ([]audit.Event, error) {
 		return nil, err
 	}
 	return events, nil
+}
+
+// GetFactoryReport returns bounded, metadata-only aggregates from this board.
+func (s *AuditService) GetFactoryReport(q audit.FactoryQuery) (audit.FactoryReport, error) {
+	if err := q.Validate(); err != nil {
+		return audit.FactoryReport{}, validationError(err.Error())
+	}
+	events, err := s.QueryAuditEvents(audit.Query{Since: q.Since, Until: q.Until.Add(-time.Nanosecond), Limit: audit.FactoryMaxEvents + 1, Strict: true, MaxBytes: audit.FactoryMaxBytes})
+	if err != nil {
+		if errors.Is(err, audit.ErrReadBudget) {
+			return audit.FactoryReport{}, validationError(err.Error())
+		}
+		return audit.FactoryReport{}, unavailableError("factory audit input unavailable; inspect the audit store")
+	}
+	report, err := audit.SummarizeFactory(events, q)
+	if err != nil {
+		return audit.FactoryReport{}, validationError(err.Error())
+	}
+	return report, nil
 }

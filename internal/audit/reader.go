@@ -3,6 +3,8 @@ package audit
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -15,7 +17,15 @@ type Query struct {
 	Until  time.Time
 	Type   string
 	TaskID string
+	// Limit caps matching records at the storage boundary. Zero is unlimited.
+	Limit int
+	// Strict refuses unreadable records instead of silently omitting coverage.
+	Strict bool
+	// MaxBytes bounds raw decoded input. Zero preserves the legacy read path.
+	MaxBytes int
 }
+
+var ErrReadBudget = errors.New("audit input exceeds the report byte budget; narrow the window")
 
 func Read(dir string, q Query) ([]Event, error) {
 	files, err := auditFiles(dir, q.Since, q.Until)
@@ -24,15 +34,22 @@ func Read(dir string, q Query) ([]Event, error) {
 	}
 
 	var events []Event
+	remaining := q.MaxBytes
 	for _, path := range files {
-		evts, err := readFile(path)
+		fileQuery := q
+		if q.Limit > 0 {
+			fileQuery.Limit = q.Limit - len(events)
+		}
+		evts, err := readMatchingFile(path, fileQuery, &remaining)
 		if err != nil {
+			if q.Strict || q.MaxBytes > 0 {
+				return nil, err
+			}
 			continue
 		}
-		for i := range evts {
-			if matchesQuery(evts[i], q) {
-				events = append(events, evts[i])
-			}
+		events = append(events, evts...)
+		if q.Limit > 0 && len(events) >= q.Limit {
+			break
 		}
 	}
 	return events, nil
@@ -71,7 +88,7 @@ func auditFiles(dir string, since, until time.Time) ([]string, error) {
 	return paths, nil
 }
 
-func readFile(path string) ([]Event, error) {
+func readMatchingFile(path string, q Query, remaining *int) ([]Event, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -84,9 +101,23 @@ func readFile(path string) ([]Event, error) {
 	for scanner.Scan() {
 		var e Event
 		if err := json.Unmarshal(scanner.Bytes(), &e); err != nil {
+			if q.Strict {
+				return nil, fmt.Errorf("audit contains an unreadable record: %w", err)
+			}
 			continue
 		}
-		events = append(events, e)
+		if matchesQuery(e, q) {
+			if q.MaxBytes > 0 {
+				if len(scanner.Bytes()) > *remaining {
+					return nil, ErrReadBudget
+				}
+				*remaining -= len(scanner.Bytes())
+			}
+			events = append(events, e)
+		}
+		if q.Limit > 0 && len(events) >= q.Limit {
+			break
+		}
 	}
 	return events, scanner.Err()
 }

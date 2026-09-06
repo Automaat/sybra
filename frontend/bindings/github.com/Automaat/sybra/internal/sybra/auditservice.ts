@@ -8,7 +8,8 @@
  * of daily files under the server's home, so a client reading its own copy
  * would answer questions about the wrong machine. `audit` and `stats
  * lifecycle` both reduce the same event stream, so both go through this one
- * query rather than a report endpoint each.
+ * query. Factory reports additionally reduce on the server so their response
+ * is bounded and contains no task/project content.
  * @module
  */
 
@@ -21,14 +22,24 @@ import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Cr
 import * as audit$0 from "../audit/models.js";
 
 /**
+ * GetFactoryReport returns bounded, metadata-only aggregates from this board.
+ */
+export function GetFactoryReport(q: audit$0.FactoryQuery): $CancellablePromise<audit$0.FactoryReport> {
+    return $Call.ByID(3259783608, q).then(($result: any) => {
+        return $$createType0($result);
+    });
+}
+
+/**
  * QueryAuditEvents returns the events in the window that match the filters.
  */
 export function QueryAuditEvents(q: audit$0.Query): $CancellablePromise<audit$0.Event[]> {
     return $Call.ByID(1253011374, q).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
 // Private type creation functions
-const $$createType0 = audit$0.Event.createFrom;
-const $$createType1 = $Create.Array($$createType0);
+const $$createType0 = audit$0.FactoryReport.createFrom;
+const $$createType1 = audit$0.Event.createFrom;
+const $$createType2 = $Create.Array($$createType1);

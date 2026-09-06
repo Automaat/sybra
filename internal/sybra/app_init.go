@@ -471,6 +471,7 @@ func (a *App) initAgentQueue(ctx context.Context) {
 	queue, err := agentqueue.New(config.AgentQueueDir(), agentqueue.Options{
 		MaxDepth: a.cfg.Agent.Queue.MaxDepth,
 		Store:    a.openAgentQueueStore(ctx),
+		Observe:  a.observeQueueBoundary,
 	}, a.logger)
 	if err != nil {
 		a.logger.Warn("agentqueue.init.degraded", "err", err)
@@ -1539,7 +1540,7 @@ func (a *App) initAudit(ctx context.Context) {
 		// a.audit remains nil; logAudit() is a no-op when audit is nil.
 		return
 	}
-	a.audit = al
+	a.audit = audit.WithRelease(al, buildversion.CleanRevision())
 	retentionDays := a.cfg.Audit.RetentionDays
 	if retentionDays <= 0 {
 		retentionDays = 30
