@@ -896,6 +896,10 @@ func (e *Engine) transitionFields(t TaskInfo, wfExec *Execution) map[string]stri
 	// follows the documented default instead of silently shipping
 	// single-pass review.
 	fields["config.review_until_clean"] = strconv.FormatBool(!e.reviewLoopDisabled.Load())
+	if e.ciEnabled(t.ID) {
+		fields["task.reviewed"] = strconv.FormatBool(e.reusableReview(t))
+		fields["config.review_until_clean"] = "true"
+	}
 	hourlyExceeded, lifetimeExceeded := e.reviewBudgetExhaustion(t)
 	fields["task.review_budget_exceeded"] = strconv.FormatBool(hourlyExceeded || lifetimeExceeded)
 	fields["task.review_lifetime_exceeded"] = strconv.FormatBool(lifetimeExceeded)
@@ -906,7 +910,7 @@ func (e *Engine) transitionFields(t TaskInfo, wfExec *Execution) map[string]stri
 // temporary hourly throttle differently from a permanent lifetime ceiling.
 // It uses the same reviewbudget.Budget as the inbound PR-review dispatcher.
 func (e *Engine) reviewBudgetExhaustion(t TaskInfo) (hourly, lifetime bool) {
-	if e.reviewLoopDisabled.Load() {
+	if e.reviewLoopDisabled.Load() && !e.ciEnabled(t.ID) {
 		return false, false
 	}
 	limit := int(e.reviewRoundsPerHour.Load())

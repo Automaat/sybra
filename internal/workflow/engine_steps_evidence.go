@@ -76,6 +76,14 @@ func (e *Engine) recordEvidence(taskID, stepID, criterion string, proofType evid
 		StepID:       stepID,
 		Timestamp:    time.Now().UTC(),
 	}
+	if criterion == evidenceCriterionReview || criterion == evidenceCriterionTestRunner {
+		if t, err := e.tasks.GetTask(taskID); err == nil && t.Workflow != nil {
+			entry.ContractDigest = t.Workflow.Variables[verificationInputKey(stepID, "contract")]
+			if source := t.Workflow.Variables[verificationInputKey(stepID, "head")]; source != "" || e.ciEnabled(taskID) {
+				entry.FinalRev = source
+			}
+		}
+	}
 	if err := e.evidenceRecorder.AppendCriterion(taskID, entry); err != nil {
 		e.logger.Warn("workflow.evidence.append-failed",
 			"task_id", taskID, "criterion", criterion, "err", err)
@@ -136,6 +144,9 @@ func (e *Engine) recordVerifyChecksEvidence(taskID, stepID, command, result, sou
 // re-records fresh evidence on its own, so callers gate this to the single-pass
 // route.
 func (e *Engine) refreshReviewEvidenceFreshness(taskID string) {
+	if e.ciEnabled(taskID) {
+		return // CI projects require a real clean review of the new revision.
+	}
 	if e.evidenceRecorder == nil || e.execution.Worktrees == nil {
 		return
 	}
@@ -237,7 +248,15 @@ func taskWasTested(runs []AgentRunInfo) bool {
 // vouch for it (unreadable/corrupt store), so it blocks rather than silently
 // treating unreadable proof as no proof at all — see evidence.Store.Load.
 func (e *Engine) execRequireEvidence(taskID string, step *Step, t TaskInfo) (StepOutput, error) {
-	if !e.evidence.Enabled || e.evidenceRecorder == nil {
+	policy, err := e.ciPolicy(taskID)
+	if err != nil {
+		return StepOutput{}, err
+	}
+	strict := policy != nil && policy.Enabled
+	if strict && e.evidenceRecorder == nil {
+		return e.blockRequireEvidence(taskID, step, t, "evidence recorder unavailable")
+	}
+	if (!e.evidence.Enabled && !strict) || e.evidenceRecorder == nil {
 		return stepDone(step, "skipped: evidence gate disabled")
 	}
 	ce, err := e.evidenceRecorder.Evidence(taskID)
@@ -246,11 +265,17 @@ func (e *Engine) execRequireEvidence(taskID string, step *Step, t TaskInfo) (Ste
 		return e.blockRequireEvidence(taskID, step, t, "evidence store unreadable: "+err.Error())
 	}
 	if len(ce.Criteria) == 0 {
+		if strict {
+			return e.blockRequireEvidence(taskID, step, t, "no evidence baseline recorded")
+		}
 		return stepDone(step, "skipped: no evidence baseline recorded")
 	}
 
 	headSHA := e.currentHeadSHA(taskID)
 	if headSHA == "" {
+		if strict {
+			return e.blockRequireEvidence(taskID, step, t, "worktree HEAD unresolved")
+		}
 		return stepDone(step, "skipped: no worktree or HEAD unresolved")
 	}
 
@@ -265,6 +290,10 @@ func (e *Engine) execRequireEvidence(taskID string, step *Step, t TaskInfo) (Ste
 		case !freshnessExemptCriteria[criterion] && entry.FinalRev != headSHA:
 			problems = append(problems, fmt.Sprintf("%s: stale (recorded at %s, HEAD is %s)",
 				criterion, trimDiffLine(entry.FinalRev), trimDiffLine(headSHA)))
+		case strict && (criterion == evidenceCriterionReview || criterion == evidenceCriterionTestRunner) && entry.ContractDigest != e.verificationContractDigest(t):
+			problems = append(problems, criterion+": task contract changed or unstamped")
+		case strict && criterion == evidenceCriterionReview && t.CodeReviewVerdict != "CLEAN":
+			problems = append(problems, criterion+": clean verdict required")
 		}
 	}
 

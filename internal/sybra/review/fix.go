@@ -306,6 +306,9 @@ func (r *Handler) handleAutoMerge(ctx context.Context, issue github.PRIssue) {
 	}
 
 	backoff := r.mergeBackoff()
+	if !r.factoryCIReady(ctx, t, issue.PR) {
+		return
+	}
 	gate := NewMergeGate(issue.PR)
 	stateSig := gate.StateSignature()
 
@@ -364,11 +367,11 @@ func (r *Handler) handleAutoMerge(ctx context.Context, issue github.PRIssue) {
 		}
 		mergeErr = merge(issue.PR.Repository, issue.PR.Number, issue.PR.HeadSHA)
 	} else {
-		merge := r.mergePR
-		if merge == nil {
-			merge = github.MergePR
+		if r.mergePR != nil {
+			mergeErr = r.mergePR(issue.PR.Repository, issue.PR.Number)
+		} else {
+			mergeErr = github.MergePRAtHead(issue.PR.Repository, issue.PR.Number, issue.PR.HeadSHA)
 		}
-		mergeErr = merge(issue.PR.Repository, issue.PR.Number)
 	}
 	r.evictReadyPRCache(issue.PR.Repository, issue.PR.Number)
 	if mergeErr != nil {
@@ -433,6 +436,15 @@ func (r *Handler) nativeAutoMergeEnabled() bool {
 // classify/back off. Unsupported repo/branch stays a nil error so callers do
 // not back it off like a genuine API failure.
 func (r *Handler) tryArmNativeAutoMerge(t task.Task, issue github.PRIssue, fallback string) nativeAutoMergeAttemptResult {
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+	defer cancel()
+	policy, err := r.factoryCIPolicy(ctx, t)
+	// Native auto-merge may outlive this revision. GitHub branch protection
+	// need not match a project's stricter list, so CI-enabled projects always
+	// use our current-head gate and the head-pinned protected merge path.
+	if err != nil || (policy != nil && policy.Enabled) {
+		return nativeAutoMergeAttemptResult{}
+	}
 	supportsFn := r.supportsAutoMergeFn
 	if supportsFn == nil {
 		supportsFn = github.SupportsNativeAutoMerge

@@ -107,6 +107,10 @@ func fetchCommitGateWith(ctx context.Context, e execer, repo, sha string, requir
 		}
 	}
 
+	return commitGateFromStates(repo, sha, required, statuses), nil
+}
+
+func commitGateFromStates(repo, sha string, required []string, statuses map[string]string) CommitGate {
 	gate := CommitGate{
 		Repo:   repo,
 		SHA:    sha,
@@ -128,7 +132,7 @@ func fetchCommitGateWith(ctx context.Context, e execer, repo, sha string, requir
 	sort.Strings(gate.Pending)
 	sort.Strings(gate.Failed)
 	sort.Strings(gate.Succeeded)
-	return gate, nil
+	return gate
 }
 
 func NormalizeRequiredChecks(in []string) []string {

@@ -64,6 +64,9 @@ type CriterionEvidence struct {
 	// rather than false-hit.
 	TreeSHA    string `json:"treeSha,omitempty"`
 	ChecksHash string `json:"checksHash,omitempty"`
+	// ContractDigest binds review/testing to their task inputs at dispatch.
+	// Empty legacy entries never qualify for revision/contract reuse.
+	ContractDigest string `json:"contractDigest,omitempty"`
 }
 
 // Passed reports whether this proof represents a passing result.

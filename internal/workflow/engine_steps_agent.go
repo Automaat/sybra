@@ -436,6 +436,9 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	// dispatches an interactive one-shot anymore — a steerable headless run
 	// finalizes on its first completed turn on its own (drainOrCloseHeadlessSteer).
 	oneShot := false
+	if err := e.bindVerificationInput(taskID, step, wfExec, ctx.Task); err != nil {
+		return err
+	}
 
 	// The step-action effect intent is already persisted before execRunAgent is
 	// entered, so an untracked completion that lands while StartAgent is

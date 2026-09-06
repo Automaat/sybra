@@ -763,6 +763,14 @@ func MergePR(repo string, number int) error {
 	return mergePRWith(defaultExecer, repo, number)
 }
 
+// MergePRAtHead refuses a push racing the caller's verification snapshot.
+func MergePRAtHead(repo string, number int, head string) error {
+	if strings.TrimSpace(head) == "" {
+		return fmt.Errorf("merge requires a verified head SHA")
+	}
+	return mergePRWith(defaultExecer, repo, number, head)
+}
+
 // ClosePR closes an open pull request with a short explanatory comment.
 func ClosePR(ctx context.Context, repo string, number int, comment string) error {
 	return closePRWith(ctx, defaultExecer, repo, number, comment)
@@ -783,12 +791,15 @@ func closePRWith(ctx context.Context, e execer, repo string, number int, comment
 	return nil
 }
 
-func mergePRWith(e execer, repo string, number int) error {
+func mergePRWith(e execer, repo string, number int, head ...string) error {
+	args := []string{"pr", "merge", strconv.Itoa(number), "--repo", repo, "--squash"}
+	if len(head) > 0 {
+		args = append(args, "--match-head-commit", head[0])
+	}
 	var lastOut []byte
 	var lastErr error
 	for attempt := 0; attempt <= len(mergeRetryDelays); attempt++ {
-		out, err := e.run("pr", "merge", strconv.Itoa(number),
-			"--repo", repo, "--squash")
+		out, err := e.run(args...)
 		if err == nil {
 			if runtimeCacheEnabled(e) {
 				invalidatePRCaches(repo, number)
@@ -981,6 +992,15 @@ func isHeadSHAMismatchErr(resp ghHTTPResponse) bool {
 // MarkReady marks a draft pull request as ready for review.
 func MarkReady(repo string, number int) error {
 	return markReadyWith(defaultExecer, repo, number)
+}
+
+func MarkReadyContext(ctx context.Context, repo string, number int) error {
+	out, err := runE(ctx, defaultExecer, "pr", "ready", strconv.Itoa(number), "-R", repo)
+	if err != nil {
+		return fmt.Errorf("gh pr ready: %s: %w", sanitizeGHOutput(out), err)
+	}
+	invalidatePRCaches(repo, number)
+	return nil
 }
 
 func markReadyWith(e execer, repo string, number int) error {

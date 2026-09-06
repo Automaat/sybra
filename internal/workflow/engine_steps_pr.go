@@ -40,6 +40,11 @@ func (e *Engine) execPushBranch(taskID string, step *Step, wfExec *Execution, t 
 	if e.pr.HeadFetcher != nil && t.PRNumber > 0 && t.ProjectID != "" {
 		e.verifyPushedHead(taskID, wtPath, t)
 	}
+	if t.PRNumber > 0 {
+		if err := e.publishCIDraft(taskID, t, t.PRNumber); err != nil {
+			return StepOutput{}, err
+		}
+	}
 
 	return stepDone(step, fmt.Sprintf("pushed %s", branch))
 }
@@ -48,6 +53,10 @@ func (e *Engine) execPushBranch(taskID string, step *Step, wfExec *Execution, t 
 // a GitHub PR for it, drafting the title/body via a single cheap LLM job
 // (internal/prcontent). Replaces the create-pr agent role.
 func (e *Engine) execCreatePR(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error) {
+	return e.createPR(taskID, step, wfExec, t, false)
+}
+
+func (e *Engine) createPR(taskID string, step *Step, wfExec *Execution, t TaskInfo, draftOnly bool) (StepOutput, error) {
 	if t.ProjectID == "" {
 		return e.humanRequiredPR(taskID, step, "task has no project — cannot open a PR")
 	}
@@ -73,14 +82,10 @@ func (e *Engine) execCreatePR(taskID string, step *Step, wfExec *Execution, t Ta
 	// so a fork-hosted branch, which GitHub only matches as "owner:branch",
 	// is found too.
 	if existing, ok := e.findExistingPRForBranch(t.ProjectID, headArg); ok {
-		if err := e.linkTaskPR(taskID, t, existing); err != nil {
-			return StepOutput{}, fmt.Errorf("create_pr: link existing pr: %w", err)
-		}
-		e.requestCopilotReview(taskID, t.ProjectID, existing)
-		return stepDone(step, fmt.Sprintf("pr #%d already exists for branch", existing))
+		return e.adoptOpenPR(taskID, step, wfExec, t, existing, draftOnly)
 	}
-	if out, done := e.handleExistingAnyStatePRForBranch(taskID, step, wtPath, t, headArg); done {
-		return out, nil
+	if out, done, err := e.handleExistingAnyStatePRForBranch(taskID, step, wfExec, wtPath, t, headArg, draftOnly); done || err != nil {
+		return out, err
 	}
 
 	if out, err, ok := e.pushTaskBranch(taskID, step, wfExec, t, wtPath, branch); !ok {
@@ -98,17 +103,31 @@ func (e *Engine) execCreatePR(taskID string, step *Step, wfExec *Execution, t Ta
 	number, headSHA, createErr := e.pr.Creator.CreatePR(ctx, wtPath, PRCreateRequest{
 		Repo:  t.ProjectID,
 		Head:  headArg,
-		Draft: t.ProjectType != "pet",
+		Draft: draftOnly || e.ciEnabled(taskID) || t.ProjectType != "pet",
 		Title: title,
 		Body:  body,
 	})
 	if createErr != nil {
-		if num, ok := e.adoptExistingPROnConflict(taskID, t.ProjectID, headArg, createErr); ok {
-			return stepDone(step, fmt.Sprintf("pr #%d already existed, adopted", num))
+		if draftOnly {
+			if existing, ok := e.findExistingPRForBranch(t.ProjectID, headArg); ok {
+				return stepDone(step, fmt.Sprintf("CI draft #%d adopted after creation conflict", existing))
+			}
+			return e.classifyPRGitError(taskID, step, wfExec, t, createErr, "start_ci")
+		}
+		if strings.Contains(strings.ToLower(createErr.Error()), "already exists") {
+			if num, ok := e.findExistingPRForBranch(t.ProjectID, headArg); ok {
+				return e.adoptOpenPR(taskID, step, wfExec, t, num, false)
+			}
 		}
 		return e.classifyPRGitError(taskID, step, wfExec, t, createErr, "create_pr")
 	}
+	if draftOnly {
+		return stepDone(step, fmt.Sprintf("started CI on draft #%d; local review and testing still required", number))
+	}
 
+	if err := e.publishCIDraft(taskID, t, number); err != nil {
+		return StepOutput{}, err
+	}
 	if err := e.linkTaskPR(taskID, t, number); err != nil {
 		return StepOutput{}, fmt.Errorf("create_pr: link pr: %w", err)
 	}
@@ -133,26 +152,33 @@ func (e *Engine) requestCopilotReview(taskID, repo string, prNumber int) {
 	e.logger.Info("workflow.create-pr.copilot-review.requested", "task_id", taskID, "repo", repo, "pr", prNumber)
 }
 
-func (e *Engine) adoptExistingPROnConflict(taskID, repo, headArg string, createErr error) (int, bool) {
-	if createErr == nil || !strings.Contains(strings.ToLower(createErr.Error()), "already exists") {
-		return 0, false
+func (e *Engine) adoptOpenPR(taskID string, step *Step, wfExec *Execution, t TaskInfo, existing int, draftOnly bool) (StepOutput, error) {
+	if draftOnly {
+		return stepDone(step, fmt.Sprintf("CI draft #%d already exists; local gates still required", existing))
 	}
-	existing, ok := e.findExistingPRForBranch(repo, headArg)
-	if !ok {
-		return 0, false
-	}
-	t, err := e.tasks.GetTask(taskID)
-	if err != nil {
-		e.logger.Warn("workflow.create-pr.adopt-existing.get-task", "task_id", taskID, "pr", existing, "err", err)
-		return 0, false
+	if e.ciEnabled(taskID) {
+		// Keep all lookup/recovery paths under the same push/publication gates.
+		out, err := e.execPushBranch(taskID, step, wfExec, t)
+		if err != nil || out.Status != "completed" {
+			return out, err
+		}
+		fresh, err := e.tasks.GetTask(taskID)
+		if err != nil {
+			return StepOutput{}, err
+		}
+		if fresh.Status != t.Status {
+			return out, nil
+		}
+		if err := e.publishCIDraft(taskID, t, existing); err != nil {
+			return StepOutput{}, err
+		}
 	}
 	if err := e.linkTaskPR(taskID, t, existing); err != nil {
-		e.logger.Warn("workflow.create-pr.adopt-existing", "task_id", taskID, "pr", existing, "err", err)
-		return 0, false
+		return StepOutput{}, err
 	}
 	e.logger.Info("workflow.create-pr.adopt-existing", "task_id", taskID, "pr", existing)
-	e.requestCopilotReview(taskID, repo, existing)
-	return existing, true
+	e.requestCopilotReview(taskID, t.ProjectID, existing)
+	return stepDone(step, fmt.Sprintf("pr #%d already exists for branch", existing))
 }
 
 func (e *Engine) linkTaskPR(taskID string, t TaskInfo, newPR int) error {
@@ -512,44 +538,40 @@ func (e *Engine) findExistingPRForBranch(repo, branch string) (number int, ok bo
 	return num, found
 }
 
-func (e *Engine) handleExistingAnyStatePRForBranch(taskID string, step *Step, wtPath string, t TaskInfo, headArg string) (StepOutput, bool) {
+func (e *Engine) handleExistingAnyStatePRForBranch(taskID string, step *Step, wfExec *Execution, wtPath string, t TaskInfo, headArg string, draftOnly bool) (out StepOutput, handled bool, resultErr error) {
 	if e.pr.AnyStateFinder == nil {
-		return StepOutput{}, false
+		return StepOutput{}, false, nil
 	}
 	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
 	defer cancel()
 	num, state, found, err := e.pr.AnyStateFinder.FindPRForBranchAnyState(ctx, t.ProjectID, headArg)
 	if err != nil {
 		e.logger.Warn("workflow.create-pr.find-any-state", "task_id", taskID, "repo", t.ProjectID, "head", headArg, "err", err)
-		return StepOutput{}, false
+		return StepOutput{}, false, nil
 	}
 	if !found {
-		return StepOutput{}, false
+		return StepOutput{}, false, nil
 	}
 	switch state {
 	case "OPEN":
-		if err := e.linkTaskPR(taskID, t, num); err != nil {
-			e.logger.Warn("workflow.create-pr.link-any-state-open", "task_id", taskID, "pr", num, "err", err)
-			return StepOutput{}, false
-		}
-		out, _ := stepDone(step, fmt.Sprintf("pr #%d already exists for branch", num))
-		return out, true
+		out, err := e.adoptOpenPR(taskID, step, wfExec, t, num, draftOnly)
+		return out, true, err
 	case "MERGED":
 		clean, cleanErr := branchPatchAlreadyAppliedToBase(ctx, wtPath)
 		if cleanErr != nil {
 			e.logger.Warn("workflow.create-pr.merged-branch-diff", "task_id", taskID, "pr", num, "err", cleanErr)
-			return StepOutput{}, false
+			return StepOutput{}, false, nil
 		}
 		if !clean {
 			e.logger.Info("workflow.create-pr.merged-branch-has-diff", "task_id", taskID, "pr", num)
-			return StepOutput{}, false
+			return StepOutput{}, false, nil
 		}
 		reason := fmt.Sprintf("branch already landed via merged PR #%d and has no remaining diff against base", num)
 		e.logger.Info("workflow.create-pr.merged-branch-done", "task_id", taskID, "pr", num)
 		out := StepOutput{StepID: step.ID, Status: "completed", Output: reason, TerminalStatus: taskstatus.Done, TerminalReason: reason}
-		return out, true
+		return out, true, nil
 	default:
-		return StepOutput{}, false
+		return StepOutput{}, false, nil
 	}
 }
 

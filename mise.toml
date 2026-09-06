@@ -57,7 +57,7 @@ description = "Run all linters"
 # and Go module resolution may still hit the network — it means the gate's
 # outcome depends only on repo state, not on ambient CI infra. Intentionally
 # excludes gates that need external advisory DBs or a browser and so cannot
-# run reliably as a pre-commit loop: lint-nilaway (installs nilaway),
+# run reliably as a local diagnostic: lint-nilaway (installs nilaway),
 # security (govulncheck + npm audit hit the advisory DBs), the e2e job
 # (Playwright + chromium + a live server), and smoke:k3d (Docker + a real k3d
 # cluster), and test-go-db (needs a postgres container; run `mise run test:db`
@@ -96,7 +96,7 @@ run = [
   "wails3 generate bindings -ts -clean -d frontend/bindings ./... && git diff --exit-code frontend/bindings/",
   "hadolint Dockerfile",
 ]
-description = "Run every deterministic CI-aligned gate (go build+mod+tidy+tests+e2e, golangci-lint, frontend check+build:web+tests+oxlint+pins, api-shim sync, no-home-fallback, consolidated-primitive drift, Git/GitHub execution boundaries, no-direct-status-write, no-direct-workflow-write, autonomy SLO gate, bindings sync, hadolint). Run before committing. Excludes nilaway/security/playwright — CI owns those."
+description = "Optional full local CI diagnostic, not a per-commit requirement. Prefer focused package tests while coding; GitHub CI owns full verification before protected merge. Excludes nilaway/security/playwright."
 
 [tasks."test:db"]
 run = "scripts/test-db-engines.sh"

@@ -92,6 +92,8 @@ type Handler struct {
 	// mergePR performs the actual squash-merge; overridable in tests.
 	// nil falls back to github.MergePR.
 	mergePR func(repo string, number int) error
+	// fetchCIGate is uncached and binds explicit required checks to a PR head.
+	fetchCIGate func(context.Context, string, int, []string) (github.CommitGate, error)
 	// rerunFailedChecks requests a rerun of the failed checks on a PR;
 	// overridable in tests. nil falls back to github.RerunFailedChecks.
 	rerunFailedChecks func(repo string, number int) error
@@ -342,7 +344,6 @@ func New(
 		wtFailures:          make(map[string]int),
 		dispatchFailures:    make(map[string]int),
 		authCircuit:         poll.NewAuthCircuit("reviews", logger),
-		mergePR:             github.MergePR,
 		rerunFailedChecks:   github.RerunFailedChecks,
 		classifyFlakiness:   github.ClassifyCIFlakiness,
 		enableAutoMergeFn:   github.EnableAutoMerge,

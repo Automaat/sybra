@@ -43,14 +43,31 @@ manual_test:
 # otherwise the hook fails with "tool not found" at commit time, which was
 # the aa9ba123 failure mode (see CLAUDE.md Server Deployment section).
 checks:
+  # Opt-in pilot. Full suites run asynchronously on the draft PR, then remain
+  # mandatory on its exact head and on GitHub's protected merge-group commit.
+  ci:
+    enabled: true
+    required_checks:
+      - Go Tests
+      - Go E2E Tests
+      - Frontend Tests
+      - Go Lint
+      - Nilaway
+      - Dockerfile Lint
+      - Wails Bindings Sync
+      - Build
+      - Doc Version Sync
+      - Go Module Integrity
+      - npm Lockfile Integrity
+      - Security Audit
+      - E2E Tests (claude)
+      - E2E Tests (codex)
   # golangci-lint and go test are intentionally NOT run here — CI's
   # lint-go/test-go jobs already cover them on every push, and running the
   # full-repo lint/test suite per-commit across parallel agent worktrees
-  # overloads the local machine. gofmt/goimports-equivalent formatting is
-  # cheap enough to keep local via oxlint/hadolint below.
+  # overloads the local machine. Formatting stays in the codegen pass.
   pre_commit:
-    - (cd frontend && npx oxlint .)
-    - mise exec -- hadolint Dockerfile
+    - git diff --cached --check
   # Mutation pass run by the codegen_gate workflow step before tamper/verify/
   # review/testing so generated files, goimports, and go.mod drift are fixed
   # in the worktree and committed before downstream validation.
@@ -60,53 +77,21 @@ checks:
     - mise exec -- golangci-lint fmt ./...
     - mise exec -- go mod tidy
   focused:
-    - name: workflow
+    - name: changed-go-packages
       paths:
-        - internal/workflow/**
-      packages:
-        - ./internal/workflow/...
+        - internal/**
+        - cmd/**
+        - '*.go'
       commands:
-        - mise exec -- go test ./internal/workflow/...
-    - name: sybra-backend
-      paths:
-        - internal/sybra/**
-      packages:
-        - ./internal/sybra/...
-      commands:
-        - mise exec -- go test ./internal/sybra/...
-    - name: project
-      paths:
-        - internal/project/**
-      packages:
-        - ./internal/project
-      commands:
-        - mise exec -- go test ./internal/project
+        - mise exec -- bash scripts/test-changed-go.sh
     - name: frontend
       paths:
         - frontend/**
       commands:
         - (cd frontend && mise exec -- npm run check)
-  # Verify suite run by the verify_checks workflow step (reward-hacking
-  # phase 2): runs on the agent's branch HEAD before review so an
-  # implementation that does not pass its own tests cannot reach a PR. This
-  # is a portable, deterministic, read-only, sub-10-minute subset of the CI
-  # gate (.github/workflows/ci.yml) — chosen to catch the CI failure classes
-  # that dominate first-pass failures (api-shim drift, frontend coverage
-  # thresholds, and the e2e suite that plain `go test ./...` skips) without
-  # depending on darwin-only tooling or mutating tracked files. CI remains
-  # the source of truth for what this list excludes: Wails bindings
-  # generation (darwin/wails3-only), `-race` and full e2e (too slow for a
-  # pre-review gate), `go mod tidy`/npm lockfile drift, security scans, and
-  # browser-driven Playwright e2e. `hadolint` and `npm run check` are already
-  # covered by pre_commit/pre_push above and are not duplicated here.
-  # Ordered cheap-to-expensive; measured all-pass wall-clock on a dev
-  # machine is ~3 minutes, well under the shared 10-minute
-  # verifyChecksDefaultTimeout.
+  # Cheap local safety checks. Independent review and black-box testing stay
+  # local; full lint/race/e2e/coverage/security/build checks run in GitHub CI.
+  # The PR monitor must verify required checks on the current SHA to merge.
   verify:
     - mise exec -- bash scripts/check-api-shim-sync.sh
     - mise exec -- bash scripts/check-no-home-fallback.sh
-    - 'GOLANGCI_LINT_CACHE="${TMPDIR:-/tmp}/golangci-lint-$(basename "$(pwd)")" mise exec -- golangci-lint run ./internal/... ./cmd/...'
-    - mise exec -- go test ./internal/... ./cmd/...
-    - (cd frontend && mise exec -- npm run build:web)
-    - (cd frontend && mise exec -- npm run test:coverage)
-    - mise exec -- go test -tags e2e -short -timeout 4m ./internal/sybra/...
