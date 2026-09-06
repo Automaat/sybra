@@ -209,7 +209,7 @@ type applyOutcome struct {
 func (m *Manager) fireApplyOutcome(id string, outcome applyOutcome) {
 	if outcome.fireHook {
 		m.recordStatusActor(id, outcome.actor)
-		m.onStatusHook(id, outcome.prevStatus, outcome.newStatus, outcome.result.Task)
+		m.onStatusHook(id, outcome.prevStatus, outcome.newStatus, outcome.actor, outcome.result.Task)
 	}
 	if outcome.result.Applied {
 		metrics.TaskUpdated()
@@ -314,6 +314,7 @@ func (m *Manager) applyLocked(id string, intent TransitionIntent) (applyOutcome,
 	if fireHook {
 		m.recordFiredStatus(id, newStat)
 	}
+	m.observeStatus(id, string(prev), string(saved.Status), strings.TrimSpace(intent.Actor), saved)
 	return applyOutcome{
 		result:     TransitionResult{Task: saved, Applied: true},
 		fireHook:   fireHook,

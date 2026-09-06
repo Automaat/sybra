@@ -27,6 +27,7 @@ import (
 	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/health"
 	"github.com/Automaat/sybra/internal/httpserve"
 	"github.com/Automaat/sybra/internal/intervention"
 	"github.com/Automaat/sybra/internal/learning"
@@ -867,9 +868,10 @@ func (a *App) limitPolicy() limits.Policy {
 }
 
 func (a *App) initStatusHook() {
-	a.tasks.SetStatusChangeHook(func(taskID, from, to string, changed task.Task) {
+	a.tasks.SetStatusTransitionObserver(a.observeIncidentBoundary)
+	a.tasks.SetStatusTransitionHook(func(taskID, from, to, actor string, changed task.Task) {
 		releaseTaskAgents := shouldReleaseTaskAgentsForStatus(task.Status(to))
-		data := map[string]any{"from": from, "to": to}
+		data := map[string]any{"from": from, "to": to, "actor": actor}
 		if !changed.Escalation.IsZero() {
 			data["escalation_code"] = changed.Escalation.Code
 			data["failure_owner"] = string(changed.Escalation.Owner)
@@ -881,8 +883,8 @@ func (a *App) initStatusHook() {
 				data["human_kind"] = kind
 			}
 		}
-		a.logAudit(audit.EventTaskStatusChanged, taskID, "", data)
-		if a.maybeQuarantineStatusBounce(taskID, from, to) {
+		a.auditStatusTransition(changed, data)
+		if a.maybeQuarantineStatusBounce(taskID, from, to, actor, changed.UpdatedAt) {
 			// Stop the agent the pause was meant to interrupt. Without this it
 			// runs on, and its completion advances the workflow onto a step
 			// that writes a live status back over the pause.
@@ -988,8 +990,25 @@ func (a *App) initStatusHook() {
 	})
 }
 
-func (a *App) maybeQuarantineStatusBounce(taskID, from, to string) bool {
-	if !a.statusBounceTripped(taskID, from, to) {
+func (a *App) auditStatusTransition(changed task.Task, data map[string]any) {
+	if a.audit != nil {
+		if err := a.audit.Log(audit.Event{Timestamp: changed.UpdatedAt, Type: audit.EventTaskStatusChanged, TaskID: changed.ID, Data: data}); err != nil {
+			a.logger.Warn("audit.status-transition", "err", err)
+		}
+	}
+}
+
+// observeIncidentBoundary runs under the Manager's commit lock: only bounded
+// in-memory metadata, never workflow dispatch, task mutation, or IO. Publishing
+// the boundary here prevents a later edge overtaking its unlocked status hook.
+func (a *App) observeIncidentBoundary(id, from, to, actor string, snapshot task.Task) {
+	if health.IsIncidentReopen(from, to, actor) {
+		a.statusBounceTrippedAt(id, from, to, actor, snapshot.UpdatedAt)
+	}
+}
+
+func (a *App) maybeQuarantineStatusBounce(taskID, from, to, actor string, at time.Time) bool {
+	if !a.statusBounceTrippedAt(taskID, from, to, actor, at) {
 		return false
 	}
 	reason := fmt.Sprintf("automatic status loop detected (%s → %s repeated); task paused", from, to)
@@ -1020,7 +1039,22 @@ const statusBounceLimit = 3
 const statusBounceWindow = 2 * time.Hour
 
 type statusBounceState struct {
-	edges map[string][]bounceEdge
+	edges        map[string][]bounceEdge
+	episodeStart time.Time
+	lastSeen     time.Time
+}
+
+func (s *statusBounceState) beginEpisode(at time.Time) {
+	if !at.After(s.episodeStart) {
+		return
+	}
+	s.episodeStart = at
+	for key, edges := range s.edges {
+		s.edges[key] = slices.DeleteFunc(edges, func(edge bounceEdge) bool { return edge.at.Before(at) })
+		if len(s.edges[key]) == 0 {
+			delete(s.edges, key)
+		}
+	}
 }
 
 type bounceEdge struct {
@@ -1069,10 +1103,6 @@ func contendingActors(forward, reverse map[string]int) int {
 // reciprocal loop (A→B and B→A). A single repeated transition is not enough:
 // bulk status edits and legitimate retries can repeat one direction, whereas
 // a reciprocal pair is the distinctive signature of competing automations.
-func (a *App) statusBounceTripped(taskID, from, to string) bool {
-	return a.statusBounceTrippedAt(taskID, from, to, a.tasks.LastStatusActor(taskID), time.Now())
-}
-
 func (a *App) statusBounceTrippedAt(taskID, from, to, actor string, now time.Time) bool {
 	if taskID == "" || from == "" || to == "" || from == to ||
 		from == string(task.StatusBlocked) || to == string(task.StatusBlocked) {
@@ -1082,6 +1112,9 @@ func (a *App) statusBounceTrippedAt(taskID, from, to, actor string, now time.Tim
 	reverse := to + "\x00" + from
 	a.statusBounceMu.Lock()
 	defer a.statusBounceMu.Unlock()
+	if !now.After(a.statusBounceCutoff) {
+		return false
+	}
 	if a.statusBounces == nil {
 		a.statusBounces = make(map[string]*statusBounceState)
 	}
@@ -1090,10 +1123,20 @@ func (a *App) statusBounceTrippedAt(taskID, from, to, actor string, now time.Tim
 		state = &statusBounceState{edges: make(map[string][]bounceEdge)}
 		a.statusBounces[taskID] = state
 	}
+	if now.After(state.lastSeen) {
+		state.lastSeen = now
+	}
+	if health.IsIncidentReopen(from, to, actor) {
+		state.beginEpisode(now)
+		return false
+	}
+	if now.Before(state.episodeStart) {
+		return false
+	}
 	state.edges[key] = append(state.edges[key], bounceEdge{at: now, actor: actor})
 	forward := state.recentActors(key, now)
 	back := state.recentActors(reverse, now)
-	if len(state.edges) == 0 {
+	if len(state.edges) == 0 && state.episodeStart.IsZero() {
 		delete(a.statusBounces, taskID)
 	}
 	return contendingActors(forward, back) >= statusBounceLimit &&

@@ -209,8 +209,9 @@ type App struct {
 	// statusBounce tracks reciprocal status transitions seen by this process.
 	// It is a circuit breaker for automation loops; the persisted audit trail
 	// remains the cross-restart diagnostic record.
-	statusBounceMu sync.Mutex
-	statusBounces  map[string]*statusBounceState
+	statusBounceMu     sync.Mutex
+	statusBounces      map[string]*statusBounceState
+	statusBounceCutoff time.Time
 	// maintenanceCleanupRunning prevents slow git cleanup from stacking across
 	// maintenance ticks. Cleanup itself runs outside the orchestrator loop.
 	maintenanceCleanupRunning atomic.Bool

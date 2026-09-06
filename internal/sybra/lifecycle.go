@@ -122,6 +122,7 @@ func (lm *LifecycleManager) StartManagers(ctx context.Context, emit func(string,
 	lm.startPromptLabService(ctx, emit)
 	lm.startAutoUpdate(ctx)
 	lm.startAgentLogPruneLoop(ctx)
+	a.startStatusBouncePruning(ctx)
 	lm.startTrashPruneLoop(ctx)
 	lm.startTaskSnapshotLoop(ctx)
 	lm.registerMetricsObservers()

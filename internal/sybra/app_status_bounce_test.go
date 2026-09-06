@@ -5,7 +5,44 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
+
+func TestStatusBounceIncidentReopenStartsNewEpisode(t *testing.T) {
+	var a App
+	now := time.Now()
+	for range statusBounceLimit + 2 {
+		if a.statusBounceTrippedAt("task-incident", string(taskstatus.Todo), string(taskstatus.Done), "workflow", now) {
+			t.Fatal("incident completion quarantined")
+		}
+		if a.statusBounceTrippedAt("task-incident", string(taskstatus.Done), string(taskstatus.Todo), "monitor.incident.reopen", now) {
+			t.Fatal("incident recurrence quarantined")
+		}
+	}
+	for i := range statusBounceLimit {
+		tripped := a.statusBounceTrippedAt("task-incident", string(taskstatus.InReview), string(taskstatus.InProgress), "fixer", now)
+		tripped = a.statusBounceTrippedAt("task-incident", string(taskstatus.InProgress), string(taskstatus.InReview), "reviewer", now) || tripped
+		if i == statusBounceLimit-1 && !tripped {
+			t.Fatal("real contention in fresh incident episode escaped")
+		}
+	}
+}
+
+func TestStatusBouncePrunesIdleIncidentWithoutReplayingOldEdges(t *testing.T) {
+	var a App
+	base := time.Now()
+	a.statusBounceTrippedAt("idle-incident", string(task.StatusDone), string(task.StatusTodo), "monitor.incident.reopen", base)
+	fresh := base.Add(3 * time.Hour)
+	a.statusBounceTrippedAt("active-incident", string(task.StatusDone), string(task.StatusTodo), "monitor.incident.reopen", fresh)
+	a.pruneStatusBounces(fresh)
+	if len(a.statusBounces) != 1 || a.statusBounces["active-incident"] == nil {
+		t.Fatalf("idle watermark retained or active state lost: %+v", a.statusBounces)
+	}
+	a.statusBounceTrippedAt("idle-incident", string(task.StatusInReview), string(task.StatusInProgress), "late-fixer", base.Add(time.Minute))
+	if len(a.statusBounces) != 1 {
+		t.Fatal("late hook recreated expired episode after pruning")
+	}
+}
 
 func TestStatusBounceTrippedRequiresRepeatedReciprocalTransitions(t *testing.T) {
 	var a App

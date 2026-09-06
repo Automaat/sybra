@@ -86,8 +86,8 @@ func TestE2E_NewChecksFireThroughChecker(t *testing.T) {
 	if _, ok := categories[CatAgentRetryLoop]; !ok {
 		t.Errorf("expected CatAgentRetryLoop finding, got categories=%v", findingCategories(report.Findings))
 	}
-	if _, ok := categories[CatTriageMismatch]; !ok {
-		t.Errorf("expected CatTriageMismatch finding, got categories=%v", findingCategories(report.Findings))
+	if _, ok := categories[CatEscalationUnknown]; !ok {
+		t.Errorf("expected legacy escalation to remain explicitly unknown, got categories=%v", findingCategories(report.Findings))
 	}
 	if _, ok := categories[CatStatusBottleneck]; !ok {
 		t.Errorf("expected CatStatusBottleneck finding, got categories=%v", findingCategories(report.Findings))
@@ -157,7 +157,7 @@ func TestE2E_NewChecksFireThroughChecker(t *testing.T) {
 	for _, f := range persisted.Findings {
 		gotPersisted[f.Category] = true
 	}
-	for _, want := range []Category{CatAgentRetryLoop, CatTriageMismatch, CatStatusBottleneck, CatDockerReclaimable} {
+	for _, want := range []Category{CatAgentRetryLoop, CatEscalationUnknown, CatStatusBottleneck, CatDockerReclaimable} {
 		if !gotPersisted[string(want)] {
 			t.Errorf("persisted report missing category %q", want)
 		}

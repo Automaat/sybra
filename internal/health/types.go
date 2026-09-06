@@ -10,6 +10,7 @@ import (
 type Severity string
 
 const (
+	SeverityInfo     Severity = "info"
 	SeverityWarning  Severity = "warning"
 	SeverityCritical Severity = "critical"
 )
@@ -18,21 +19,26 @@ const (
 type Category string
 
 const (
-	CatFailureRate       Category = "failure_rate"
-	CatCostOutlier       Category = "cost_outlier"
-	CatDockerReclaimable Category = "docker_reclaimable"
-	CatStuckTask         Category = "stuck_task"
-	CatWorkflowLoop      Category = "workflow_loop"
-	CatStatusBounce      Category = "status_bounce"
-	CatCostDrift         Category = "cost_drift"
-	CatAgentRetryLoop    Category = "agent_retry_loop"
-	CatTriageMismatch    Category = "triage_mismatch"
-	CatStatusBottleneck  Category = "status_bottleneck"
-	CatGHAuthFailure     Category = "gh_auth_failure"
-	CatGHPushAuthFailure Category = "gh_push_auth_failure"
-	CatGHAuthUnavailable Category = "gh_auth_unavailable"
-	CatSandboxCleanup    Category = "sandbox_cleanup_failure"
-	CatTaskUnreadable    Category = "task_unreadable"
+	CatFailureRate              Category = "failure_rate"
+	CatCostOutlier              Category = "cost_outlier"
+	CatDockerReclaimable        Category = "docker_reclaimable"
+	CatStuckTask                Category = "stuck_task"
+	CatWorkflowLoop             Category = "workflow_loop"
+	CatStatusBounce             Category = "status_bounce"
+	CatCostDrift                Category = "cost_drift"
+	CatAgentRetryLoop           Category = "agent_retry_loop"
+	CatTriageMismatch           Category = "triage_mismatch"
+	CatStatusBottleneck         Category = "status_bottleneck"
+	CatGHAuthFailure            Category = "gh_auth_failure"
+	CatGHPushAuthFailure        Category = "gh_push_auth_failure"
+	CatGHAuthUnavailable        Category = "gh_auth_unavailable"
+	CatSandboxCleanup           Category = "sandbox_cleanup_failure"
+	CatTaskUnreadable           Category = "task_unreadable"
+	CatIncidentRecovery         Category = "incident_recovery"
+	CatInfrastructureEscalation Category = "infrastructure_escalation"
+	CatEscalationUnknown        Category = "escalation_unknown"
+	CatSpecificationGap         Category = "specification_gap"
+	CatOperatorAttention        Category = "operator_attention"
 )
 
 // Score is the rollup verdict across all findings in a report.
@@ -46,16 +52,18 @@ const (
 
 // Finding is a single health issue detected by the checker.
 type Finding struct {
-	Category    Category       `json:"category"`
-	Severity    Severity       `json:"severity"`
-	Title       string         `json:"title"`
-	Description string         `json:"description"`
-	TaskID      string         `json:"taskId,omitempty"`
-	AgentID     string         `json:"agentId,omitempty"`
-	Role        string         `json:"role,omitempty"`
-	LogFile     string         `json:"logFile,omitempty"`
-	Evidence    map[string]any `json:"evidence"`
-	DetectedAt  time.Time      `json:"detectedAt"`
+	Cause       TransitionCause `json:"cause,omitempty"`
+	NextAction  string          `json:"nextAction,omitempty"`
+	Category    Category        `json:"category"`
+	Severity    Severity        `json:"severity"`
+	Title       string          `json:"title"`
+	Description string          `json:"description"`
+	TaskID      string          `json:"taskId,omitempty"`
+	AgentID     string          `json:"agentId,omitempty"`
+	Role        string          `json:"role,omitempty"`
+	LogFile     string          `json:"logFile,omitempty"`
+	Evidence    map[string]any  `json:"evidence"`
+	DetectedAt  time.Time       `json:"detectedAt"`
 	// Fingerprint is a stable dedup key derived from (Category, TaskID,
 	// Evidence). Populated by the Checker after each tick; downstream
 	// consumers (selfmonitor, issue sinks) use it as a cross-run identity.
@@ -121,16 +129,20 @@ type Report struct {
 	Processes   *procstat.Summary `json:"processes,omitempty"`
 }
 
-// RollupScore returns good if there are no findings, critical if any finding
-// is critical, otherwise warning.
+// RollupScore keeps informational observations visible without lowering health.
+// A critical finding wins; other non-informational findings mean warning.
 func RollupScore(findings []Finding) Score {
 	if len(findings) == 0 {
 		return ScoreGood
 	}
+	result := ScoreGood
 	for i := range findings {
 		if findings[i].Severity == SeverityCritical {
 			return ScoreCritical
 		}
+		if findings[i].Severity != SeverityInfo {
+			result = ScoreWarning
+		}
 	}
-	return ScoreWarning
+	return result
 }
