@@ -1,0 +1,25 @@
+name: Go test build cache
+description: Cache modules and compiled packages after mise selects the toolchain
+inputs:
+  suite:
+    description: Separate cache working sets for unit, application E2E, and child-package E2E tests
+    required: true
+runs:
+  using: composite
+  steps:
+    - id: go-env
+      shell: bash
+      run: |
+        echo "build=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+        echo "modules=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+        echo "version=$(go env GOVERSION)" >> "$GITHUB_OUTPUT"
+    - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: |
+          ${{ steps.go-env.outputs.build }}
+          ${{ steps.go-env.outputs.modules }}
+        key: go-test-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.go-env.outputs.version }}-${{ inputs.suite }}-${{ hashFiles('go.sum', 'mise.toml') }}-${{ github.sha }}
+        restore-keys: |
+          go-test-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.go-env.outputs.version }}-${{ inputs.suite }}-${{ hashFiles('go.sum', 'mise.toml') }}-
+      env:
+        SEGMENT_DOWNLOAD_TIMEOUT_MINS: '2'
