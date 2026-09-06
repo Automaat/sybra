@@ -213,7 +213,7 @@ jobs:
       - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
 
       - name: Run database-backed store tests on sqlite and postgres
-        run: go test -race -timeout 10m ./internal/db/... ./internal/loopagent/... ./internal/testutil/dbtest/...
+        run: go test -race -timeout 10m ./internal/db/... ./internal/loopagent/... ./internal/workercontrol/... ./internal/task/taskdb/... ./internal/testutil/dbtest/...
         env:
           SYBRA_TEST_POSTGRES_DSN: postgres://sybra:sybra@127.0.0.1:5432/sybra?sslmode=disable
           SYBRA_REQUIRE_POSTGRES_TESTS: "1"

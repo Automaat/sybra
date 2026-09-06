@@ -138,15 +138,13 @@ func (s *Service) handleReplayEvents(w http.ResponseWriter, r *http.Request) {
 	respond(w, events, err)
 }
 
-func (s *Service) handleAckEvents(w http.ResponseWriter, r *http.Request) {
-	var request struct {
-		SessionID string `json:"sessionId"`
-		Through   uint64 `json:"through"`
-	}
-	if !decode(w, r, &request) {
-		return
-	}
-	respond(w, map[string]bool{"acknowledged": true}, s.AckEvents(r.Context(), request.SessionID, r.PathValue("runID"), request.Through))
+func (s *Service) handleAckEvents(w http.ResponseWriter, _ *http.Request) {
+	// Workers receive transport durability ACKs from AppendEvents. They cannot
+	// assert the separate leader-owned fact that a canonical result was stored.
+	// Shipped agentd clients never called this legacy endpoint.
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusGone)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": "completion acknowledgement is leader-owned"})
 }
 
 func (s *Service) handleArtifact(w http.ResponseWriter, r *http.Request) {

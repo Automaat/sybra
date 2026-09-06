@@ -183,6 +183,11 @@ the actual desktop listener, and adds readiness/backlog diagnostics.
 
 ### Recover a stuck or partitioned run
 
+- For a terminal result left unacknowledged after a leader restart, use the
+  local leader's dry-run-first
+  [completion recovery command](remote-result-recovery.md). It acknowledges
+  only an exact canonical result/cost receipt, without replaying workflow
+  callbacks; older ambiguous results remain preserved.
 - Connectivity loss alone is not permission to reassign or launch a second
   provider. Restore the route and allow the daemon to replay its durable spool;
   exact duplicates are accepted, gaps or changed repeats are rejected. The

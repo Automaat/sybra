@@ -734,6 +734,9 @@ func TestOnComplete_ImportsTestRunnerEvidenceBeforeTerminalStatus(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := taskMgr.AddRun(tk.ID, task.AgentRun{AgentID: "agent-1", Role: string(agent.RoleTestRunner), Mode: "headless"}); err != nil {
+		t.Fatal(err)
+	}
 	status := task.StatusTesting
 	tk, err = taskMgr.Update(tk.ID, task.Update{
 		Status:      &status,
@@ -862,6 +865,25 @@ func TestOnComplete_DefersWorkflowUntilLockTimeoutRunUpdatePersists(t *testing.T
 	}
 	if got.AgentRuns[0].Result != "done after lock" {
 		t.Fatalf("run result = %q, want deferred result", got.AgentRuns[0].Result)
+	}
+}
+
+func TestOnComplete_PermanentRunWriteFailureDoesNotAdvanceWorkflow(t *testing.T) {
+	taskMgr := newMinimalTaskManager(t)
+	tk, err := taskMgr.Create("missing run fixture", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wf := &recordingCompletionWorkflow{completed: make(chan workflow.AgentCompletion, 1)}
+	h := New(Config{Logger: discardLogger(), Tasks: taskMgr, WorkflowEngine: wf})
+	ag := &agent.Agent{ID: "missing-run", TaskID: tk.ID, Mode: "headless", State: agent.StateStopped,
+		Name: agent.RoleImplementation.AgentName(tk.Title), StartedAt: time.Now().Add(-time.Second)}
+	ag.AppendOutput(agent.StreamEvent{Type: "result", Content: "not persisted"})
+	h.OnComplete(ag)
+	select {
+	case c := <-wf.completed:
+		t.Fatalf("workflow advanced without a durable run: %+v", c)
+	default:
 	}
 }
 

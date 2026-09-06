@@ -83,6 +83,10 @@ type Config struct {
 	// type here would create an import cycle, since internal/sybra
 	// constructs this Handler. Nil-safe: Handler checks before calling.
 	HumanReviewComplete func(*agent.Agent)
+	// RunResultPersisted runs only after the canonical result/cost write has
+	// succeeded, including a deferred contention retry. It does not mean the
+	// whole workflow has finished; workflow recovery uses the persisted result.
+	RunResultPersisted func(*agent.Agent)
 
 	// ConflictRecovery dispatches the autonomous conflict-fix agent for a
 	// diverged fix-review push instead of Sybra's own process force-pushing.
@@ -126,6 +130,7 @@ type Handler struct {
 	workScrub func(projectID string) *WorkScrubContext
 
 	humanReviewComplete func(*agent.Agent)
+	runResultPersisted  func(*agent.Agent)
 	conflictRecovery    func(taskID string) bool
 }
 
@@ -148,6 +153,7 @@ func New(cfg Config) *Handler {
 		reconciler:          cfg.Reconciler,
 		workScrub:           cfg.WorkScrub,
 		humanReviewComplete: cfg.HumanReviewComplete,
+		runResultPersisted:  cfg.RunResultPersisted,
 		conflictRecovery:    cfg.ConflictRecovery,
 	}
 }
@@ -273,7 +279,9 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 			return
 		}
 		h.logger.Error("task.update-run", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
+		return // No durable result: do not advance a workflow or acknowledge it.
 	}
+	h.notifyRunResultPersisted(ag)
 	h.afterRunPersisted(ag, resultContent, exitErr)
 }
 
@@ -284,6 +292,7 @@ func (h *Handler) retryUpdateRunCompletion(ag *agent.Agent, runUpdates task.RunP
 		err := h.tasks.UpdateRunBy(ag.TaskID, "completion.record_run_result", ag.ID, runUpdates)
 		if err == nil {
 			h.logger.Info("task.update-run.deferred.persisted", "task_id", ag.TaskID, "agent_id", ag.ID)
+			h.notifyRunResultPersisted(ag)
 			h.afterRunPersisted(ag, resultContent, exitErr)
 			return
 		}
@@ -292,6 +301,12 @@ func (h *Handler) retryUpdateRunCompletion(ag *agent.Agent, runUpdates task.RunP
 			return
 		}
 		h.logger.Warn("task.update-run.deferred.retry", "task_id", ag.TaskID, "agent_id", ag.ID, "delay", delay, "err", err)
+	}
+}
+
+func (h *Handler) notifyRunResultPersisted(ag *agent.Agent) {
+	if h.runResultPersisted != nil && ag.GetRemoteCompletionReceipt() != "" {
+		h.runResultPersisted(ag)
 	}
 }
 
@@ -626,6 +641,9 @@ func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiu
 		Model:           task.Ptr(ag.Model),
 		Provider:        task.Ptr(ag.Provider),
 		ToolFailures:    task.Ptr(ag.GetToolFailures()),
+	}
+	if receipt := ag.GetRemoteCompletionReceipt(); receipt != "" {
+		runUpdates.RemoteCompletionReceipt = task.Ptr(receipt)
 	}
 	if ag.SkillExecutionMode != "" {
 		runUpdates.SkillExecutionMode = task.Ptr(ag.SkillExecutionMode)

@@ -8,11 +8,12 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/sybra"
 )
 
 func cmdCluster(cfg *config.Config, api *apiClient, args []string, jsonOut bool) int {
 	if len(args) == 0 {
-		return fatal(jsonOut, "usage: sybra-cli cluster <nodes|reassign|gen-cert> [flags]")
+		return fatal(jsonOut, "usage: sybra-cli cluster <nodes|reassign|gen-cert|reconcile-results> [flags]")
 	}
 	switch args[0] {
 	case "nodes":
@@ -21,9 +22,47 @@ func cmdCluster(cfg *config.Config, api *apiClient, args []string, jsonOut bool)
 		return cmdClusterReassign(cfg, api, args[1:], jsonOut)
 	case "gen-cert":
 		return cmdClusterGenCert(args[1:], jsonOut)
+	case "reconcile-results":
+		return cmdClusterReconcileResults(api, args[1:], jsonOut)
 	default:
 		return fatal(jsonOut, "unknown cluster command: %s", args[0])
 	}
+}
+
+func cmdClusterReconcileResults(api *apiClient, args []string, jsonOut bool) int {
+	fs := flag.NewFlagSet("reconcile-results", flag.ContinueOnError)
+	apply := fs.Bool("apply", false, "acknowledge only results with matching durable completion receipts (default: dry run)")
+	after := fs.String("after", "", "opaque nextAfter cursor from the previous page")
+	limit := fs.Int("limit", 100, "maximum results to examine (1-100)")
+	if err := fs.Parse(args); err != nil {
+		return fatal(jsonOut, "%v", err)
+	}
+	if fs.NArg() != 0 || *limit < 1 || *limit > 100 {
+		return fatal(jsonOut, "usage: cluster reconcile-results [--apply] [--after CURSOR] [--limit 1-100]")
+	}
+	if api == nil {
+		return fatal(jsonOut, "result recovery needs a Sybra server and none is reachable")
+	}
+	report, err := callAPI[sybra.RemoteResultRecoveryReport](api, "App", "ReconcileRemoteResults", *apply, *after, *limit)
+	if err != nil {
+		return fatal(jsonOut, "%v", err)
+	}
+	if jsonOut {
+		return printJSON(report)
+	}
+	mode := "dry run"
+	if report.Apply {
+		mode = "apply"
+	}
+	fmt.Printf("%s: scanned=%d eligible=%d acknowledged=%d preserved=%d events=%d\n", mode,
+		report.Scanned, report.Eligible, report.Acknowledged, report.Preserved, report.Events)
+	for reason, count := range report.Reasons {
+		fmt.Printf("  %s: %d\n", reason, count)
+	}
+	if report.NextAfter != "" {
+		fmt.Printf("Continue with --after %s\n", report.NextAfter)
+	}
+	return 0
 }
 
 func cmdClusterGenCert(args []string, jsonOut bool) int {

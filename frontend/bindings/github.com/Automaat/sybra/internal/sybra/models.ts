@@ -801,6 +801,61 @@ export class ProviderRoutingSettings {
 }
 
 /**
+ * RemoteResultRecoveryReport deliberately carries only counts and an opaque
+ * paging cursor. Task bodies, project identities, errors, and artifacts stay
+ * inside the leader's stores, including for work-typed projects.
+ */
+export class RemoteResultRecoveryReport {
+    "apply": boolean;
+    "scanned": number;
+    "eligible": number;
+    "acknowledged": number;
+    "preserved": number;
+    "events": number;
+    "reasons": { [_ in string]?: number };
+    "nextAfter"?: string;
+
+    /** Creates a new RemoteResultRecoveryReport instance. */
+    constructor($$source: Partial<RemoteResultRecoveryReport> = {}) {
+        if (!("apply" in $$source)) {
+            this["apply"] = false;
+        }
+        if (!("scanned" in $$source)) {
+            this["scanned"] = 0;
+        }
+        if (!("eligible" in $$source)) {
+            this["eligible"] = 0;
+        }
+        if (!("acknowledged" in $$source)) {
+            this["acknowledged"] = 0;
+        }
+        if (!("preserved" in $$source)) {
+            this["preserved"] = 0;
+        }
+        if (!("events" in $$source)) {
+            this["events"] = 0;
+        }
+        if (!("reasons" in $$source)) {
+            this["reasons"] = {};
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new RemoteResultRecoveryReport instance from a string or object.
+     */
+    static createFrom($$source: any = {}): RemoteResultRecoveryReport {
+        const $$createField6_0 = $$createType34;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("reasons" in $$parsedSource) {
+            $$parsedSource["reasons"] = $$createField6_0($$parsedSource["reasons"]);
+        }
+        return new RemoteResultRecoveryReport($$parsedSource as Partial<RemoteResultRecoveryReport>);
+    }
+}
+
+/**
  * RuntimeInfo is the read-only detected state for one known CLI runtime.
  */
 export class RuntimeInfo {
@@ -911,7 +966,7 @@ export class TamperReportDTO {
      */
     static createFrom($$source: any = {}): TamperReportDTO {
         const $$createField4_0 = $$createType20;
-        const $$createField5_0 = $$createType35;
+        const $$createField5_0 = $$createType36;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("files" in $$parsedSource) {
             $$parsedSource["files"] = $$createField4_0($$parsedSource["files"]);
@@ -1001,7 +1056,7 @@ export class TaskAuditEventDTO {
      * Creates a new TaskAuditEventDTO instance from a string or object.
      */
     static createFrom($$source: any = {}): TaskAuditEventDTO {
-        const $$createField4_0 = $$createType36;
+        const $$createField4_0 = $$createType37;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("data" in $$parsedSource) {
             $$parsedSource["data"] = $$createField4_0($$parsedSource["data"]);
@@ -1100,7 +1155,7 @@ export class TrashPruneReportDTO {
      * Creates a new TrashPruneReportDTO instance from a string or object.
      */
     static createFrom($$source: any = {}): TrashPruneReportDTO {
-        const $$createField2_0 = $$createType38;
+        const $$createField2_0 = $$createType39;
         const $$createField3_0 = $$createType20;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("entries" in $$parsedSource) {
@@ -1136,7 +1191,7 @@ export class TriageResultDTO {
      * Creates a new TriageResultDTO instance from a string or object.
      */
     static createFrom($$source: any = {}): TriageResultDTO {
-        const $$createField0_0 = $$createType39;
+        const $$createField0_0 = $$createType40;
         const $$createField1_0 = $$createType28;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("verdict" in $$parsedSource) {
@@ -1274,9 +1329,10 @@ const $$createType30 = $Create.Array($Create.Any);
 const $$createType31 = monitor$0.Report.createFrom;
 const $$createType32 = promptlab$0.RunResult.createFrom;
 const $$createType33 = config$0.RoutingSummary.createFrom;
-const $$createType34 = TamperFindingDTO.createFrom;
-const $$createType35 = $Create.Array($$createType34);
-const $$createType36 = $Create.Map($Create.Any, $Create.Any);
-const $$createType37 = task$0.TrashEntry.createFrom;
-const $$createType38 = $Create.Array($$createType37);
-const $$createType39 = triage$0.Verdict.createFrom;
+const $$createType34 = $Create.Map($Create.Any, $Create.Any);
+const $$createType35 = TamperFindingDTO.createFrom;
+const $$createType36 = $Create.Array($$createType35);
+const $$createType37 = $Create.Map($Create.Any, $Create.Any);
+const $$createType38 = task$0.TrashEntry.createFrom;
+const $$createType39 = $Create.Array($$createType38);
+const $$createType40 = triage$0.Verdict.createFrom;

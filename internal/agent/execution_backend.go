@@ -46,6 +46,9 @@ type ExecutionEvent struct {
 	// provider. It is infrastructure backpressure, not a coding attempt.
 	AdmissionDeferred bool
 	Approval          *ApprovalRequest
+	// RemoteCompletionReceipt binds a consumed terminal event to the run's
+	// durable result. Local execution and observer-only timeouts leave it empty.
+	RemoteCompletionReceipt string
 	// OutputParsed marks Output as this package's own StreamEvent rather than
 	// the provider's wire format. A backend that runs the agent on another
 	// machine forwards already-parsed events, and re-parsing them as provider

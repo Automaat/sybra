@@ -98,15 +98,16 @@ func statusChangedAtBackfill(t Task, fallback time.Time) time.Time {
 // latches that only ever flip true.
 type RunPatch struct {
 	// Lifecycle
-	State                 *string
-	Outcome               *string
-	ReviewSalvaged        *bool
-	EscalationReason      *string
-	Result                *string
-	LogFile               *string
-	HeadSHA               *string
-	FinalCommitSource     *string
-	ResumeZeroOutputStall *bool
+	State                   *string
+	Outcome                 *string
+	RemoteCompletionReceipt *string
+	ReviewSalvaged          *bool
+	EscalationReason        *string
+	Result                  *string
+	LogFile                 *string
+	HeadSHA                 *string
+	FinalCommitSource       *string
+	ResumeZeroOutputStall   *bool
 
 	// Cost/tokens
 	CostUSD         *float64
@@ -146,6 +147,9 @@ func applyRunLifecycle(run *AgentRun, p RunPatch) {
 	}
 	if p.Outcome != nil && *p.Outcome != "" {
 		run.Outcome = *p.Outcome
+	}
+	if p.RemoteCompletionReceipt != nil && *p.RemoteCompletionReceipt != "" {
+		run.RemoteCompletionReceipt = *p.RemoteCompletionReceipt
 	}
 	if p.ReviewSalvaged != nil {
 		run.ReviewSalvaged = *p.ReviewSalvaged

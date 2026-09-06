@@ -69,9 +69,8 @@ func TestDurableWorkerControlBehavior(t *testing.T) {
 		if err != nil || len(replayed) != 2 || replayed[1].Sequence != 2 {
 			t.Fatalf("replay after restart = %+v, %v", replayed, err)
 		}
-		if err := restarted.AckEvents(ctx, session.SessionID, "run-a", 2); err != nil {
-			t.Fatalf("AckEvents: %v", err)
-		}
+		// Replay is not canonical consumption: the prefix remains unacknowledged
+		// until a terminal result and matching durable completion receipt exist.
 
 		replacement, err := restarted.Register(ctx, RegisterRequest{
 			WorkerID: "worker-a", ResumeSessionID: session.SessionID, LastCommandAck: first.Sequence,

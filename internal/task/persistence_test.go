@@ -87,6 +87,7 @@ func TestTaskFrontmatterMappingRoundTrip(t *testing.T) {
 			ResolvedSkillSourceHash: "deadbeefcafebabe",
 			SkillConformance:        "exact",
 			State:                   "done",
+			RemoteCompletionReceipt: "v1:receipt",
 			EscalationReason:        "cost",
 			StartedAt:               now,
 			CostUSD:                 1.25,

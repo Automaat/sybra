@@ -1274,6 +1274,7 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 	patch := RunPatch{
 		State:                   Ptr("done"),
 		Outcome:                 Ptr(RunOutcomeSuccess),
+		RemoteCompletionReceipt: Ptr("v1:receipt-payload"),
 		EscalationReason:        Ptr("cost"),
 		CostUSD:                 Ptr(1.23),
 		PremiumRequests:         Ptr(2.5),
@@ -1341,6 +1342,7 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 		SkillConformance:        "exact",
 		State:                   "done",
 		Outcome:                 RunOutcomeSuccess,
+		RemoteCompletionReceipt: "v1:receipt-payload",
 		EscalationReason:        "cost",
 		CostUSD:                 1.23,
 		PremiumRequests:         2.5,
@@ -1424,6 +1426,9 @@ func assertAgentRunPayload(t *testing.T, got, want AgentRun) {
 	}
 	if got.Outcome != want.Outcome {
 		t.Errorf("Outcome = %q, want %q", got.Outcome, want.Outcome)
+	}
+	if got.RemoteCompletionReceipt != want.RemoteCompletionReceipt {
+		t.Errorf("RemoteCompletionReceipt = %q, want %q", got.RemoteCompletionReceipt, want.RemoteCompletionReceipt)
 	}
 	if got.EscalationReason != want.EscalationReason {
 		t.Errorf("EscalationReason = %q, want %q", got.EscalationReason, want.EscalationReason)

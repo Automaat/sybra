@@ -97,6 +97,7 @@ type agentRunRecord struct {
 	SkillConformance        string    `yaml:"skill_conformance,omitempty"`
 	State                   string    `yaml:"state"`
 	Outcome                 string    `yaml:"outcome,omitempty"`
+	RemoteCompletionReceipt string    `yaml:"remote_completion_receipt,omitempty"`
 	ReviewSalvaged          bool      `yaml:"review_salvaged,omitempty"`
 	EscalationReason        string    `yaml:"escalation_reason,omitempty"`
 	StartedAt               time.Time `yaml:"started_at"`

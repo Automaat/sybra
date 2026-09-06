@@ -135,6 +135,17 @@ export function ListNotifications(): $CancellablePromise<notification$0.Notifica
 }
 
 /**
+ * ReconcileRemoteResults acknowledges only terminal events already consumed
+ * into a durable canonical result. It never replays completion callbacks,
+ * imports work, transitions tasks, or starts agents. apply=false is read-only.
+ */
+export function ReconcileRemoteResults(apply: boolean, after: string, limit: number): $CancellablePromise<$models.RemoteResultRecoveryReport> {
+    return $Call.ByID(1822423907, apply, after, limit).then(($result: any) => {
+        return $$createType10($result);
+    });
+}
+
+/**
  * RegisterSpotlightHotkey binds Ctrl+Space to the Spotlight quick-add panel.
  */
 export function RegisterSpotlightHotkey(): $CancellablePromise<void> {
@@ -149,7 +160,7 @@ export function RegisterSpotlightHotkey(): $CancellablePromise<void> {
  */
 export function RunLearningDigestNow(): $CancellablePromise<learning$0.Digest> {
     return $Call.ByID(1773365246).then(($result: any) => {
-        return $$createType10($result);
+        return $$createType11($result);
     });
 }
 
@@ -225,7 +236,7 @@ export function Startup(): $CancellablePromise<void> {
  */
 export function V3Services(): $CancellablePromise<application$0.Service[]> {
     return $Call.ByID(1114222916).then(($result: any) => {
-        return $$createType12($result);
+        return $$createType13($result);
     });
 }
 
@@ -240,6 +251,7 @@ const $$createType6 = bgop$0.Operation.createFrom;
 const $$createType7 = $Create.Array($$createType6);
 const $$createType8 = notification$0.Notification.createFrom;
 const $$createType9 = $Create.Array($$createType8);
-const $$createType10 = learning$0.Digest.createFrom;
-const $$createType11 = application$0.Service.createFrom;
-const $$createType12 = $Create.Array($$createType11);
+const $$createType10 = $models.RemoteResultRecoveryReport.createFrom;
+const $$createType11 = learning$0.Digest.createFrom;
+const $$createType12 = application$0.Service.createFrom;
+const $$createType13 = $Create.Array($$createType12);
