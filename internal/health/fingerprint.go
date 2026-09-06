@@ -14,6 +14,9 @@ func FingerprintFor(f *Finding) string {
 		return ""
 	}
 	if f.TaskID != "" {
+		if f.Cause != "" {
+			return string(f.Category) + ":" + f.TaskID + ":" + string(f.Cause)
+		}
 		return string(f.Category) + ":" + f.TaskID
 	}
 	if status, ok := f.Evidence["status"].(string); ok && status != "" {

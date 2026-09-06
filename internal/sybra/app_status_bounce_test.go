@@ -7,6 +7,26 @@ import (
 	"github.com/Automaat/sybra/internal/task"
 )
 
+func TestStatusBounceIncidentReopenStartsNewEpisode(t *testing.T) {
+	var a App
+	now := time.Now()
+	for range statusBounceLimit + 2 {
+		if a.statusBounceTrippedAt("task-incident", "todo", "done", "workflow", now) {
+			t.Fatal("incident completion quarantined")
+		}
+		if a.statusBounceTrippedAt("task-incident", "done", "todo", "monitor.incident.reopen", now) {
+			t.Fatal("incident recurrence quarantined")
+		}
+	}
+	for i := range statusBounceLimit {
+		tripped := a.statusBounceTrippedAt("task-incident", "in-review", "in-progress", "fixer", now)
+		tripped = a.statusBounceTrippedAt("task-incident", "in-progress", "in-review", "reviewer", now) || tripped
+		if i == statusBounceLimit-1 && !tripped {
+			t.Fatal("real contention in fresh incident episode escaped")
+		}
+	}
+}
+
 func TestStatusBounceTrippedRequiresRepeatedReciprocalTransitions(t *testing.T) {
 	var a App
 	const id = "task-bounce"

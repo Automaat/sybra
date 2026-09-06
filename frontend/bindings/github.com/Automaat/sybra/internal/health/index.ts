@@ -5,5 +5,6 @@ export {
     Category,
     Finding,
     Score,
-    Severity
+    Severity,
+    TransitionCause
 } from "./models.js";

@@ -37,7 +37,7 @@ func isAgentFailure(e audit.Event) bool {
 
 // checkAgentRetryLoops flags tasks that have 2+ failed agent runs in the
 // window — an indicator that headless retries are not converging and the task
-// likely needs mode change, prompt refinement, or human intervention.
+// likely needs cause investigation, prompt refinement, or human intervention.
 func checkAgentRetryLoops(events []audit.Event, now time.Time) []Finding {
 	failuresPerTask := make(map[string]int)
 	lastRole := make(map[string]string)
@@ -62,7 +62,7 @@ func checkAgentRetryLoops(events []audit.Event, now time.Time) []Finding {
 			Category:    CatAgentRetryLoop,
 			Severity:    SeverityCritical,
 			Title:       fmt.Sprintf("task %s has %d failed agent runs", taskID, count),
-			Description: fmt.Sprintf("Task %s accumulated %d failed agent runs — retries are not converging, consider mode change or human review", taskID, count),
+			Description: fmt.Sprintf("Task %s accumulated %d failed agent runs — retries are not converging, investigate the cause before retrying", taskID, count),
 			TaskID:      taskID,
 			Role:        lastRole[taskID],
 			Evidence: map[string]any{
@@ -74,45 +74,50 @@ func checkAgentRetryLoops(events []audit.Event, now time.Time) []Finding {
 	return findings
 }
 
-// checkTriageMismatch flags tasks that triage classified as headless but later
-// transitioned to human-required — the triage policy under-specified the task.
+// checkTriageMismatch retains the old entrypoint but classifies escalation
+// evidence, never execution mode. A human-required transition alone proves
+// neither a triage error nor permission to spend another agent run.
 func checkTriageMismatch(events []audit.Event, now time.Time) []Finding {
-	classifiedHeadless := make(map[string]bool)
-	for _, e := range events {
-		if e.Type != audit.EventTriageClassified {
-			continue
-		}
-		mode, _ := e.Data["mode"].(string)
-		if mode == "headless" {
-			classifiedHeadless[e.TaskID] = true
-		}
+	type key struct {
+		taskID string
+		cause  TransitionCause
 	}
-
-	escalated := make(map[string]bool)
+	escalated := make(map[key]int)
 	for _, e := range events {
-		if e.Type != audit.EventTaskStatusChanged {
+		if e.Type != audit.EventTaskStatusChanged || e.TaskID == "" {
 			continue
 		}
 		to, _ := e.Data["to"].(string)
-		if to == string(taskstatus.HumanRequired) && classifiedHeadless[e.TaskID] {
-			if isExpectedHumanRequired(e) {
-				continue
-			}
-			escalated[e.TaskID] = true
+		if to != string(taskstatus.HumanRequired) && to != string(taskstatus.Blocked) {
+			continue
 		}
+		if isExpectedHumanRequired(e) {
+			continue
+		}
+		escalated[key{e.TaskID, ClassifyTransition(e)}]++
 	}
 
 	var findings []Finding
-	for taskID := range escalated {
+	for k, count := range escalated {
+		category := CatEscalationUnknown
+		switch k.cause {
+		case CausePlanning:
+			category = CatTriageMismatch
+		case CauseSpecification:
+			category = CatSpecificationGap
+		case CauseInfrastructure:
+			category = CatInfrastructureEscalation
+		case CauseOperator:
+			category = CatOperatorAttention
+		}
 		findings = append(findings, Finding{
-			Category:    CatTriageMismatch,
+			Category: category, Cause: k.cause, NextAction: nextAction(k.cause),
 			Severity:    SeverityWarning,
-			Title:       fmt.Sprintf("task %s triaged headless but escalated to human-required", taskID),
-			Description: fmt.Sprintf("Task %s was classified as headless by triage but later required human intervention — triage rules may be under-specifying complexity", taskID),
-			TaskID:      taskID,
+			Title:       fmt.Sprintf("task %s escalation: %s", k.taskID, k.cause),
+			Description: fmt.Sprintf("%d escalation observation(s), classified from structured evidence as %s. Investigate the recorded cause before retrying; headless mode is not a planning diagnosis.", count, k.cause),
+			TaskID:      k.taskID,
 			Evidence: map[string]any{
-				"classified_mode": "headless",
-				"final_status":    string(taskstatus.HumanRequired),
+				"observation_count": count,
 			},
 			DetectedAt: now,
 		})

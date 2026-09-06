@@ -29,12 +29,19 @@ export enum Category {
     CatGHAuthUnavailable = "gh_auth_unavailable",
     CatSandboxCleanup = "sandbox_cleanup_failure",
     CatTaskUnreadable = "task_unreadable",
+    CatIncidentRecovery = "incident_recovery",
+    CatInfrastructureEscalation = "infrastructure_escalation",
+    CatEscalationUnknown = "escalation_unknown",
+    CatSpecificationGap = "specification_gap",
+    CatOperatorAttention = "operator_attention",
 };
 
 /**
  * Finding is a single health issue detected by the checker.
  */
 export class Finding {
+    "cause"?: TransitionCause;
+    "nextAction"?: string;
     "category": Category;
     "severity": Severity;
     "title": string;
@@ -81,10 +88,10 @@ export class Finding {
      * Creates a new Finding instance from a string or object.
      */
     static createFrom($$source: any = {}): Finding {
-        const $$createField8_0 = $$createType0;
+        const $$createField10_0 = $$createType0;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("evidence" in $$parsedSource) {
-            $$parsedSource["evidence"] = $$createField8_0($$parsedSource["evidence"]);
+            $$parsedSource["evidence"] = $$createField10_0($$parsedSource["evidence"]);
         }
         return new Finding($$parsedSource as Partial<Finding>);
     }
@@ -113,8 +120,23 @@ export enum Severity {
      */
     $zero = "",
 
+    SeverityInfo = "info",
     SeverityWarning = "warning",
     SeverityCritical = "critical",
+};
+
+export enum TransitionCause {
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero = "",
+
+    CauseUnknown = "unknown",
+    CauseIncidentRecurrence = "incident_recurrence",
+    CauseInfrastructure = "infrastructure",
+    CausePlanning = "planning_insufficiency",
+    CauseSpecification = "specification_gap",
+    CauseOperator = "operator_decision",
 };
 
 // Private type creation functions

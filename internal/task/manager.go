@@ -35,6 +35,10 @@ func NoopEmitter() EventEmitter { return noopEmitter{} }
 // could not be read.
 type StatusChangeHook func(taskID, from, to string, snapshot Task)
 
+// StatusTransitionHook receives the actor from this exact write, not the
+// mutable LastStatusActor cache which another concurrent hook may replace.
+type StatusTransitionHook func(taskID, from, to, actor string, snapshot Task)
+
 // DeleteHook is invoked after a task is successfully deleted.
 type DeleteHook func(taskID string)
 
@@ -50,13 +54,14 @@ type DeleteHook func(taskID string)
 // not part of Persistence yet — see the follow-up issue linked from #3268.
 // commentPersist is the same seam for Comments specifically: nil (and Comments() falling back to store.Comments(), the file backend) until SetCommentPersistence is called. A Manager always has store regardless of which Persistence or CommentPersistence backs it.
 type Manager struct {
-	store          *Store
-	persist        Persistence
-	commentPersist CommentPersistence
-	emitter        EventEmitter
-	locks          fsutil.KeyedLocker
-	onStatusHook   StatusChangeHook
-	onDeleteHook   []DeleteHook
+	store            *Store
+	persist          Persistence
+	commentPersist   CommentPersistence
+	emitter          EventEmitter
+	locks            fsutil.KeyedLocker
+	onStatusHook     StatusTransitionHook
+	onStatusObserver StatusTransitionHook
+	onDeleteHook     []DeleteHook
 
 	// firedMu/firedStatus tracks the most recent status value that has
 	// triggered onStatusHook. OnExternalUpdate uses it to dedupe repeated
@@ -93,7 +98,26 @@ func (m *Manager) recordStatusActor(id, actor string) {
 
 // SetStatusChangeHook registers a callback fired on every status transition.
 // Passing nil disables the hook.
-func (m *Manager) SetStatusChangeHook(h StatusChangeHook) { m.onStatusHook = h }
+func (m *Manager) SetStatusChangeHook(h StatusChangeHook) {
+	if h == nil {
+		m.onStatusHook = nil
+		return
+	}
+	m.onStatusHook = func(id, from, to, _ string, snapshot Task) { h(id, from, to, snapshot) }
+}
+
+func (m *Manager) SetStatusTransitionHook(h StatusTransitionHook) { m.onStatusHook = h }
+
+// SetStatusTransitionObserver installs a bounded metadata-only observer called
+// before releasing this Manager's mutation lock. It must never re-enter the
+// manager or perform IO; workflow callbacks belong in SetStatusTransitionHook.
+func (m *Manager) SetStatusTransitionObserver(h StatusTransitionHook) { m.onStatusObserver = h }
+
+func (m *Manager) observeStatus(id, from, to, actor string, snapshot Task) {
+	if from != to && m.onStatusObserver != nil {
+		m.onStatusObserver(id, from, to, actor, snapshot)
+	}
+}
 
 // SetCommentPersistence selects a non-file backend for Comments(). Passing
 // nil (the zero value, also the default before this is ever called) falls
@@ -217,10 +241,11 @@ func (m *Manager) OnExternalUpdate(path string) {
 		return
 	}
 	m.recordFiredStatus(id, newStatus)
+	m.observeStatus(id, prev, newStatus, "", t)
 	unlock()
 
 	m.recordStatusActor(id, "")
-	m.onStatusHook(id, prev, newStatus, t)
+	m.onStatusHook(id, prev, newStatus, "", t)
 }
 
 func (m *Manager) recordFiredStatus(id, status string) {
@@ -551,6 +576,7 @@ func (m *Manager) PutBy(t Task, actor string) (Task, bool, error) {
 	if fireHook {
 		m.recordFiredStatus(saved.ID, newStatus)
 	}
+	m.observeStatus(saved.ID, prevStatus, newStatus, actor, saved)
 	unlock()
 
 	if existed {
@@ -561,7 +587,7 @@ func (m *Manager) PutBy(t Task, actor string) (Task, bool, error) {
 		m.emitter.Emit(events.TaskCreated, eventPath(saved))
 	}
 	if fireHook {
-		m.onStatusHook(saved.ID, prevStatus, newStatus, saved)
+		m.onStatusHook(saved.ID, prevStatus, newStatus, actor, saved)
 	}
 	return saved, !existed, nil
 }
@@ -604,12 +630,13 @@ func (m *Manager) PutFnBy(id, actor string, fn func(cur Task) (Task, error)) (Ta
 	if fireHook {
 		m.recordFiredStatus(saved.ID, newStatus)
 	}
+	m.observeStatus(saved.ID, prevStatus, newStatus, actor, saved)
 	unlock()
 
 	metrics.TaskUpdated()
 	m.emitter.Emit(events.TaskUpdated, eventPath(saved))
 	if fireHook {
-		m.onStatusHook(saved.ID, prevStatus, newStatus, saved)
+		m.onStatusHook(saved.ID, prevStatus, newStatus, actor, saved)
 	}
 	return saved, false, nil
 }
@@ -683,10 +710,13 @@ func (m *Manager) UpdateFnBy(id, actor string, fn func(cur Task) (Update, error)
 	if fireHook {
 		m.recordFiredStatus(id, newStat)
 	}
+	if statusSet {
+		m.observeStatus(id, string(prev), string(t.Status), actor, t)
+	}
 	unlock()
 
 	if fireHook {
-		m.onStatusHook(id, prevStatus, newStat, t)
+		m.onStatusHook(id, prevStatus, newStat, actor, t)
 	}
 	metrics.TaskUpdated()
 	m.emitter.Emit(events.TaskUpdated, eventPath(t))
@@ -877,15 +907,17 @@ func (m *Manager) AddRunWithStatusBy(taskID, actor string, run AgentRun, status 
 	}
 	unlock := m.lock(taskID)
 	var prevStatus Status
-	_, err := m.persist.PutFnBy(taskID, actor, func(cur Task) (Task, []string, error) {
+	t, err := m.persist.PutFnBy(taskID, actor, func(cur Task) (Task, []string, error) {
 		prevStatus = cur.Status
 		next, ferr := applyAddRun(cur, run, status)
 		return next, nil, ferr
 	})
-	var t Task
 	if err == nil {
-		// A full re-read rather than PutFnBy's own return value: the file backend's PutFnBy runs against a parse-only cur with no sidecars loaded (the same optimization the file watcher's read path uses), so its returned Task would otherwise hand the status hook and the emitted event a snapshot with every plan/review sidecar field zeroed even though the on-disk sidecar files themselves were never touched.
-		t, err = m.persist.Get(taskID)
+		// Hydrate only sidecars: a second writer can commit before Get, so its
+		// primary status, escalation, and timestamp must never replace ours.
+		var hydrated Task
+		hydrated, err = m.persist.Get(taskID)
+		copySidecars(&t, hydrated)
 	}
 	var (
 		fireHook  bool
@@ -898,15 +930,28 @@ func (m *Manager) AddRunWithStatusBy(taskID, actor string, run AgentRun, status 
 	if fireHook {
 		m.recordFiredStatus(taskID, newStatus)
 	}
+	if err == nil && status != nil {
+		m.observeStatus(taskID, string(prevStatus), string(t.Status), actor, t)
+	}
 	unlock()
 	if err != nil {
 		return err
 	}
 	m.emitter.Emit(events.TaskUpdated, eventPath(t))
 	if fireHook {
-		m.onStatusHook(taskID, string(prevStatus), newStatus, t)
+		m.onStatusHook(taskID, string(prevStatus), newStatus, actor, t)
 	}
 	return nil
+}
+
+// UpdateRun updates fields on a specific agent run and emits task:updated.
+func copySidecars(dst *Task, src Task) {
+	dst.Plan, dst.PlanContract = src.Plan, src.PlanContract
+	dst.PlanCritique, dst.PlanResearch = src.PlanCritique, src.PlanResearch
+	dst.PlanDecisions, dst.PlanBrief = src.PlanDecisions, src.PlanBrief
+	dst.CodeReview, dst.CurrentTestFailures = src.CodeReview, src.CurrentTestFailures
+	dst.AcceptanceLedger, dst.SpecDecision = src.AcceptanceLedger, src.SpecDecision
+	dst.PlanDrafts = src.PlanDrafts
 }
 
 // UpdateRun updates fields on a specific agent run and emits task:updated.

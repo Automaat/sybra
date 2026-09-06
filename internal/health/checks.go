@@ -3,6 +3,7 @@ package health
 import (
 	"fmt"
 	"math"
+	"slices"
 	"time"
 
 	"github.com/Automaat/sybra/internal/audit"
@@ -188,11 +189,17 @@ func checkWorkflowLoops(events []audit.Event, now time.Time) []Finding {
 
 // checkStatusBounce flags tasks where the same status transition occurs 2+ times.
 func checkStatusBounce(events []audit.Event, now time.Time) []Finding {
-	// taskID → "from→to" → count
-	transitions := make(map[string]map[string]int)
+	type edge struct {
+		taskID, transition string
+		episode            int
+	}
+	transitions := make(map[edge]int)
+	recurrences := make(map[string]int)
+	ordered := slices.Clone(events)
+	slices.SortStableFunc(ordered, func(a, b audit.Event) int { return a.Timestamp.Compare(b.Timestamp) })
 
-	for _, e := range events {
-		if e.Type != audit.EventTaskStatusChanged {
+	for _, e := range ordered {
+		if e.Type != audit.EventTaskStatusChanged || e.TaskID == "" {
 			continue
 		}
 		from, _ := e.Data["from"].(string)
@@ -200,36 +207,43 @@ func checkStatusBounce(events []audit.Event, now time.Time) []Finding {
 		if from == "" || to == "" {
 			continue
 		}
+		if ClassifyTransition(e) == CauseIncidentRecurrence {
+			recurrences[e.TaskID]++
+			continue
+		}
 		if to == string(taskstatus.HumanRequired) && isExpectedHumanRequired(e) {
 			continue
 		}
 
-		key := from + "→" + to
-		if transitions[e.TaskID] == nil {
-			transitions[e.TaskID] = make(map[string]int)
-		}
-		transitions[e.TaskID][key]++
+		transitions[edge{e.TaskID, from + "→" + to, recurrences[e.TaskID]}]++
 	}
 
 	var findings []Finding
-	for taskID, trans := range transitions {
-		for key, count := range trans {
-			if count < 2 {
-				continue
-			}
-			findings = append(findings, Finding{
-				Category:    CatStatusBounce,
-				Severity:    SeverityWarning,
-				Title:       fmt.Sprintf("task %s status bounce: %s (%dx)", taskID, key, count),
-				Description: fmt.Sprintf("Status transition %s occurred %d times, indicating the task is bouncing between states", key, count),
-				TaskID:      taskID,
-				Evidence: map[string]any{
-					"transition": key,
-					"count":      count,
-				},
-				DetectedAt: now,
-			})
+	for taskID, count := range recurrences {
+		findings = append(findings, Finding{Category: CatIncidentRecovery, Cause: CauseIncidentRecurrence,
+			Severity: SeverityInfo, TaskID: taskID, NextAction: nextAction(CauseIncidentRecurrence),
+			Title:       fmt.Sprintf("task %s incident reopened (%dx)", taskID, count),
+			Description: "Incident lifecycle recurrence remains observable; it is not an ordinary task bounce or a planning repair request.",
+			Evidence:    map[string]any{"recurrence_count": count}, DetectedAt: now})
+	}
+	for item, count := range transitions {
+		taskID, key := item.taskID, item.transition
+		if count < 2 {
+			continue
 		}
+		findings = append(findings, Finding{
+			Category: CatStatusBounce,
+			Cause:    CauseUnknown, NextAction: nextAction(CauseUnknown),
+			Severity:    SeverityWarning,
+			Title:       fmt.Sprintf("task %s status bounce: %s (%dx)", taskID, key, count),
+			Description: fmt.Sprintf("Status transition %s occurred %d times. Repetition is observed; its root cause is not established by the transition count.", key, count),
+			TaskID:      taskID,
+			Evidence: map[string]any{
+				"transition": key,
+				"count":      count,
+			},
+			DetectedAt: now,
+		})
 	}
 
 	return findings

@@ -109,12 +109,12 @@ func TestCheckTriageMismatch(t *testing.T) {
 			1,
 		},
 		{
-			"interactive then human-required (not a mismatch)",
+			"legacy interactive escalation is unknown, not hidden",
 			[]audit.Event{
 				{Type: audit.EventTriageClassified, TaskID: "t1", Data: map[string]any{"mode": "interactive"}},
 				{Type: audit.EventTaskStatusChanged, TaskID: "t1", Data: map[string]any{"from": "in-progress", "to": "human-required"}},
 			},
-			0,
+			1,
 		},
 		{
 			"headless without escalation",
