@@ -1211,7 +1211,10 @@ func TestE2E_HeadlessAgent_CostHardStopPreemptsMidStream(t *testing.T) {
 // misread that as a Sybra-initiated stall, silently re-queuing already
 // -completed work instead of finalizing it.
 func TestE2E_HeadlessAgent_StopCompletedAgent_AdvancesWorkflow(t *testing.T) {
-	env := setupE2EMulti(t, []string{"success_then_hang", "triage"})
+	// A stale background-task announcement prevents automatic fast-close.
+	// This test must explicitly exercise StopCompletedAgent, not win a race
+	// against the 100ms cleanup covered by TerminalResultFastClose above.
+	env := setupE2EMulti(t, []string{"success_with_background_then_hang", "triage"})
 
 	h := completion.New(completion.Config{
 		Logger:         e2eLogger(t),
@@ -1238,7 +1241,7 @@ func TestE2E_HeadlessAgent_StopCompletedAgent_AdvancesWorkflow(t *testing.T) {
 			return false
 		}
 		triageAgentID = ag.ID
-		return ag.CompletedSuccessfully()
+		return ag.CompletedSuccessfully() && ag.HasBackgroundTasks()
 	})
 
 	if err := env.agents.StopCompletedAgent(triageAgentID); err != nil {
