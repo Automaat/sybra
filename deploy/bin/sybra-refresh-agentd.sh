@@ -18,5 +18,14 @@ STANDALONE="${SYBRA_AGENTD_STANDALONE:-/etc/systemd/system/sybra-agentd.service.
 # predates agentd. Leave the durable daemon stopped in that case; the next
 # successful agentd-capable activation will restart it.
 if [[ -f "$CONFIG" && -x "$BINARY" ]] && systemctl is-enabled --quiet "$UNIT"; then
+  # An independently starting worker may exhaust its start budget while the
+  # board builds its first agentd-capable release. A healthy new release is a
+  # fresh start opportunity; do not leave that worker permanently rate-limited.
+  # The final retry delay is activating/auto-restart, not failed, so checking
+  # is-failed alone misses the last-start race. Never-loaded units have no
+  # budget to reset; loaded units may need one regardless of their active state.
+  if [[ "$(systemctl show --property=LoadState --value "$UNIT")" == "loaded" ]]; then
+    systemctl reset-failed "$UNIT"
+  fi
   systemctl --no-block restart "$UNIT"
 fi

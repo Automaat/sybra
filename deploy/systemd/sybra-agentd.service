@@ -1,9 +1,11 @@
 [Unit]
 Description=Sybra thin agent execution daemon
 Documentation=https://github.com/Automaat/sybra/blob/main/docs/agentd.md
-After=network-online.target sybra.service
+After=network-online.target
 Wants=network-online.target
-PartOf=sybra.service
+# Workers retry leader registration independently. Co-hosted installations
+# refresh them explicitly from the board's post-healthcheck hook; do not bind
+# their lifetime to the board (dependency lists cannot be cleared by drop-ins).
 
 StartLimitIntervalSec=600
 StartLimitBurst=10

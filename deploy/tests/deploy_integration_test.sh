@@ -552,7 +552,10 @@ scenario_agentd_refresh() {
   new_env "$root"
   export SYBRA_AGENTD_CONFIG="$root/sybra-agentd.yaml"
   export SYBRA_AGENTD_BINARY="$root/sybra-agentd"
+  export SYBRA_AGENTD_STANDALONE="$root/standalone.conf"
   export FAKE_SYSTEMCTL_LOG="$root/systemctl.log"
+  export FAKE_AGENTD_FAILED=0
+  export FAKE_AGENTD_LOAD_STATE=loaded
 
   # Server-only hosts must remain a silent no-op even if a stale unit happens
   # to be enabled: the daemon config is the operator's opt-in boundary.
@@ -574,6 +577,21 @@ scenario_agentd_refresh() {
   export FAKE_AGENTD_ENABLED=1
   bash "$DEPLOY_BIN/sybra-refresh-agentd.sh"
   assert_contains "agentd-refresh: enabled daemon restarts asynchronously" "$(cat "$FAKE_SYSTEMCTL_LOG")" "--no-block restart sybra-agentd.service"
+  assert_eq "agentd-refresh: loaded auto-restart worker resets even when is-failed is false" \
+    $'reset-failed sybra-agentd.service\n--no-block restart sybra-agentd.service' "$(cat "$FAKE_SYSTEMCTL_LOG")"
+
+  local previous_calls
+  previous_calls="$(cat "$FAKE_SYSTEMCTL_LOG")"
+  export FAKE_AGENTD_FAILED=1
+  bash "$DEPLOY_BIN/sybra-refresh-agentd.sh"
+  assert_eq "agentd-refresh: failed cohost worker gets a fresh start budget" \
+    "$previous_calls"$'\nreset-failed sybra-agentd.service\n--no-block restart sybra-agentd.service' \
+    "$(cat "$FAKE_SYSTEMCTL_LOG")"
+
+  previous_calls="$(cat "$FAKE_SYSTEMCTL_LOG")"
+  : >"$SYBRA_AGENTD_STANDALONE"
+  bash "$DEPLOY_BIN/sybra-refresh-agentd.sh"
+  assert_eq "agentd-refresh: standalone worker is not restarted" "$previous_calls" "$(cat "$FAKE_SYSTEMCTL_LOG")"
 }
 
 scenario_repair_src_preflight() {
