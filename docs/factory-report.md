@@ -4,6 +4,8 @@ Run `sybra-cli --json factory --since 7d` against the local leader. To compare r
 
 The window is at most 31 days, 250,000 events, and 32 MiB of matching input; excessive input or unreadable records are refused, never silently sampled. Limits apply inside both storage readers, before retaining the full input. Output contains four fixed phases, bounded release counts, and no task/project IDs, repository names, agent transcripts, or task content. It reuses the audit store and canonical run lifecycle/accounting normalization. It does not query GitHub or spawn an agent to produce a report.
 
+Invalid query boundaries and exceeded report budgets return HTTP 400. Corrupt or unavailable server-owned audit storage returns a generic HTTP 503 without exposing record contents. Queue boundary timestamps are captured at the mutation, but audit writes happen after releasing the queue lock; delayed delivery does not inflate measured queue residence.
+
 | Phase | Measurement |
 | --- | --- |
 | queue | Observed admission-queue entry to dequeue; restored intent is one interval. Removal/reconciliation without dequeue is censored. |

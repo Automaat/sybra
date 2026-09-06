@@ -469,11 +469,7 @@ func (a *App) initAgentQueue(ctx context.Context) {
 	queue, err := agentqueue.New(config.AgentQueueDir(), agentqueue.Options{
 		MaxDepth: a.cfg.Agent.Queue.MaxDepth,
 		Store:    a.openAgentQueueStore(ctx),
-		Observe: func(taskID string, enqueued time.Time, state string) {
-			a.logAudit(audit.EventFactoryQueue, taskID, "", map[string]any{
-				"interval_key": audit.FactoryIntervalKey(taskID, enqueued.UTC().Format(time.RFC3339Nano)), "state": state,
-			})
-		},
+		Observe:  a.observeQueueBoundary,
 	}, a.logger)
 	if err != nil {
 		a.logger.Warn("agentqueue.init.degraded", "err", err)

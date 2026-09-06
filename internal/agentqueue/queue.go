@@ -37,9 +37,11 @@ type Item struct {
 // Options configures queue behavior. These are package-local for P0 — no
 // global agent.queue.* config keys exist yet.
 type Options struct {
-	// Observe receives metadata-only lifecycle boundaries under the queue lock.
-	// It must not re-enter the queue. Telemetry never decides admission.
-	Observe func(taskID string, enqueued time.Time, state string)
+	// Observe receives metadata-only boundaries after releasing the queue lock.
+	// observedAt is captured under that lock; concurrent callbacks may arrive
+	// out of order, so consumers must use the boundary time, not delivery time.
+	// Telemetry never decides admission.
+	Observe func(taskID string, enqueued, observedAt time.Time, state string)
 	// MaxDepth caps the number of distinct TaskIDs the queue holds. 0 means
 	// unbounded. Once full, Offer rejects genuinely new TaskIDs (re-offers
 	// of an already-queued TaskID still refresh in place).
@@ -92,12 +94,20 @@ func (h *queueHeap) Pop() any {
 // file store; store failures are logged and never fail the in-memory
 // operation (the store is a durability mirror, not the authority).
 type Queue struct {
-	mu    sync.Mutex
-	h     *queueHeap
-	store Persistence
-	log   *slog.Logger
-	now   func() time.Time
-	opts  Options
+	mu           sync.Mutex
+	h            *queueHeap
+	store        Persistence
+	log          *slog.Logger
+	now          func() time.Time
+	opts         Options
+	observations []observation
+	lastObserved time.Time
+}
+
+type observation struct {
+	taskID       string
+	enqueued, at time.Time
+	state        string
 }
 
 // DepthSnapshot is the queue's current depth and top effective priority.
@@ -163,7 +173,7 @@ func (q *Queue) offer(it Item, restore bool) bool {
 	}
 
 	q.mu.Lock()
-	defer q.mu.Unlock()
+	defer q.unlockAndObserve()
 
 	if pos, ok := q.h.index[it.TaskID]; ok {
 		existing := q.h.items[pos]
@@ -213,7 +223,7 @@ func (q *Queue) Remove(taskID string) {
 	}
 
 	q.mu.Lock()
-	defer q.mu.Unlock()
+	defer q.unlockAndObserve()
 
 	pos, ok := q.h.index[taskID]
 	if !ok {
@@ -280,7 +290,7 @@ func (q *Queue) popReady(n int, keep func(Item) bool) []Item {
 	}
 
 	q.mu.Lock()
-	defer q.mu.Unlock()
+	defer q.unlockAndObserve()
 
 	if len(q.h.items) == 0 {
 		return nil
@@ -347,7 +357,7 @@ func (q *Queue) Reconcile(exists func(taskID string) (task.Task, bool)) {
 	}
 
 	q.mu.Lock()
-	defer q.mu.Unlock()
+	defer q.unlockAndObserve()
 	for _, id := range stale {
 		pos, ok := q.h.index[id]
 		if !ok {
@@ -359,14 +369,31 @@ func (q *Queue) Reconcile(exists func(taskID string) (task.Task, bool)) {
 	}
 }
 
-// persist writes it to the store and logs (non-fatally) on failure. Caller
-// must hold q.mu.
+// observe records the boundary under q.mu; delivery happens after unlock.
 func (q *Queue) observe(it Item, state string) {
 	if q.opts.Observe != nil {
-		q.opts.Observe(it.TaskID, it.Enqueued, state)
+		at := q.now().UTC()
+		if !at.After(q.lastObserved) {
+			// Preserve mutation order through coarse clocks or wall-clock steps
+			// even when callbacks are delivered out of order after unlocking.
+			at = q.lastObserved.Add(time.Nanosecond)
+		}
+		q.lastObserved = at
+		q.observations = append(q.observations, observation{it.TaskID, it.Enqueued, at, state})
 	}
 }
 
+func (q *Queue) unlockAndObserve() {
+	observations := q.observations
+	q.observations = nil
+	q.mu.Unlock()
+	for _, boundary := range observations {
+		q.opts.Observe(boundary.taskID, boundary.enqueued, boundary.at, boundary.state)
+	}
+}
+
+// persist writes it to the store and logs (non-fatally) on failure. Caller
+// must hold q.mu.
 func (q *Queue) persist(it Item) {
 	if err := q.store.put(it); err != nil {
 		q.log.Warn("agentqueue.store.put-failed", "task_id", it.TaskID, "err", err)
