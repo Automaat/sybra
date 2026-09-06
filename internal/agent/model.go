@@ -356,6 +356,7 @@ type Agent struct {
 	executionSink           ExecutionEventSink
 	executionHandle         ExecutionHandle
 	backendOwnsCompletion   bool
+	reviewProgressVerified  bool
 	unthrottledOutputEvents bool
 	steerCommandIDs         map[string]struct{}
 	steerDispatching        bool
@@ -388,6 +389,14 @@ func (a *Agent) completionOwnedByBackend() bool {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.backendOwnsCompletion
+}
+
+// CanCaptureReviewProgress requires execution-host proof for portable runs.
+// Provider output itself cannot set this bit; only the backend terminal event can.
+func (a *Agent) CanCaptureReviewProgress() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return !a.backendOwnsCompletion || a.reviewProgressVerified
 }
 
 type foregroundCommand struct {
@@ -2253,6 +2262,7 @@ type RunConfig struct {
 	// RemoteDiscardWorkspaceChanges validates daemon Git output without
 	// publishing it, matching local disposable verifier-clone behavior.
 	RemoteDiscardWorkspaceChanges bool
+	ReviewBase                    *executioncontract.ReviewBase
 	// DisableVerifierControl withholds the task mutation credential from local
 	// deterministic checks, whose admission certificate has no such capability.
 	DisableVerifierControl bool

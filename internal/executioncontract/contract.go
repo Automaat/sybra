@@ -153,6 +153,14 @@ type Workspace struct {
 	// The bytes travel through worker control, never through a host path or
 	// repository credential in the execution contract.
 	BaseBundle *ContentReference `json:"baseBundle,omitempty"`
+	// ReviewBase pins the comparison input for an opted-in reviewer checkpoint.
+	ReviewBase *ReviewBase `json:"reviewBase,omitempty"`
+}
+
+type ReviewBase struct {
+	Ref         string `json:"ref"`
+	SHA         string `json:"sha"`
+	ProgressKey string `json:"progressKey"`
 }
 
 const MaxWorkspaceBaseBundleSize int64 = 64 << 20
@@ -362,6 +370,9 @@ func sensitiveEnvironmentName(name string) bool {
 }
 
 func validateWorkspace(workspace Workspace) error {
+	if base := workspace.ReviewBase; base != nil && (!validFullGitRef(base.Ref) || !gitObjectID.MatchString(base.SHA) || !sha256Digest.MatchString(base.ProgressKey)) {
+		return errors.New("execution contract: invalid review comparison input")
+	}
 	if !validRepositoryID(workspace.RepositoryID) || !gitObjectID.MatchString(workspace.BaseSHA) || !validFullGitRef(workspace.BaseRef) || len(workspace.Roots) == 0 {
 		return errors.New("execution contract: workspace base SHA/ref and logical roots are required")
 	}

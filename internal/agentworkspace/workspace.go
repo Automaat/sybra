@@ -20,6 +20,7 @@ import (
 	"github.com/Automaat/sybra/internal/executioncontract"
 	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/notes"
+	"github.com/Automaat/sybra/internal/reviewprogress"
 )
 
 const (
@@ -63,6 +64,8 @@ func BaseBundleRef(runID string) string {
 	digest := sha256.Sum256([]byte(runID))
 	return "refs/sybra/base-input/" + hex.EncodeToString(digest[:])
 }
+
+func ReviewBundleRef(runID string) string { return BaseBundleRef(runID) + "-review" }
 
 // Prepare clones the daemon-local source and checks out exactly BaseSHA. The
 // mutable BaseRef tip is verified only as ancestry; it is never checked out.
@@ -116,6 +119,16 @@ func PrepareWithBaseBundle(ctx context.Context, root, source string, spec execut
 		if err := gitexec.Run(ctx, gitexec.Options{Dir: worktree}, "fetch", bundlePath, importedRef+":"+importedRef); err != nil {
 			return Layout{}, fmt.Errorf("%w: import: %w", ErrInvalidBaseBundle, err)
 		}
+		if base := spec.Workspace.ReviewBase; base != nil {
+			ref := ReviewBundleRef(spec.RunID)
+			if err := gitexec.Run(ctx, gitexec.Options{Dir: worktree}, "fetch", bundlePath, ref+":"+ref); err != nil {
+				return Layout{}, fmt.Errorf("%w: import review base: %w", ErrInvalidBaseBundle, err)
+			}
+			sha, err := gitexec.Output(ctx, gitexec.Options{Dir: worktree}, "rev-parse", "--verify", ref+"^{commit}")
+			if err != nil || sha != base.SHA {
+				return Layout{}, fmt.Errorf("%w: review base differs", ErrInvalidBaseBundle)
+			}
+		}
 		_ = os.Remove(bundlePath)
 		resolved, err := gitexec.Output(ctx, gitexec.Options{Dir: worktree}, "rev-parse", "--verify", importedRef+"^{commit}")
 		if err != nil || resolved != spec.Workspace.BaseSHA {
@@ -139,6 +152,11 @@ func PrepareWithBaseBundle(ctx context.Context, root, source string, spec execut
 	}
 	if err := gitexec.Run(ctx, gitexec.Options{Dir: worktree}, "checkout", "--detach", spec.Workspace.BaseSHA); err != nil {
 		return Layout{}, fmt.Errorf("agent workspace: checkout immutable base: %w", err)
+	}
+	if base := spec.Workspace.ReviewBase; base != nil {
+		if err := reviewprogress.PinBase(ctx, worktree, base.Ref, base.SHA); err != nil {
+			return Layout{}, err
+		}
 	}
 	// Remote workspaces must be able to create handback commits without
 	// depending on the daemon account's operator identity or signing setup.

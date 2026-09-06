@@ -128,6 +128,11 @@ type DispatchClaim interface {
 
 // AgentAssignment carries A/B experiment attribution selected before dispatch.
 type AgentAssignment struct {
+	// Review continuity is scoped by the workflow owner, never by an agent's
+	// prompt or implementation notes. Empty values disable checkpoint reuse.
+	ReviewLineage        string
+	ReviewContractDigest string
+	ReviewProgressBase   string
 	// IntentID is the durable workflow-effect identity used by admission to
 	// reject a replay while the original attempt is still owned, preventing a
 	// second provider process from being spawned for the same effect.

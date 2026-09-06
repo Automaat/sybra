@@ -142,6 +142,7 @@ func (c *Config) Capabilities(ctx context.Context, build string) []string {
 		"protocol=1", "build=" + build, "os=" + runtime.GOOS, "arch=" + runtime.GOARCH,
 		fmt.Sprintf("capacity=%d", c.Capacity), "sandbox=" + c.SandboxMode,
 		"workspace_base_bundle=true",
+		"review_progress=true",
 		fmt.Sprintf("trusted_work=%t", c.TrustedWork),
 		fmt.Sprintf("encrypted_work=%t", c.EncryptedWork),
 	}

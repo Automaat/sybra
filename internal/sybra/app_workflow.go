@@ -1303,7 +1303,8 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	}
 
 	canonicalDir := cfg.Dir
-	ag, baselineRef, err := a.launchDirectWithVerification(t, r, &cfg, hasCanonicalWorktree)
+	progressScope := verification.ProgressScope{Lineage: assignment.ReviewLineage, ContractDigest: assignment.ReviewContractDigest, BaseRef: assignment.ReviewProgressBase}
+	ag, baselineRef, err := a.launchDirectWithVerification(t, r, &cfg, hasCanonicalWorktree, progressScope)
 	if err != nil {
 		return "", "", "", err
 	}
@@ -1315,7 +1316,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	return ag.ID, canonicalDir, baselineRef, nil
 }
 
-func (a *agentAdapter) launchDirectWithVerification(t task.Task, role agent.Role, cfg *agent.RunConfig, hasCanonicalWorktree bool) (ag *agent.Agent, baselineRef string, err error) {
+func (a *agentAdapter) launchDirectWithVerification(t task.Task, role agent.Role, cfg *agent.RunConfig, hasCanonicalWorktree bool, progressScope verification.ProgressScope) (ag *agent.Agent, baselineRef string, err error) {
 	canonicalDir := cfg.Dir
 	var lease verification.Lease
 	if role.IsVerifier() && a.verification != nil {
@@ -1347,6 +1348,17 @@ func (a *agentAdapter) launchDirectWithVerification(t task.Task, role agent.Role
 		}
 		cfg.BeforeStart = func(agentID string) error {
 			return a.verification.BindAgent(lease.ID, agentID)
+		}
+		if role == agent.RoleReview && progressScope.Lineage != "" {
+			var seed string
+			lease, seed, err = a.verification.PrepareProgress(context.Background(), lease, progressScope)
+			if err != nil {
+				return nil, "", err
+			}
+			cfg.Prompt += seed
+			if input := lease.ProgressInput; input != nil {
+				cfg.ReviewBase = &executioncontract.ReviewBase{Ref: input.Scope.BaseRef, SHA: input.BaseSHA, ProgressKey: input.Key()}
+			}
 		}
 	}
 	ag, baselineRef, err = a.launchCertifiedDirect(t, role, cfg)

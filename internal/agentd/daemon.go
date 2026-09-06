@@ -19,6 +19,7 @@ import (
 	agentevents "github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/executioncontract"
 	"github.com/Automaat/sybra/internal/fsutil"
+	"github.com/Automaat/sybra/internal/reviewprogress"
 	"github.com/Automaat/sybra/internal/version"
 	"github.com/Automaat/sybra/internal/workercontrol"
 )
@@ -748,12 +749,21 @@ func (d *Daemon) completeAgent(a *agent.Agent) {
 	artifactState := executioncontract.ArtifactsFailed
 	manifestID := ""
 	artifactError := ""
+	progressVerified := false
+	progressKey := ""
 	if spec, ok := d.spool.snapshot().RunSpecs[runID]; ok && !errors.Is(a.GetExitErr(), ErrSpoolExhausted) {
 		collectCtx, collectCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		layout := agentworkspace.Layout{
 			RunRoot: filepath.Join(d.cfg.WorkspaceRoot, runID), Worktree: filepath.Join(d.cfg.WorkspaceRoot, runID, "worktree"),
 			Sidecar: filepath.Join(d.cfg.WorkspaceRoot, runID, "sidecar"), Artifact: filepath.Join(d.cfg.WorkspaceRoot, runID, "artifact"),
 			WorkingMemory: filepath.Join(d.cfg.WorkspaceRoot, runID, "worktree"),
+		}
+		// Validate before Collect can reconcile/reset disposable Git changes.
+		if base := spec.Workspace.ReviewBase; base != nil && spec.Role == "review" {
+			progressVerified = reviewprogress.ValidateWorkspace(collectCtx, layout.Worktree, spec.Workspace.BaseSHA, base.Ref, base.SHA) == nil
+			if progressVerified {
+				progressKey = base.ProgressKey
+			}
 		}
 		manifest, content, collectErr := agentworkspace.Collect(collectCtx, layout, spec, buildVersion())
 		collectCancel()
@@ -790,7 +800,9 @@ func (d *Daemon) completeAgent(a *agent.Agent) {
 	}
 	terminalErr := d.emitCompletion(runID, map[string]any{
 		"state": state, "error": errText, "artifactState": artifactState, "artifactManifestId": manifestID,
-		"artifactError": artifactError,
+		"artifactError":          artifactError,
+		"reviewProgressVerified": progressVerified,
+		"reviewProgressKey":      progressKey,
 	})
 	if terminalErr != nil {
 		d.logger.Error("agentd.terminal.persist", "run_id", runID, "err", terminalErr)

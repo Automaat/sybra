@@ -26,17 +26,18 @@ import (
 )
 
 type remoteExecution struct {
-	mu               sync.RWMutex
-	recoverMu        sync.Mutex
-	runID, sessionID string
-	buildVersion     string
-	sink             agent.ExecutionEventSink
-	cancel           context.CancelFunc
-	localHandle      agent.ExecutionHandle
-	deadline         time.Time
-	after            uint64
-	observing        bool
-	observerDone     chan struct{}
+	mu                sync.RWMutex
+	recoverMu         sync.Mutex
+	runID, sessionID  string
+	buildVersion      string
+	sink              agent.ExecutionEventSink
+	cancel            context.CancelFunc
+	localHandle       agent.ExecutionHandle
+	deadline          time.Time
+	after             uint64
+	observing         bool
+	observerDone      chan struct{}
+	reviewProgressKey string
 }
 
 const remoteTerminalGrace = time.Minute
@@ -143,6 +144,9 @@ func (b *leaderExecutionBackend) startRemoteRelay(ctx context.Context, start age
 	handle := agent.ExecutionHandle("remote:" + runID)
 	runCtx, cancel := context.WithDeadline(ctx, deadline.Add(remoteTerminalGrace))
 	run := &remoteExecution{runID: runID, sessionID: sessionID, buildVersion: buildVersion, sink: start.Sink, cancel: cancel, deadline: deadline, observing: true, observerDone: make(chan struct{})}
+	if base := start.Config.ReviewBase; base != nil {
+		run.reviewProgressKey = base.ProgressKey
+	}
 	b.store(handle, run)
 	start.Sink.EmitExecutionEvent(ctx, handle, agent.ExecutionEvent{
 		Kind: agent.ExecutionStarted, Command: command, BackendOwnsCompletion: true,
@@ -245,6 +249,7 @@ func (b *leaderExecutionBackend) placementRequest(ctx context.Context, start age
 	}
 	baseBundles, err := prepareRemoteWorkspaceBases(
 		ctx, start.Config.Dir, start.Spec.ID, baseSHA, baseRef, anchors, executioncontract.MaxWorkspaceBaseBundleSize,
+		clean.Config.ReviewBase,
 	)
 	if err != nil {
 		return workercontrol.PlacementRequest{}, err
@@ -296,10 +301,10 @@ func prepareRemoteWorkspaceBase(ctx context.Context, dir, runID, baseSHA, worker
 	return prepareRemoteWorkspaceBaseLimited(ctx, dir, runID, baseSHA, workerAnchor, baseRef, executioncontract.MaxWorkspaceBaseBundleSize)
 }
 
-func prepareRemoteWorkspaceBases(ctx context.Context, dir, runID, baseSHA, baseRef string, anchors []string, maxBytes int64) ([]workercontrol.WorkspaceBaseBundleInput, error) {
+func prepareRemoteWorkspaceBases(ctx context.Context, dir, runID, baseSHA, baseRef string, anchors []string, maxBytes int64, review ...*executioncontract.ReviewBase) ([]workercontrol.WorkspaceBaseBundleInput, error) {
 	baseBundles := make([]workercontrol.WorkspaceBaseBundleInput, 0, len(anchors))
 	for _, anchor := range anchors {
-		baseBundle, baseBundleRef, err := prepareRemoteWorkspaceBaseLimited(ctx, dir, runID, baseSHA, anchor, baseRef, maxBytes)
+		baseBundle, baseBundleRef, err := prepareRemoteWorkspaceBaseLimited(ctx, dir, runID, baseSHA, anchor, baseRef, maxBytes, review...)
 		if errors.Is(err, errRemoteWorkspaceBaseTooLarge) {
 			// Bundle size is a property of this worker's advertised repository
 			// anchor, not of the run. Omit only that anchor so placement can still
@@ -316,13 +321,18 @@ func prepareRemoteWorkspaceBases(ctx context.Context, dir, runID, baseSHA, baseR
 	return baseBundles, nil
 }
 
-func prepareRemoteWorkspaceBaseLimited(ctx context.Context, dir, runID, baseSHA, workerAnchor, baseRef string, maxBytes int64) ([]byte, *executioncontract.ContentReference, error) {
+func prepareRemoteWorkspaceBaseLimited(ctx context.Context, dir, runID, baseSHA, workerAnchor, baseRef string, maxBytes int64, review ...*executioncontract.ReviewBase) ([]byte, *executioncontract.ContentReference, error) {
 	// Thin bundles are safe only against the exact object advertised by the
 	// candidate daemon. A leader-side remote-tracking ref says nothing about a
 	// stale daemon clone and must never be used as the prerequisite.
 	anchor := strings.TrimSpace(workerAnchor)
+	var comparison *executioncontract.ReviewBase
+	if len(review) > 0 {
+		comparison = review[0]
+	}
 	if anchor != "" && followerResolvableBaseRef(baseRef) &&
-		gitexec.Run(ctx, gitexec.Options{Dir: dir}, "merge-base", "--is-ancestor", baseSHA, anchor) == nil {
+		gitexec.Run(ctx, gitexec.Options{Dir: dir}, "merge-base", "--is-ancestor", baseSHA, anchor) == nil &&
+		(comparison == nil || gitexec.Run(ctx, gitexec.Options{Dir: dir}, "merge-base", "--is-ancestor", comparison.SHA, anchor) == nil) {
 		return nil, nil, nil
 	}
 	prerequisite := ""
@@ -340,6 +350,15 @@ func prepareRemoteWorkspaceBaseLimited(ctx context.Context, dir, runID, baseSHA,
 			prerequisite = strings.TrimSpace(shared)
 		}
 	}
+	if comparison != nil && prerequisite != "" {
+		// Both advertised refs must be inside the bundle, not excluded as
+		// prerequisites. Keep the common ancestor itself by excluding its parent.
+		shared, err := gitexec.Output(ctx, gitexec.Options{Dir: dir}, "merge-base", prerequisite, comparison.SHA)
+		prerequisite = ""
+		if err == nil {
+			prerequisite, _ = gitexec.Output(ctx, gitexec.Options{Dir: dir}, "rev-parse", "--verify", shared+"^")
+		}
+	}
 	tmpDir, err := os.MkdirTemp("", "sybra-workspace-base-")
 	if err != nil {
 		return nil, nil, err
@@ -354,6 +373,16 @@ func prepareRemoteWorkspaceBaseLimited(ctx context.Context, dir, runID, baseSHA,
 		_ = gitexec.Run(context.WithoutCancel(ctx), gitexec.Options{Dir: dir}, "update-ref", "-d", ref)
 	}()
 	bundleArgs := []string{"bundle", "create", path, ref}
+	if comparison != nil {
+		reviewRef := agentworkspace.ReviewBundleRef(runID)
+		if err := gitexec.Run(ctx, gitexec.Options{Dir: dir}, "update-ref", reviewRef, comparison.SHA); err != nil {
+			return nil, nil, fmt.Errorf("remote execution stage review base: %w", err)
+		}
+		defer func() {
+			_ = gitexec.Run(context.WithoutCancel(ctx), gitexec.Options{Dir: dir}, "update-ref", "-d", reviewRef)
+		}()
+		bundleArgs = append(bundleArgs, reviewRef)
+	}
 	if prerequisite != "" {
 		bundleArgs = append(bundleArgs, "^"+prerequisite)
 	}
@@ -458,12 +487,14 @@ func (b *leaderExecutionBackend) completeAfterHandback(ctx context.Context, hand
 		run.emit(ctx, handle, completion)
 	}
 	var terminal struct {
-		State             executioncontract.TerminalState `json:"state"`
-		Error             string                          `json:"error"`
-		ArtifactState     executioncontract.ArtifactState `json:"artifactState"`
-		ArtifactError     string                          `json:"artifactError,omitempty"`
-		Permanent         bool                            `json:"permanent,omitempty"`
-		AdmissionDeferred bool                            `json:"admissionDeferred,omitempty"`
+		State                  executioncontract.TerminalState `json:"state"`
+		Error                  string                          `json:"error"`
+		ArtifactState          executioncontract.ArtifactState `json:"artifactState"`
+		ArtifactError          string                          `json:"artifactError,omitempty"`
+		Permanent              bool                            `json:"permanent,omitempty"`
+		AdmissionDeferred      bool                            `json:"admissionDeferred,omitempty"`
+		ReviewProgressVerified bool                            `json:"reviewProgressVerified,omitempty"`
+		ReviewProgressKey      string                          `json:"reviewProgressKey,omitempty"`
 	}
 	if err := json.Unmarshal(event.Payload, &terminal); err != nil {
 		receipt = ""
@@ -527,7 +558,10 @@ func (b *leaderExecutionBackend) completeAfterHandback(ctx context.Context, hand
 		completionErr = errors.Join(completionErr, fmt.Errorf("remote artifact handback: %s",
 			firstNonBlank(terminal.ArtifactError, "delivery did not complete")))
 	}
-	emitCompletion(agent.ExecutionEvent{Kind: agent.ExecutionCompleted, Err: completionErr, PermanentFailure: terminal.Permanent, AdmissionDeferred: terminal.AdmissionDeferred && terminal.State == executioncontract.TerminalFailed})
+	// An accepted run may be recovered after inputs changed. Still observe its
+	// paid result, but never attach its notes to the new lease's input identity.
+	progressVerified := terminal.ReviewProgressVerified && run.reviewProgressKey != "" && terminal.ReviewProgressKey == run.reviewProgressKey
+	emitCompletion(agent.ExecutionEvent{Kind: agent.ExecutionCompleted, Err: completionErr, PermanentFailure: terminal.Permanent, AdmissionDeferred: terminal.AdmissionDeferred && terminal.State == executioncontract.TerminalFailed, ReviewProgressVerified: progressVerified})
 	return true
 }
 

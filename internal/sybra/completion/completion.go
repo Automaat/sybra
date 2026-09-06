@@ -28,6 +28,7 @@ import (
 	"github.com/Automaat/sybra/internal/loopagent"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/reconcile"
+	"github.com/Automaat/sybra/internal/reviewprogress"
 	"github.com/Automaat/sybra/internal/runoutcome"
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/skillattr"
@@ -858,7 +859,7 @@ func interruptedReviewAssistantTranscript(ag *agent.Agent) string {
 			continue
 		}
 		content := strings.TrimSpace(ev.Content)
-		if content == "" {
+		if content == "" || reviewprogress.IsCheckpoint(content) {
 			continue
 		}
 		if b.Len() > 0 {
