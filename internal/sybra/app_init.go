@@ -56,6 +56,7 @@ import (
 	"github.com/Automaat/sybra/internal/taskstatus"
 	"github.com/Automaat/sybra/internal/toolledger"
 	"github.com/Automaat/sybra/internal/umbrella"
+	"github.com/Automaat/sybra/internal/version"
 	"github.com/Automaat/sybra/internal/watcher"
 	"github.com/Automaat/sybra/internal/workercontrol"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -468,6 +469,11 @@ func (a *App) initAgentQueue(ctx context.Context) {
 	queue, err := agentqueue.New(config.AgentQueueDir(), agentqueue.Options{
 		MaxDepth: a.cfg.Agent.Queue.MaxDepth,
 		Store:    a.openAgentQueueStore(ctx),
+		Observe: func(taskID string, enqueued time.Time, state string) {
+			a.logAudit(audit.EventFactoryQueue, taskID, "", map[string]any{
+				"interval_key": audit.FactoryIntervalKey(taskID, enqueued.UTC().Format(time.RFC3339Nano)), "state": state,
+			})
+		},
 	}, a.logger)
 	if err != nil {
 		a.logger.Warn("agentqueue.init.degraded", "err", err)
@@ -1470,7 +1476,7 @@ func (a *App) initAudit(ctx context.Context) {
 		// a.audit remains nil; logAudit() is a no-op when audit is nil.
 		return
 	}
-	a.audit = al
+	a.audit = audit.WithRelease(al, version.CleanRevision())
 	retentionDays := a.cfg.Audit.RetentionDays
 	if retentionDays <= 0 {
 		retentionDays = 30

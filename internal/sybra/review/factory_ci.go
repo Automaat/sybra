@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
@@ -30,12 +31,16 @@ func (r *Handler) factoryCIReady(ctx context.Context, t task.Task, pr github.Pul
 	}
 	gate, err := fetch(ctx, t.ProjectID, pr.Number, policy.RequiredChecks)
 	if err != nil || pr.HeadSHA == "" || gate.SHA != pr.HeadSHA || !gate.Approved() {
+		if pr.HeadSHA != "" {
+			r.logAudit(audit.EventFactoryCIWait, t.ID, "", map[string]any{"interval_key": audit.FactoryIntervalKey(t.ID, pr.HeadSHA)})
+		}
 		r.logger.Info("factory.ci.waiting", "task_id", t.ID, "head", pr.HeadSHA,
 			"missing", gate.Missing, "pending", gate.Pending, "failed", gate.Failed, "err", err)
 		return false
 	}
-	r.logAudit("factory.ci.verified", t.ID, "", map[string]any{
-		"head_sha": gate.SHA, "required_checks": gate.Succeeded, "pr": pr.Number,
+	r.logAudit(audit.EventFactoryCIVerified, t.ID, "", map[string]any{
+		"interval_key": audit.FactoryIntervalKey(t.ID, gate.SHA),
+		"head_sha":     gate.SHA, "required_checks": gate.Succeeded, "pr": pr.Number,
 	})
 	return true
 }

@@ -104,6 +104,10 @@ func (s *SQLStore) Read(q Query) ([]Event, error) {
 		args = append(args, q.TaskID)
 	}
 	stmt += ` ORDER BY ts, ` + s.db.OrderText("id")
+	if q.Limit > 0 && !q.Strict {
+		stmt += ` LIMIT ?`
+		args = append(args, q.Limit)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
 	defer cancel()
@@ -112,7 +116,12 @@ func (s *SQLStore) Read(q Query) ([]Event, error) {
 		return nil, fmt.Errorf("read audit events: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
+	return readAuditRows(rows, q)
+}
+
+func readAuditRows(rows *sql.Rows, q Query) ([]Event, error) {
 	var out []Event
+	remaining := q.MaxBytes
 	for rows.Next() {
 		var doc string
 		if err := rows.Scan(&doc); err != nil {
@@ -120,11 +129,30 @@ func (s *SQLStore) Read(q Query) ([]Event, error) {
 		}
 		var e Event
 		if err := json.Unmarshal([]byte(doc), &e); err != nil {
+			if q.Strict {
+				return nil, fmt.Errorf("audit contains an unreadable record: %w", err)
+			}
 			// The file reader skips a line it cannot decode rather than failing
 			// the query; one unreadable row must not cost a report all of it.
 			continue
 		}
+		// The timestamp index is microsecond-granular; the JSON envelope may
+		// retain nanoseconds. Strict report bounds/limits count exact matches,
+		// not extra rows in the first/last index bucket. Read as a bounded
+		// cursor instead of applying LIMIT before this refinement.
+		if q.Strict && !matchesQuery(e, q) {
+			continue
+		}
+		if q.MaxBytes > 0 {
+			if len(doc) > remaining {
+				return nil, ErrReadBudget
+			}
+			remaining -= len(doc)
+		}
 		out = append(out, e)
+		if q.Limit > 0 && len(out) >= q.Limit {
+			break
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate audit events: %w", err)

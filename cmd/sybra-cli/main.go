@@ -392,6 +392,8 @@ func dispatch(cmd string, rest []string, cfg *config.Config, jsonOut bool) int {
 		return cmdCluster(cfg, api, rest, jsonOut)
 	case "audit":
 		return cmdAudit(cfg, api, rest, jsonOut)
+	case "factory":
+		return cmdFactory(api, rest, jsonOut)
 	case "board":
 		return cmdBoard(store, jsonOut)
 	case "health":
@@ -2883,6 +2885,7 @@ func usageProjectAndOps() {
            self-signed follower cert + the tls_pin the leader must trust
 
   audit    [--since DURATION|DATE] [--until DATE] [--type TYPE] [--task ID] [--summary]
+  factory  [--since DURATION|DATE|RFC3339] [--until DATE|RFC3339] [--release SHA|unknown|mixed]
   board    (status counts + in-progress/plan-review/human-required task lists)
   monitor  scan [--json]    one-shot read-only detector pass (no remediation)
            map-duplicates --fingerprint ID --issues N[,N] --coverage TEXT

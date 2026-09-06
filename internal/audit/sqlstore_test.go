@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,6 +19,68 @@ func eventsFixture() []Event {
 		{Timestamp: base.Add(time.Hour), Type: "agent.done", TaskID: "task-a", AgentID: "ag1"},
 		{Timestamp: base.Add(2 * time.Hour), Type: "agent.started", TaskID: "task-b", AgentID: "ag2"},
 	}
+}
+
+func TestFactoryStorageByteBudget(t *testing.T) {
+	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
+		files, err := NewLogger(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = files.Close() })
+		sqlStore, err := NewSQLStore(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, store := range []Store{files, sqlStore} {
+			for _, e := range eventsFixture() {
+				if err := store.Log(e); err != nil {
+					t.Fatal(err)
+				}
+			}
+			q := Query{Since: eventsFixture()[0].Timestamp.Add(-time.Hour), Until: eventsFixture()[2].Timestamp.Add(time.Hour), Strict: true, MaxBytes: 10}
+			if _, err := store.Read(q); err == nil {
+				t.Fatal("byte budget ignored")
+			}
+			q.MaxBytes = 4096
+			q.Limit = 2
+			if got, err := store.Read(q); err != nil || len(got) != 2 {
+				t.Fatalf("bounded read: %d %v", len(got), err)
+			}
+		}
+	})
+}
+
+func TestFactoryStorageExactWindowBeforeLimits(t *testing.T) {
+	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
+		files, err := NewLogger(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = files.Close() })
+		sqlStore, err := NewSQLStore(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, store := range []Store{files, sqlStore} {
+			for i, ns := range []int{100, 600, 950} {
+				e := Event{Timestamp: factoryEpoch.Add(time.Duration(ns) * time.Nanosecond), Type: "synthetic"}
+				if i != 1 {
+					e.Data = map[string]any{"irrelevant": strings.Repeat("x", 2048)}
+				}
+				if err := store.Log(e); err != nil {
+					t.Fatal(err)
+				}
+			}
+			q := Query{Since: factoryEpoch.Add(500 * time.Nanosecond), Until: factoryEpoch.Add(900 * time.Nanosecond), Limit: 1, Strict: true, MaxBytes: 1024}
+			got, err := store.Read(q)
+			if err != nil || len(got) != 1 || !got[0].Timestamp.Equal(factoryEpoch.Add(600*time.Nanosecond)) {
+				t.Fatalf("exact bounded window: %+v %v", got, err)
+			}
+		}
+	})
 }
 
 // TestSQLStore_ReadMatchesTheFileTrail is the issue's "reports show the same
@@ -46,6 +109,8 @@ func TestSQLStore_ReadMatchesTheFileTrail(t *testing.T) {
 
 		base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 		for _, q := range []Query{
+			{Since: base.Add(-time.Hour), Until: base.Add(6 * time.Hour), Limit: 1, Strict: true},
+			{Since: base.Add(-time.Hour), Until: base.Add(6 * time.Hour), Type: "agent.started", Limit: 1, Strict: true},
 			{Since: base.Add(-time.Hour), Until: base.Add(6 * time.Hour)},
 			{Since: base.Add(-time.Hour), Until: base.Add(6 * time.Hour), TaskID: "task-a"},
 			{Since: base.Add(-time.Hour), Until: base.Add(6 * time.Hour), Type: "agent.started"},

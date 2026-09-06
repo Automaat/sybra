@@ -37,6 +37,9 @@ type Item struct {
 // Options configures queue behavior. These are package-local for P0 — no
 // global agent.queue.* config keys exist yet.
 type Options struct {
+	// Observe receives metadata-only lifecycle boundaries under the queue lock.
+	// It must not re-enter the queue. Telemetry never decides admission.
+	Observe func(taskID string, enqueued time.Time, state string)
 	// MaxDepth caps the number of distinct TaskIDs the queue holds. 0 means
 	// unbounded. Once full, Offer rejects genuinely new TaskIDs (re-offers
 	// of an already-queued TaskID still refresh in place).
@@ -168,6 +171,10 @@ func (q *Queue) offer(it Item, restore bool) bool {
 		q.h.items[pos] = it
 		heap.Fix(q.h, pos)
 		q.persist(it)
+		if !it.Enqueued.Equal(existing.Enqueued) {
+			q.observe(existing, "removed")
+			q.observe(it, "queued")
+		}
 		return false
 	}
 
@@ -181,6 +188,7 @@ func (q *Queue) offer(it Item, restore bool) bool {
 	}
 	heap.Push(q.h, it)
 	q.persist(it)
+	q.observe(it, "queued")
 	return true
 }
 
@@ -211,6 +219,7 @@ func (q *Queue) Remove(taskID string) {
 	if !ok {
 		return
 	}
+	q.observe(q.h.items[pos], "removed")
 	heap.Remove(q.h, pos)
 	q.deletePersist(taskID)
 }
@@ -305,6 +314,7 @@ func (q *Queue) popReady(n int, keep func(Item) bool) []Item {
 	out := ranked[:n]
 	for i := range out {
 		pos := q.h.index[out[i].TaskID]
+		q.observe(out[i], "dequeued")
 		heap.Remove(q.h, pos)
 		q.deletePersist(out[i].TaskID)
 	}
@@ -343,6 +353,7 @@ func (q *Queue) Reconcile(exists func(taskID string) (task.Task, bool)) {
 		if !ok {
 			continue
 		}
+		q.observe(q.h.items[pos], "removed")
 		heap.Remove(q.h, pos)
 		q.deletePersist(id)
 	}
@@ -350,6 +361,12 @@ func (q *Queue) Reconcile(exists func(taskID string) (task.Task, bool)) {
 
 // persist writes it to the store and logs (non-fatally) on failure. Caller
 // must hold q.mu.
+func (q *Queue) observe(it Item, state string) {
+	if q.opts.Observe != nil {
+		q.opts.Observe(it.TaskID, it.Enqueued, state)
+	}
+}
+
 func (q *Queue) persist(it Item) {
 	if err := q.store.put(it); err != nil {
 		q.log.Warn("agentqueue.store.put-failed", "task_id", it.TaskID, "err", err)

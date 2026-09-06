@@ -256,6 +256,7 @@ const (
 )
 
 type Event struct {
+	Release   string         `json:"release,omitempty"`
 	Timestamp time.Time      `json:"ts"`
 	Type      string         `json:"type"`
 	TaskID    string         `json:"task_id,omitempty"`

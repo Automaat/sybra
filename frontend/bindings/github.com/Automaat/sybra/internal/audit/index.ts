@@ -3,5 +3,8 @@
 
 export {
     Event,
+    FactoryPhase,
+    FactoryQuery,
+    FactoryReport,
     Query
 } from "./models.js";

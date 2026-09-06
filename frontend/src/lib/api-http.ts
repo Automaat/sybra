@@ -12,7 +12,7 @@ import type { Notification } from '../../bindings/github.com/Automaat/sybra/inte
 import type { RemoteResultRecoveryReport } from '../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
 import type { StatsResponse } from '../../bindings/github.com/Automaat/sybra/internal/stats/models.js'
 import type { Meta, ProgressEntry } from '../../bindings/github.com/Automaat/sybra/internal/artifact/models.js'
-import type { Event as AuditEvent, Query as AuditQuery } from '../../bindings/github.com/Automaat/sybra/internal/audit/models.js'
+import type { Event as AuditEvent, Query as AuditQuery, FactoryQuery, FactoryReport } from '../../bindings/github.com/Automaat/sybra/internal/audit/models.js'
 import type { Report as MonitorReport } from '../../bindings/github.com/Automaat/sybra/internal/monitor/models.js'
 import type { Report as SelfMonitorReport, LedgerEntry } from '../../bindings/github.com/Automaat/sybra/internal/selfmonitor/models.js'
 import type { Report as EvaluationReport } from '../../bindings/github.com/Automaat/sybra/internal/evaluation/models.js'
@@ -247,6 +247,7 @@ export function MapDuplicateIncidents(arg1: string, arg2: number[], arg3: string
 
 // AuditService
 export function QueryAuditEvents(arg1: AuditQuery): Promise<Array<AuditEvent>> { return call('AuditService', 'QueryAuditEvents', arg1) }
+export function GetFactoryReport(arg1: FactoryQuery): Promise<FactoryReport> { return call('AuditService', 'GetFactoryReport', arg1) }
 
 // SelfMonitorService
 export function GetSelfMonitorReport(): Promise<SelfMonitorReport> { return call('SelfMonitorService', 'GetSelfMonitorReport') }

@@ -651,6 +651,7 @@ func (a *App) Startup(ctx context.Context) error {
 
 	a.logAutomationsSummary()
 	a.logger.Info("app.started")
+	a.logAudit(audit.EventFactoryReleaseStarted, "", "", nil)
 	started = true
 	return nil
 }
