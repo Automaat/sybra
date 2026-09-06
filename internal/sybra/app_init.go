@@ -1015,6 +1015,7 @@ const statusBounceWindow = 2 * time.Hour
 type statusBounceState struct {
 	edges        map[string][]bounceEdge
 	episodeStart time.Time
+	lastSeen     time.Time
 }
 
 func (s *statusBounceState) beginEpisode(at time.Time) {
@@ -1085,6 +1086,9 @@ func (a *App) statusBounceTrippedAt(taskID, from, to, actor string, now time.Tim
 	reverse := to + "\x00" + from
 	a.statusBounceMu.Lock()
 	defer a.statusBounceMu.Unlock()
+	if !now.After(a.statusBounceCutoff) {
+		return false
+	}
 	if a.statusBounces == nil {
 		a.statusBounces = make(map[string]*statusBounceState)
 	}
@@ -1092,6 +1096,9 @@ func (a *App) statusBounceTrippedAt(taskID, from, to, actor string, now time.Tim
 	if state == nil {
 		state = &statusBounceState{edges: make(map[string][]bounceEdge)}
 		a.statusBounces[taskID] = state
+	}
+	if now.After(state.lastSeen) {
+		state.lastSeen = now
 	}
 	if health.IsIncidentReopen(from, to, actor) {
 		state.beginEpisode(now)

@@ -28,6 +28,22 @@ func TestStatusBounceIncidentReopenStartsNewEpisode(t *testing.T) {
 	}
 }
 
+func TestStatusBouncePrunesIdleIncidentWithoutReplayingOldEdges(t *testing.T) {
+	var a App
+	base := time.Now()
+	a.statusBounceTrippedAt("idle-incident", string(task.StatusDone), string(task.StatusTodo), "monitor.incident.reopen", base)
+	fresh := base.Add(3 * time.Hour)
+	a.statusBounceTrippedAt("active-incident", string(task.StatusDone), string(task.StatusTodo), "monitor.incident.reopen", fresh)
+	a.pruneStatusBounces(fresh)
+	if len(a.statusBounces) != 1 || a.statusBounces["active-incident"] == nil {
+		t.Fatalf("idle watermark retained or active state lost: %+v", a.statusBounces)
+	}
+	a.statusBounceTrippedAt("idle-incident", string(task.StatusInReview), string(task.StatusInProgress), "late-fixer", base.Add(time.Minute))
+	if len(a.statusBounces) != 1 {
+		t.Fatal("late hook recreated expired episode after pruning")
+	}
+}
+
 func TestStatusBounceTrippedRequiresRepeatedReciprocalTransitions(t *testing.T) {
 	var a App
 	const id = "task-bounce"
