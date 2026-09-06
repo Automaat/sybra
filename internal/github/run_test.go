@@ -70,6 +70,66 @@ func TestRunWithEnv_NilEnvInheritsAmbient(t *testing.T) {
 	}
 }
 
+func TestAmbientAuthTokenResolvesHostCredential(t *testing.T) {
+	t.Cleanup(resetAuthHealthForTest)
+	resetAuthHealthForTest()
+
+	dir := t.TempDir()
+	ghPath := filepath.Join(dir, "gh")
+	script := "#!/bin/bash\n[[ \"$*\" = 'auth token --hostname github.com' ]] || exit 2\nprintf 'ambient-token\\n'\n"
+	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+	t.Setenv("PATH", dir)
+	t.Setenv("GH_HOST", "enterprise.example")
+
+	token, err := AmbientAuthToken()
+	if err != nil {
+		t.Fatalf("AmbientAuthToken: %v", err)
+	}
+	if token != "ambient-token" {
+		t.Fatalf("token = %q, want ambient-token", token)
+	}
+}
+
+func TestAmbientAuthTokenBypassesNetworkAuthCircuit(t *testing.T) {
+	t.Cleanup(resetAuthHealthForTest)
+	t.Cleanup(DisableAppAuth)
+	resetAuthHealthForTest()
+	DisableAppAuth()
+
+	// Use an error that the circuit classifies as an ambient credential failure.
+	ObserveCallResult(nil, &ambientAuthTestError{})
+	before := AuthHealthSnapshot()
+	if before.State != AuthUnavailable {
+		t.Fatalf("auth state before lookup = %q, want unavailable", before.State)
+	}
+
+	dir := t.TempDir()
+	ghPath := filepath.Join(dir, "gh")
+	script := "#!/bin/bash\nprintf 'ambient-token\\n'\n"
+	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+	t.Setenv("PATH", dir)
+
+	token, err := AmbientAuthToken()
+	if err != nil {
+		t.Fatalf("AmbientAuthToken: %v", err)
+	}
+	if token != "ambient-token" {
+		t.Fatalf("token = %q, want ambient-token", token)
+	}
+	after := AuthHealthSnapshot()
+	if after.State != AuthUnavailable || after.Transitions != before.Transitions || after.SuppressedCalls != before.SuppressedCalls {
+		t.Fatalf("auth health changed during local lookup: before=%+v after=%+v", before, after)
+	}
+}
+
+type ambientAuthTestError struct{}
+
+func (*ambientAuthTestError) Error() string { return "gh: authentication required, run gh auth login" }
+
 // TestRun_UsesPackageGHEnv asserts Run (unlike RunWithEnv) sources its
 // credential env from this package's own GHEnv() rather than requiring the
 // caller to supply one — the form findMergedPRByBranch migrated to.

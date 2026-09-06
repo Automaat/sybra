@@ -683,6 +683,9 @@ func (m *Manager) injectGitAccess(cfg *RunConfig) error {
 			// This is a deliberately explicit escape hatch for an operator's
 			// local gh login. Keep the approval guard: it still blocks APPROVE,
 			// while the disposable verifier workspace has its push remote disabled.
+			if err := m.injectAmbientReviewGitHubToken(cfg); err != nil {
+				return err
+			}
 			m.injectAmbientReviewGhShim(cfg)
 			return nil
 		}
@@ -707,6 +710,28 @@ func (m *Manager) allowsAmbientReviewAuth() bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.allowAmbientReviewAuth
+}
+
+func (m *Manager) injectAmbientReviewGitHubToken(cfg *RunConfig) error {
+	m.mu.RLock()
+	tokenFn := m.ambientReviewToken
+	m.mu.RUnlock()
+	if tokenFn == nil {
+		// Embedders may deliberately supply GH_TOKEN/GITHUB_TOKEN themselves.
+		// The Sybra app always wires the host-side resolver.
+		return nil
+	}
+	token, err := tokenFn()
+	if err != nil {
+		return fmt.Errorf("agent.Run: resolve ambient review GitHub credential: %w", err)
+	}
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return errors.New("agent.Run: ambient review GitHub credential is unavailable")
+	}
+	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, "GH_TOKEN", "GITHUB_TOKEN")
+	cfg.ExtraEnv = append(cfg.ExtraEnv, "GH_TOKEN="+token, "GITHUB_TOKEN="+token)
+	return nil
 }
 
 func (m *Manager) hasVerifierGitHubToken() bool {
