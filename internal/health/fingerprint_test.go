@@ -1,6 +1,7 @@
 package health
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/monitor"
@@ -58,6 +59,8 @@ func TestFingerprintParity(t *testing.T) {
 		{"failure_rate", "", map[string]any{"failure_rate": 0.42}},
 		{"cost_outlier", "task-2", map[string]any{"role": "eval"}},
 		{"cost_drift", "", nil},
+		{"stuck_task", "task-1", map[string]any{"cause": "  Planning_INSUFFICIENCY  "}},
+		{"cost_drift", "", map[string]any{"cause": strings.Repeat("synthetic cause ", 8)}},
 	}
 	for _, r := range rows {
 		f := Finding{Category: Category(r.kind), TaskID: r.taskID, Evidence: r.evidence}
@@ -65,6 +68,31 @@ func TestFingerprintParity(t *testing.T) {
 		want := monitor.Fingerprint(monitor.AnomalyKind(r.kind), r.taskID, r.evidence)
 		if got != want {
 			t.Errorf("parity mismatch for %+v: health=%q monitor=%q", r, got, want)
+		}
+	}
+}
+
+func TestFingerprintStructuredCauseParity(t *testing.T) {
+	causes := []TransitionCause{CauseUnknown, CauseIncidentRecurrence, CauseInfrastructure, CausePlanning, CauseSpecification, CauseOperator}
+	for _, cause := range causes {
+		for _, taskID := range []string{"task-fixture", ""} {
+			for _, evidence := range []map[string]any{nil, {"status": "fixture-status", "cause": "legacy cause"}} {
+				f := Finding{Category: CatTriageMismatch, TaskID: taskID, Cause: cause, Evidence: evidence}
+				wantEvidence := map[string]any{"cause": string(cause)}
+				if evidence != nil {
+					wantEvidence["status"] = evidence["status"]
+				}
+				want := monitor.Fingerprint(monitor.AnomalyKind(f.Category), taskID, wantEvidence)
+				if got := FingerprintFor(&f); got != want {
+					t.Errorf("cause=%s task=%q: got %q, want %q", cause, taskID, got, want)
+				}
+				if evidence != nil && evidence["cause"] != "legacy cause" {
+					t.Fatal("fingerprinting mutated original evidence")
+				}
+				if evidence == nil && f.Evidence != nil {
+					t.Fatal("fingerprinting replaced nil evidence")
+				}
+			}
 		}
 	}
 }
