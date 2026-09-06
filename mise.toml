@@ -13,7 +13,7 @@ run = [
   "go install ./cmd/sybra-cli",
   "sybra-cli install-skills || true",
   "cd frontend && npm run build:desktop",
-  "go run .",
+  "go run -buildvcs=true .",
 ]
 description = "Install CLI, refresh agent skills, rebuild frontend, run the desktop app on Wails v3 (darwin-only)."
 env = { SYBRA_PPROF = "127.0.0.1:6060" }
@@ -115,7 +115,7 @@ run = ["cd frontend && npm run build:web", "go build -o bin/sybra-server ./cmd/s
 description = "Build HTTP server binary (builds web frontend first)"
 
 [tasks."dev:server"]
-run = ["cd frontend && npm run build:web", "SYBRA_STATIC_DIR=frontend/dist-web go run ./cmd/sybra-server"]
+run = ["cd frontend && npm run build:web", "SYBRA_STATIC_DIR=frontend/dist-web go run -buildvcs=true ./cmd/sybra-server"]
 description = "Build web frontend then run HTTP server"
 env = { SYBRA_PORT = "8080" }
 
