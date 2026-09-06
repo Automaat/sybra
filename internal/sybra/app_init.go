@@ -56,7 +56,7 @@ import (
 	"github.com/Automaat/sybra/internal/taskstatus"
 	"github.com/Automaat/sybra/internal/toolledger"
 	"github.com/Automaat/sybra/internal/umbrella"
-	"github.com/Automaat/sybra/internal/version"
+	buildversion "github.com/Automaat/sybra/internal/version"
 	"github.com/Automaat/sybra/internal/watcher"
 	"github.com/Automaat/sybra/internal/workercontrol"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -1476,7 +1476,7 @@ func (a *App) initAudit(ctx context.Context) {
 		// a.audit remains nil; logAudit() is a no-op when audit is nil.
 		return
 	}
-	a.audit = audit.WithRelease(al, version.CleanRevision())
+	a.audit = audit.WithRelease(al, buildversion.CleanRevision())
 	retentionDays := a.cfg.Audit.RetentionDays
 	if retentionDays <= 0 {
 		retentionDays = 30

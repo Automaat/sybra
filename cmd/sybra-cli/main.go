@@ -1979,7 +1979,7 @@ func isRetryableCLIError(err error) bool {
 	}
 	type statusErr interface{ HTTPStatus() int }
 	var se statusErr
-	return errors.As(err, &se) && se.HTTPStatus() == http.StatusServiceUnavailable
+	return errors.As(err, &se) && se != nil && se.HTTPStatus() == http.StatusServiceUnavailable
 }
 
 // writeJSONError marshals rather than interpolating: several messages quote a

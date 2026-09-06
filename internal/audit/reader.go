@@ -88,10 +88,6 @@ func auditFiles(dir string, since, until time.Time) ([]string, error) {
 	return paths, nil
 }
 
-func readFile(path string) ([]Event, error) {
-	return readMatchingFile(path, Query{}, nil)
-}
-
 func readMatchingFile(path string, q Query, remaining *int) ([]Event, error) {
 	f, err := os.Open(path)
 	if err != nil {

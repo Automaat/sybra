@@ -54,7 +54,8 @@ func factoryIntervals(events []Event, phase, release string) FactoryPhase {
 			pair.censored = true
 		}
 	}
-	for _, pair := range completed {
+	for i := range completed {
+		pair := &completed[i]
 		label := pairRelease(pair.start, pair.end)
 		if phase == "deploy" {
 			key, _ := factoryBoundary(pair.start, phase)

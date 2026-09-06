@@ -237,7 +237,8 @@ func factoryRuns(events []Event, release string, completed map[string]bool, repo
 	slices.SortStableFunc(runs, func(a, b RunLifecycle) int { return a.StartedAt.Compare(b.StartedAt) })
 	var samples factorySamples
 	var selected []Event
-	for _, run := range runs {
+	for i := range runs {
+		run := &runs[i]
 		start := starts[run.AgentID]
 		matched := releaseMatches(release, pairRelease(start, run.TerminalEvent))
 		if matched {
@@ -259,11 +260,12 @@ func factoryRuns(events []Event, release string, completed map[string]bool, repo
 func factoryRetries(runs []RunLifecycle, starts map[string]Event, release string) int {
 	type boundary struct {
 		at    time.Time
-		run   RunLifecycle
+		run   *RunLifecycle
 		start bool
 	}
 	var boundaries []boundary
-	for _, run := range runs {
+	for i := range runs {
+		run := &runs[i]
 		if run.TaskID == "" || run.AgentID == "" {
 			continue
 		}
@@ -277,7 +279,8 @@ func factoryRetries(runs []RunLifecycle, starts map[string]Event, release string
 	slices.SortStableFunc(boundaries, func(a, b boundary) int { return a.at.Compare(b.at) })
 	lastOutcome := map[string]string{}
 	count := 0
-	for _, b := range boundaries {
+	for i := range boundaries {
+		b := &boundaries[i]
 		start := starts[b.run.AgentID]
 		role, _ := b.run.TerminalEvent.Data["role"].(string)
 		if role == "" {
