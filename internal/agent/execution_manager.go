@@ -227,6 +227,9 @@ func (m *Manager) emitExecutionEvent(ctx context.Context, _ ExecutionHandle, eve
 		}
 		return false
 	case ExecutionCompleted:
+		if event.AdmissionDeferred {
+			a.SetEscalationReason(EscalationReasonAdmissionDeferred)
+		}
 		if event.PermanentFailure {
 			a.SetEscalationReason(EscalationReasonPermanentExecution)
 		}

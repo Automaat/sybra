@@ -267,7 +267,7 @@ func (r *Handler) preflightArmNativeAutoMerge(ctx context.Context, t task.Task, 
 		metrics.AutoMergeAttempt(ctx, "suppressed", string(backoff.Class(issue.PR.Repository, issue.PR.Number)))
 		return false
 	}
-	res := r.tryArmNativeAutoMerge(t, issue, "")
+	res := r.tryArmNativeAutoMerge(ctx, t, issue, "")
 	if res.armed {
 		r.clearMergeBackoff(ctx, issue.PR.Repository, issue.PR.Number)
 		metrics.AutoMergeAttempt(ctx, "armed", "")
@@ -306,6 +306,9 @@ func (r *Handler) handleAutoMerge(ctx context.Context, issue github.PRIssue) {
 	}
 
 	backoff := r.mergeBackoff()
+	if !r.factoryCIReady(ctx, t, issue.PR) {
+		return
+	}
 	gate := NewMergeGate(issue.PR)
 	stateSig := gate.StateSignature()
 
@@ -356,24 +359,11 @@ func (r *Handler) handleAutoMerge(ctx context.Context, issue github.PRIssue) {
 	}
 	metrics.AutoMergeAttempt(ctx, "attempted", "")
 
-	var mergeErr error
-	if issue.PR.SourcedViaREST {
-		merge := r.mergePRViaREST
-		if merge == nil {
-			merge = github.MergePRViaREST
-		}
-		mergeErr = merge(issue.PR.Repository, issue.PR.Number, issue.PR.HeadSHA)
-	} else {
-		merge := r.mergePR
-		if merge == nil {
-			merge = github.MergePR
-		}
-		mergeErr = merge(issue.PR.Repository, issue.PR.Number)
-	}
+	mergeErr := r.mergeAtObservedHead(issue.PR)
 	r.evictReadyPRCache(issue.PR.Repository, issue.PR.Number)
 	if mergeErr != nil {
 		if r.nativeAutoMergeEnabled() && !issue.PR.SourcedViaREST && requiresNativeAutoMerge(mergeErr) {
-			if res := r.tryArmNativeAutoMerge(t, issue, "direct_merge_rejected"); res.armed {
+			if res := r.tryArmNativeAutoMerge(ctx, t, issue, "direct_merge_rejected"); res.armed {
 				r.clearMergeBackoff(ctx, issue.PR.Repository, issue.PR.Number)
 				metrics.AutoMergeAttempt(ctx, "armed", "")
 				return
@@ -432,7 +422,16 @@ func (r *Handler) nativeAutoMergeEnabled() bool {
 // reports whether a real GitHub call ran, while err carries the failure to
 // classify/back off. Unsupported repo/branch stays a nil error so callers do
 // not back it off like a genuine API failure.
-func (r *Handler) tryArmNativeAutoMerge(t task.Task, issue github.PRIssue, fallback string) nativeAutoMergeAttemptResult {
+func (r *Handler) tryArmNativeAutoMerge(ctx context.Context, t task.Task, issue github.PRIssue, fallback string) nativeAutoMergeAttemptResult {
+	ctx, cancel := context.WithTimeout(ctx, 35*time.Second)
+	defer cancel()
+	policy, err := r.factoryCIPolicy(ctx, t)
+	// Native auto-merge may outlive this revision. GitHub branch protection
+	// need not match a project's stricter list, so CI-enabled projects always
+	// use our current-head gate and the head-pinned protected merge path.
+	if err != nil || (policy != nil && policy.Enabled) {
+		return nativeAutoMergeAttemptResult{}
+	}
 	supportsFn := r.supportsAutoMergeFn
 	if supportsFn == nil {
 		supportsFn = github.SupportsNativeAutoMerge
@@ -467,6 +466,20 @@ func (r *Handler) tryArmNativeAutoMerge(t task.Task, issue github.PRIssue, fallb
 		r.logger.Info("auto-merge.native-armed", "task_id", t.ID, "pr", issue.PR.Number)
 	}
 	return nativeAutoMergeAttemptResult{armed: true, attempted: true}
+}
+
+func (r *Handler) mergeAtObservedHead(pr github.PullRequest) error {
+	if pr.SourcedViaREST {
+		merge := r.mergePRViaREST
+		if merge == nil {
+			merge = github.MergePRViaREST
+		}
+		return merge(pr.Repository, pr.Number, pr.HeadSHA)
+	}
+	if r.mergePR != nil {
+		return r.mergePR(pr.Repository, pr.Number)
+	}
+	return github.MergePRAtHead(pr.Repository, pr.Number, pr.HeadSHA)
 }
 
 func requiresNativeAutoMerge(err error) bool {

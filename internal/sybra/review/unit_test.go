@@ -3155,6 +3155,15 @@ func TestPollSecondaryReconcilesKnownTaskPRsWithoutSearch(t *testing.T) {
 	if _, err := projects.CreateMeta("https://github.com/o/r", project.ProjectTypePet); err != nil {
 		t.Fatal(err)
 	}
+	// Merge policy now comes from the trusted default branch. A metadata-only
+	// project with a missing clone correctly fails closed, so provide one.
+	proj, err := projects.Get("o/r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := project.CloneBare(t.Context(), initAutoResolveSourceRepo(t), proj.ClonePath); err != nil {
+		t.Fatal(err)
+	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
 
 	fetchReviewsCalled := false

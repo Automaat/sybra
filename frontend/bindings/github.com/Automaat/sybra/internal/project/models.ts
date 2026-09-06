@@ -5,11 +5,42 @@
 // @ts-ignore: Unused imports
 import { Create as $Create } from "@wailsio/runtime";
 
+export class CIConfig {
+    "enabled": boolean;
+    "requiredChecks"?: string[];
+
+    /** Creates a new CIConfig instance. */
+    constructor($$source: Partial<CIConfig> = {}) {
+        if (!("enabled" in $$source)) {
+            this["enabled"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CIConfig instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CIConfig {
+        const $$createField1_0 = $$createType0;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("requiredChecks" in $$parsedSource) {
+            $$parsedSource["requiredChecks"] = $$createField1_0($$parsedSource["requiredChecks"]);
+        }
+        return new CIConfig($$parsedSource as Partial<CIConfig>);
+    }
+}
+
 /**
  * ChecksConfig defines shell commands run as git hooks in agent worktrees.
  * Commands execute in the worktree root; non-zero exit blocks the git operation.
  */
 export class ChecksConfig {
+    /**
+     * CI opts this project into early draft PRs and strict, revision-bound
+     * GitHub verification at the existing PR monitor's merge boundary.
+     */
+    "ci"?: CIConfig | null;
     "preCommit"?: string[];
     "prePush"?: string[];
 
@@ -46,26 +77,30 @@ export class ChecksConfig {
      * Creates a new ChecksConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): ChecksConfig {
-        const $$createField0_0 = $$createType0;
+        const $$createField0_0 = $$createType2;
         const $$createField1_0 = $$createType0;
         const $$createField2_0 = $$createType0;
         const $$createField3_0 = $$createType0;
-        const $$createField4_0 = $$createType2;
+        const $$createField4_0 = $$createType0;
+        const $$createField5_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("ci" in $$parsedSource) {
+            $$parsedSource["ci"] = $$createField0_0($$parsedSource["ci"]);
+        }
         if ("preCommit" in $$parsedSource) {
-            $$parsedSource["preCommit"] = $$createField0_0($$parsedSource["preCommit"]);
+            $$parsedSource["preCommit"] = $$createField1_0($$parsedSource["preCommit"]);
         }
         if ("prePush" in $$parsedSource) {
-            $$parsedSource["prePush"] = $$createField1_0($$parsedSource["prePush"]);
+            $$parsedSource["prePush"] = $$createField2_0($$parsedSource["prePush"]);
         }
         if ("codegen" in $$parsedSource) {
-            $$parsedSource["codegen"] = $$createField2_0($$parsedSource["codegen"]);
+            $$parsedSource["codegen"] = $$createField3_0($$parsedSource["codegen"]);
         }
         if ("verify" in $$parsedSource) {
-            $$parsedSource["verify"] = $$createField3_0($$parsedSource["verify"]);
+            $$parsedSource["verify"] = $$createField4_0($$parsedSource["verify"]);
         }
         if ("focused" in $$parsedSource) {
-            $$parsedSource["focused"] = $$createField4_0($$parsedSource["focused"]);
+            $$parsedSource["focused"] = $$createField5_0($$parsedSource["focused"]);
         }
         return new ChecksConfig($$parsedSource as Partial<ChecksConfig>);
     }
@@ -229,9 +264,9 @@ export class Project {
      */
     static createFrom($$source: any = {}): Project {
         const $$createField8_0 = $$createType0;
-        const $$createField9_0 = $$createType4;
-        const $$createField10_0 = $$createType6;
-        const $$createField11_0 = $$createType8;
+        const $$createField9_0 = $$createType6;
+        const $$createField10_0 = $$createType8;
+        const $$createField11_0 = $$createType10;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("setupCommands" in $$parsedSource) {
             $$parsedSource["setupCommands"] = $$createField8_0($$parsedSource["setupCommands"]);
@@ -334,7 +369,7 @@ export class SandboxConfig {
      */
     static createFrom($$source: any = {}): SandboxConfig {
         const $$createField2_0 = $$createType0;
-        const $$createField6_0 = $$createType9;
+        const $$createField6_0 = $$createType11;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("with" in $$parsedSource) {
             $$parsedSource["with"] = $$createField2_0($$parsedSource["with"]);
@@ -385,12 +420,14 @@ export class Worktree {
 
 // Private type creation functions
 const $$createType0 = $Create.Array($Create.Any);
-const $$createType1 = FocusedCheck.createFrom;
-const $$createType2 = $Create.Array($$createType1);
-const $$createType3 = SandboxConfig.createFrom;
-const $$createType4 = $Create.Nullable($$createType3);
-const $$createType5 = ChecksConfig.createFrom;
+const $$createType1 = CIConfig.createFrom;
+const $$createType2 = $Create.Nullable($$createType1);
+const $$createType3 = FocusedCheck.createFrom;
+const $$createType4 = $Create.Array($$createType3);
+const $$createType5 = SandboxConfig.createFrom;
 const $$createType6 = $Create.Nullable($$createType5);
-const $$createType7 = ManualTestConfig.createFrom;
+const $$createType7 = ChecksConfig.createFrom;
 const $$createType8 = $Create.Nullable($$createType7);
-const $$createType9 = $Create.Map($Create.Any, $Create.Any);
+const $$createType9 = ManualTestConfig.createFrom;
+const $$createType10 = $Create.Nullable($$createType9);
+const $$createType11 = $Create.Map($Create.Any, $Create.Any);

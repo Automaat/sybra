@@ -636,8 +636,15 @@ func TestBuiltinSimpleTaskImplement_CodegenPrecedesValidation(t *testing.T) {
 	if got, err := ResolveTransition(codegen.Next, map[string]string{"task.status": "human-required"}); err != nil || got != "" {
 		t.Fatalf("codegen_gate human-required goto = %q, err=%v; want end", got, err)
 	}
-	if got, err := ResolveTransition(codegen.Next, map[string]string{"task.status": "in-progress"}); err != nil || got != "parallel_gates" {
-		t.Fatalf("codegen_gate clean goto = %q, err=%v; want parallel_gates", got, err)
+	if got, err := ResolveTransition(codegen.Next, map[string]string{"task.status": "in-progress"}); err != nil || got != "start_ci" {
+		t.Fatalf("codegen_gate clean goto = %q, err=%v; want start_ci", got, err)
+	}
+	startCI := impl.StepByID("start_ci")
+	if startCI == nil || startCI.Type != StepStartCI {
+		t.Fatal("missing deterministic early CI step")
+	}
+	if got, err := ResolveTransition(startCI.Next, map[string]string{"task.status": "in-progress"}); err != nil || got != "parallel_gates" {
+		t.Fatalf("early CI must retain local gates: %q, %v", got, err)
 	}
 
 	gates := impl.StepByID("parallel_gates")
@@ -1871,7 +1878,7 @@ func TestBuiltinBestOfN_OptInTriggerPriority(t *testing.T) {
 		t.Fatalf("untagged in-progress task matched %q, want simple-task-implement", id)
 	}
 
-	tagged := TaskInfo{ID: "t2", Status: "in-progress", Tags: []string{"backend", "best-of-n"}}
+	tagged := TaskInfo{ID: "t2", Status: taskstatus.InProgress, Tags: []string{"backend", "best-of-n"}}
 	if got := engine.MatchWorkflow(tagged, "task.status_changed"); got == nil || got.ID != "simple-task-best-of-n-implement" {
 		id := "<nil>"
 		if got != nil {

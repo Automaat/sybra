@@ -55,6 +55,19 @@ type Spool struct {
 	state           durableState
 }
 
+func (s *Spool) backlog(now time.Time) (events, artifacts int, oldestSeconds int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	artifacts = len(s.state.Artifacts)
+	for _, batch := range s.state.Events {
+		events += len(batch)
+		for i := range batch {
+			oldestSeconds = max(oldestSeconds, int64(now.Sub(batch[i].ObservedAt).Seconds()))
+		}
+	}
+	return events, artifacts, oldestSeconds
+}
+
 func (s *Spool) usageBytes() int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()

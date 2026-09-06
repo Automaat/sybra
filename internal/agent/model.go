@@ -1378,6 +1378,9 @@ const EscalationReasonCheckpointFailed = "checkpoint_failed"
 // workspace input). The workflow parks instead of creating a retry storm.
 const EscalationReasonPermanentExecution = "permanent_execution_failure"
 
+// EscalationReasonAdmissionDeferred marks pre-provider worker backpressure.
+const EscalationReasonAdmissionDeferred = "infrastructure_admission_deferred"
+
 // IsCheckpointEscalation reports whether reason records a turn-ceiling
 // checkpoint outcome. Both values steer terminal handling — one reschedules the
 // handoff, the other stamps errCheckpointCommitFailed — so neither may be

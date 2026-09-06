@@ -18,8 +18,11 @@ const (
 // ChecksConfig defines shell commands run as git hooks in agent worktrees.
 // Commands execute in the worktree root; non-zero exit blocks the git operation.
 type ChecksConfig struct {
-	PreCommit []string `yaml:"pre_commit,omitempty" json:"preCommit,omitempty"`
-	PrePush   []string `yaml:"pre_push,omitempty"   json:"prePush,omitempty"`
+	// CI opts this project into early draft PRs and strict, revision-bound
+	// GitHub verification at the existing PR monitor's merge boundary.
+	CI        *CIConfig `yaml:"ci,omitempty" json:"ci,omitempty"`
+	PreCommit []string  `yaml:"pre_commit,omitempty" json:"preCommit,omitempty"`
+	PrePush   []string  `yaml:"pre_push,omitempty"   json:"prePush,omitempty"`
 	// Codegen is the project's deterministic mutation pass (formatters,
 	// goimports, go mod tidy, generated-file refresh) run by the codegen_gate
 	// workflow step before downstream tamper/verify/review/testing validation.
@@ -34,6 +37,11 @@ type ChecksConfig struct {
 	// Focused maps changed-file surfaces to cheap static commands the
 	// implementation workflow can run before the final full verify suite.
 	Focused []FocusedCheck `yaml:"focused,omitempty" json:"focused,omitempty"`
+}
+
+type CIConfig struct {
+	Enabled        bool     `yaml:"enabled" json:"enabled"`
+	RequiredChecks []string `yaml:"required_checks,omitempty" json:"requiredChecks,omitempty"`
 }
 
 // FocusedCheck maps repo-relative paths and/or packages to cheap commands.
@@ -105,6 +113,11 @@ func MergeChecks(repo, app *ChecksConfig) *ChecksConfig {
 		return nil
 	}
 	out := &ChecksConfig{}
+	if repo != nil && repo.CI != nil {
+		out.CI = repo.CI
+	} else if app != nil {
+		out.CI = app.CI
+	}
 	if repo != nil && len(repo.PreCommit) > 0 {
 		out.PreCommit = repo.PreCommit
 	} else if app != nil {
@@ -130,7 +143,7 @@ func MergeChecks(repo, app *ChecksConfig) *ChecksConfig {
 	} else if app != nil {
 		out.Focused = app.Focused
 	}
-	if len(out.PreCommit) == 0 && len(out.PrePush) == 0 && len(out.Codegen) == 0 && len(out.Verify) == 0 && len(out.Focused) == 0 {
+	if out.CI == nil && len(out.PreCommit) == 0 && len(out.PrePush) == 0 && len(out.Codegen) == 0 && len(out.Verify) == 0 && len(out.Focused) == 0 {
 		return nil
 	}
 	return out

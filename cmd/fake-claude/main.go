@@ -183,24 +183,25 @@ var scenarioHandlers = map[string]func(string){
 		emitAssistant("Implementing...")
 		emitResult("Implementation done. PR created")
 	},
-	"interactive_implement":           func(string) { runInteractiveImplement() },
-	"evaluate":                        runEvaluate,
-	"pr_created":                      func(string) { runPRCreated() },
-	"human_review_invalid_structured": func(string) { runHumanReviewInvalidStructured() },
-	"signal_kill":                     func(string) { runSignalKill() },
-	"block_silent":                    func(string) { _, _ = io.Copy(io.Discard, os.Stdin) },
-	"hang":                            func(string) { runHang() },
-	"success_then_hang":               func(string) { runSuccessThenHang() },
-	"auth_error":                      func(string) { emitSystem(); emitAssistant("Authentication failed. Please re-auth."); os.Exit(1) },
-	"malformed_pr_output":             func(string) { runMalformedPROutput() },
-	"perf_stream":                     func(string) { runPerfStream() },
-	"perf_burst":                      func(string) { runPerfBurst() },
-	"perf_long":                       func(string) { runPerfLong() },
-	"sybra_home_sentinel":             runSybraHomeSentinel,
-	"verify_commits_remote_race":      func(string) { runVerifyCommitsRemoteRace() },
-	"best_of_n_attempt":               func(string) { runBestOfNAttempt() },
-	"best_of_n_judge":                 func(string) { runBestOfNJudge() },
-	"k8s_repo_change":                 runK8sRepoChange,
+	"interactive_implement":             func(string) { runInteractiveImplement() },
+	"evaluate":                          runEvaluate,
+	"pr_created":                        func(string) { runPRCreated() },
+	"human_review_invalid_structured":   func(string) { runHumanReviewInvalidStructured() },
+	"signal_kill":                       func(string) { runSignalKill() },
+	"block_silent":                      func(string) { _, _ = io.Copy(io.Discard, os.Stdin) },
+	"hang":                              func(string) { runHang() },
+	"success_then_hang":                 func(string) { runSuccessThenHang(false) },
+	"success_with_background_then_hang": func(string) { runSuccessThenHang(true) },
+	"auth_error":                        func(string) { emitSystem(); emitAssistant("Authentication failed. Please re-auth."); os.Exit(1) },
+	"malformed_pr_output":               func(string) { runMalformedPROutput() },
+	"perf_stream":                       func(string) { runPerfStream() },
+	"perf_burst":                        func(string) { runPerfBurst() },
+	"perf_long":                         func(string) { runPerfLong() },
+	"sybra_home_sentinel":               runSybraHomeSentinel,
+	"verify_commits_remote_race":        func(string) { runVerifyCommitsRemoteRace() },
+	"best_of_n_attempt":                 func(string) { runBestOfNAttempt() },
+	"best_of_n_judge":                   func(string) { runBestOfNJudge() },
+	"k8s_repo_change":                   runK8sRepoChange,
 }
 
 func scenarioNeedsPromptContext(scenario string) bool {
@@ -362,9 +363,15 @@ func runK8sRepoChange(taskID string) {
 // work but never exited (e.g. a subagent-spawning skill left CC alive). Used
 // to test the watchdog's StopCompletedAgent path, which must reap the
 // orphaned process without the completed work being treated as a stall.
-func runSuccessThenHang() {
+func runSuccessThenHang(background bool) {
 	emitSystem()
 	emitAssistant("Working on it...")
+	if background {
+		// Keep the completed-but-alive fixture observable until its caller
+		// explicitly reaps it, rather than racing the runner's 100ms fast-close.
+		emit(map[string]any{"type": "system", "subtype": "background_tasks_changed",
+			"session_id": "fake-session-1", "tasks": []map[string]any{{"task_id": "orphaned-background-task"}}})
+	}
 	emitResult("Task completed successfully.")
 	// A bare `select {}` deadlocks a single-goroutine program instantly (the
 	// runtime treats it as a fatal all-goroutines-asleep condition, not a

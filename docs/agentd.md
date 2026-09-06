@@ -144,6 +144,11 @@ the same restricted verifier credential and isolation as the leader.
 
 ## Operations runbook
 
+For a local-brain / remote-execution-only installation, use the
+[worker-only rollout](factory-rollout.md#worker-only-rollout). It separates
+worker releases and supervision from the optional old remote board, follows
+the actual desktop listener, and adds readiness/backlog diagnostics.
+
 ### Enroll and rotate credentials
 
 1. Create a dedicated leader bearer token and expose it to the daemon through

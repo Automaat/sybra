@@ -91,6 +91,15 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 		}
 	}
 
+	if !c.Success && c.EscalationReason == "infrastructure_admission_deferred" {
+		// Only a still-owned dispatch can be deferred. A duplicate terminal
+		// event after route retirement must not re-arm the replacement effect.
+		if routeStatus == taskStepTracked || routeStatus == taskStepPending {
+			e.deferWorkerAdmission(taskID, c.AgentID)
+		}
+		return
+	}
+
 	status := e.importOrAdoptSidecarStatus(taskID, spawnedStep, t, c, &defs)
 
 	e.recordAgentCompletionTrace(taskID, spawnedStep, c, status)

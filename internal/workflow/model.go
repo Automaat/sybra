@@ -206,6 +206,7 @@ const (
 	// title/body via a single cheap LLM job (internal/prcontent). No agent
 	// session involved; replaces the create-pr agent role.
 	StepCreatePR StepType = "create_pr"
+	StepStartCI  StepType = "start_ci"
 	// StepClassifyTask deterministically runs the Go triage classifier
 	// (internal/triage) against the task and applies its verdict — no agent
 	// session involved. Replaces a run_agent step that wrapped a full Sonnet
@@ -313,6 +314,7 @@ func init() {
 		StepPromoteBestOfN:       {sync: bindSyncTaskStep((*Engine).execPromoteBestOfN), reducer: stepReducerDispatch, resumable: true},
 		StepPushBranch:           {sync: bindSyncExecTaskInfoStep((*Engine).execPushBranch), reducer: stepReducerDispatch, resumable: true},
 		StepCreatePR:             {sync: bindSyncExecTaskInfoStep((*Engine).execCreatePR), reducer: stepReducerDispatch, resumable: true},
+		StepStartCI:              {sync: bindSyncExecTaskInfoStep((*Engine).execStartCI), reducer: stepReducerDispatch, resumable: true},
 		StepClassifyTask:         {sync: bindSyncExecStep((*Engine).execClassifyTask), reducer: stepReducerDispatch, resumable: true},
 		StepAdmissionPreflight:   {sync: bindSyncExecTaskInfoStep((*Engine).execAdmissionPreflight), reducer: stepReducerDispatch, resumable: true},
 		StepRequireEvidence:      {sync: bindSyncTaskInfoStep((*Engine).execRequireEvidence), reducer: stepReducerDispatch},

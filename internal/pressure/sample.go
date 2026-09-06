@@ -24,6 +24,13 @@ func CurrentLoadPerCPU() (load float64, ok bool) {
 	return load, !math.IsNaN(load)
 }
 
+// CurrentDiskFreeBytes reports unprivileged available space on the filesystem
+// containing dir. Callers must distinguish an unavailable measurement from zero.
+func CurrentDiskFreeBytes(dir string) (bytes float64, ok bool) {
+	bytes = readSample(dir).DiskFreeBytes
+	return bytes, !math.IsNaN(bytes)
+}
+
 // thresholdTripped reports whether value has crossed threshold in the
 // configured "bad" direction. below=true means lower-is-worse (a percent-free
 // signal like disk/memory); below=false means higher-is-worse (a load

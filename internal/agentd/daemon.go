@@ -187,7 +187,7 @@ func shutdownApprovalServer(parent context.Context, server *agent.ApprovalServer
 }
 
 func (d *Daemon) Run(ctx context.Context) error {
-	if err := d.register(ctx); err != nil {
+	if err := d.registerUntilReady(ctx); err != nil {
 		return err
 	}
 	d.pruneExpiredWorkspaces()
@@ -404,9 +404,14 @@ func (d *Daemon) ensureRegistrationID(current, resumeSession string, commandAck 
 
 func (d *Daemon) runtimeCapabilities(ctx context.Context) []string {
 	capabilities := d.cfg.refreshRepositoryHeads(ctx, d.capabilities)
+	events, artifacts, oldest := d.spool.backlog(time.Now())
 	return append(capabilities,
 		fmt.Sprintf("spool_bytes=%d", d.spool.usageBytes()),
 		fmt.Sprintf("spool_max_bytes=%d", d.cfg.SpoolMaxBytes),
+		"readiness="+d.readiness(),
+		fmt.Sprintf("buffered_events=%d", events),
+		fmt.Sprintf("pending_artifacts=%d", artifacts),
+		fmt.Sprintf("oldest_buffered_event_seconds=%d", oldest),
 	)
 }
 
@@ -482,17 +487,17 @@ func (d *Daemon) start(ctx context.Context, envelope executioncontract.CommandEn
 	}
 	if draining {
 		return d.emitAdmissionFailure(envelope.RunID, map[string]any{
-			"state": executioncontract.TerminalFailed, "error": "worker is draining",
+			"state": executioncontract.TerminalFailed, "error": "worker is draining", "admissionDeferred": true,
 		})
 	}
 	if d.manager.RunningCount() >= d.cfg.Capacity {
 		return d.emitAdmissionFailure(envelope.RunID, map[string]any{
-			"state": executioncontract.TerminalFailed, "error": agent.ErrMaxConcurrentReached.Error(),
+			"state": executioncontract.TerminalFailed, "error": agent.ErrMaxConcurrentReached.Error(), "admissionDeferred": true,
 		})
 	}
 	if errors.Is(d.spool.capacityError(), ErrSpoolExhausted) {
 		return d.emitAdmissionFailure(envelope.RunID, map[string]any{
-			"state": executioncontract.TerminalFailed, "error": ErrSpoolExhausted.Error(),
+			"state": executioncontract.TerminalFailed, "error": ErrSpoolExhausted.Error(), "admissionDeferred": true,
 		})
 	}
 	var payload executioncontract.StartCommandPayload
@@ -502,6 +507,15 @@ func (d *Daemon) start(ctx context.Context, envelope executioncontract.CommandEn
 	spec := payload.Spec
 	if err := spec.Validate(); err != nil {
 		return err
+	}
+	if reason := d.readiness(); reason != "ready" {
+		// A queued Start may outlive the healthy heartbeat used for placement.
+		// Reject it before preparing a checkout or spawning a paid provider;
+		// the typed outcome is re-queued by the leader without code retries.
+		return d.emitAdmissionFailure(envelope.RunID, map[string]any{
+			"state": executioncontract.TerminalFailed, "error": "worker readiness: " + reason,
+			"admissionDeferred": true,
+		})
 	}
 	source := d.cfg.Repositories[spec.Workspace.RepositoryID]
 	baseBundle, err := d.loadWorkspaceBaseBundle(ctx, *spec)
@@ -733,6 +747,7 @@ func (d *Daemon) completeAgent(a *agent.Agent) {
 	}
 	artifactState := executioncontract.ArtifactsFailed
 	manifestID := ""
+	artifactError := ""
 	if spec, ok := d.spool.snapshot().RunSpecs[runID]; ok && !errors.Is(a.GetExitErr(), ErrSpoolExhausted) {
 		collectCtx, collectCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		layout := agentworkspace.Layout{
@@ -747,7 +762,10 @@ func (d *Daemon) completeAgent(a *agent.Agent) {
 		}
 		if collectErr != nil {
 			d.logger.Error("agentd.artifact.collect", "run_id", runID, "err", collectErr)
-			a.SetExitErr(errors.New("artifact collection failed"))
+			// Delivery is independent of provider execution. Keep the original
+			// provider error intact; the leader fails closed on failed handback.
+			// Raw collector output may contain repository paths, so it stays local.
+			artifactError = "artifact collection failed"
 		} else {
 			artifactState, manifestID = executioncontract.ArtifactsReady, manifest.ManifestID
 		}
@@ -772,6 +790,7 @@ func (d *Daemon) completeAgent(a *agent.Agent) {
 	}
 	terminalErr := d.emitCompletion(runID, map[string]any{
 		"state": state, "error": errText, "artifactState": artifactState, "artifactManifestId": manifestID,
+		"artifactError": artifactError,
 	})
 	if terminalErr != nil {
 		d.logger.Error("agentd.terminal.persist", "run_id", runID, "err", terminalErr)

@@ -478,7 +478,7 @@ func (a *App) initAgentQueue(ctx context.Context) {
 
 // initLimits opens the quota store, taking the store the caller already built
 // so the import's context belongs to startup while the live poller keeps the
-// app's own long-lived one.
+// scheduler context, which is canceled before shutdown waits for background work.
 func (a *App) initLimits(limitStore *limits.Store, err error) {
 	if err != nil {
 		a.logger.Warn("limits.init.degraded", "err", err)
@@ -488,10 +488,7 @@ func (a *App) initLimits(limitStore *limits.Store, err error) {
 	policy := a.limitPolicy()
 	if policy.Enabled {
 		cutoff := time.Now().AddDate(0, 0, -a.cfg.Providers.Limits.BackfillDays)
-		backfillCtx := a.ctx
-		if backfillCtx == nil {
-			backfillCtx = context.Background()
-		}
+		backfillCtx := a.schedulerContext()
 		a.wg.Go(func() {
 			a.logger.Info("limits.backfill.start", "cutoff", cutoff)
 			if err := limitStore.BackfillLocalSessionFiles(backfillCtx, cutoff); err != nil {
@@ -504,7 +501,7 @@ func (a *App) initLimits(limitStore *limits.Store, err error) {
 			a.logger.Info("limits.backfill.done")
 		})
 		if a.ctx != nil {
-			a.startLiveLimitPolling(a.ctx, limitStore, policy)
+			a.startLiveLimitPolling(a.schedulerContext(), limitStore, policy)
 		}
 	}
 }

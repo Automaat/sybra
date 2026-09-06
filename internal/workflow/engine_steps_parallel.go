@@ -63,6 +63,10 @@ func (e *Engine) execParallel(taskID string, def *Definition, step *Step, wfExec
 	}
 
 	dir := wfExec.Variables[WorkflowVarDir]
+	// Serialize publication against fast child completions/refusals. Otherwise
+	// a later sibling's SetWorkflow can restore a retired dispatch identity.
+	// StopAgentsForTask above must remain outside this lock.
+	unlockInflight := e.acquireInflight(taskID)
 	for i := range step.Parallel {
 		child := &step.Parallel[i]
 		status := rec.Children[child.ID]
@@ -94,9 +98,10 @@ func (e *Engine) execParallel(taskID string, def *Definition, step *Step, wfExec
 	// drive advanceParallelChild. Advance the parent synchronously instead so
 	// the workflow doesn't deadlock in state=waiting.
 	if rec.AllChildrenDone() {
+		unlockInflight()
 		return e.finalizeParallelParent(taskID, def, step, wfExec)
 	}
-
+	defer unlockInflight()
 	return nil, e.tasks.SetWorkflow(taskID, wfExec)
 }
 
@@ -134,7 +139,7 @@ func (e *Engine) spawnParallelChild(taskID string, parent, child *Step, wfExec *
 		return err
 	}
 	applySkillReceiptRecoveryAssignment(child.ID, wfExec, &assignment)
-	assignment.IntentID = taskID + ":" + wfExec.WorkflowID + ":parallel:" + parent.ID + ":" + child.ID
+	assignment.IntentID = admissionIntentID(taskID+":"+wfExec.WorkflowID+":parallel:"+parent.ID+":"+child.ID, status.AdmissionGeneration)
 	assignment.AdmissionObserve = true
 
 	prompt, err := e.renderAssignedPrompt(taskID, child, childCtx, assignment, "workflow.parallel.consume-steer")

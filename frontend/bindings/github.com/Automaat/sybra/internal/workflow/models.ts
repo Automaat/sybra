@@ -9,6 +9,11 @@ import { Create as $Create } from "@wailsio/runtime";
  * AttemptStatus is one best-of-N attempt's persisted slot.
  */
 export class AttemptStatus {
+    /**
+     * AdmissionGeneration retires a refused, never-started dispatch without
+     * consuming a coding retry. Transport retries retain this generation.
+     */
+    "admissionGeneration"?: number;
     "attemptId": string;
     "provider"?: string;
     "model"?: string;
@@ -90,6 +95,7 @@ export class BestOfNInflight {
  * ChildStatus is one child step's slot inside a ParallelChildren record.
  */
 export class ChildStatus {
+    "admissionGeneration"?: number;
     "agentId"?: string;
     "provider"?: string;
 
@@ -1121,6 +1127,7 @@ export enum StepType {
      * session involved; replaces the create-pr agent role.
      */
     StepCreatePR = "create_pr",
+    StepStartCI = "start_ci",
 
     /**
      * StepClassifyTask deterministically runs the Go triage classifier

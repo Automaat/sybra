@@ -558,16 +558,19 @@ already satisfies both** before inventing one:
 Never reach for a `//nolint` directive to settle one of these; there is a shape
 that satisfies every linter, and the repo already contains it.
 
-**`mise run verify` is the pre-commit gate — it runs every deterministic, CI-aligned gate in `.github/workflows/ci.yml`** (frontend build:desktop + build:web, `go build ./...`, `go mod verify`, `go mod tidy` drift check, `go test -race ./...`, `go test -race -tags e2e ./internal/sybra/...`, golangci-lint, frontend check + test:coverage + oxlint + pin-strategy, api-shim sync, no-home-fallback gate, Wails bindings drift check, hadolint). "Deterministic" means the outcome depends only on repo state, not ambient CI infra — some steps (`npm ci`, Go module resolution) still need network access. It intentionally excludes the CI jobs that need external advisory DBs, a browser, or a container runtime and so can't run as a reliable pre-commit loop — `lint-nilaway`, `security` (govulncheck + npm audit), the Playwright `e2e` job, and `test-go-db` (run `mise run test:db` by hand before touching SQL); CI stays the source of truth for those four. Running only `go test ./...` skips the e2e suite entirely (it's gated behind `//go:build e2e`) and will ship green-local / red-CI.
+**Local agents own coding, focused regression tests, independent review, and black-box testing. GitHub CI owns full-repository lint, race/e2e/DB tests, coverage, security scans, and builds.** Run the relevant package tests and formatting while coding; do not repeat the full suite for every commit, review, and test stage. The Sybra project opts into `checks.ci`: the leader opens an unlinked draft to start CI early, then links/publishes it only after local gates. Missing, pending, skipped, failed, or stale required checks cannot authorize a merge. CI also runs on `merge_group`; never bypass protected merging.
+
+`mise run verify` remains available for a deliberate full local diagnostic, not as a per-commit requirement. Run `mise run test:db` when changing SQL. A focused local pass is not a claim that full CI passed. Wails binding drift is read-only in CI: apply/regenerate the repair, review it, and push a new revision instead of allowing CI to rewrite the reviewed branch.
 
 ```bash
-mise run verify
+mise exec -- bash scripts/test-changed-go.sh
 ```
 
 Before committing:
 
-- [ ] `mise run verify` passes
-- [ ] `cd frontend && npm run build:desktop && cd .. && go build .` succeeds (darwin)
+- [ ] Formatting, whitespace checks, and focused regression tests pass
+- [ ] Independent review and real behavior testing cover the change
+- [ ] Before merging: required GitHub CI is green on the exact current revision
 
 ```bash
 # Lint all

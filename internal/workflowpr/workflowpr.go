@@ -76,6 +76,10 @@ func (MetaFetcherAdapter) FetchPRMeta(ctx context.Context, repo string, number i
 // github package. Stateless — all state lives in `gh` / GitHub.
 type CreatorAdapter struct{}
 
+func (CreatorAdapter) MarkReady(ctx context.Context, repo string, number int) error {
+	return github.MarkReadyContext(ctx, repo, number)
+}
+
 func (CreatorAdapter) CreatePR(ctx context.Context, dir string, req workflow.PRCreateRequest) (number int, headSHA string, err error) {
 	return github.CreatePR(ctx, dir, github.CreatePRRequest{
 		Repo:  req.Repo,

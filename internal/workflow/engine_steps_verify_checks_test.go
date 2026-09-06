@@ -2130,8 +2130,8 @@ func TestBuiltinSimpleTaskImplement_VerifyChecksWiring(t *testing.T) {
 		t.Fatal("codegen_gate step missing")
 		return
 	}
-	if got, _ := ResolveTransition(codegen.Next, map[string]string{"task.status": "in-progress"}); got != "parallel_gates" {
-		t.Errorf("codegen_gate clean goto = %q, want parallel_gates", got)
+	if got, _ := ResolveTransition(codegen.Next, map[string]string{"task.status": "in-progress"}); got != "start_ci" {
+		t.Errorf("codegen_gate clean goto = %q, want start_ci", got)
 	}
 	if got, _ := ResolveTransition(gates.Next, map[string]string{"task.status": "blocked"}); got != "" {
 		t.Errorf("blocked parallel_gates goto = %q, want end", got)

@@ -15,6 +15,12 @@ on:
 permissions:
   contents: read
 
+# Superseded PR revisions have no reusable evidence. Keep main/merge-group
+# runs independent so cancellation cannot strand or invalidate the merge queue.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test-go:
     name: Go Tests
@@ -255,18 +261,12 @@ jobs:
     name: Wails Bindings Sync
     runs-on: macos-15
     permissions:
-      contents: write
+      contents: read
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
-          # Only same-repo PRs check out the head branch (so regenerated files
-          # can be pushed back). Fork PRs and push/tag events resolve to an
-          # empty ref and use the default checkout — a fork branch name would
-          # not resolve in this repo, and a fork cannot be pushed to.
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref || '' }}
-          # The push step supplies BINDINGS_SYNC_PAT explicitly. If checkout
-          # persists its GITHUB_TOKEN extraheader, Git uses that instead and
-          # the follow-up PR checks are left action_required by anti-recursion.
+          # Verification never mutates the reviewed PR head. Use the event's
+          # revision, including merge_group, and offer drift as a patch.
           persist-credentials: false
 
       - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
@@ -295,39 +295,18 @@ jobs:
         # produced in the same pass.
         run: go run ./cmd/gen-api-shim
 
-      - name: Commit and push regenerated bindings and shims
-        # Restricted to same-repo PRs — a fork PR's GITHUB_TOKEN is read-only
-        # and falls through to the drift gate.
-        #
-        # BINDINGS_SYNC_PAT, when set, avoids a GitHub anti-recursion guard:
-        # a GITHUB_TOKEN-authored commit leaves the required "CI"/"Wails
-        # Bindings Sync" checks permanently `action_required` on this new
-        # HEAD instead of running them, so the PR gets stuck until a human
-        # clicks "Re-run". Falls back to GITHUB_TOKEN, with that drawback,
-        # until the secret exists.
-        if: >-
-          github.event_name == 'pull_request' &&
-          github.event.pull_request.head.repo.full_name == github.repository
-        env:
-          HEAD_REF: ${{ github.head_ref }}
-          PUSH_TOKEN: ${{ secrets.BINDINGS_SYNC_PAT || secrets.GITHUB_TOKEN }}
+      - name: Prepare generated-code repair patch
         run: |
-          if git diff --quiet -- frontend/bindings/ frontend/src/lib/api.ts frontend/src/lib/api-http.ts; then
-            echo "bindings and api shims already in sync"
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add frontend/bindings/ frontend/src/lib/api.ts frontend/src/lib/api-http.ts
-          git commit -s -m "chore(bindings): regenerate wails bindings and api shims"
-          git push "https://x-access-token:${PUSH_TOKEN}@github.com/${{ github.repository }}.git" HEAD:"$HEAD_REF"
+          git add -N -- frontend/bindings/ frontend/src/lib/api.ts frontend/src/lib/api-http.ts
+          git diff --binary -- frontend/bindings/ frontend/src/lib/api.ts frontend/src/lib/api-http.ts > "$RUNNER_TEMP/bindings.patch"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bindings-repair-${{ github.sha }}
+          path: ${{ runner.temp }}/bindings.patch
+          retention-days: 7
 
       - name: Check for drift
-        # Fork PRs and push/tag events cannot auto-commit, so the hard gate
-        # stays as the backstop and any drift there still fails red.
-        if: >-
-          github.event_name != 'pull_request' ||
-          github.event.pull_request.head.repo.full_name != github.repository
         run: |
           git diff --exit-code frontend/bindings/ frontend/src/lib/api.ts frontend/src/lib/api-http.ts || \
             (echo "::error::Wails bindings / api shims out of sync. Run 'wails3 generate bindings -ts -d frontend/bindings ./...' and 'go run ./cmd/gen-api-shim'." && exit 1)

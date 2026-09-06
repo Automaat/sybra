@@ -186,6 +186,25 @@ steps:
           operator: equals
           value: human-required
         goto: ""
+      - goto: start_ci
+
+  # Opt-in, project-scoped: open an unlinked draft to start GitHub CI while
+  # the existing local gates, independent review, and runtime tests proceed.
+  # Draft existence is NOT evidence and does not change task.pr_number.
+  - id: start_ci
+    name: Start GitHub CI
+    type: start_ci
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - when:
+          field: task.status
+          operator: equals
+          value: blocked
+        goto: ""
       - goto: parallel_gates
 
   # Mechanical gate (no LLM): runs the three deterministic post-implement

@@ -91,10 +91,13 @@ type BestOfNInflight struct {
 
 // AttemptStatus is one best-of-N attempt's persisted slot.
 type AttemptStatus struct {
-	AttemptID string `yaml:"attempt_id" json:"attemptId"`
-	Provider  string `yaml:"provider,omitempty" json:"provider,omitempty"`
-	Model     string `yaml:"model,omitempty" json:"model,omitempty"`
-	AgentID   string `yaml:"agent_id,omitempty" json:"agentId,omitempty"`
+	// AdmissionGeneration retires a refused, never-started dispatch without
+	// consuming a coding retry. Transport retries retain this generation.
+	AdmissionGeneration uint64 `yaml:"admission_generation,omitempty" json:"admissionGeneration,omitempty"`
+	AttemptID           string `yaml:"attempt_id" json:"attemptId"`
+	Provider            string `yaml:"provider,omitempty" json:"provider,omitempty"`
+	Model               string `yaml:"model,omitempty" json:"model,omitempty"`
+	AgentID             string `yaml:"agent_id,omitempty" json:"agentId,omitempty"`
 	// Dir/Branch locate the attempt's isolated worktree so
 	// promoteBestOfN can promote the winner without depending on any live
 	// agent/registry state.
@@ -163,8 +166,9 @@ type ParallelChildren struct {
 
 // ChildStatus is one child step's slot inside a ParallelChildren record.
 type ChildStatus struct {
-	AgentID  string `yaml:"agent_id,omitempty" json:"agentId,omitempty"`
-	Provider string `yaml:"provider,omitempty" json:"provider,omitempty"`
+	AdmissionGeneration uint64 `yaml:"admission_generation,omitempty" json:"admissionGeneration,omitempty"`
+	AgentID             string `yaml:"agent_id,omitempty" json:"agentId,omitempty"`
+	Provider            string `yaml:"provider,omitempty" json:"provider,omitempty"`
 	// Status: "pending" | "completed" | "failed".
 	Status  string `yaml:"status" json:"status"`
 	Output  string `yaml:"output,omitempty" json:"output,omitempty"`

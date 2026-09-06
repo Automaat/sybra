@@ -8,6 +8,11 @@ set -euo pipefail
 UNIT="${SYBRA_AGENTD_UNIT:-sybra-agentd.service}"
 CONFIG="${SYBRA_AGENTD_CONFIG:-/etc/sybra/sybra-agentd.yaml}"
 BINARY="${SYBRA_AGENTD_BINARY:-/opt/sybra/current/sybra-agentd}"
+STANDALONE="${SYBRA_AGENTD_STANDALONE:-/etc/systemd/system/sybra-agentd.service.d/standalone.conf}"
+
+# A worker-only installation has its own release pointer and supervisor.
+# An optional old board on the host must never restart it during migration.
+[[ ! -f "$STANDALONE" ]] || exit 0
 
 # An initial rollout can health-check and roll back to a last-good release that
 # predates agentd. Leave the durable daemon stopped in that case; the next

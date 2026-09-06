@@ -925,6 +925,36 @@ func (a *checkConfigGetterAdapter) VerifyCommands(ctx context.Context, taskID st
 	return merged.Verify
 }
 
+func (a *checkConfigGetterAdapter) CIConfig(ctx context.Context, taskID string) (*project.CIConfig, error) {
+	t, err := a.tasks.Get(taskID)
+	if err != nil {
+		return nil, err
+	}
+	if t.ProjectID == "" {
+		return &project.CIConfig{}, nil
+	}
+	if a.projects == nil {
+		return nil, fmt.Errorf("CI policy: project store unavailable")
+	}
+	p, err := a.projects.Get(t.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	var repoChecks *project.ChecksConfig
+	if p.ClonePath != "" {
+		cfg, err := project.LoadRepoConfigAtDefaultBranch(ctx, p.ClonePath)
+		if err != nil {
+			return nil, err
+		}
+		repoChecks = cfg.Checks
+	}
+	merged := project.MergeChecks(repoChecks, p.Checks)
+	if merged == nil {
+		return &project.CIConfig{}, nil
+	}
+	return merged.CI, nil
+}
+
 func (a *checkConfigGetterAdapter) FocusedChecks(ctx context.Context, taskID string) []project.FocusedCheck {
 	merged := a.mergedChecks(ctx, taskID)
 	if merged == nil {
