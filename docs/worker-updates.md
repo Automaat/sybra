@@ -20,6 +20,12 @@ updater with an incompatible protocol requires an explicit operator bootstrap.
 The unauthenticated `/health` identity must match before any bearer request;
 redirects and non-loopback cleartext URLs are refused.
 
+The `dev` and `dev:server` startup tasks explicitly use `go run -buildvcs=true`.
+Plain `go run` can omit VCS metadata even in a clean checkout, leaving the
+leader healthy but unable to authorize a worker release. Preserve the explicit
+flag in custom supervisors; never fall back to reading the checkout's HEAD at
+runtime. A dirty development build still starts, but cannot authorize updates.
+
 An update has a private, durable nonce and a separate SQL hold, visible as
 `updateHeld` in worker diagnostics. Both start-command paths honor it; existing
 commands and handback still flow. It never changes an operator's disabled or
