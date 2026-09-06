@@ -732,10 +732,13 @@ func (a *App) onAgentComplete(ag *agent.Agent) {
 }
 
 func reviewerProgressPackets(ag *agent.Agent) []string {
-	events := ag.Output()
+	outputs := ag.Output()
 	var packets []string
-	for i := len(events) - 1; i >= 0 && len(packets) < 24; i-- {
-		event := &events[i]
+	for i := range slices.Backward(outputs) {
+		if len(packets) >= 24 {
+			break
+		}
+		event := &outputs[i]
 		if event.Type == "assistant" && len(event.Content) <= reviewprogress.MaxBytes+len(reviewprogress.Start)+len(reviewprogress.End) && reviewprogress.IsCheckpoint(event.Content) {
 			packets = append(packets, event.Content)
 		}

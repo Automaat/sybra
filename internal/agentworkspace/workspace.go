@@ -119,15 +119,8 @@ func PrepareWithBaseBundle(ctx context.Context, root, source string, spec execut
 		if err := gitexec.Run(ctx, gitexec.Options{Dir: worktree}, "fetch", bundlePath, importedRef+":"+importedRef); err != nil {
 			return Layout{}, fmt.Errorf("%w: import: %w", ErrInvalidBaseBundle, err)
 		}
-		if base := spec.Workspace.ReviewBase; base != nil {
-			ref := ReviewBundleRef(spec.RunID)
-			if err := gitexec.Run(ctx, gitexec.Options{Dir: worktree}, "fetch", bundlePath, ref+":"+ref); err != nil {
-				return Layout{}, fmt.Errorf("%w: import review base: %w", ErrInvalidBaseBundle, err)
-			}
-			sha, err := gitexec.Output(ctx, gitexec.Options{Dir: worktree}, "rev-parse", "--verify", ref+"^{commit}")
-			if err != nil || sha != base.SHA {
-				return Layout{}, fmt.Errorf("%w: review base differs", ErrInvalidBaseBundle)
-			}
+		if err := importReviewBase(ctx, worktree, bundlePath, spec); err != nil {
+			return Layout{}, err
 		}
 		_ = os.Remove(bundlePath)
 		resolved, err := gitexec.Output(ctx, gitexec.Options{Dir: worktree}, "rev-parse", "--verify", importedRef+"^{commit}")
@@ -195,6 +188,22 @@ func PrepareWithBaseBundle(ctx context.Context, root, source string, spec execut
 		return Layout{}, err
 	}
 	return final, nil
+}
+
+func importReviewBase(ctx context.Context, worktree, bundlePath string, spec executioncontract.RunSpec) error {
+	base := spec.Workspace.ReviewBase
+	if base == nil {
+		return nil
+	}
+	ref := ReviewBundleRef(spec.RunID)
+	if err := gitexec.Run(ctx, gitexec.Options{Dir: worktree}, "fetch", bundlePath, ref+":"+ref); err != nil {
+		return fmt.Errorf("%w: import review base: %w", ErrInvalidBaseBundle, err)
+	}
+	sha, err := gitexec.Output(ctx, gitexec.Options{Dir: worktree}, "rev-parse", "--verify", ref+"^{commit}")
+	if err != nil || sha != base.SHA {
+		return fmt.Errorf("%w: review base differs", ErrInvalidBaseBundle)
+	}
+	return nil
 }
 
 func cloneAtRepositoryAnchor(ctx context.Context, source, worktree, anchor string) error {

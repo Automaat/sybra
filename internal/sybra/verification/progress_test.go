@@ -17,13 +17,13 @@ func progressScope() ProgressScope {
 	return ProgressScope{Lineage: strings.Repeat("a", 64), ContractDigest: strings.Repeat("b", 64), BaseRef: "HEAD"}
 }
 
-func progressLease(t *testing.T, m *Manager, repo, taskID, role, agentID string, scope ProgressScope) (Lease, string) {
+func progressLease(t *testing.T, m *Manager, repo, taskID, role, agentID string, scope ProgressScope) (lease Lease, seed string) {
 	t.Helper()
 	lease, err := m.Prepare(t.Context(), taskID, role, repo)
 	if err != nil {
 		t.Fatal(err)
 	}
-	lease, seed, err := m.PrepareProgress(t.Context(), lease, scope)
+	lease, seed, err = m.PrepareProgress(t.Context(), lease, scope)
 	if err != nil {
 		t.Fatal(err)
 	}
