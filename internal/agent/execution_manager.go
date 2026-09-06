@@ -228,6 +228,11 @@ func (m *Manager) emitExecutionEvent(ctx context.Context, _ ExecutionHandle, eve
 		return false
 	case ExecutionCompleted:
 		a.mu.Lock()
+		if a.executionCompletionClaimed {
+			a.mu.Unlock()
+			return false
+		}
+		a.executionCompletionClaimed = true
 		a.remoteCompletionReceipt = event.RemoteCompletionReceipt
 		a.mu.Unlock()
 		if event.AdmissionDeferred {

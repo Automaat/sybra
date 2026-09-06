@@ -478,7 +478,9 @@ func runExecutionBackendConformance(t *testing.T, factory func(*testing.T, Execu
 			t.Fatalf("repeated Stop: %v", err)
 		}
 		if !pollUntil(time.Second, time.Millisecond, func() bool {
-			for _, event := range sink.snapshot() {
+			events := sink.snapshot()
+			for i := range events {
+				event := &events[i]
 				if event.Kind == ExecutionCompleted && errors.Is(event.Err, context.Canceled) {
 					return true
 				}
@@ -488,7 +490,9 @@ func runExecutionBackendConformance(t *testing.T, factory func(*testing.T, Execu
 			t.Fatalf("stop events = %+v", sink.snapshot())
 		}
 		completed := 0
-		for _, event := range sink.snapshot() {
+		events := sink.snapshot()
+		for i := range events {
+			event := &events[i]
 			if event.Kind == ExecutionCompleted {
 				completed++
 			}
