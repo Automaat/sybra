@@ -22,9 +22,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # Files allowed to spawn `gh` directly:
-#   - internal/github/client.go: RunWithEnv, the sole gated constructor. Every
-#     other gh call in the process (in this package or any other) must route
-#     through it (or the Run wrapper) instead of shelling out on its own.
+#   - internal/github/client.go: runGHSubprocess, the central raw constructor.
+#     Network-facing calls route through gated Run/RunWithEnv; the local-only
+#     AmbientAuthToken credential lookup deliberately bypasses the network gate.
 #   - internal/github/pr_create.go: createPRRunner already wraps its
 #     exec.CommandContext call in ghGate.execute directly (it needs cmd.Dir,
 #     which RunWithEnv doesn't expose) — gated by construction, just not via

@@ -80,6 +80,7 @@ type Manager struct {
 	// allowAmbientReviewAuth is an explicit operator opt-in for review agents
 	// to use the host's gh credentials instead of a restricted App token.
 	allowAmbientReviewAuth bool
+	ambientReviewToken     func() (string, error)
 	guardrails             Guardrails
 	bashTimeoutMs          int
 	retryWatchdog          int
@@ -313,6 +314,10 @@ type ManagerConfig struct {
 	// when no restricted GitHub App verifier token is configured. This is an
 	// explicit opt-in because those credentials may have broader authority.
 	AllowAmbientReviewAuth bool
+	// AmbientReviewToken resolves the opted-in host credential before the
+	// verifier read sandbox starts. This keeps keychain-backed gh logins usable
+	// without granting the review process read access to the operator keychain.
+	AmbientReviewToken func() (string, error)
 }
 
 // ManagerRuntimeConfig holds settings that affect future runs and may change
@@ -381,6 +386,7 @@ func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir 
 		approvalAddr:           cfg.ApprovalAddr,
 		ghShimDir:              resolveGhShimDir(cfg.GhShimDir, logger),
 		allowAmbientReviewAuth: cfg.AllowAmbientReviewAuth,
+		ambientReviewToken:     cfg.AmbientReviewToken,
 		defaultProv:            defaultProv,
 		defaultModel:           cfg.Runtime.DefaultModel,
 		maxConcurrent:          cfg.Runtime.MaxConcurrent,
