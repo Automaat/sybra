@@ -195,7 +195,7 @@ jobs:
     # skips and sqlite-only SQL reaches an operator's postgres box unreviewed.
     services:
       postgres:
-        image: postgres:17@sha256:67f41722b7a8cbdb868a44a4995c846eddfdc2973bccb291ce937dce88ad5675
+        image: postgres:17@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f
         env:
           POSTGRES_USER: sybra
           POSTGRES_PASSWORD: sybra
