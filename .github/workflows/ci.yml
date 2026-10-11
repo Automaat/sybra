@@ -270,7 +270,7 @@ jobs:
 
       - name: Install nilaway
         # renovate: datasource=go depName=go.uber.org/nilaway
-        run: go install go.uber.org/nilaway/cmd/nilaway@v0.0.0-20260808063849-8649a03c818a
+        run: go install go.uber.org/nilaway/cmd/nilaway@v0.0.0-20260918162853-acb8859b9031
 
       - name: Run nilaway
         run: |
@@ -364,7 +364,7 @@ jobs:
           git add -N -- frontend/bindings/ frontend/src/lib/api.ts frontend/src/lib/api-http.ts
           git diff --binary -- frontend/bindings/ frontend/src/lib/api.ts frontend/src/lib/api-http.ts > "$RUNNER_TEMP/bindings.patch"
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: bindings-repair-${{ github.sha }}
           path: ${{ runner.temp }}/bindings.patch
@@ -717,7 +717,7 @@ jobs:
         if: failure()
         run: cat /tmp/sybra-server.log || true
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
           name: playwright-report-${{ matrix.provider }}
@@ -831,7 +831,7 @@ jobs:
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
         with:
           subject-path: dist/*
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sybra-worker-linux-${{ matrix.arch }}
           path: dist/
