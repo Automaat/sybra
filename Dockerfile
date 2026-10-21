@@ -96,7 +96,7 @@ ARG CLAUDE_CODE_VERSION=2.1.222
 # renovate: datasource=npm depName=@openai/codex
 ARG CODEX_VERSION=0.157.0
 # renovate: datasource=npm depName=opencode-ai
-ARG OPENCODE_VERSION=1.18.13
+ARG OPENCODE_VERSION=1.19.3
 RUN npm install -g \
         "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
         "@openai/codex@${CODEX_VERSION}" \
