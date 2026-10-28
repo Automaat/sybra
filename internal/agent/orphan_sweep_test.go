@@ -53,7 +53,8 @@ func TestReapOwnedOrphanProviderProcessesRequiresOwnerMarker(t *testing.T) {
 	}
 
 	ownerAssignment := mcpOwner{AgentID: "owned-agent", TaskID: "task-1", Mode: "headless"}
-	owned := spawnOwnedMCPHelperProcess(t, root, "chrome-devtools-mcp", ownerAssignment)
+	exited := make(chan error, 1)
+	owned := spawnOwnedMCPHelperProcess(t, root, "chrome-devtools-mcp", ownerAssignment, exited)
 	// Start returns before the child has exec'd, so until the exec lands the
 	// process still reads as the test binary with no owner marker and the
 	// sweep has nothing to reap.
@@ -62,7 +63,12 @@ func TestReapOwnedOrphanProviderProcessesRequiresOwnerMarker(t *testing.T) {
 		procs, observed := listProviderProcessesUnderRoots(context.Background(), []string{root})
 		trackedPIDs, trackedAgents := m.trackedProcessOwners()
 		status, statusErr := os.ReadFile(filepath.Join("/proc", strconv.Itoa(owned.Process.Pid), "status"))
-		t.Fatalf("owned shared-root sweep = %d, %v; want 1, true; pid=%d alive=%v scan=%v observed=%v tracked_pids=%v tracked_agents=%v proc_status=%s status_err=%v", got, confirmed, owned.Process.Pid, processAlive(owned.Process.Pid), procs, observed, trackedPIDs, trackedAgents, status, statusErr)
+		var exitErr error
+		select {
+		case exitErr = <-exited:
+		case <-time.After(time.Second):
+		}
+		t.Fatalf("owned shared-root sweep = %d, %v; want 1, true; pid=%d alive=%v exit=%v scan=%v observed=%v tracked_pids=%v tracked_agents=%v proc_status=%s status_err=%v", got, confirmed, owned.Process.Pid, processAlive(owned.Process.Pid), exitErr, procs, observed, trackedPIDs, trackedAgents, status, statusErr)
 	}
 	if processAlive(owned.Process.Pid) {
 		t.Fatal("owned-only reaper returned before owned process termination")
@@ -349,7 +355,7 @@ func spawnOwnedProviderDescendantProcess(t *testing.T, root string, owner proces
 	return childPID
 }
 
-func spawnOwnedMCPHelperProcess(t *testing.T, root, name string, owner mcpOwner) *exec.Cmd {
+func spawnOwnedMCPHelperProcess(t *testing.T, root, name string, owner mcpOwner, exitReports ...chan<- error) *exec.Cmd {
 	t.Helper()
 
 	sleepPath, err := exec.LookPath("sleep")
@@ -372,7 +378,12 @@ func spawnOwnedMCPHelperProcess(t *testing.T, root, name string, owner mcpOwner)
 		t.Fatalf("start owned helper: %v", err)
 	}
 	t.Cleanup(func() { _ = cmd.Process.Kill() })
-	go func() { _ = cmd.Wait() }()
+	go func() {
+		err := cmd.Wait()
+		if len(exitReports) > 0 {
+			exitReports[0] <- err
+		}
+	}()
 	return cmd
 }
 
