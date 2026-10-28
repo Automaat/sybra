@@ -522,12 +522,14 @@ func (r *Recovery) surfaceStartFailure(ctx context.Context, taskID string, curre
 	update := task.Update{
 		StatusReason: task.Ptr(failure.Reason),
 	}
-	if target == task.StatusHumanRequired {
+	switch target {
+	case task.StatusHumanRequired:
 		update.Escalation = task.ControlPlaneFailure("run.start_operator_action_required", blocker.FailureOwner(failure.Blocker.Kind), failure.Reason)
 		update.AutonomyOutcome = task.HumanRequiredOutcome()
-	} else if target == task.StatusBlocked {
+	case task.StatusBlocked:
 		update.Escalation = task.MachineFailure("run.start_failure_quarantined", failure.Reason)
 		update.AutonomyOutcome = task.QuarantinedOutcome()
+	default:
 	}
 	if !failure.Blocker.IsZero() {
 		update.Blocker = &failure.Blocker
