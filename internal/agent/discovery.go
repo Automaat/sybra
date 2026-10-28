@@ -314,11 +314,11 @@ func readClaudeSessions() []claudeSession {
 }
 
 func processAlive(pid int) bool {
-	if pid <= 0 {
+	p, err := os.FindProcess(pid)
+	if err != nil {
 		return false
 	}
-	err := syscall.Kill(pid, 0)
-	return err == nil || err == syscall.EPERM
+	return p.Signal(syscall.Signal(0)) == nil
 }
 
 func projectName(cwd string) string {

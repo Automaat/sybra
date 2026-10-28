@@ -53,22 +53,13 @@ func TestReapOwnedOrphanProviderProcessesRequiresOwnerMarker(t *testing.T) {
 	}
 
 	ownerAssignment := mcpOwner{AgentID: "owned-agent", TaskID: "task-1", Mode: "headless"}
-	exited := make(chan error, 1)
-	owned := spawnOwnedMCPHelperProcess(t, root, "chrome-devtools-mcp", ownerAssignment, exited)
+	owned := spawnOwnedMCPHelperProcess(t, root, "chrome-devtools-mcp", ownerAssignment)
 	// Start returns before the child has exec'd, so until the exec lands the
 	// process still reads as the test binary with no owner marker and the
 	// sweep has nothing to reap.
 	waitForOwnedProcessUnderRoot(t, []string{root}, processOwner(ownerAssignment), "chrome-devtools-mcp")
 	if got, confirmed := m.ReapOwnedOrphanProviderProcessesConfirmed(context.Background(), []string{root}); got != 1 || !confirmed {
-		procs, observed := listProviderProcessesUnderRoots(context.Background(), []string{root})
-		trackedPIDs, trackedAgents := m.trackedProcessOwners()
-		status, statusErr := os.ReadFile(filepath.Join("/proc", strconv.Itoa(owned.Process.Pid), "status"))
-		var exitErr error
-		select {
-		case exitErr = <-exited:
-		case <-time.After(time.Second):
-		}
-		t.Fatalf("owned shared-root sweep = %d, %v; want 1, true; pid=%d alive=%v exit=%v scan=%v observed=%v tracked_pids=%v tracked_agents=%v proc_status=%s status_err=%v", got, confirmed, owned.Process.Pid, processAlive(owned.Process.Pid), exitErr, procs, observed, trackedPIDs, trackedAgents, status, statusErr)
+		t.Fatalf("owned shared-root sweep = %d, %v; want 1, true", got, confirmed)
 	}
 	if processAlive(owned.Process.Pid) {
 		t.Fatal("owned-only reaper returned before owned process termination")
@@ -298,25 +289,31 @@ func TestOrphanSweepRootsForAgent_UsesResolvedSandboxHome(t *testing.T) {
 	}
 }
 
+func TestOrphanSweepHelperProcess(t *testing.T) {
+	if os.Getenv("SYBRA_ORPHAN_SWEEP_HELPER") == "1" {
+		time.Sleep(30 * time.Second)
+	}
+}
+
 func spawnProviderProcess(t *testing.T, root string) *exec.Cmd {
 	t.Helper()
 
-	sleepPath, err := exec.LookPath("sleep")
+	helperPath, err := os.Executable()
 	if err != nil {
-		t.Fatalf("sleep not found: %v", err)
+		t.Fatalf("test executable: %v", err)
 	}
 	binDir := t.TempDir()
 	link := filepath.Join(binDir, "claude")
-	if err := os.Symlink(sleepPath, link); err != nil {
-		t.Fatalf("symlink sleep -> claude: %v", err)
+	if err := os.Symlink(helperPath, link); err != nil {
+		t.Fatalf("symlink helper -> claude: %v", err)
 	}
 	cwd := filepath.Join(root, "sandboxes", "task-1", "sybra-home")
 	if err := os.MkdirAll(cwd, 0o755); err != nil {
 		t.Fatalf("mkdir cwd: %v", err)
 	}
-	cmd := exec.Command(link, "30")
+	cmd := exec.Command(link, "-test.run=^TestOrphanSweepHelperProcess$")
 	cmd.Dir = cwd
-	cmd.Env = scrubAmbientOwnerEnv(os.Environ())
+	cmd.Env = append(scrubAmbientOwnerEnv(os.Environ()), "SYBRA_ORPHAN_SWEEP_HELPER=1")
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start provider-shaped process: %v", err)
 	}
@@ -355,35 +352,31 @@ func spawnOwnedProviderDescendantProcess(t *testing.T, root string, owner proces
 	return childPID
 }
 
-func spawnOwnedMCPHelperProcess(t *testing.T, root, name string, owner mcpOwner, exitReports ...chan<- error) *exec.Cmd {
+func spawnOwnedMCPHelperProcess(t *testing.T, root, name string, owner mcpOwner) *exec.Cmd {
 	t.Helper()
 
-	sleepPath, err := exec.LookPath("sleep")
+	helperPath, err := os.Executable()
 	if err != nil {
-		t.Fatalf("sleep not found: %v", err)
+		t.Fatalf("test executable: %v", err)
 	}
 	binDir := t.TempDir()
 	link := filepath.Join(binDir, name)
-	if err := os.Symlink(sleepPath, link); err != nil {
-		t.Fatalf("symlink sleep -> %s: %v", name, err)
+	if err := os.Symlink(helperPath, link); err != nil {
+		t.Fatalf("symlink helper -> %s: %v", name, err)
 	}
 	cwd := filepath.Join(root, "sandboxes", "task-1", "sybra-home")
 	if err := os.MkdirAll(cwd, 0o755); err != nil {
 		t.Fatalf("mkdir cwd: %v", err)
 	}
-	cmd := exec.Command(link, "30")
+	cmd := exec.Command(link, "-test.run=^TestOrphanSweepHelperProcess$")
 	cmd.Dir = cwd
 	cmd.Env = append(scrubAmbientOwnerEnv(os.Environ()), mcpOwnerAssignments(owner)...)
+	cmd.Env = append(cmd.Env, "SYBRA_ORPHAN_SWEEP_HELPER=1")
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start owned helper: %v", err)
 	}
 	t.Cleanup(func() { _ = cmd.Process.Kill() })
-	go func() {
-		err := cmd.Wait()
-		if len(exitReports) > 0 {
-			exitReports[0] <- err
-		}
-	}()
+	go func() { _ = cmd.Wait() }()
 	return cmd
 }
 
