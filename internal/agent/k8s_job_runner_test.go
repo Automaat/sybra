@@ -382,7 +382,7 @@ func TestK8sRunnerFailedTTLHonorsConfiguredValue(t *testing.T) {
 }
 
 func TestPatchJobTTLSendsMergePatch(t *testing.T) {
-	client := fake.NewSimpleClientset(&batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: "sybra-agent-abc", Namespace: "sybra-poc"}})
+	client := fake.NewSimpleClientset(&batchv1.Job{Name: "sybra-agent-abc", Namespace: "sybra-poc"})
 	r := newFakeK8sJobRunner(client, nil, K8sJobRunnerConfig{Namespace: "sybra-poc"})
 
 	if err := r.patchJobTTL(context.Background(), "sybra-agent-abc", 86400); err != nil {
@@ -422,8 +422,8 @@ func TestK8sRunPatchesFailedJobTTL(t *testing.T) {
 			return false, nil, nil
 		}
 		return true, &batchv1.Job{
-			ObjectMeta: metav1.ObjectMeta{Name: jobName, Namespace: "sybra-poc"},
-			Status:     batchv1.JobStatus{Failed: 1},
+			Name: jobName, Namespace: "sybra-poc",
+			Status: batchv1.JobStatus{Failed: 1},
 		}, nil
 	})
 	r := newFakeK8sJobRunner(client, newFakePodClient(client.CoreV1().Pods("sybra-poc")), K8sJobRunnerConfig{Namespace: "sybra-poc", TTL: 300, FailedTTL: 86400})
@@ -461,8 +461,8 @@ func TestK8sRunSkipsPatchWhenFailedTTLMatchesTTL(t *testing.T) {
 			return false, nil, nil
 		}
 		return true, &batchv1.Job{
-			ObjectMeta: metav1.ObjectMeta{Name: jobName, Namespace: "sybra-poc"},
-			Status:     batchv1.JobStatus{Failed: 1},
+			Name: jobName, Namespace: "sybra-poc",
+			Status: batchv1.JobStatus{Failed: 1},
 		}, nil
 	})
 	r := newFakeK8sJobRunner(client, newFakePodClient(client.CoreV1().Pods("sybra-poc")), K8sJobRunnerConfig{Namespace: "sybra-poc", TTL: 300, FailedTTL: 300})
@@ -554,7 +554,7 @@ func k8sCommonConformanceFixture(t *testing.T, emit func(backendconformance.Even
 		releaseOnce.Do(func() {
 			podName := "agent-1-pod"
 			_, _ = client.CoreV1().Pods("sybra-poc").Create(t.Context(), &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{Name: podName, Namespace: "sybra-poc", Labels: map[string]string{"job-name": jobName}},
+				Name: podName, Namespace: "sybra-poc", Labels: map[string]string{"job-name": jobName},
 			}, metav1.CreateOptions{})
 			pods.logs[podName] = "{\"type\":\"assistant\"}\n"
 			job, err := client.BatchV1().Jobs("sybra-poc").Get(t.Context(), jobName, metav1.GetOptions{})
@@ -683,7 +683,7 @@ func (s *recordingExecutionSink) completedErr() error {
 }
 
 func TestPatchJobTTLReturnsErrorOnNonSuccessStatus(t *testing.T) {
-	client := fake.NewSimpleClientset(&batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: "sybra-agent-abc", Namespace: "sybra-poc"}})
+	client := fake.NewSimpleClientset(&batchv1.Job{Name: "sybra-agent-abc", Namespace: "sybra-poc"})
 	client.PrependReactor("patch", "jobs", func(_ k8stesting.Action) (bool, runtime.Object, error) {
 		return true, nil, fmt.Errorf("boom")
 	})

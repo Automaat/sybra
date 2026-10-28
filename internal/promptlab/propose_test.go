@@ -117,7 +117,7 @@ func TestHasProposalDistinguishesIDsAndTags(t *testing.T) {
 func TestHasProposalMatchesRenderedBody(t *testing.T) {
 	t.Parallel()
 	subject := WeakSubject{
-		Subject:    Subject{Role: "review"},
+		Role:       "review",
 		Metric:     "failure_rate",
 		Samples:    157,
 		EffectSize: 0.054,

@@ -353,13 +353,11 @@ func (r *k8sJobRunner) createJob(ctx context.Context, name string, spec Executio
 	runAsNonRoot := true
 	noRetries := int32(0)
 	job := &batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: name,
-			Labels: map[string]string{
-				"app.kubernetes.io/name": "sybra-agent",
-				"sybra.agent/id":         spec.ID,
-				"sybra.task/id":          sanitizeLabelValue(spec.TaskID),
-			},
+		Name: name,
+		Labels: map[string]string{
+			"app.kubernetes.io/name": "sybra-agent",
+			"sybra.agent/id":         spec.ID,
+			"sybra.task/id":          sanitizeLabelValue(spec.TaskID),
 		},
 		Spec: batchv1.JobSpec{
 			BackoffLimit:            &noRetries,
@@ -415,10 +413,8 @@ func (r *k8sJobRunner) volumeSpec() (volumes []corev1.Volume, mounts []corev1.Vo
 		}
 		volumes = append(volumes, corev1.Volume{
 			Name: v.Name,
-			VolumeSource: corev1.VolumeSource{
-				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-					ClaimName: v.ClaimName,
-				},
+			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+				ClaimName: v.ClaimName,
 			},
 		})
 		mount := corev1.VolumeMount{
@@ -490,8 +486,8 @@ func (r *k8sJobRunner) baseEnv(spec ExecutionSpec, cfg RunConfig) []corev1.EnvVa
 			Name: e.Name,
 			ValueFrom: &corev1.EnvVarSource{
 				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: e.SecretName},
-					Key:                  e.SecretKey,
+					Name: e.SecretName,
+					Key:  e.SecretKey,
 				},
 			},
 		})

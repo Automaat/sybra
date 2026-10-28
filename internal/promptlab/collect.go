@@ -49,8 +49,8 @@ func CollectWeakSubjects(records []stats.RunRecord, minSamples int, minEffectSiz
 			continue
 		}
 		out = append(out, WeakSubject{
-			Subject: Subject{Role: b.Key},
-			Metric:  "failure_rate",
+			Role:   b.Key,
+			Metric: "failure_rate",
 			Detail: fmt.Sprintf("role %s fails %.0f%% vs %.0f%% overall over %d resolved runs (%d stalled)",
 				b.Key, b.FailureRate*100, overall.FailureRate*100, resolved, b.Stalled),
 			Samples:    resolved,

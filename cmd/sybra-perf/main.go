@@ -1000,12 +1000,12 @@ func scrapeMetrics(ctx context.Context, url string) (map[string]float64, error) 
 		}
 		// "<name>{labels} <value>" — take the last whitespace-separated token
 		// as the value and the rest as the key.
-		sp := strings.LastIndexByte(line, ' ')
-		if sp < 0 {
+		before, after, ok := strings.CutLast(line, " ")
+		if !ok {
 			continue
 		}
-		key := line[:sp]
-		valStr := line[sp+1:]
+		key := before
+		valStr := after
 		v, err := strconv.ParseFloat(valStr, 64)
 		if err != nil {
 			continue

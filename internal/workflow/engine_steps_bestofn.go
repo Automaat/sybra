@@ -32,12 +32,12 @@ func bestOfNAttemptStepKey(parentID, attemptID string) string {
 
 // splitBestOfNAttemptStepKey reverses bestOfNAttemptStepKey.
 func splitBestOfNAttemptStepKey(key string) (parentID, attemptID string, ok bool) {
-	idx := strings.LastIndex(key, bestOfNAttemptSep)
-	if idx < 0 {
+	before, after, ok := strings.CutLast(key, bestOfNAttemptSep)
+	if !ok {
 		return "", "", false
 	}
-	parentID = key[:idx]
-	attemptID = key[idx+len(bestOfNAttemptSep):]
+	parentID = before
+	attemptID = after
 	if parentID == "" || attemptID == "" {
 		return "", "", false
 	}

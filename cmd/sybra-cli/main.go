@@ -1973,8 +1973,7 @@ func isRetryableCLIError(err error) bool {
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded) {
 		return true
 	}
-	var ae *apiError
-	if errors.As(err, &ae) {
+	if ae, ok := errors.AsType[*apiError](err); ok {
 		return ae.Status == http.StatusServiceUnavailable
 	}
 	type statusErr interface{ HTTPStatus() int }

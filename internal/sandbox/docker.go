@@ -111,7 +111,7 @@ func generateComposeYAML(worktreePath string, cfg *project.SandboxConfig) (data 
 	var dependsOn []string
 
 	for _, with := range cfg.With {
-		imageName := strings.SplitN(with, ":", 2)[0]
+		imageName, _, _ := strings.Cut(with, ":")
 		svcName := imageName
 		sc, known := sidecarDefaults[imageName]
 		if known && sc.serviceName != "" {
