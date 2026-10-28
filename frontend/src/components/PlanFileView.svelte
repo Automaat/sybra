@@ -3,7 +3,7 @@
   import { formatDateTime } from '$lib/dates.js'
 
 
-  let { taskId, planBody } = $props<{ taskId: string; planBody: string }>()
+  let { taskId, planBody }: { taskId: string; planBody: string } = $props()
 
   let addingLine = $state<number | null>(null)
   let newCommentBody = $state('')
