@@ -5,9 +5,13 @@
 // @ts-ignore: Unused imports
 import { Create as $Create } from "@wailsio/runtime";
 
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as jsontext$0 from "./jsontext/models.js";
+
 /**
  * RawMessage is a raw encoded JSON value.
  * It implements [Marshaler] and [Unmarshaler] and can
  * be used to delay JSON decoding or precompute a JSON encoding.
  */
-export type RawMessage = any;
+export type RawMessage = jsontext$0.Value;
