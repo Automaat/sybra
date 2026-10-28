@@ -109,8 +109,8 @@ func classifyTrivialFile(path string) trivialFileClass {
 		return trivialFileGenerated
 	}
 	base := path
-	if i := strings.LastIndexByte(path, '/'); i >= 0 {
-		base = path[i+1:]
+	if _, after, ok := strings.CutLast(path, "/"); ok {
+		base = after
 	}
 	if triageReviewDepBumpBasenames[base] {
 		return trivialFileDep

@@ -529,6 +529,7 @@ func (r *Recovery) surfaceStartFailure(ctx context.Context, taskID string, curre
 	case task.StatusBlocked:
 		update.Escalation = task.MachineFailure("run.start_failure_quarantined", failure.Reason)
 		update.AutonomyOutcome = task.QuarantinedOutcome()
+	default:
 	}
 	if !failure.Blocker.IsZero() {
 		update.Blocker = &failure.Blocker

@@ -818,8 +818,7 @@ func isTransientCapacityRefusal(err error) bool {
 	if agent.IsCapacityError(err) {
 		return true
 	}
-	var unhealthy *provider.UnhealthyError
-	if errors.As(err, &unhealthy) {
+	if unhealthy, ok := errors.AsType[*provider.UnhealthyError](err); ok {
 		return unhealthy.RateLimited
 	}
 	return false

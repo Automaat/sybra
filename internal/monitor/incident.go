@@ -240,14 +240,14 @@ func incidentBody(in Incident, change IncidentChange) string {
 	if in.AffectedTaskOverflow {
 		affected = "at least " + affected + " (exact fan-out unknown)"
 	}
-	body := fmt.Sprintf("## Incident\n\n- Fingerprint: `%s`\n- Failure code: `%s`\n- Component: `%s`\n- Capability: `%s`\n- Project scope: `%s`\n- Configuration generation: `%s`\n- State change: `%s`\n- Affected tasks: %s\n- Recurrences: %d\n- Remediation attempts: %d\n",
-		in.Fingerprint, in.FailureCode, in.Component, in.Capability, in.ProjectScope,
-		in.ConfigGeneration, change, affected, in.RecurrenceCount, len(in.RemediationAttempts))
+	body := fmt.Sprintf("## Incident\n\n- Fingerprint: %s\n- Failure code: %s\n- Component: %s\n- Capability: %s\n- Project scope: %s\n- Configuration generation: %s\n- State change: %s\n- Affected tasks: %s\n- Recurrences: %d\n- Remediation attempts: %d\n",
+		"`"+in.Fingerprint+"`", "`"+in.FailureCode+"`", "`"+in.Component+"`", "`"+in.Capability+"`", "`"+in.ProjectScope+"`",
+		"`"+in.ConfigGeneration+"`", "`"+string(change)+"`", affected, in.RecurrenceCount, len(in.RemediationAttempts))
 	if len(in.RemediationAttempts) == 0 {
 		return body
 	}
 	latest := in.RemediationAttempts[len(in.RemediationAttempts)-1]
-	body += fmt.Sprintf("- Latest remediation: `%s` -> `%s` at %s\n", latest.Kind, latest.Result, latest.AttemptedAt.UTC().Format(time.RFC3339Nano))
+	body += fmt.Sprintf("- Latest remediation: %s -> %s at %s\n", "`"+latest.Kind+"`", "`"+latest.Result+"`", latest.AttemptedAt.UTC().Format(time.RFC3339Nano))
 	if latest.ObservedAt != nil {
 		body += fmt.Sprintf("- Latest remediation observed at: %s\n", latest.ObservedAt.UTC().Format(time.RFC3339Nano))
 	}

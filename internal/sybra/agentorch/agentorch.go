@@ -1125,8 +1125,7 @@ func (o *Orchestrator) revertToTodoAfterGateBlock(taskID, logSuffix string) {
 		Actor:          "agentorch.provider_gate",
 		ExpectedStatus: &expected,
 	}); err != nil {
-		var conflict *task.ConflictError
-		if errors.As(err, &conflict) {
+		if _, ok := errors.AsType[*task.ConflictError](err); ok {
 			// Someone else already moved the task off in-progress between
 			// our read and this write — their decision wins.
 			return
@@ -1533,7 +1532,7 @@ func BuildPRFixPrompt(t task.Task, logger *slog.Logger) string {
 		if branch == "" {
 			branch = "unknown"
 		}
-		return fmt.Sprintf("%s\n\n## PR Context\n- PR: #%d (https://github.com/%s/pull/%d)\n- Branch: `%s`\n\nCheck out the branch and push amended commits to the same branch.", base, t.PRNumber, t.ProjectID, t.PRNumber, branch)
+		return fmt.Sprintf("%s\n\n## PR Context\n- PR: #%d (https://github.com/%s/pull/%d)\n- Branch: %s\n\nCheck out the branch and push amended commits to the same branch.", base, t.PRNumber, t.ProjectID, t.PRNumber, "`"+branch+"`")
 	}
 
 	var sb strings.Builder

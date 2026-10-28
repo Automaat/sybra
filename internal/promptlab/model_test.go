@@ -4,7 +4,7 @@ import "testing"
 
 func TestProposalIDStable(t *testing.T) {
 	s := WeakSubject{
-		Subject:    Subject{Role: "implementation"},
+		Role:       "implementation",
 		Samples:    12,
 		EffectSize: 0.234,
 	}

@@ -440,8 +440,7 @@ func newWebhookMux(
 		r.Body = http.MaxBytesReader(w, r.Body, httpapi.MaxRequestBody)
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
-			var maxErr *http.MaxBytesError
-			if errors.As(err, &maxErr) {
+			if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
 				writeWebhookError(w, logger, http.StatusRequestEntityTooLarge, "payload_too_large", "request body too large")
 				return
 			}
@@ -546,8 +545,7 @@ func writeWebhookError(w http.ResponseWriter, logger *slog.Logger, status int, c
 }
 
 func writeWebhookAdmissionError(w http.ResponseWriter, logger *slog.Logger, err error) {
-	var clientErr httpapi.ClientError
-	if errors.As(err, &clientErr) {
+	if clientErr, ok := errors.AsType[httpapi.ClientError](err); ok {
 		code := "validation_error"
 		if clientErr.HTTPStatus() == http.StatusServiceUnavailable {
 			code = string(httpapi.ErrCodeUnavailable)

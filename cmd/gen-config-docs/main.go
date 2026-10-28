@@ -468,7 +468,7 @@ func rootConfigSection(sections []section) *section {
 func renderSection(b *bytes.Buffer, sec section) {
 	heading := sec.title
 	if canonical := canonicalDocPath(sec.yaml); canonical != "" {
-		heading = fmt.Sprintf("%s (`%s`)", sec.title, canonical)
+		heading = sec.title + " (`" + canonical + "`)"
 	}
 	level := "### "
 	if sec.title == "Schema" {
@@ -539,7 +539,7 @@ func markdownList(items []string) string {
 	}
 	out := make([]string, 0, len(items))
 	for _, item := range items {
-		out = append(out, fmt.Sprintf("`%s`", item))
+		out = append(out, "`"+item+"`")
 	}
 	return strings.Join(out, ", ")
 }
@@ -548,7 +548,7 @@ func markdownCell(s string) string {
 	if s == "" {
 		return ""
 	}
-	return fmt.Sprintf("`%s`", s)
+	return "`" + s + "`"
 }
 
 func boolCell(v bool) string {

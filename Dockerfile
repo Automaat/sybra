@@ -7,7 +7,7 @@ COPY frontend/ ./
 RUN npm run build:web
 
 # Stage 2: Build sybra-server binary
-FROM golang:1.26.6-bookworm@sha256:116d58cbd88c1297624acc6e967a060012422bacf9930927e23fb719189c6f36 AS go-builder
+FROM golang:1.27.3-bookworm@sha256:df4bb0305771186a85d0fd3a40f5c5da9af97ac8053d391ffce2c070817a20c6 AS go-builder
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download

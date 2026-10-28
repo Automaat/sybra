@@ -507,8 +507,7 @@ func wrapDispatchErr(stepID string, err error) error {
 // dispatchFailureStepID returns the step ID a dispatchStepError was recorded
 // against, or fallback if err doesn't carry one.
 func dispatchFailureStepID(err error, fallback string) string {
-	var dse *dispatchStepError
-	if errors.As(err, &dse) {
+	if dse, ok := errors.AsType[*dispatchStepError](err); ok {
 		return dse.stepID
 	}
 	return fallback

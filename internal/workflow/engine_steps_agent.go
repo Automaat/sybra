@@ -1049,6 +1049,7 @@ func (e *Engine) execShell(step *Step, ctx TemplateContext) (StepOutput, error) 
 	defer cancel()
 
 	cmd := exec.CommandContext(shellCtx, "bash", "-c", command)
+	configureShellCancellation(cmd)
 	if step.Config.Dir != "" {
 		// Rendered the same as Command: lets a shell step target a
 		// dynamically-resolved dir (e.g. best-of-n's canonical worktree,

@@ -49,12 +49,10 @@ func (d *Daemon) retryRegistration(ctx context.Context, initial, maximum time.Du
 func retryableLeaderError(err error) bool {
 	// http.Client wraps these in *url.Error, which implements net.Error even
 	// though retrying cannot repair trust or a mismatched server identity.
-	var certificate *tls.CertificateVerificationError
-	if errors.As(err, &certificate) {
+	if _, ok := errors.AsType[*tls.CertificateVerificationError](err); ok {
 		return false
 	}
-	var response *leaderHTTPError
-	if errors.As(err, &response) {
+	if response, ok := errors.AsType[*leaderHTTPError](err); ok {
 		return response.status == http.StatusRequestTimeout ||
 			response.status == http.StatusTooManyRequests ||
 			response.status >= http.StatusInternalServerError || isRejectedSession(err)

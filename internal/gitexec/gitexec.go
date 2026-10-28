@@ -119,8 +119,7 @@ func output(ctx context.Context, opts Options, args ...string) ([]byte, error) {
 	out, err := cmd.Output()
 	if err != nil {
 		var detail []byte
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 			detail = exitErr.Stderr
 		}
 		return out, commandError(args, err, detail)

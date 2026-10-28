@@ -23,8 +23,7 @@ func ValidationMessages(err error) []string {
 	if err == nil {
 		return nil
 	}
-	var verr *ValidationError
-	if errors.As(err, &verr) {
+	if verr, ok := errors.AsType[*ValidationError](err); ok {
 		return append([]string(nil), verr.Messages...)
 	}
 	return []string{err.Error()}

@@ -189,8 +189,7 @@ func fromLoopback(r *http.Request) bool {
 }
 
 func respondAdmissionError(w http.ResponseWriter, logger *slog.Logger, svcName, methodName string, err error) {
-	var ce ClientError
-	if errors.As(err, &ce) {
+	if ce, ok := errors.AsType[ClientError](err); ok {
 		respondError(w, logger, ce.HTTPStatus(), codeForStatus(ce.HTTPStatus()), ce.Error())
 		return
 	}
@@ -215,8 +214,7 @@ func readArgs(w http.ResponseWriter, logger *slog.Logger, r *http.Request) ([]js
 	r.Body = http.MaxBytesReader(w, r.Body, MaxRequestBody)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		var maxErr *http.MaxBytesError
-		if errors.As(err, &maxErr) {
+		if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
 			respondError(w, logger, http.StatusRequestEntityTooLarge, ErrCodeTooLarge, "request body too large")
 		} else {
 			respondError(w, logger, http.StatusBadRequest, ErrCodeValidation, "failed to read request body")
@@ -284,7 +282,7 @@ func stripErrorResult(out []reflect.Value, w http.ResponseWriter, logger *slog.L
 	if last.IsNil() {
 		return out[:len(out)-1], true
 	}
-	callErr, _ := last.Interface().(error)
+	callErr, _ := reflect.TypeAssert[error](last)
 	var ce ClientError
 	switch {
 	case errors.As(callErr, &ce):

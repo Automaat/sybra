@@ -113,7 +113,7 @@ func TestDurableGHIssueSink_AuthFailurePersistsAndLaterRetrySucceeds(t *testing.
 }
 
 func TestDurableGHIssueSink_StaleIncidentCannotOverwriteNewerDesiredState(t *testing.T) {
-	inner := &fakeIncidentSubmitter{fakeSubmitter: fakeSubmitter{err: errAuthFailed}}
+	inner := &fakeIncidentSubmitter{err: errAuthFailed}
 	d, _ := newTestDurableSink(t, inner)
 	newer := Incident{Fingerprint: "incident:one", Revision: 2, State: IncidentResolved}
 	older := Incident{Fingerprint: newer.Fingerprint, Revision: 1, State: IncidentActive}
@@ -347,7 +347,7 @@ func TestDurableGHIssueSink_SubmitDelegatesToAnomalyShapedSubmitIssue(t *testing
 }
 
 func TestDurableGHIssueSink_IncidentOutboxCoalescesLatestDesiredRevision(t *testing.T) {
-	inner := &fakeIncidentSubmitter{fakeSubmitter: fakeSubmitter{err: errAuthFailed}}
+	inner := &fakeIncidentSubmitter{err: errAuthFailed}
 	d, _ := newTestDurableSink(t, inner)
 	in := Incident{Fingerprint: "incident:abc", Revision: 1, State: IncidentActive}
 

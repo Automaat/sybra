@@ -552,8 +552,7 @@ func viaAPI[T any](api *apiClient, service, method string, args ...any) (result 
 	if callErr == nil {
 		return result, true, nil
 	}
-	var ae *apiError
-	if errors.As(callErr, &ae) {
+	if _, ok := errors.AsType[*apiError](callErr); ok {
 		return result, true, callErr
 	}
 	return result, false, nil

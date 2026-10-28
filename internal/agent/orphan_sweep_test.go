@@ -289,25 +289,31 @@ func TestOrphanSweepRootsForAgent_UsesResolvedSandboxHome(t *testing.T) {
 	}
 }
 
+func TestOrphanSweepHelperProcess(t *testing.T) {
+	if os.Getenv("SYBRA_ORPHAN_SWEEP_HELPER") == "1" {
+		time.Sleep(30 * time.Second)
+	}
+}
+
 func spawnProviderProcess(t *testing.T, root string) *exec.Cmd {
 	t.Helper()
 
-	sleepPath, err := exec.LookPath("sleep")
+	helperPath, err := os.Executable()
 	if err != nil {
-		t.Fatalf("sleep not found: %v", err)
+		t.Fatalf("test executable: %v", err)
 	}
 	binDir := t.TempDir()
 	link := filepath.Join(binDir, "claude")
-	if err := os.Symlink(sleepPath, link); err != nil {
-		t.Fatalf("symlink sleep -> claude: %v", err)
+	if err := os.Symlink(helperPath, link); err != nil {
+		t.Fatalf("symlink helper -> claude: %v", err)
 	}
 	cwd := filepath.Join(root, "sandboxes", "task-1", "sybra-home")
 	if err := os.MkdirAll(cwd, 0o755); err != nil {
 		t.Fatalf("mkdir cwd: %v", err)
 	}
-	cmd := exec.Command(link, "30")
+	cmd := exec.Command(link, "-test.run=^TestOrphanSweepHelperProcess$")
 	cmd.Dir = cwd
-	cmd.Env = scrubAmbientOwnerEnv(os.Environ())
+	cmd.Env = append(scrubAmbientOwnerEnv(os.Environ()), "SYBRA_ORPHAN_SWEEP_HELPER=1")
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start provider-shaped process: %v", err)
 	}
@@ -349,22 +355,23 @@ func spawnOwnedProviderDescendantProcess(t *testing.T, root string, owner proces
 func spawnOwnedMCPHelperProcess(t *testing.T, root, name string, owner mcpOwner) *exec.Cmd {
 	t.Helper()
 
-	sleepPath, err := exec.LookPath("sleep")
+	helperPath, err := os.Executable()
 	if err != nil {
-		t.Fatalf("sleep not found: %v", err)
+		t.Fatalf("test executable: %v", err)
 	}
 	binDir := t.TempDir()
 	link := filepath.Join(binDir, name)
-	if err := os.Symlink(sleepPath, link); err != nil {
-		t.Fatalf("symlink sleep -> %s: %v", name, err)
+	if err := os.Symlink(helperPath, link); err != nil {
+		t.Fatalf("symlink helper -> %s: %v", name, err)
 	}
 	cwd := filepath.Join(root, "sandboxes", "task-1", "sybra-home")
 	if err := os.MkdirAll(cwd, 0o755); err != nil {
 		t.Fatalf("mkdir cwd: %v", err)
 	}
-	cmd := exec.Command(link, "30")
+	cmd := exec.Command(link, "-test.run=^TestOrphanSweepHelperProcess$")
 	cmd.Dir = cwd
 	cmd.Env = append(scrubAmbientOwnerEnv(os.Environ()), mcpOwnerAssignments(owner)...)
+	cmd.Env = append(cmd.Env, "SYBRA_ORPHAN_SWEEP_HELPER=1")
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start owned helper: %v", err)
 	}

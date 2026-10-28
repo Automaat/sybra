@@ -172,8 +172,7 @@ func (c *Client) call(ctx context.Context, idempotent bool, service, method stri
 }
 
 func isConnectError(err error) bool {
-	var netErr *net.OpError
-	if errors.As(err, &netErr) {
+	if netErr, ok := errors.AsType[*net.OpError](err); ok {
 		return netErr.Op == "dial"
 	}
 	return false

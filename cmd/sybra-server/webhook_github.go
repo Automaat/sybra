@@ -84,8 +84,7 @@ func newGitHubWebhookHandler(
 		r.Body = http.MaxBytesReader(w, r.Body, httpapi.MaxRequestBody)
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
-			var maxErr *http.MaxBytesError
-			if errors.As(err, &maxErr) {
+			if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
 				writeWebhookError(w, logger, http.StatusRequestEntityTooLarge, "payload_too_large", "request body too large")
 				return
 			}
