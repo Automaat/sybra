@@ -247,7 +247,7 @@ func incidentBody(in Incident, change IncidentChange) string {
 		return body
 	}
 	latest := in.RemediationAttempts[len(in.RemediationAttempts)-1]
-	body += fmt.Sprintf("- Latest remediation: %s -> %s at %s\n", "`"+string(latest.Kind)+"`", "`"+latest.Result+"`", latest.AttemptedAt.UTC().Format(time.RFC3339Nano))
+	body += fmt.Sprintf("- Latest remediation: %s -> %s at %s\n", "`"+latest.Kind+"`", "`"+latest.Result+"`", latest.AttemptedAt.UTC().Format(time.RFC3339Nano))
 	if latest.ObservedAt != nil {
 		body += fmt.Sprintf("- Latest remediation observed at: %s\n", latest.ObservedAt.UTC().Format(time.RFC3339Nano))
 	}
