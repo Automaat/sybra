@@ -36,7 +36,7 @@
     "@vitest/coverage-v8": "4.1.12",
     "jsdom": "29.1.1",
     "oxlint": "1.89.0",
-    "svelte": "5.57.2",
+    "svelte": "5.57.3",
     "svelte-check": "4.7.7",
     "tailwindcss": "4.3.3",
     "typescript": "6.0.3",
@@ -46,7 +46,7 @@
   "dependencies": {
     "@dagrejs/dagre": "^3.0.0",
     "@lucide/svelte": "^1.8.0",
-    "@wailsio/runtime": "3.0.0-beta.34",
+    "@wailsio/runtime": "3.0.0",
     "@xyflow/svelte": "^1.5.2",
     "dompurify": "^3.4.3",
     "highlight.js": "^11.11.1",
