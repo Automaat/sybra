@@ -1049,7 +1049,7 @@ func hasManualPassEvidence(output string, t TaskInfo) (ok bool, reason string) {
 			return false, "PASS used a no-app exemption without CLI/test harness evidence"
 		}
 		if reportsUntestedCriteria(parsed.UnableToRunReason) && !hasConcreteManualProbeEvidence(parsed.ManualProbes) {
-			return false, partialPassWithoutProbe
+			return false, partialVerdictWithoutProbe
 		}
 		return true, ""
 	}
@@ -1160,7 +1160,7 @@ func isManualTestExemption(surface string, t TaskInfo) bool {
 	return false
 }
 
-const partialPassWithoutProbe = "PASS listed UNTESTED criteria but no criterion passed on an executed manual probe"
+const partialVerdictWithoutProbe = "PASS listed UNTESTED criteria but no criterion passed on an executed manual probe"
 
 // reportsUntestedCriteria reports a PASS (partial), which the test prompt maps to
 // PASS with its UNTESTED criteria in unable_to_run_reason. Regression checks can
@@ -1182,7 +1182,7 @@ func hasPlainTextManualPassEvidence(output string, t TaskInfo) (ok bool, reason 
 			return false, "plain-text PASS used a no-app exemption without CLI/test harness evidence"
 		}
 		if reportsUntestedCriteria(firstPlainEvidenceField(output, "unable_to_run_reason", "unable to run manual test")) && !hasPlainTextConcreteProbeEvidence(output) {
-			return false, partialPassWithoutProbe
+			return false, partialVerdictWithoutProbe
 		}
 		return true, ""
 	}
