@@ -217,6 +217,15 @@ func (e *Engine) retryOrOpenPRForUnrunnableGate(taskID, stepID string, wfExec *E
 	if parked {
 		return StepOutput{}, errStepParked
 	}
+	// Opening a PR says the gate could not run. A tester that already claimed PASS
+	// without a probe did run, so a later attempt failing must not launder that.
+	if wfExec.Variables[testPartialPassRejectedVar] != "" {
+		reason := "test-runner PASS report listed UNTESTED criteria with no executed probe, and later attempts produced no usable report — needs human inspection"
+		if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
+			return StepOutput{}, err
+		}
+		return StepOutput{StepID: stepID, Status: "completed", Output: "partial pass rejected — escalated"}, nil
+	}
 	return e.openPRForUnrunnableTestingGate(taskID, stepID)
 }
 
@@ -1160,6 +1169,10 @@ func isManualTestExemption(surface string, t TaskInfo) bool {
 	return false
 }
 
+// testPartialPassRejectedVar outlives the per-attempt verdict keys, because the
+// attempt after a rejection decides the route.
+const testPartialPassRejectedVar = "test_partial_pass_rejected"
+
 const partialVerdictWithoutProbe = "PASS listed UNTESTED criteria but no criterion passed on an executed manual probe"
 
 // reportsUntestedCriteria reports a PASS (partial), which the test prompt maps to
@@ -1635,6 +1648,9 @@ func applyTestVerdictCompletion(wfExec *Execution, output *StepOutput, body stri
 				output.Output = appendUnstartableSurface(output.Output, surface)
 				return "", testOutcomeInfraFailure, ""
 			}
+			if reason == partialVerdictWithoutProbe {
+				wfExec.SetVar(testPartialPassRejectedVar, "1")
+			}
 			wfExec.SetVar("step."+output.StepID+"."+testVerdictOutcomeKey, testOutcomeMissingEvidence)
 			wfExec.SetVar("step."+output.StepID+"."+testVerdictTaintedKey, testProtocolMissingEvidence)
 			wfExec.SetVar("step."+output.StepID+"."+testPassEvidenceReasonKey, reason)
@@ -1642,6 +1658,7 @@ func applyTestVerdictCompletion(wfExec *Execution, output *StepOutput, body stri
 			output.Output = appendTestProtocolViolation(output.Output, reason)
 			return testProtocolMissingEvidence, testOutcomeMissingEvidence, ""
 		}
+		delete(wfExec.Variables, testPartialPassRejectedVar)
 	}
 	if outcome == testOutcomeInfraFailure {
 		output.Status = "failed"

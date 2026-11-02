@@ -4316,3 +4316,35 @@ func TestApplyTestVerdict_PartialPassWithoutProbeIsNotAnUnrunnableGate(t *testin
 		t.Fatalf("surface marked unavailable: %q", got)
 	}
 }
+
+// The attempt after a rejected partial PASS can fail for its own reasons, which
+// classifies as infra_failure. That must not open a PR for an unverified change.
+func TestRouteTestResult_RejectedPartialPassBlocksTheUnrunnableGatePR(t *testing.T) {
+	t.Parallel()
+
+	for name, vars := range map[string]map[string]string{
+		"rejected": {testPartialPassRejectedVar: "1"},
+		"clean":    {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			e, tasks := makeTestEngine(t)
+			tasks.Put(TaskInfo{ID: "t1", Status: taskstatus.Testing})
+			wf := &Execution{WorkflowID: "testing-task", StartedAt: time.Now().UTC(), Variables: vars}
+			wf.Variables[testingAutoRetryKey(testOutcomeInfraFailure)] = "99"
+
+			_, err := e.retryOrOpenPRForUnrunnableGate("t1", "route_test", wf, mustGetTaskInfo(t, tasks, "t1"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := taskstatus.ReadyPR
+			if name == "rejected" {
+				want = taskstatus.HumanRequired
+			}
+			got, _ := tasks.GetTask("t1")
+			if got.Status != want {
+				t.Errorf("status = %q, want %q", got.Status, want)
+			}
+		})
+	}
+}
