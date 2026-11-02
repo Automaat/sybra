@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/executil"
 	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/textutil"
 )
@@ -111,11 +112,20 @@ func probeRuntimeVersion(path string, args []string, timeout time.Duration) (ver
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	out, err := exec.CommandContext(ctx, path, args...).CombinedOutput()
+	out, err := runRuntimeProbe(ctx, path, args)
 	if err != nil {
 		return "", formatRuntimeProbeError(ctx, err, out, timeout)
 	}
 	return strings.TrimSpace(string(out)), ""
+}
+
+func runRuntimeProbe(ctx context.Context, path string, args []string) ([]byte, error) {
+	cmd := executil.ProbeCommand(ctx, path, args...)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	err := executil.RunProbe(cmd)
+	return out.Bytes(), err
 }
 
 func formatRuntimeProbeError(ctx context.Context, err error, output []byte, timeout time.Duration) string {
@@ -140,7 +150,7 @@ func probeRuntimeTextCapability(path string, probe *runtimeTextProbe, timeout ti
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	out, err := exec.CommandContext(ctx, path, probe.args...).CombinedOutput()
+	out, err := runRuntimeProbe(ctx, path, probe.args)
 	if err != nil {
 		return ""
 	}
