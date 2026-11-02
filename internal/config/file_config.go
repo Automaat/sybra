@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -365,8 +366,16 @@ type fieldAliasIndex struct {
 // must keep loading such a file instead of failing closed with "unknown
 // config key", or every operator upgrading past the removal breaks startup.
 var removedConfigKeys = map[string]map[string]bool{
-	"":      {"skills_dir": true},
-	"agent": {"mode": true},
+	"":                                {"skills_dir": true},
+	"agent":                           {"mode": true},
+	"ab_testing.experiments.subject":  {"skill_name": true},
+	"ab_testing.experiments.variants": {"skill_aliases": true},
+}
+
+var configIndexSegment = regexp.MustCompile(`\.\[\d+\]`)
+
+func isRemovedConfigKey(parent, key string) bool {
+	return removedConfigKeys[configIndexSegment.ReplaceAllString(parent, "")][key]
 }
 
 func newAliasIndex(specs []durationAliasSpec) aliasIndex {
@@ -522,7 +531,7 @@ func validateNodeAgainstType(node *yaml.Node, typ reflect.Type, path []string, a
 				}
 				continue
 			}
-			if removedConfigKeys[parent][key] {
+			if isRemovedConfigKey(parent, key) {
 				continue
 			}
 			suggestion := nearestKey(key, knownKeys(fields, allowedAliases, allowedFieldAliases))

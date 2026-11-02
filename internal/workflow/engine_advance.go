@@ -174,7 +174,7 @@ func (e *Engine) recordRoleCompletionSideEffects(taskID string, currentStep *Ste
 		verdict := ExtractReviewVerdict(output.Output)
 		// A FAILED gate examined nothing, so it counts as neither a review nor
 		// evidence of one.
-		if verdict != reviewVerdictFailed {
+		if verdict != ReviewVerdictFailed {
 			if mErr := e.tasks.MarkTaskReviewed(taskID); mErr != nil {
 				e.logger.Warn("workflow.mark-reviewed.failed", "task_id", taskID, "err", mErr)
 			}

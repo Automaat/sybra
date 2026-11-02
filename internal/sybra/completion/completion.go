@@ -729,6 +729,10 @@ func (h *Handler) markCompletedReview(ag *agent.Agent, exitErr error) {
 	if ag.EffectiveRole() != agent.RoleReview || exitErr != nil {
 		return
 	}
+	// A FAILED gate examined nothing, so the task has not been reviewed.
+	if workflow.ExtractReviewVerdict(lastAssistantText(ag)) == workflow.ReviewVerdictFailed {
+		return
+	}
 	reviewed := true
 	if _, err := h.tasks.UpdateBy(ag.TaskID, "completion.mark_completed_review", task.Update{Reviewed: &reviewed}); err != nil {
 		h.logger.Warn("task.mark-reviewed", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)

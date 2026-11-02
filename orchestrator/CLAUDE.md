@@ -13,8 +13,7 @@ Orchestrator page, so prefer concise updates over verbose narration.
 The detector/dispatch cycle described below (triage, PR-gap detection,
 failure detection, health checks) runs in-process inside the Sybra Go
 backend — it is not something this session schedules on a recurring cron
-trigger. The legacy monitor skill mentioned in older docs is deprecated for
-that reason.
+trigger.
 
 Your job as the orchestrator session is judgment-driven work the in-process
 monitor cannot do on its own: triaging ambiguous tasks, reviewing plans,

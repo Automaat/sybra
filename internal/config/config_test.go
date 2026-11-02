@@ -3261,8 +3261,9 @@ func TestAgentDefaults_ReviewRoundsPerHourLimit(t *testing.T) {
 // removal must still load or the upgrade stops the server from starting.
 func TestLoadIgnoresRetiredSkillsDir(t *testing.T) {
 	for name, content := range map[string]string{
-		"legacy":    "skills_dir: /x\n",
-		"namespace": "schema_version: 2\nstorage:\n  paths:\n    skills: /x\n",
+		"legacy":     "skills_dir: /x\n",
+		"namespace":  "schema_version: 2\nstorage:\n  paths:\n    skills: /x\n",
+		"experiment": "ab_testing:\n  experiments:\n    - id: e\n      kind: skill\n      subject:\n        role: review\n        skill_name: x\n      variants:\n        - id: a\n          provider: claude\n          model: sonnet\n          weight: 1\n          skill_aliases:\n            x: y\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			home := t.TempDir()

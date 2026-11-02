@@ -4258,6 +4258,8 @@ func TestPartialPassNeedsAnExecutedProbe(t *testing.T) {
 		{"library_without_untested_criteria", "internal package with no surface", "", true},
 		{"untested_criteria_without_probe", "UNTESTED: AC1 - no display", "", false},
 		{"untested_criteria_with_probe", "UNTESTED: AC1 - no display", probe, true},
+		{"untested_criteria_with_probe_that_never_ran", "UNTESTED: AC1 - no display", `,"manual_probes":[{"command":"curl localhost/health","actual":"not run","status":"not run"}]`, false},
+		{"untested_criteria_with_only_a_test_suite", "UNTESTED: AC1 - no display", `,"manual_probes":[{"command":"go test ./...","actual":"ok","status":"passed"}]`, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -4277,5 +4279,19 @@ func TestReportsUntestedCriteria(t *testing.T) {
 	}
 	if reportsUntestedCriteria("internal package with no surface") {
 		t.Error("plain exemption reason treated as partial")
+	}
+}
+
+func TestPartialPassNeedsAProbeOnEverySurface(t *testing.T) {
+	t.Parallel()
+
+	reports := map[string]string{
+		"server": `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"server","app_started":true,"start_command":"./srv","readiness_probe":{"command":"curl /health","actual":"200"},"unable_to_run_reason":"UNTESTED: AC1 - no display","manual_probes":[{"command":"go test ./...","actual":"ok","status":"passed"}]}`,
+		"cli":    `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"cli","unable_to_run_reason":"UNTESTED: AC1 - no display","manual_probes":[{"command":"curl /x","actual":"not run","status":"not run"}]}`,
+	}
+	for name, report := range reports {
+		if ok, _ := hasManualPassEvidence(report, TaskInfo{ID: "t1"}); ok {
+			t.Errorf("%s: PASS accepted with no executed probe", name)
+		}
 	}
 }

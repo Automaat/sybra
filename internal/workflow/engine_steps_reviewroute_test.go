@@ -251,8 +251,8 @@ func TestRouteReviewVerdict_StopsInsteadOfFixingWhenItEscalated(t *testing.T) {
 
 func TestExtractReviewVerdict_ReturnsFailed(t *testing.T) {
 	t.Parallel()
-	if got := ExtractReviewVerdict(`{"verdict":"FAILED"}`); got != reviewVerdictFailed {
-		t.Fatalf("ExtractReviewVerdict = %q, want %q", got, reviewVerdictFailed)
+	if got := ExtractReviewVerdict(`{"verdict":"FAILED"}`); got != ReviewVerdictFailed {
+		t.Fatalf("ExtractReviewVerdict = %q, want %q", got, ReviewVerdictFailed)
 	}
 }
 
@@ -267,7 +267,7 @@ func TestExecRouteReviewVerdict_FailedRetriesWithAGateNote(t *testing.T) {
 	wfExec := &Execution{
 		CurrentStep: "route_review_verdict",
 		Variables: map[string]string{
-			reviewVerdictVar:           reviewVerdictFailed,
+			reviewVerdictVar:           ReviewVerdictFailed,
 			reviewVerdictSourceStepVar: "code_review_simple",
 		},
 	}
@@ -326,7 +326,7 @@ func TestExecRouteReviewVerdict_FailureClearsAnEarlierVerdict(t *testing.T) {
 	wfExec := &Execution{
 		CurrentStep: "route_review_verdict",
 		Variables: map[string]string{
-			reviewVerdictVar:           reviewVerdictFailed,
+			reviewVerdictVar:           ReviewVerdictFailed,
 			reviewVerdictSourceStepVar: "code_review_simple",
 		},
 	}

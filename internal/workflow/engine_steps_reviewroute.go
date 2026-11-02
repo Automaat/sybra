@@ -9,10 +9,12 @@ import (
 	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
+// ReviewVerdictFailed is the verdict of a review gate that could not run.
+const ReviewVerdictFailed = "FAILED"
+
 const (
 	reviewVerdictClean      = "CLEAN"
 	reviewVerdictNeedsFixes = "NEEDS_FIXES"
-	reviewVerdictFailed     = "FAILED"
 
 	// reviewVerdictVar / reviewVerdictSourceStepVar are set in engine_advance
 	// when a review-role run_agent step completes: the extracted structured
@@ -77,8 +79,8 @@ func ExtractReviewVerdict(output string) string {
 		return reviewVerdictClean
 	case reviewVerdictNeedsFixes:
 		return reviewVerdictNeedsFixes
-	case reviewVerdictFailed:
-		return reviewVerdictFailed
+	case ReviewVerdictFailed:
+		return ReviewVerdictFailed
 	default:
 		return ""
 	}
@@ -142,7 +144,7 @@ func (e *Engine) execRouteReviewVerdict(taskID string, step *Step, wfExec *Execu
 		rewindStep: sourceStep,
 		backoff:    func(int) time.Duration { return reviewVerdictAutoRetryBackoff },
 		onArm: func(wfExec *Execution, _ int) {
-			if verdict == reviewVerdictFailed {
+			if verdict == ReviewVerdictFailed {
 				wfExec.SetVar(reviewReaskNoteVar, reviewGateFailedReask)
 			} else {
 				wfExec.SetVar(reviewReaskNoteVar, reviewMalformedReask)
@@ -163,6 +165,9 @@ func (e *Engine) execRouteReviewVerdict(taskID string, step *Step, wfExec *Execu
 	}
 
 	reason := "code review did not return a schema-valid verdict after auto-retries — needs human inspection of the review sidecar"
+	if verdict == ReviewVerdictFailed {
+		reason = "code review returned FAILED after auto-retries: the review gate could not run — needs human inspection of the review sidecar"
+	}
 	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 		return StepOutput{}, err
 	}

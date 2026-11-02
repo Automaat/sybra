@@ -1039,6 +1039,9 @@ func hasManualPassEvidence(output string, t TaskInfo) (ok bool, reason string) {
 	if surface == "" {
 		return false, "PASS report omitted surface_kind"
 	}
+	if reportsUntestedCriteria(parsed.UnableToRunReason) && !hasExecutedManualProbe(parsed.ManualProbes) {
+		return false, partialVerdictWithoutProbe
+	}
 	if isManualTestExemption(surface, t) {
 		if strings.TrimSpace(parsed.UnableToRunReason) == "" {
 			return false, "PASS used a no-app exemption but omitted unable_to_run_reason"
@@ -1047,9 +1050,6 @@ func hasManualPassEvidence(output string, t TaskInfo) (ok bool, reason string) {
 			!hasReadinessProbeEvidence(parsed.ReadinessProbe) &&
 			!hasManualProbeEvidence(parsed.ManualProbes) {
 			return false, "PASS used a no-app exemption without CLI/test harness evidence"
-		}
-		if reportsUntestedCriteria(parsed.UnableToRunReason) && !hasConcreteManualProbeEvidence(parsed.ManualProbes) {
-			return false, partialVerdictWithoutProbe
 		}
 		return true, ""
 	}
@@ -1167,6 +1167,30 @@ const partialVerdictWithoutProbe = "PASS listed UNTESTED criteria but no criteri
 // stand in for a surface that does not exist, not for one the run failed to reach.
 func reportsUntestedCriteria(reason string) bool {
 	return strings.Contains(strings.ToUpper(reason), "UNTESTED")
+}
+
+// hasExecutedManualProbe is stricter than the surface checks: a test suite or a
+// probe that never ran cannot stand behind a report that left criteria untested.
+func hasExecutedManualProbe(probes manualProbeEvidenceList) bool {
+	for _, p := range probes {
+		command := strings.ToLower(strings.TrimSpace(p.Command))
+		if command == "" || isAutomatedSuiteCommand(command) {
+			continue
+		}
+		result := strings.ToLower(strings.TrimSpace(string(p.Actual) + " " + string(p.Output) + " " + string(p.Observed) + " " + string(p.Status)))
+		if result == "" || strings.Contains(result, "not run") || strings.Contains(result, "untested") || strings.Contains(result, "skipped") || result == "n/a" {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func isAutomatedSuiteCommand(lower string) bool {
+	return containsAny(lower,
+		"go test", "go vet", "go build", "npm test", "npm run test", "npm run check",
+		"pnpm test", "pnpm run test", "yarn test", "pytest", "cargo test",
+		"type-check", "typecheck", "lint")
 }
 
 func hasPlainTextManualPassEvidence(output string, t TaskInfo) (ok bool, reason string) {

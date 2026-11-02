@@ -82,31 +82,67 @@ func checkStepInvokesNoSkill(t *testing.T, workflowID string, step *Step) {
 	}
 }
 
-// A task can be parked on a step a new build no longer runs. Each retired step
-// must stay resolvable and lead to the review that replaced it, or the task fails
-// on a missing step.
-func TestBuiltinRetiredReviewStepsResumeTheReview(t *testing.T) {
+// A task can be parked on a step a new build no longer routes to. Each retired
+// agent step must run the same review, because the resume sweep only restarts
+// agent steps and a retry rewinds to the step that produced the verdict.
+func TestBuiltinRetiredReviewStepsRunTheSameReview(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		workflow, step, want string
+		workflow, retired, current string
 	}{
 		{"simple-task-review", "code_review_staff", "code_review_simple"},
 		{"pr-review", "review_staff", "review_simple"},
-		{"pr-review", "triage_review", "review_simple"},
-		{"pr-review", "pick_review_method", "review_simple"},
 	}
 	for _, tc := range cases {
-		t.Run(tc.workflow+"/"+tc.step, func(t *testing.T) {
+		t.Run(tc.workflow, func(t *testing.T) {
 			t.Parallel()
-			step := mustBuiltinDefinition(t, tc.workflow).StepByID(tc.step)
-			if step == nil {
-				t.Fatal("retired step not found")
+			def := mustBuiltinDefinition(t, tc.workflow)
+			retired, current := def.StepByID(tc.retired), def.StepByID(tc.current)
+			if retired == nil || current == nil {
+				t.Fatalf("steps missing: retired=%v current=%v", retired, current)
 			}
-			if step.Type != StepCondition || len(step.Next) != 1 || step.Next[0].GoTo != tc.want {
-				t.Fatalf("step = %+v, want a condition going to %s", step, tc.want)
+			if !isResumableStepType(retired.Type) {
+				t.Errorf("retired step type %q cannot resume", retired.Type)
+			}
+			if retired.Config.Prompt != current.Config.Prompt || retired.Config.OutputSchema != current.Config.OutputSchema {
+				t.Error("retired step does not run the same review")
+			}
+			if strings.Contains(strings.ToLower(retired.Name), "staff") {
+				t.Errorf("retired step name %q still describes staff review", retired.Name)
 			}
 		})
+	}
+}
+
+// A snapshot pinned before skills were removed names a step and a prompt the
+// provider can no longer run, so the execution must move onto the live builtin.
+func TestResolveExecutionDefinitionLeavesARetiredSkillSnapshot(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	live := *mustBuiltinDefinition(t, "simple-task-review")
+	if err := store.Save(live); err != nil {
+		t.Fatal(err)
+	}
+	stale := live
+	stale.Description = "before skills were removed"
+	stale.Steps = []Step{{ID: "code_review_staff", Type: StepRunAgent, Config: StepConfig{Role: "review", Prompt: "Run /staff-code-review"}}}
+	hash, err := store.SaveSnapshot(stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := newMemTasks()
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
+	info := TaskInfo{ID: "t1", Workflow: &Execution{WorkflowID: live.ID, DefinitionHash: hash, CurrentStep: "code_review_staff"}}
+
+	got, err := engine.resolveExecutionDefinition("t1", info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	step := got.StepByID("code_review_staff")
+	if step == nil || strings.Contains(step.Config.Prompt, "/staff-code-review") {
+		t.Fatalf("resolved step = %+v, want the live inline prompt", step)
 	}
 }
 

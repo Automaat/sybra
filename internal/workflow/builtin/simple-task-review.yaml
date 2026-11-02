@@ -1,6 +1,6 @@
 id: simple-task-review
 name: Simple Task — Review
-description: Triage the review depth, run code review (simple or staff), apply fixes, then hand the task to the testing phase (status → testing). PR creation now lives in simple-task-pr, which runs after testing passes. Triggered by the cascade after simple-task-implement flips status to ready-review.
+description: Triage the review depth, run the adversarial code review, apply fixes, then hand the task to the testing phase (status → testing). PR creation now lives in simple-task-pr, which runs after testing passes. Triggered by the cascade after simple-task-implement flips status to ready-review.
 builtin: true
 trigger:
   on: task.status_changed
@@ -103,20 +103,12 @@ steps:
         goto: done_review
       - goto: code_review_simple
 
-  # Retired with staff review. Kept so a task parked here at upgrade resumes
-  # with a fresh review instead of failing on a missing step.
-  - id: code_review_staff
-    name: Retired Staff Review
-    type: condition
-    next:
-      - goto: code_review_simple
-
   # The report goes to the code_review sidecar for fix_review; the JSON final
   # message is what route_review_verdict reads.
   - id: code_review_simple
     name: Code Review (adversarial)
     type: run_agent
-    config:
+    config: &code_review_config
       role: review
       review_progress_base: refs/remotes/origin/main
       mode: headless
@@ -160,6 +152,15 @@ steps:
       import_sidecar:
         kind: code_review
         from: '{{sidecardir .Vars}}/.sybra-review-{{.Task.ID}}.md'
+    next:
+      - goto: require_code_review
+
+  # A task parked on this retired ID at upgrade runs the same review, so it
+  # resumes instead of failing on a missing step.
+  - id: code_review_staff
+    name: Code Review (adversarial, resumed)
+    type: run_agent
+    config: *code_review_config
     next:
       - goto: require_code_review
 

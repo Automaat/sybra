@@ -30,30 +30,10 @@ steps:
     next:
       - goto: review_simple
 
-  # Retired with staff review. Kept so a task parked on one of these at upgrade
-  # resumes with a fresh review instead of failing on a missing step.
-  - id: triage_review
-    name: Retired Triage Review
-    type: condition
-    next:
-      - goto: review_simple
-
-  - id: pick_review_method
-    name: Retired Pick Review Method
-    type: condition
-    next:
-      - goto: review_simple
-
-  - id: review_staff
-    name: Retired Staff Review
-    type: condition
-    next:
-      - goto: review_simple
-
   - id: review_simple
     name: Review PR (adversarial)
     type: run_agent
-    config:
+    config: &pr_review_config
       role: review
       mode: headless
       model: sonnet
@@ -62,7 +42,18 @@ steps:
       # temporary cwd and checkout validation fails before an agent is
       # registered.
       needs_worktree: true
-      prompt: '{{prreviewprompt .Task.ProjectID .Task.PRNumber .Task.ID}}'
+      output_schema: >-
+        {"type":"object","properties":{"verdict":{"type":"string","enum":["CLEAN","NEEDS_FIXES","FAILED"]}},"required":["verdict"],"additionalProperties":false}
+      prompt: |-
+        {{prreviewprompt .Task.ProjectID .Task.PRNumber .Task.ID}}
+        {{- if getvar .Vars "review_reask_note"}}
+
+        RETRY GUIDANCE: {{getvar .Vars "review_reask_note"}}
+        {{- end}}
+
+        Your FINAL message of the turn must be ONLY the schema-valid JSON
+        verdict object: `{"verdict":"CLEAN"}`, `{"verdict":"NEEDS_FIXES"}`, or
+        `{"verdict":"FAILED"}`.
     next:
       # If the agent could not find or review the PR it self-escalates to
       # human-required instead of posting, so stop here rather than reporting
@@ -72,7 +63,46 @@ steps:
           operator: equals
           value: human-required
         goto: ""
+      - goto: route_review_verdict
+
+  # A FAILED, missing, or malformed verdict never reaches set_in_review: this
+  # step's own type retries the review and then escalates.
+  - id: route_review_verdict
+    name: Route Review Verdict
+    type: route_review_verdict
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
       - goto: set_in_review
+
+  # A task parked on one of these retired IDs at upgrade resumes instead of
+  # failing on a missing step.
+  - id: triage_review
+    name: Triage Review (resumed)
+    type: triage_review
+    next:
+      - goto: review_simple
+
+  - id: pick_review_method
+    name: Pick Review Method (resumed)
+    type: condition
+    next:
+      - goto: review_simple
+
+  - id: review_staff
+    name: Review PR (adversarial, resumed)
+    type: run_agent
+    config: *pr_review_config
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: route_review_verdict
 
   - id: set_in_review
     name: Set In Review

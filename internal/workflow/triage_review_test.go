@@ -241,8 +241,8 @@ func TestBuiltinPRReview_EscalatesOnLookupFailure(t *testing.T) {
 			t.Fatalf("%s first transition = %+v, want a human-required guard ending the workflow", stepID, guard)
 		}
 		fallback := step.Next[len(step.Next)-1]
-		if fallback.When != nil || fallback.GoTo != "set_in_review" {
-			t.Fatalf("%s fallback transition = %+v, want unconditional goto set_in_review", stepID, fallback)
+		if fallback.When != nil || fallback.GoTo != "route_review_verdict" {
+			t.Fatalf("%s fallback transition = %+v, want unconditional goto route_review_verdict", stepID, fallback)
 		}
 	}
 }

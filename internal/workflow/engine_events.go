@@ -3,6 +3,7 @@ package workflow
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Automaat/sybra/internal/blocker"
@@ -91,6 +92,12 @@ func (e *Engine) resolveExecutionDefinition(taskID string, t TaskInfo) (Definiti
 	}
 	snapshot, err := e.store.GetSnapshot(t.Workflow.WorkflowID, t.Workflow.DefinitionHash)
 	if err == nil {
+		// A snapshot pinned before skills were removed would re-dispatch a slash
+		// invocation no provider can run. The live builtin keeps every step ID
+		// those snapshots used, so the execution moves onto it.
+		if def.Builtin && definitionInvokesRetiredSkill(&snapshot) {
+			return def, nil
+		}
 		return snapshot, nil
 	}
 	reason := "Workflow definition snapshot for " + t.Workflow.WorkflowID + " (" + t.Workflow.DefinitionHash +
@@ -117,4 +124,31 @@ func (e *Engine) resolveExecutionDefinition(taskID string, t TaskInfo) (Definiti
 		"definition_hash", t.Workflow.DefinitionHash,
 		"err", err)
 	return Definition{}, fmt.Errorf("%w: %s", errWorkflowDefinitionSnapshotUnavailable, reason)
+}
+
+// retiredSkillInvocations are the slash invocations builtin prompts used before
+// instructions moved inline.
+var retiredSkillInvocations = []string{"/adversarial-review", "/plan-critic", "/staff-code-review", "/sybra-test"}
+
+func definitionInvokesRetiredSkill(def *Definition) bool {
+	for i := range def.Steps {
+		if stepInvokesRetiredSkill(&def.Steps[i]) {
+			return true
+		}
+	}
+	return false
+}
+
+func stepInvokesRetiredSkill(step *Step) bool {
+	for _, invocation := range retiredSkillInvocations {
+		if strings.Contains(step.Config.Prompt, invocation) {
+			return true
+		}
+	}
+	for i := range step.Parallel {
+		if stepInvokesRetiredSkill(&step.Parallel[i]) {
+			return true
+		}
+	}
+	return false
 }

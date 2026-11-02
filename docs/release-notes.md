@@ -20,7 +20,7 @@ nothing is installed on the host.
   evaluate architecture, conventions, or dead code. It posts `REQUEST_CHANGES` on
   any surviving `blocking:` or `issue:` finding.
 - **Review and testing changed.** Both now come from `smykla-skalski/sai`. A review
-  that cannot run returns `FAILED`, retries, and then parks on human-required. A
+  that cannot run returns `FAILED`, retries, and then stops for a human. A
   test verdict of `PASS (partial)` passes when at least one criterion passed on a
   real probe, with the untested criteria in `unable_to_run_reason`.
 - **Evaluation:** the skill execution breakdown and skill-parity gating are gone,
