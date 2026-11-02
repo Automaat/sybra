@@ -1626,7 +1626,9 @@ func applyTestVerdictCompletion(wfExec *Execution, output *StepOutput, body stri
 			if proseUnstartableClaim(output.Output, t) {
 				wfExec.SetVar("step."+output.StepID+"."+testSchemaReaskKey, "1")
 			}
-			if surface := unstartableSurface(output.Output, t); surface != "" {
+			// A report claiming PASS with untested criteria is not an unrunnable
+			// gate: that route opens the PR, which is what the probe rule forbids.
+			if surface := unstartableSurface(output.Output, t); surface != "" && reason != partialVerdictWithoutProbe {
 				wfExec.SetVar("step."+output.StepID+"."+testVerdictOutcomeKey, testOutcomeInfraFailure)
 				wfExec.SetVar("step."+output.StepID+"."+testSurfaceUnavailableKey, surface)
 				output.Status = "failed"

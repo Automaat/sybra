@@ -4295,3 +4295,24 @@ func TestPartialPassNeedsAProbeOnEverySurface(t *testing.T) {
 		}
 	}
 }
+
+// The unrunnable-gate route opens the PR, so a partial PASS must never take it.
+func TestApplyTestVerdict_PartialPassWithoutProbeIsNotAnUnrunnableGate(t *testing.T) {
+	t.Parallel()
+
+	report := `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"server","app_started":false,"start_command":"","readiness_probe":{"command":"","actual":""},"unable_to_run_reason":"UNTESTED: AC1 - could not start the server, no display","manual_probes":[],"automated_checks":[{"command":"go test ./...","actual":"ok","status":"passed"}]}`
+	wf := &Execution{CurrentStep: testVerdictSourceStep, Variables: map[string]string{}}
+	out := StepOutput{StepID: testVerdictSourceStep, Status: "completed", Output: report}
+
+	_, outcome, _ := applyTestVerdictCompletion(wf, &out, "", TaskInfo{ID: "t1"})
+
+	if outcome != testOutcomeMissingEvidence {
+		t.Fatalf("outcome = %q, want %q", outcome, testOutcomeMissingEvidence)
+	}
+	if out.Status != "failed" {
+		t.Fatalf("status = %q, want failed", out.Status)
+	}
+	if got := wf.Variables["step."+testVerdictSourceStep+"."+testSurfaceUnavailableKey]; got != "" {
+		t.Fatalf("surface marked unavailable: %q", got)
+	}
+}
