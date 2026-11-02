@@ -21,6 +21,7 @@ import (
 	"github.com/Automaat/sybra/internal/intervention"
 	"github.com/Automaat/sybra/internal/poll"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/prompts"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
@@ -407,8 +408,8 @@ func TestPushPreflightFailureReasonKeepsValidUTF8(t *testing.T) {
 	}
 }
 
-func TestStaffCodeReviewRunConfigLeavesProviderUnpinned(t *testing.T) {
-	cfg := StaffCodeReviewRunConfig(task.Task{ID: "review-task", Title: "Needs review"}, "Run /staff-code-review", t.TempDir(), "default", "enforce")
+func TestPRReviewRunConfigLeavesProviderUnpinned(t *testing.T) {
+	cfg := PRReviewRunConfig(task.Task{ID: "review-task", Title: "Needs review"}, "Review the pull request", t.TempDir(), "default", "enforce")
 
 	if cfg.Name != agent.RoleReview.AgentName("Needs review") {
 		t.Fatalf("Name = %q, want %q", cfg.Name, agent.RoleReview.AgentName("Needs review"))
@@ -436,12 +437,12 @@ func TestStaffCodeReviewRunConfigLeavesProviderUnpinned(t *testing.T) {
 	}
 }
 
-// TestStaffCodeReviewRunConfigCarriesTaskReasoningEffort proves the operator's
+// TestPRReviewRunConfigCarriesTaskReasoningEffort proves the operator's
 // per-task pin reaches the run. Without it the Manager would resolve the review
 // role's own baseline instead, silently overriding the pin — this dispatch path
 // does not go through the workflow engine, which is where the other sites
 // resolve effort.
-func TestStaffCodeReviewRunConfigCarriesTaskReasoningEffort(t *testing.T) {
+func TestPRReviewRunConfigCarriesTaskReasoningEffort(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name   string
@@ -454,9 +455,9 @@ func TestStaffCodeReviewRunConfigCarriesTaskReasoningEffort(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			cfg := StaffCodeReviewRunConfig(
+			cfg := PRReviewRunConfig(
 				task.Task{ID: "review-task", Title: "Needs review", ReasoningEffort: tt.pinned},
-				"Run /staff-code-review", t.TempDir(), "default", "enforce",
+				"Review the pull request", t.TempDir(), "default", "enforce",
 			)
 			if cfg.ReasoningEffort != tt.want {
 				t.Fatalf("ReasoningEffort = %q, want %q", cfg.ReasoningEffort, tt.want)
@@ -465,12 +466,12 @@ func TestStaffCodeReviewRunConfigCarriesTaskReasoningEffort(t *testing.T) {
 	}
 }
 
-func TestStaffCodeReviewPromptAuthorizesPendingReview(t *testing.T) {
+func TestPRReviewPromptAuthorizesPendingReview(t *testing.T) {
 	t.Parallel()
 
-	prompt := StaffCodeReviewPrompt("Automaat/example", 123)
+	prompt := prompts.PRReview("Automaat/example", 123)
 	for _, want := range []string{
-		"Run /staff-code-review on https://github.com/Automaat/example/pull/123",
+		"Review https://github.com/Automaat/example/pull/123",
 		"Do not ask the operator for confirmation",
 		"findings become inline comments",
 		"if a review for that head already contains the Sybra harness",
@@ -485,10 +486,10 @@ func TestStaffCodeReviewPromptAuthorizesPendingReview(t *testing.T) {
 	}
 }
 
-func TestStaffCodeReviewPromptNeverAuthorizesApproval(t *testing.T) {
+func TestPRReviewPromptNeverAuthorizesApproval(t *testing.T) {
 	t.Parallel()
 
-	prompt := StaffCodeReviewPrompt("Automaat/example", 123)
+	prompt := prompts.PRReview("Automaat/example", 123)
 	if !strings.Contains(prompt, "NEVER submit an APPROVE review event") {
 		t.Fatalf("prompt does not withhold approval authority:\n%s", prompt)
 	}
@@ -994,14 +995,14 @@ func TestReviewAgentAlreadyRan(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "human diagnostic does not count as staff review",
+			name: "human diagnostic does not count as PR review",
 			tk: task.Task{AgentRuns: []task.AgentRun{
 				{Role: string(agent.RoleHumanReview), State: string(agent.StateStopped)},
 			}},
 			want: false,
 		},
 		{
-			name: "fix-review does not count as staff review",
+			name: "fix-review does not count as PR review",
 			tk: task.Task{AgentRuns: []task.AgentRun{
 				{Role: string(agent.RoleFixReview), State: string(agent.StateStopped)},
 			}},
@@ -2806,7 +2807,7 @@ func TestPollAndMonitorPRs_BudgetExhaustedUsesSingleRESTFallbackReconcile(t *tes
 // TestAdvanceClosedTaskPRs_CancelsStaleWorkflow is the regression guard for
 // the self-conflict bug: a merge that flips a task to done while its
 // workflow is still Running/Waiting at an earlier step (e.g.
-// code_review_staff) must have that workflow cancelled so
+// code_review_simple) must have that workflow cancelled so
 // Engine.ResumeStalled never re-dispatches a rebase against the
 // already-merged branch and flips the task back to human-required.
 func TestAdvanceClosedTaskPRs_CancelsStaleWorkflow(t *testing.T) {
@@ -2837,7 +2838,7 @@ func TestAdvanceClosedTaskPRs_CancelsStaleWorkflow(t *testing.T) {
 	}
 	wf := &workflow.Execution{
 		WorkflowID:  "test-simple",
-		CurrentStep: "code_review_staff",
+		CurrentStep: "code_review_simple",
 		State:       workflow.ExecWaiting,
 		Variables:   map[string]string{},
 	}

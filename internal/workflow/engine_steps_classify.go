@@ -18,7 +18,7 @@ const classifyTaskTimeout = 2 * time.Minute
 // task and applies its verdict (title, tags, size/type, mode, project,
 // routed status) in one atomic update. No agent session involved — this
 // replaces a run_agent step that wrapped a full Sonnet agent invoking the
-// /sybra-triage skill around the same classifier, which was a second LLM
+// a triage prompt around the same classifier, which was a second LLM
 // call for no benefit.
 func (e *Engine) execClassifyTask(taskID string, step *Step, wfExec *Execution) (StepOutput, error) {
 	if e.execution.Classifier == nil {

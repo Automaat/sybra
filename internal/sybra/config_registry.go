@@ -134,7 +134,6 @@ var configRegistry = []configRegistryEntry{
 	{Path: "browser", Policy: configPolicyRestart, Visibility: configVisibilityUI},
 	{Path: "project_types", Policy: configPolicyRestart, Visibility: configVisibilityUI},
 	{Path: "tasks_dir", Policy: configPolicyImmutable, Visibility: configVisibilityRaw},
-	{Path: "skills_dir", Policy: configPolicyImmutable, Visibility: configVisibilityRaw},
 	{Path: "repo_dir", Policy: configPolicyImmutable, Visibility: configVisibilityRaw},
 	{Path: "projects_dir", Policy: configPolicyImmutable, Visibility: configVisibilityRaw},
 	{Path: "clones_dir", Policy: configPolicyImmutable, Visibility: configVisibilityRaw},

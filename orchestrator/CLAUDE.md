@@ -274,7 +274,7 @@ sybra-cli --json audit --since 7d --summary
 
 ### Deep analysis
 
-Use `/sybra-audit` skill for a full report covering failures, bottlenecks, cost outliers, and triage accuracy.
+Use `sybra-cli --json audit --since 7d --summary` for a report covering failures, bottlenecks, cost outliers, and triage accuracy.
 
 ### Periodic review
 

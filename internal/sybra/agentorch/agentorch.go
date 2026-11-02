@@ -26,8 +26,6 @@ import (
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/sandbox"
-	"github.com/Automaat/sybra/internal/skillattr"
-	"github.com/Automaat/sybra/internal/skillinvoke"
 	"github.com/Automaat/sybra/internal/sybra/runenv"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -809,7 +807,6 @@ func (o *Orchestrator) implementationRunConfig(p implementationRunParams) agent.
 		AssignmentKey:           p.assignment.AssignmentKey,
 		DecisionVersion:         p.assignment.DecisionVersion,
 		DisableProviderFailover: false, // Preserve availability after A/B assignment.
-		RequestedSkill:          requestedWorkflowSkill(p.prompt),
 		RequirePermissions:      p.requirePerm,
 		HeadlessPermissionMode:  p.posture,
 		SkipDispatchJitter:      p.opts.skipDispatchJitter,
@@ -831,14 +828,6 @@ func (o *Orchestrator) implementationRunConfig(p implementationRunParams) agent.
 		RemoteExpectedOutputs: append([]executioncontract.ExpectedOutput(nil), p.assignment.RemoteOutputs...),
 		SidecarDir:            p.assignment.RemoteSidecarDir,
 	}
-}
-
-func requestedWorkflowSkill(prompt string) string {
-	names := skillinvoke.InvokedNames(prompt)
-	if len(names) != 1 {
-		return ""
-	}
-	return names[0]
 }
 
 func (o *Orchestrator) handleSaturatedDispatch(t task.Task, taskID, mode, prompt string, includeTaskDescription, skipWT bool, opts startOptions) (*agent.CapacityReservation, *agent.Agent, string, error, bool) {
@@ -1282,17 +1271,12 @@ func (o *Orchestrator) RecoverFromWorktreePrepFailure(tasks *task.Manager, taskI
 func (o *Orchestrator) recordImplAgentStart(ag *agent.Agent, t task.Task, taskID, effMode, posture string, requirePerm, oneShot bool, fullPrompt string) {
 	skipPerm := !requirePerm && len(t.AllowedTools) == 0
 	// Hash the prompt the agent was actually dispatched with (ag.Prompt, set by
-	// Run after prepareRunConfig appended NOTES.md, the background-task
-	// guardrail, and any injected/fallback skill instructions), NOT the
-	// pre-preparation fullPrompt. This is the same canonical prompt the provider
-	// render summary (agent.prompt_rendered) is computed against, so the shared
-	// prompt_hash uniquely identifies the dispatched prompt variant: re-running
-	// the task after editing NOTES.md or changing the resolved skill source
-	// yields a different hash, as it must. Run/newRunningAgent already stamps
-	// this same value centrally for every run; the re-stamp here is idempotent
-	// and keeps the agent.started payload correct for callers (and tests) that
-	// invoke recordImplAgentStart on an agent built outside that path.
-	ag.SetPromptHash(skillattr.HashSourceID(ag.Prompt))
+	// Run after prepareRunConfig appended NOTES.md and the background-task
+	// guardrail), NOT the pre-preparation fullPrompt: re-running the task after
+	// editing NOTES.md yields a different hash, as it must. The re-stamp is
+	// idempotent and keeps the agent.started payload correct for callers (and
+	// tests) that invoke recordImplAgentStart on an agent built outside Run.
+	ag.SetPromptHash(agent.HashPrompt(ag.Prompt))
 	o.LogAudit(audit.EventAgentStarted, taskID, ag.ID, map[string]any{
 		"mode": effMode, "title": t.Title, "role": string(agent.RoleImplementation), "task_type": string(t.TaskType), "provider": ag.Provider,
 		"model": ag.Model, "experiment_id": ag.ExperimentID, "variant_id": ag.VariantID,
@@ -1304,26 +1288,22 @@ func (o *Orchestrator) recordImplAgentStart(ag *agent.Agent, t task.Task, taskID
 		nextStatus = task.Ptr(task.StatusInProgress)
 	}
 	if err := o.tasks.AddRunWithStatusBy(taskID, "agentorch.record_impl_agent_start", task.AgentRun{
-		AgentID:                 ag.ID,
-		Role:                    string(agent.RoleImplementation),
-		Mode:                    effMode,
-		Provider:                ag.Provider,
-		Model:                   ag.Model,
-		ExperimentID:            ag.ExperimentID,
-		VariantID:               ag.VariantID,
-		RoutingReason:           ag.RoutingReason,
-		AssignmentUnit:          ag.AssignmentUnit,
-		AssignmentKey:           ag.AssignmentKey,
-		DecisionVersion:         ag.DecisionVersion,
-		ReasoningEffort:         ag.ReasoningEffort,
-		RequestedSkill:          ag.RequestedSkill,
-		SkillExecutionMode:      ag.SkillExecutionMode,
-		ResolvedSkillSourceHash: ag.ResolvedSkillSourceHash,
-		SkillConformance:        ag.SkillConformance,
-		OneShot:                 oneShot,
-		State:                   string(agent.StateRunning),
-		StartedAt:               ag.StartedAt,
-		Prompt:                  fullPrompt,
+		AgentID:         ag.ID,
+		Role:            string(agent.RoleImplementation),
+		Mode:            effMode,
+		Provider:        ag.Provider,
+		Model:           ag.Model,
+		ExperimentID:    ag.ExperimentID,
+		VariantID:       ag.VariantID,
+		RoutingReason:   ag.RoutingReason,
+		AssignmentUnit:  ag.AssignmentUnit,
+		AssignmentKey:   ag.AssignmentKey,
+		DecisionVersion: ag.DecisionVersion,
+		ReasoningEffort: ag.ReasoningEffort,
+		OneShot:         oneShot,
+		State:           string(agent.StateRunning),
+		StartedAt:       ag.StartedAt,
+		Prompt:          fullPrompt,
 	}, nextStatus); err != nil {
 		o.logger.Error("task.add-run", "task_id", taskID, "err", err)
 	}

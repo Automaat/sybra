@@ -1,4 +1,4 @@
-// Package prompteval evaluates candidate prompt/skill variants offline
+// Package prompteval evaluates candidate prompt variants offline
 // (outside any live agent run) and stores durable, machine-readable verdicts
 // that gate their enrollment into online A/B tests.
 package prompteval
@@ -9,14 +9,14 @@ import (
 	"time"
 )
 
-// CandidateVariant is a prompt/skill variant to be evaluated offline before
+// CandidateVariant is a prompt variant to be evaluated offline before
 // online A/B enrollment. Digest is the identity key: two variants with the
 // same resolved prompt bytes share a verdict, and re-running after an edit
 // invalidates the stale one automatically.
 type CandidateVariant struct {
 	ID              string `json:"id"`
 	Digest          string `json:"digest"`
-	Prompt          string `json:"prompt"` // resolved prompt or skill body bytes
+	Prompt          string `json:"prompt"` // resolved prompt body bytes
 	Provider        string `json:"provider"`
 	Model           string `json:"model"`
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`
@@ -89,14 +89,14 @@ type VariantVerdict struct {
 	CreatedAt  time.Time         `json:"createdAt"`
 }
 
-// Digest returns the hex sha256 of resolved prompt/skill bytes — the
+// Digest returns the hex sha256 of resolved prompt bytes — the
 // identity key used to key stored verdicts and to detect a stale prompt.
 func Digest(b []byte) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
 }
 
-// resolvedPrompt composes the candidate variant's own prompt/skill body with
+// resolvedPrompt composes the candidate variant's own prompt body with
 // the golden case's input so a runner actually screens the digested bytes —
 // not just the fixture input — against the provider. A variant with no
 // resolved Prompt (e.g. a bare model/provider comparison) falls back to the

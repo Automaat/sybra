@@ -559,7 +559,6 @@ func (d *Daemon) start(ctx context.Context, envelope executioncontract.CommandEn
 		MaxTurns: spec.Resources.MaxTurns, BashTimeoutMs: spec.Resources.BashTimeoutMillis,
 		HeadlessSteerable: spec.Options.Steerable, ForkSubagent: spec.Options.ForkSubagent,
 		RetryWatchdog: spec.Options.RetryWatchdog, FallbackModel: spec.Options.FallbackModel,
-		RequestedSkill: spec.Options.RequestedSkill, SkillExecutionMode: spec.Options.SkillExecutionMode,
 		SeedWorkingMemory: spec.Options.SeedWorkingMemory, ResumeSessionID: spec.Options.ResumeSessionID,
 		SandboxMode: d.cfg.SandboxMode, DisableProviderFailover: true, SkipDispatchJitter: true,
 		ExtraEnv: runEnv, StripEnvKeys: d.secretEnvironmentKeys(), UnthrottledOutputEvents: true,

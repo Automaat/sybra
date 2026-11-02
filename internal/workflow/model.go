@@ -119,7 +119,7 @@ const (
 	StepValidatePlanContract StepType = "validate_plan_contract"
 	StepTriageReview         StepType = "triage_review"
 	// StepFlagPlanCritique reads the plan-critic verdict (the "## Verdict:
-	// APPROVE|REFINE|REJECT" line, per the /plan-critic skill's Phase 6
+	// APPROVE|REFINE|REJECT" line, per the plan-critic prompt's output
 	// contract) and, on REFINE/REJECT, appends a note to the task body so
 	// the verdict is impossible to miss at the review_plan approval gate.
 	// Never blocks progression itself — review_plan's human approve/reject
@@ -210,7 +210,7 @@ const (
 	// StepClassifyTask deterministically runs the Go triage classifier
 	// (internal/triage) against the task and applies its verdict — no agent
 	// session involved. Replaces a run_agent step that wrapped a full Sonnet
-	// agent invoking the /sybra-triage skill around this same classifier.
+	// agent running a triage prompt around this same classifier.
 	StepClassifyTask StepType = "classify_task"
 	// StepAdmissionPreflight runs deterministic pre-dispatch admission checks
 	// (plan contract schema/capability validation, oversize scope limits,
@@ -475,7 +475,7 @@ type StepConfig struct {
 	// rewinds there up to MaxRetries times before escalating.
 	RetryStep string `yaml:"retry_step,omitempty" json:"retryStep,omitempty"`
 	// RetryStepVar resolves the producer step from a workflow variable when
-	// several agent steps converge on one guard (for example simple/staff
+	// several agent steps converge on one guard (for example several
 	// review). Mutually exclusive with RetryStep.
 	RetryStepVar string `yaml:"retry_step_var,omitempty" json:"retryStepVar,omitempty"`
 

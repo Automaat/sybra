@@ -48,7 +48,6 @@ type Config struct {
 	Browser        BrowserConfig        `yaml:"browser" json:"browser"`
 	ProjectTypes   []string             `yaml:"project_types" json:"projectTypes"`
 	TasksDir       string               `yaml:"tasks_dir" json:"tasksDir"`
-	SkillsDir      string               `yaml:"skills_dir" json:"skillsDir"`
 	RepoDir        string               `yaml:"repo_dir" json:"repoDir"`
 	ProjectsDir    string               `yaml:"projects_dir" json:"projectsDir"`
 	ClonesDir      string               `yaml:"clones_dir" json:"clonesDir"`

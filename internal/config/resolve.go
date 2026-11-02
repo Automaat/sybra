@@ -2,7 +2,6 @@ package config
 
 import (
 	"os"
-	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -158,12 +157,6 @@ func applyResolvedDefaults(cfg *ResolvedConfig, file *FileConfig) {
 	}
 	if cfg.TasksDir == "" {
 		cfg.TasksDir = defaultTasksDir()
-	}
-	if cfg.SkillsDir == "" {
-		cfg.SkillsDir = defaultSkillsDir()
-	}
-	if cfg.SkillsDir == filepath.Join(HomeDir(), "skills") {
-		cfg.SkillsDir = defaultSkillsDir()
 	}
 	if cfg.ProjectsDir == "" {
 		cfg.ProjectsDir = defaultProjectsDir()

@@ -14,7 +14,7 @@ var providerCLIAvailable = func(provider string) bool {
 // ApplyABVariant selects an A/B variant for (taskID, role) and stamps the
 // chosen provider/model/effort and experiment attribution onto cfg. It is the
 // reuse point for dispatch sites outside the workflow engine (orchestrator,
-// human-review, staff PR review) so they route through the same A/B suite as
+// human-review, PR review) so they route through the same A/B suite as
 // normal task agents instead of a hardcoded provider.
 //
 // Variants whose provider CLI is missing, config-disabled, unhealthy, or

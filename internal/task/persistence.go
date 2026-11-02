@@ -91,10 +91,6 @@ type agentRunRecord struct {
 	AssignmentKey           string    `yaml:"assignment_key,omitempty"`
 	DecisionVersion         int       `yaml:"decision_version,omitempty"`
 	ReasoningEffort         string    `yaml:"reasoning_effort,omitempty"`
-	RequestedSkill          string    `yaml:"requested_skill,omitempty"`
-	SkillExecutionMode      string    `yaml:"skill_execution_mode,omitempty"`
-	ResolvedSkillSourceHash string    `yaml:"resolved_skill_source_hash,omitempty"`
-	SkillConformance        string    `yaml:"skill_conformance,omitempty"`
 	State                   string    `yaml:"state"`
 	Outcome                 string    `yaml:"outcome,omitempty"`
 	RemoteCompletionReceipt string    `yaml:"remote_completion_receipt,omitempty"`

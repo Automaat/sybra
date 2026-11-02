@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fail if ignored files are still tracked, or if known runtime/build output
 # roots get committed at all. Generated source that is intentionally checked in
-# (for example Wails bindings and copied skills) is allowed because it is
+# (for example Wails bindings) is allowed because it is
 # neither ignored nor under these explicit output roots.
 
 set -euo pipefail

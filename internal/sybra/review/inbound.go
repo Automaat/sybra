@@ -14,6 +14,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/errclass"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/prompts"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -226,15 +227,15 @@ func (r *Handler) StartReviewAgent(t task.Task, force bool) error {
 		return fmt.Errorf("prepare review worktree: %w", err)
 	}
 
-	prompt := StaffCodeReviewPrompt(current.ProjectID, current.PRNumber)
+	prompt := prompts.PRReview(current.ProjectID, current.PRNumber)
 
-	cfg := r.agents.ApplyABVariant(StaffCodeReviewRunConfig(current, prompt, dir, posture, agentorch.ResolveSandboxMode(current, r.cfg)), r.abTestingConfig(), current.ID, string(agent.RoleReview))
+	cfg := r.agents.ApplyABVariant(PRReviewRunConfig(current, prompt, dir, posture, agentorch.ResolveSandboxMode(current, r.cfg)), r.abTestingConfig(), current.ID, string(agent.RoleReview))
 	cfg.SkipDispatchJitter = force
 	var release func()
 	if r.verification != nil && dir != config.HomeDir() {
 		lease, prepErr := r.verification.Prepare(context.Background(), current.ID, string(agent.RoleReview), dir)
 		if prepErr != nil {
-			return fmt.Errorf("prepare disposable staff-review workspace: %w", prepErr)
+			return fmt.Errorf("prepare disposable review workspace: %w", prepErr)
 		}
 		release = func() { r.verification.Release(lease) }
 		// The disposable clone is the execution cwd, not the durable identity
@@ -280,14 +281,14 @@ func (r *Handler) StartReviewAgent(t task.Task, force bool) error {
 	return nil
 }
 
-// StaffCodeReviewRunConfig builds the base run config for the GitHub-PR-triggered
-// staff review. Provider is left unset so the caller's Manager.ApplyABVariant
+// PRReviewRunConfig builds the base run config for the GitHub-PR-triggered
+// PR review. Provider is left unset so the caller's Manager.ApplyABVariant
 // resolves it through the A/B suite (with failover on) or, when A/B is disabled,
 // the manager default. Model defaults to opus so the claude variant and any
 // A/B-disabled fallback keep their high-scrutiny model; an A/B pick overrides it.
 // MaxTurns is intentionally not inherited: review agents need enough turns to
-// fetch the PR, run the skill, and write findings.
-func StaffCodeReviewRunConfig(t task.Task, prompt, dir, posture, sandboxMode string) agent.RunConfig {
+// fetch the PR, run the review, and write findings.
+func PRReviewRunConfig(t task.Task, prompt, dir, posture, sandboxMode string) agent.RunConfig {
 	return agent.RunConfig{
 		TaskID: t.ID,
 		Name:   agent.RoleReview.AgentName(t.Title),
@@ -304,33 +305,6 @@ func StaffCodeReviewRunConfig(t task.Task, prompt, dir, posture, sandboxMode str
 		SandboxMode:            sandboxMode,
 		ReadOnlyDir:            true,
 	}
-}
-
-// StaffCodeReviewPrompt returns the direct PR-review prompt shared by inbound
-// review automation and task enrichment. It withholds only approval
-// authority: these PRs are other people's work, and an approval from the
-// operator's account can satisfy a required-reviewer gate. REQUEST_CHANGES
-// and COMMENT are feedback, not authority, so the prompt authorizes
-// submitting those directly instead of parking every review as an unsubmitted
-// pending draft. Kept in lockstep with the pr-review builtin workflow prompts
-// and backed by the gh PATH shim (agent.writeGhShim), which refuses submitted
-// APPROVE events if this instruction ever drifts.
-func StaffCodeReviewPrompt(projectID string, prNumber int) string {
-	return fmt.Sprintf(`Run /staff-code-review on https://github.com/%s/pull/%d
-
-This task is an authorized Sybra PR review for the linked project. Do not ask the operator for confirmation before posting your review.
-
-You have no approval authority: NEVER submit an APPROVE review event. Do not run `+"`gh pr review --approve`"+` and do not submit `+"`event=APPROVE`"+` via `+"`gh api`"+`. REQUEST_CHANGES and COMMENT are feedback, not approval authority, so submit those directly instead of leaving them pending.
-
-Before posting, fetch the PR head SHA and existing reviews; if a review for that head already contains the Sybra harness footer, do not create another review.
-
-Use GitHub's review API so findings become inline comments, not one aggregated comment. Add each blocking correctness issue as a `+"`comments`"+` entry on the changed line it applies to. Put only the short verdict and summary in the review body.
-
-Post via `+"`gh api repos/%s/pulls/%d/reviews -X POST ...`"+` with explicit `+"`-f`"+`/`+"`-F`"+` fields such as `+"`comments[][path]`"+`, `+"`comments[][line]`"+`, `+"`comments[][side]=RIGHT`"+`, and `+"`comments[][body]`"+`, then choose the event by verdict: at least one blocking finding, submit with `+"`-f event=REQUEST_CHANGES`"+`; no blocking finding but the review has notes worth surfacing, submit with `+"`-f event=COMMENT`"+`; nothing to say at all (fully clean, no findings), omit `+"`event`"+` so GitHub leaves the review PENDING for a human to approve.
-
-End the review summary and every review comment you post with a blank line then exactly this standalone harness attribution footer:
-
-_Generated by Sybra harness_`, projectID, prNumber, projectID, prNumber)
 }
 
 func reviewAgentAlreadyRan(t task.Task) bool {

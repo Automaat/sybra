@@ -1,7 +1,6 @@
 package abtest
 
 import (
-	"maps"
 	"slices"
 )
 
@@ -44,7 +43,6 @@ func CloneConfig(src Config) Config {
 				transform := *variant.PromptTransform
 				variant.PromptTransform = &transform
 			}
-			variant.SkillAliases = maps.Clone(variant.SkillAliases)
 			exp.Variants[j] = variant
 		}
 		cp.Experiments[i] = exp

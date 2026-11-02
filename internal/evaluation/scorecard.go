@@ -18,67 +18,27 @@ import (
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/modeltier"
 	"github.com/Automaat/sybra/internal/runacct"
-	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
-// Skill-conformance cohort buckets. See skillConformanceBucket.
+// Sample readiness statuses surfaced on comparison rows and experiment
+// variants, so callers can explain *why* a row is insufficient.
 const (
-	SkillCohortSkill         = "skill"         // the full mandatory workflow skill ran and was receipt-verified
-	SkillCohortDirect        = "direct"        // known direct provider work: bundled fallback, unavailable, or no skill requested
-	SkillCohortIndeterminate = "indeterminate" // conformance can't be trusted either way
+	SampleStatusActionable = "actionable"
+	SampleStatusLowSample  = "low-sample"
 )
 
-// Sample/parity readiness statuses surfaced on comparison rows and experiment
-// variants. Readiness math still gates on ResolvedRuns + SkillParityUnknown;
-// these strings exist so callers can explain *why* a row is insufficient.
-const (
-	SampleStatusActionable             = "actionable"
-	SampleStatusLowSample              = "low-sample"
-	SampleStatusParityUnknown          = "parity-unknown"
-	SampleStatusLowSampleParityUnknown = "low-sample+parity-unknown"
-)
-
-// skillConformanceBucket collapses skillattr's fine-grained conformance
-// states into the three populations a comparison cohort must never blend
-// (see issue #2007, "split skill and fallback execution cohorts"):
-//
-//   - SkillCohortSkill: native or injected delivery, including a recovered
-//     retry — the full multi-agent skill workflow actually ran.
-//   - SkillCohortDirect: bundled-fallback instructions, no skill source
-//     found at all, or the role never requested a skill in the first place —
-//     known, legitimate "direct provider work", kept visible as its own
-//     cohort rather than dropped.
-//   - SkillCohortIndeterminate: a delivered skill whose completion receipt
-//     never verified, or pre-instrumentation legacy data with no recorded
-//     conformance at all. This can't be trusted as either population, so it
-//     is excluded from skill-parity comparisons — see comparisonRows.
-func skillConformanceBucket(conformance string) string {
-	switch skillattr.NormalizeConformance(conformance) {
-	case skillattr.ConformanceExact, skillattr.ConformanceRecovered:
-		return SkillCohortSkill
-	case skillattr.ConformanceFallback, skillattr.ConformanceUnavailable, skillattr.ConformanceNone:
-		return SkillCohortDirect
-	default: // ConformanceUnverified, ConformanceUnknown
-		return SkillCohortIndeterminate
-	}
-}
-
-// agentModelCohortKey groups by provider/model/reasoning-effort/role plus the
-// run's skill-conformance bucket, so a direct fallback and a conformant full
-// skill-workflow run for the same role/provider never land in the same
-// ByAgentModel(Contribution) row — "a direct review cannot appear in the same
-// cohort as a conformant staff review" (issue #2007).
+// agentModelCohortKey groups by provider/model/reasoning-effort/role.
 func agentModelCohortKey(r stats.RunRecord) string {
 	if r.Provider == "" || r.Model == "" {
 		return ""
 	}
-	return r.Provider + ":" + r.Model + ":" + r.ReasoningEffort + ":" + normalizedRole(r.Role) + ":" + skillConformanceBucket(r.SkillConformance)
+	return r.Provider + ":" + r.Model + ":" + r.ReasoningEffort + ":" + normalizedRole(r.Role)
 }
 
 // costTierCohortKey groups by provider/role/model-tier — coarser than
-// agentModelCohortKey (no reasoning effort or skill-conformance split) — for
+// agentModelCohortKey (no reasoning effort split) — for
 // Report.ByCostTier, the segmentation the tier-cascade rollout is judged
 // against. Empty when the provider/model is unset or the model doesn't
 // resolve to a known tier, mirroring agentModelCohortKey's skip semantics.
@@ -244,32 +204,19 @@ type ComparisonBreakdown struct {
 	// CostPerMergedUSD and TokensPerMergedPR mirror Scorecard's north-star
 	// metric at this row's granularity (provider/model/role/tier), dividing by
 	// Merged+MergedWithEdits rather than Landed.
-	CostPerMergedUSD          float64 `json:"costPerMergedUsd"`
-	TokensPerMergedPR         float64 `json:"tokensPerMergedPr"`
-	PremiumRequests           float64 `json:"premiumRequests"`
-	PremiumRequestsPerLanded  float64 `json:"premiumRequestsPerLanded"`
-	TurnsPerLanded            float64 `json:"turnsPerLanded"`
-	ToolsPerLanded            float64 `json:"toolsPerLanded"`
-	InsufficientData          bool    `json:"insufficientData"`
-	QualityAttributionLimited bool    `json:"qualityAttributionLimited"`
-	// SkillConformance is this row's skill-conformance bucket
-	// (SkillCohortSkill/SkillCohortDirect/SkillCohortIndeterminate) when every
-	// run credited to the row shares one, "" when the row blends more than
-	// one — see SkillParityUnknown, the same condition reified as a bool for
-	// API consumers that would rather not special-case an empty string.
-	SkillConformance string `json:"skillConformance,omitempty"`
-	// SkillParityUnknown reports whether this row's population is not purely
-	// SkillCohortSkill or SkillCohortDirect — either it blends runs with
-	// different skill delivery, or every run in it has indeterminate
-	// conformance. Either way the row can't support a skill-parity
-	// comparison regardless of sample size, so it always forces
-	// InsufficientData.
-	SkillParityUnknown   bool                  `json:"skillParityUnknown,omitempty"`
-	Baseline             bool                  `json:"baseline"`
-	BaselineVariantID    string                `json:"baselineVariantId,omitempty"`
-	SampleStatus         string                `json:"sampleStatus,omitempty"`
-	MinSamplesPerVariant int                   `json:"minSamplesPerVariant,omitempty"`
-	RoleBreakdowns       []ComparisonBreakdown `json:"roleBreakdowns,omitempty"`
+	CostPerMergedUSD          float64               `json:"costPerMergedUsd"`
+	TokensPerMergedPR         float64               `json:"tokensPerMergedPr"`
+	PremiumRequests           float64               `json:"premiumRequests"`
+	PremiumRequestsPerLanded  float64               `json:"premiumRequestsPerLanded"`
+	TurnsPerLanded            float64               `json:"turnsPerLanded"`
+	ToolsPerLanded            float64               `json:"toolsPerLanded"`
+	InsufficientData          bool                  `json:"insufficientData"`
+	QualityAttributionLimited bool                  `json:"qualityAttributionLimited"`
+	Baseline                  bool                  `json:"baseline"`
+	BaselineVariantID         string                `json:"baselineVariantId,omitempty"`
+	SampleStatus              string                `json:"sampleStatus,omitempty"`
+	MinSamplesPerVariant      int                   `json:"minSamplesPerVariant,omitempty"`
+	RoleBreakdowns            []ComparisonBreakdown `json:"roleBreakdowns,omitempty"`
 }
 
 // RateEstimate is a binomial rate with fixed 95% Wilson uncertainty and an
@@ -343,7 +290,6 @@ type Report struct {
 	Overall                  Scorecard             `json:"overall"`
 	ByProvider               []Breakdown           `json:"byProvider,omitempty"`
 	ByRole                   []Breakdown           `json:"byRole,omitempty"`
-	BySkillExecutionMode     []Breakdown           `json:"bySkillExecutionMode,omitempty"`
 	ByAgentModel             []ComparisonBreakdown `json:"byAgentModel,omitempty"`
 	ByAgentModelContribution []ComparisonBreakdown `json:"byAgentModelContribution,omitempty"`
 	// ByCostTier segments the cost-per-merged-PR north star by
@@ -378,7 +324,7 @@ type CostBaseline struct {
 }
 
 // ExperimentKindBreakdown groups A/B comparison rows by experiment kind
-// (model, prompt, skill) so a prompt/skill rewrite is never compared against a
+// (model, prompt) so a prompt rewrite is never compared against a
 // model swap in the same table. "unknown" collects rows whose ExperimentID no
 // longer resolves against the configured abtest.Config (e.g. a retired
 // experiment) so orphaned data stays visible instead of silently vanishing.
@@ -394,7 +340,7 @@ type ExperimentKindBreakdown struct {
 
 // ExperimentGroup is the comparison table for a single experiment: every row
 // shares the same ExperimentID, and therefore the same Subject and (for
-// prompt/skill experiments) the same fixed variant provider/model settings.
+// prompt experiments) the same fixed variant provider/model settings.
 type ExperimentGroup struct {
 	ExperimentID     string                   `json:"experimentId"`
 	Subject          *abtest.Subject          `json:"subject,omitempty"`
@@ -404,7 +350,7 @@ type ExperimentGroup struct {
 }
 
 // experimentKindOrder is the stable rendering order for ExperimentKindBreakdown groups.
-var experimentKindOrder = []string{"model", "prompt", "skill", "unknown"}
+var experimentKindOrder = []string{"model", "prompt", "unknown"}
 
 // unaccountedFailureNote flags failed runs that recorded no cost and no tokens.
 //
@@ -446,16 +392,13 @@ func reportNotes(records []stats.RunRecord, since, until time.Time, sc Scorecard
 	if n := unaccountedFailureNote(records, since, until); n != "" {
 		notes = append(notes, n)
 	}
-	if n := skillParityNote(records, since, until); n != "" {
-		notes = append(notes, n)
-	}
 	if n := autonomyUnknownNote(sc); n != "" {
 		notes = append(notes, n)
 	}
 	return notes
 }
 
-// autonomyUnknownNote mirrors unaccountedFailureNote/skillParityNote:
+// autonomyUnknownNote mirrors unaccountedFailureNote:
 // diagnostic only, never adjusts a metric, just states why AutonomyRate's
 // two buckets don't sum to TasksLanded when they don't.
 func autonomyUnknownNote(sc Scorecard) string {
@@ -467,31 +410,6 @@ func autonomyUnknownNote(sc Scorecard) string {
 		sc.AutonomyUnknownLandings, sc.TasksLanded)
 }
 
-// skillParityNote counts in-window runs whose skill conformance is
-// indeterminate (see skillConformanceBucket) — diagnostic only, mirroring
-// unaccountedFailureNote: it never adjusts a metric, it just states the
-// ambiguity so a report where every comparison row reads InsufficientData
-// has a visible cause instead of looking like the feature silently broke.
-func skillParityNote(records []stats.RunRecord, since, until time.Time) string {
-	indeterminate, total := 0, 0
-	for i := range records {
-		r := records[i]
-		if r.Timestamp.Before(since) || r.Timestamp.After(until) {
-			continue
-		}
-		total++
-		if skillConformanceBucket(r.SkillConformance) == SkillCohortIndeterminate {
-			indeterminate++
-		}
-	}
-	if indeterminate == 0 {
-		return ""
-	}
-	return fmt.Sprintf(
-		"%d of %d in-window runs have indeterminate skill conformance (an unverified receipt, or pre-instrumentation legacy data with no recorded conformance) — any comparison cohort containing them is marked insufficient rather than compared",
-		indeterminate, total)
-}
-
 // deferredNotes documents metrics that need signals not yet captured, so the
 // report never silently presents a partial picture as complete.
 var deferredNotes = []string{
@@ -499,7 +417,7 @@ var deferredNotes = []string{
 	"review-finding density pending review-count capture",
 	"per-project/provider autonomy + throughput breakdowns pending project/provider on task.landed",
 	"revert detection scans the latest 100 default-branch commits per repo; a revert beyond that on a very busy repo can be missed",
-	"non-author-role quality signals (test-runner protocol violations, planning validation failures, review/fix-review follow-up) are not yet attributed to prompt/skill experiments",
+	"non-author-role quality signals (test-runner protocol violations, planning validation failures, review/fix-review follow-up) are not yet attributed to prompt experiments",
 }
 
 // taskSignals accumulates per-task lifecycle facts used for autonomy,
@@ -914,13 +832,12 @@ type CompareResult struct {
 // semantics. minSamples controls the InsufficientData flag only; rows are still
 // emitted so users can see early data.
 type comparisonAcc struct {
-	row              ComparisonBreakdown
-	skillConformance valueConsensus
-	durations        []float64
-	turns, tools     int
-	tokens           int
-	ciClean, rework  int
-	reverted         int
+	row             ComparisonBreakdown
+	durations       []float64
+	turns, tools    int
+	tokens          int
+	ciClean, rework int
+	reverted        int
 }
 
 func CompareBy(records []stats.RunRecord, events []audit.Event, since, until time.Time, opts CompareOptions, key func(stats.RunRecord) string) CompareResult {
@@ -986,7 +903,6 @@ func compareByAttribution(records []stats.RunRecord, events []audit.Event, since
 		a.turns += r.TurnCount
 		a.tools += r.ToolCalls
 		a.tokens += r.InputTokens + r.OutputTokens + r.CacheCreationInputTokens + r.CacheReadInputTokens + r.ReasoningTokens
-		a.skillConformance.add(skillConformanceBucket(r.SkillConformance))
 	}
 
 	applyComparisonLandings(ensure, records, events, since, until, key, mode)
@@ -1040,7 +956,7 @@ func classifyExperimentKind(expID string, byID map[string]abtest.Experiment) (ki
 }
 
 // GroupByKind partitions already-computed comparison rows and experiment
-// sample statuses first by experiment kind (model/prompt/skill/unknown), then
+// sample statuses first by experiment kind (model/prompt/unknown), then
 // by ExperimentID within each kind, so callers never need to re-scan records
 // or events per kind and two experiments of the same kind never land in the
 // same comparison table. Rows/statuses are annotated with Kind (and Subject,
@@ -1353,15 +1269,10 @@ func comparisonRows(groups map[string]*comparisonAcc, minSamples int) []Comparis
 		}
 		row.DurationP50S = percentile(a.durations, 50)
 		row.DurationP90S = percentile(a.durations, 90)
-		row.SkillConformance = a.skillConformance.value()
-		row.SkillParityUnknown = row.SkillConformance != SkillCohortSkill && row.SkillConformance != SkillCohortDirect
 		// Gate on resolved runs, or a variant with 29 stalls and 1 failure —
 		// one data point — is declared trustworthy at a 100% failure rate.
-		// A row whose skill-parity is unknown (mixed delivery, or every run
-		// indeterminate) is insufficient regardless of sample size: no
-		// amount of unparitied data makes a comparison honest.
-		row.InsufficientData = (minSamples > 0 && row.ResolvedRuns < minSamples) || row.SkillParityUnknown
-		row.SampleStatus = comparisonSampleStatus(minSamples > 0 && row.ResolvedRuns < minSamples, row.SkillParityUnknown)
+		row.InsufficientData = minSamples > 0 && row.ResolvedRuns < minSamples
+		row.SampleStatus = comparisonSampleStatus(row.InsufficientData)
 		row.QualityAttributionLimited = row.Landed == 0 && row.Runs > 0
 		out = append(out, row)
 	}
@@ -1369,17 +1280,11 @@ func comparisonRows(groups map[string]*comparisonAcc, minSamples int) []Comparis
 	return out
 }
 
-func comparisonSampleStatus(lowSample, parityUnknown bool) string {
-	switch {
-	case lowSample && parityUnknown:
-		return SampleStatusLowSampleParityUnknown
-	case parityUnknown:
-		return SampleStatusParityUnknown
-	case lowSample:
+func comparisonSampleStatus(lowSample bool) string {
+	if lowSample {
 		return SampleStatusLowSample
-	default:
-		return SampleStatusActionable
 	}
+	return SampleStatusActionable
 }
 
 func wilson95(numerator, denominator int) RateEstimate {
@@ -1549,14 +1454,6 @@ func applyBaselineDeltas(rows map[string]*ComparisonBreakdown, baselineVariantID
 		return
 	}
 	baseline.Baseline = true
-	// A parity-unknown baseline (mixed skill/direct delivery, or all-indeterminate)
-	// is not a trustworthy comparison basis: every variant's delta would be measured
-	// against contaminated data. Keep the Baseline flag (it is the configured
-	// baseline) but suppress delta math so no variant is reported as better/worse
-	// than an untrustworthy reference.
-	if baseline.SkillParityUnknown {
-		return
-	}
 	applyDelta := func(est *RateEstimate, base RateEstimate) {
 		if !est.HasData || !base.HasData {
 			return
@@ -1591,9 +1488,8 @@ func experimentSampleStatus(key string, cfg experimentRoleConfig, rows map[strin
 	}
 	for _, id := range variantIDs {
 		row := rows[id]
-		// Readiness gates on resolved runs (and, via InsufficientData, on
-		// skill parity too) to match the row-level SampleStatus above rather
-		// than contradict it, while Runs stays the dispatch count so "never
+		// Readiness gates on resolved runs to match the row-level SampleStatus
+		// above rather than contradict it, while Runs stays the dispatch count so "never
 		// ran" stays distinguishable from "every dispatch stalled".
 		runs, resolved := 0, 0
 		observed, insufficient := false, false
@@ -1723,24 +1619,22 @@ func normalizedRole(role string) string {
 
 func statsRecord(r stats.RunRecord) runacct.Record {
 	return runacct.Record{
-		ID:                 r.ID,
-		TaskID:             r.TaskID,
-		Role:               r.Role,
-		Mode:               r.Mode,
-		Provider:           r.Provider,
-		Model:              r.Model,
-		ReasoningEffort:    r.ReasoningEffort,
-		ExperimentID:       r.ExperimentID,
-		VariantID:          r.VariantID,
-		SkillExecutionMode: r.SkillExecutionMode,
-		SkillConformance:   r.SkillConformance,
-		CostUSD:            r.CostUSD,
-		DurationS:          r.DurationS,
-		PremiumRequests:    r.PremiumRequests,
-		TurnCount:          r.TurnCount,
-		ToolCalls:          r.ToolCalls,
-		Outcome:            r.Outcome,
-		Timestamp:          r.Timestamp,
+		ID:              r.ID,
+		TaskID:          r.TaskID,
+		Role:            r.Role,
+		Mode:            r.Mode,
+		Provider:        r.Provider,
+		Model:           r.Model,
+		ReasoningEffort: r.ReasoningEffort,
+		ExperimentID:    r.ExperimentID,
+		VariantID:       r.VariantID,
+		CostUSD:         r.CostUSD,
+		DurationS:       r.DurationS,
+		PremiumRequests: r.PremiumRequests,
+		TurnCount:       r.TurnCount,
+		ToolCalls:       r.ToolCalls,
+		Outcome:         r.Outcome,
+		Timestamp:       r.Timestamp,
 	}
 }
 

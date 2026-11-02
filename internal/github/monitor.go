@@ -173,7 +173,7 @@ func MatchTaskPRs(prs []PullRequest, tasks []TaskMatcher) []PRIssue {
 		// Dispatch a fix-review agent only for unresolved threads where a
 		// reviewer had the last word. GitHub's reviewDecision can remain
 		// CHANGES_REQUESTED after every thread was answered or resolved, and the
-		// fix-review skill has no live thread left to process in that state.
+		// fix-review has no live thread left to process in that state.
 		// Draft PRs still get review feedback from Copilot/humans; fix those
 		// comments before the author marks the PR ready.
 		if pr.ActionableCount > 0 {

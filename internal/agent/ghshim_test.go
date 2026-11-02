@@ -1032,7 +1032,7 @@ mutation { submitPullRequestReview(input: { event: APPROVE }) { clientMutationId
 
 // TestGhShim_RawFieldGuardKeysOnTheFieldName keeps the guard off ordinary
 // prose. It fires on a raw field whose value is a path, not on a body that
-// happens to contain "=@" followed by something that exists — which the skill
+// happens to contain "=@" followed by something that exists — which the prompt
 // now makes likely, since it tells agents to write "-F body=@file".
 func TestGhShim_RawFieldGuardKeysOnTheFieldName(t *testing.T) {
 	shimDir := newShim(t)
@@ -1096,51 +1096,6 @@ func TestGhShim_RawFieldGuardKeysOnTheFieldName(t *testing.T) {
 			}
 			if !strings.Contains(stderr, GhShimRawFieldReason) {
 				t.Fatalf("stderr lacks the raw-field reason for %v: %q", tc.args, stderr)
-			}
-		})
-	}
-}
-
-// TestGhShim_AcceptsBundledSkillCommands runs the commands the bundled
-// fix-review-auto skill tells agents to use. The skill and the wrapper are
-// written apart from each other, and the wrapper wins: a documented command it
-// refuses sends every agent down an improvised path, which is how #3376
-// happened.
-func TestGhShim_AcceptsBundledSkillCommands(t *testing.T) {
-	shimDir := newShim(t)
-	skill, err := os.ReadFile(filepath.Join("..", "skills", "data", "fix-review-auto.md"))
-	if err != nil {
-		t.Fatalf("read bundled skill: %v", err)
-	}
-	text := string(skill)
-	if strings.Contains(text, "-F query=@-") {
-		t.Fatal("skill still documents a stdin GraphQL query, which the shim refuses")
-	}
-
-	// The two gh api invocations the skill prescribes, reduced to the argv a
-	// shell would deliver.
-	fetch := []string{"api", "graphql", "-f", "owner=o", "-f", "repo=r", "-F", "pr=1", "-f", `
-query($owner: String!, $repo: String!, $pr: Int!) {
-  repository(owner: $owner, name: $repo) {
-    pullRequest(number: $pr) { reviewThreads(first: 100) { nodes { id isResolved } } }
-  }
-}`}
-	post := []string{"api", "graphql", "-f", "threadId=T", "-f", "body=Applied.", "-f", `
-mutation($threadId: ID!, $body: String!) {
-  addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $threadId, body: $body }) {
-    comment { id url }
-  }
-}`}
-	rest := []string{"api", "-X", "POST", "/repos/o/r/pulls/1/comments/2/replies", "-f", "body=Applied."}
-
-	for name, args := range map[string][]string{"fetch": fetch, "post": post, "rest fallback": rest} {
-		t.Run(name, func(t *testing.T) {
-			stdout, stderr, code := runShim(t, shimDir, args...)
-			if code != 0 {
-				t.Fatalf("shim refused the documented %s command: exit=%d stderr=%q", name, code, stderr)
-			}
-			if !strings.Contains(stdout, "REAL-GH") {
-				t.Fatalf("real gh not reached for %s: %s", name, stdout)
 			}
 		})
 	}

@@ -40,12 +40,6 @@ func RunRecords(events []Event) []runacct.Record {
 		if v, ok := run.TerminalEvent.Data["variant_id"].(string); ok {
 			rec.VariantID = v
 		}
-		if v, ok := run.TerminalEvent.Data["skill_execution_mode"].(string); ok {
-			rec.SkillExecutionMode = v
-		}
-		if v, ok := run.TerminalEvent.Data["skill_conformance"].(string); ok {
-			rec.SkillConformance = v
-		}
 		if v, ok := run.TerminalEvent.Data["cost_usd"].(float64); ok {
 			rec.CostUSD = v
 		}

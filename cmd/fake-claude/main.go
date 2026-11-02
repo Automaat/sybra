@@ -147,37 +147,35 @@ func writeCaptureLog(logFile string, data []byte) error {
 }
 
 var scenarioHandlers = map[string]func(string){
-	"success":                          func(string) { runSuccess() },
-	"no_receipt":                       func(string) { runSuccessNoReceipt() },
-	"high_cost":                        func(string) { runHighCost() },
-	"high_cost_mid_stream":             func(string) { runHighCostMidStream() },
-	"write_sidecar_success":            runWriteSidecarSuccess,
-	"write_sidecar_success_no_receipt": runWriteSidecarSuccessNoReceipt,
-	"revise_plan_sidecars":             runRevisePlanSidecars,
-	"fail_exit":                        func(string) { emitSystem(); os.Exit(1) },
-	"no_result":                        func(string) { emitSystem(); emitAssistant("Working on it..."); os.Exit(0) },
-	"triage":                           func(taskID string) { runTriage(taskID, "todo", "small") },
-	"triage_to_planning":               func(taskID string) { runTriage(taskID, "planning", "large") },
-	"triage_to_planning_nocritic":      func(taskID string) { runTriage(taskID, "planning", "large,nocritic") },
-	"triage_to_planning_noplan":        func(taskID string) { runTriage(taskID, "planning", "large,noplan") },
-	"plan_critic_success":              runPlanCriticSuccess,
-	"plan_critic_no_save":              func(string) { runPlanCriticNoSave() },
-	"code_review_success":              runCodeReviewSuccess,
-	"test_pass":                        func(string) { runTestPass() },
-	"test_pass_verbose":                func(string) { runTestPassVerbose() },
-	"test_fail":                        func(string) { runTestFail() },
-	"test_fail_large_1":                func(string) { runTestFailLarge(1) },
-	"test_fail_large_2":                func(string) { runTestFailLarge(2) },
-	"test_fail_large_3":                func(string) { runTestFailLarge(3) },
-	"test_fail_large_4":                func(string) { runTestFailLarge(4) },
-	"test_fail_large_5":                func(string) { runTestFailLarge(5) },
-	"test_infra_failure":               func(string) { runTestInfraFailure() },
-	"tool_result_large":                func(string) { runToolResultLarge() },
-	"malformed_tool_call_once":         func(string) { runMalformedToolCallOnce() },
-	"malformed_tool_call_repeat":       func(string) { runMalformedToolCallRepeat() },
-	"triage_to_done":                   func(taskID string) { runTriage(taskID, "done", "") },
-	"triage_to_in_review":              func(taskID string) { runTriage(taskID, "in-review", "") },
-	"triage_to_human_required":         func(taskID string) { runTriage(taskID, "human-required", "") },
+	"success":                     func(string) { runSuccess() },
+	"high_cost":                   func(string) { runHighCost() },
+	"high_cost_mid_stream":        func(string) { runHighCostMidStream() },
+	"write_sidecar_success":       runWriteSidecarSuccess,
+	"revise_plan_sidecars":        runRevisePlanSidecars,
+	"fail_exit":                   func(string) { emitSystem(); os.Exit(1) },
+	"no_result":                   func(string) { emitSystem(); emitAssistant("Working on it..."); os.Exit(0) },
+	"triage":                      func(taskID string) { runTriage(taskID, "todo", "small") },
+	"triage_to_planning":          func(taskID string) { runTriage(taskID, "planning", "large") },
+	"triage_to_planning_nocritic": func(taskID string) { runTriage(taskID, "planning", "large,nocritic") },
+	"triage_to_planning_noplan":   func(taskID string) { runTriage(taskID, "planning", "large,noplan") },
+	"plan_critic_success":         runPlanCriticSuccess,
+	"plan_critic_no_save":         func(string) { runPlanCriticNoSave() },
+	"code_review_success":         runCodeReviewSuccess,
+	"test_pass":                   func(string) { runTestPass() },
+	"test_pass_verbose":           func(string) { runTestPassVerbose() },
+	"test_fail":                   func(string) { runTestFail() },
+	"test_fail_large_1":           func(string) { runTestFailLarge(1) },
+	"test_fail_large_2":           func(string) { runTestFailLarge(2) },
+	"test_fail_large_3":           func(string) { runTestFailLarge(3) },
+	"test_fail_large_4":           func(string) { runTestFailLarge(4) },
+	"test_fail_large_5":           func(string) { runTestFailLarge(5) },
+	"test_infra_failure":          func(string) { runTestInfraFailure() },
+	"tool_result_large":           func(string) { runToolResultLarge() },
+	"malformed_tool_call_once":    func(string) { runMalformedToolCallOnce() },
+	"malformed_tool_call_repeat":  func(string) { runMalformedToolCallRepeat() },
+	"triage_to_done":              func(taskID string) { runTriage(taskID, "done", "") },
+	"triage_to_in_review":         func(taskID string) { runTriage(taskID, "in-review", "") },
+	"triage_to_human_required":    func(taskID string) { runTriage(taskID, "human-required", "") },
 	"implement": func(string) {
 		emitSystem()
 		emitAssistant("Implementing...")
@@ -330,12 +328,6 @@ func runScenario(scenario, taskID string) bool {
 func runSuccess() {
 	emitSystem()
 	emitAssistant("Working on it...")
-	emitResult(withReceiptFromPrompt(resolvedPrompt, "Task completed successfully."))
-}
-
-func runSuccessNoReceipt() {
-	emitSystem()
-	emitAssistant("Working on it...")
 	emitResult("Task completed successfully.")
 }
 
@@ -360,7 +352,7 @@ func runK8sRepoChange(taskID string) {
 
 // runSuccessThenHang emits a clean terminal result, like runSuccess, but then
 // blocks forever instead of exiting — simulating a process that finished its
-// work but never exited (e.g. a subagent-spawning skill left CC alive). Used
+// work but never exited (e.g. a spawned subagent left CC alive). Used
 // to test the watchdog's StopCompletedAgent path, which must reap the
 // orphaned process without the completed work being treated as a stall.
 func runSuccessThenHang(background bool) {
@@ -645,15 +637,6 @@ func runMalformedPROutput() {
 // the rendered prompt and writing a stub there. The engine then ingests it as
 // the configured sidecar.
 func runWriteSidecarSuccess(taskID string) {
-	emitSystem()
-	emitAssistant("Writing fake sidecar...")
-	for _, path := range extractSidecarPaths(resolvedPrompt) {
-		_ = os.WriteFile(path, []byte(fakeSidecarContent(path, taskID, "fake-claude")), 0o644)
-	}
-	emitResult(withReceiptFromPrompt(resolvedPrompt, "Sidecar written."))
-}
-
-func runWriteSidecarSuccessNoReceipt(taskID string) {
 	emitSystem()
 	emitAssistant("Writing fake sidecar...")
 	for _, path := range extractSidecarPaths(resolvedPrompt) {
@@ -966,7 +949,6 @@ func emitRaw(event map[string]any) {
 // extractTaskID attempts to find a task ID in the -p prompt argument.
 // Task IDs look like 8-char hex strings (e.g., "a1b2c3d4").
 var taskIDRe = regexp.MustCompile(`\b([a-f0-9]{8})\b`)
-var receiptMarkerRe = regexp.MustCompile(`<!-- sybra-skill-receipt [^>]+ -->`)
 
 func promptArg(args []string) string {
 	for i, arg := range args {
@@ -979,14 +961,6 @@ func promptArg(args []string) string {
 
 func extractPrompt(args []string) string {
 	return promptTaskID(promptArg(args))
-}
-
-func withReceiptFromPrompt(prompt, text string) string {
-	marker := receiptMarkerRe.FindString(prompt)
-	if marker == "" {
-		return text
-	}
-	return text + "\n" + marker
 }
 
 func promptTaskID(prompt string) string {

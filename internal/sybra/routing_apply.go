@@ -6,7 +6,7 @@ import "github.com/Automaat/sybra/internal/abtest"
 // merged (base + overlay) A/B config to every live selection site.
 //
 //   - App's live A/B snapshot is swapped atomically for direct dispatch sites
-//     (human-review and staff-review) that need the latest routing weights
+//     (human-review and PR-review) that need the latest routing weights
 //     without racing the config struct.
 //   - workflowEngine, orchSvc, and evaluationSvc each hold their own copy
 //     (set once at wiring time) rather than reading a.cfg live, so each needs

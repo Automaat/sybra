@@ -1,7 +1,7 @@
-// Package promptlab identifies underperforming prompt/skill subjects from
+// Package promptlab identifies underperforming prompt subjects from
 // fleet evidence (the Evaluation report + stats run records) and scaffolds
 // reviewable proposals for new versioned variants. It never authors variant
-// text and never mutates a production prompt or skill file — proposals are
+// text and never mutates a production prompt — proposals are
 // filed as local Sybra tasks for a human (or a later agent run) to flesh out
 // and gate through the normal offline-eval + A/B path.
 package promptlab
@@ -19,7 +19,7 @@ import (
 const ProposalTag = "prompt-lab-proposal"
 
 // Subject identifies a role/workflow-step slice of the fleet whose
-// prompt/skill may be underperforming.
+// prompt may be underperforming.
 type Subject struct {
 	Role         string `json:"role"`
 	WorkflowStep string `json:"workflowStep,omitempty"`
@@ -38,7 +38,7 @@ type WeakSubject struct {
 }
 
 // VariantCandidate is a versioned, content-addressed scaffold for a future
-// prompt/skill variant. Intent records only the DIRECTION of the change —
+// prompt variant. Intent records only the DIRECTION of the change —
 // promptlab never authors the variant's actual text; that happens later, by
 // hand or by an agent, in the task this candidate is filed under.
 type VariantCandidate struct {
@@ -65,7 +65,7 @@ type OfflineResult struct {
 // OfflineEvaluator screens a VariantCandidate before its proposal is filed.
 //
 // promptlab proposals are scaffolds (rationale + expected impact — see
-// propose.go), not authored prompt/skill bytes, so there is nothing yet to
+// propose.go), not authored prompt bytes, so there is nothing yet to
 // run through internal/prompteval's real runner: that screening happens once
 // a human or agent authors the variant text inside the filed task.
 // stubEvaluator reflects that by always returning NoVerdict, which
@@ -80,13 +80,12 @@ type stubEvaluator struct{}
 func (stubEvaluator) Evaluate(VariantCandidate) OfflineResult {
 	return OfflineResult{
 		Verdict: VerdictNoVerdict,
-		Reason:  "no resolved prompt/skill text to evaluate yet; author it in the filed task",
+		Reason:  "no resolved prompt text to evaluate yet; author it in the filed task",
 	}
 }
 
-// Proposal is one reviewable suggestion to create a new prompt/skill variant,
-// scaffolded from fleet evidence. It never mutates a production prompt or
-// skill file itself.
+// Proposal is one reviewable suggestion to create a new prompt variant,
+// scaffolded from fleet evidence. It never mutates a production prompt itself.
 type Proposal struct {
 	ID                    string           `json:"id"`
 	Subject               Subject          `json:"subject"`

@@ -61,7 +61,7 @@ func DefaultSLOTargets() SLOTargets {
 	}
 }
 
-// OfflineEvalConfig controls the offline prompt/skill eval runner
+// OfflineEvalConfig controls the offline prompt eval runner
 // (internal/prompteval) that screens candidate variants before they are
 // eligible for online A/B enrollment.
 type OfflineEvalConfig struct {

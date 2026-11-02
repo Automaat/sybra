@@ -135,7 +135,7 @@ type promptfooAssert struct {
 // concatenation, which would let injected `"` or newlines smuggle extra YAML
 // keys into the generated config.
 //
-// The prompt template composes the variant's own resolved prompt/skill body
+// The prompt template composes the variant's own resolved prompt body
 // ({{variantPrompt}}) ahead of the golden case input ({{input}}) so the
 // bytes promptfoo actually sends to the provider are the digested candidate
 // prompt, not just the fixture input. Both are passed as vars (never

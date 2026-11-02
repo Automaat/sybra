@@ -83,7 +83,6 @@ var topLevelNamespaceRules = []topLevelNamespaceRule{
 	{legacyKey: "ab_testing", canonical: []string{"observability", "ab_testing"}, deprecated: "observability.ab_testing", namespace: "observability"},
 	{legacyKey: "project_types", canonical: []string{"instance", "project_types"}, deprecated: "instance.project_types", namespace: "instance", directField: true},
 	{legacyKey: "tasks_dir", canonical: []string{"storage", "paths", "tasks"}, deprecated: "storage.paths.tasks", namespace: "storage", directField: true},
-	{legacyKey: "skills_dir", canonical: []string{"storage", "paths", "skills"}, deprecated: "storage.paths.skills", namespace: "storage", directField: true},
 	{legacyKey: "repo_dir", canonical: []string{"storage", "paths", "repo"}, deprecated: "storage.paths.repo", namespace: "storage", directField: true},
 	{legacyKey: "projects_dir", canonical: []string{"storage", "paths", "projects"}, deprecated: "storage.paths.projects", namespace: "storage", directField: true},
 	{legacyKey: "clones_dir", canonical: []string{"storage", "paths", "clones"}, deprecated: "storage.paths.clones", namespace: "storage", directField: true},
@@ -783,7 +782,6 @@ func normalizeStorageNamespace(builder *flatConfigBuilder, node *yaml.Node, sink
 func normalizeStoragePathsNamespace(builder *flatConfigBuilder, node *yaml.Node, sink *unknownKeySink) error {
 	return normalizeSimpleNamespaceSink(builder, node, sink, map[string]string{
 		"tasks":       "tasks_dir",
-		"skills":      "skills_dir",
 		"repo":        "repo_dir",
 		"projects":    "projects_dir",
 		"clones":      "clones_dir",

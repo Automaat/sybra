@@ -183,7 +183,7 @@ func (s *OrchestratorService) reconcileOrchestratorsLocked() string {
 }
 
 // StartOrchestrator launches the orchestrator as an in-app conversational
-// agent rooted at ~/.sybra (where the brain CLAUDE.md + skills live). The
+// agent rooted at ~/.sybra (where the brain CLAUDE.md lives). The
 // detector/dispatch loop runs in-process in the Go backend (see
 // LifecycleManager.startMonitorService); this session handles the
 // judgment-driven work on top of it. Provider is resolved through the A/B suite

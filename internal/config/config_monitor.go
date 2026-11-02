@@ -1,7 +1,7 @@
 package config
 
 // MonitorConfig controls the in-process monitor service that replaces the
-// /loop 5m /sybra-monitor skill. Each tick snapshots the board + audit
+// legacy 5-minute monitor loop. Each tick snapshots the board + audit
 // window, detects anomalies (lost agents, PR gaps, dwell, failure spikes,
 // bottlenecks), runs idempotent remediations directly, and dispatches a
 // focused headless agent for anomalies that need LLM judgment.

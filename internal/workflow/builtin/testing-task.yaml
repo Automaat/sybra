@@ -91,41 +91,33 @@ steps:
       max_retries: 1
       output_schema: >-
         {"type":"object","properties":{"verdict":{"type":"string","enum":["PASS","FAIL"]},"outcome":{"type":"string","enum":["pass","product_bug","infra_failure","ambiguous_requirement","missing_evidence"]},"failures_markdown":{"type":"string"},"surface_kind":{"type":"string","enum":["web","cli","server","desktop","k8s","library","docs","none"]},"app_started":{"type":"boolean"},"start_command":{"type":"string"},"readiness_probe":{"type":"object","properties":{"command":{"type":"string"},"expected":{"type":"string"},"actual":{"type":"string"},"observed":{"type":"string"},"output":{"type":"string"},"status":{"type":"string"},"url":{"type":"string"}},"required":["command","expected","actual","observed","output","status","url"],"additionalProperties":false},"manual_probes":{"type":"array","items":{"type":"object","properties":{"command":{"type":"string"},"expected":{"type":"string"},"actual":{"type":"string"},"observed":{"type":"string"},"output":{"type":"string"},"status":{"type":"string"}},"required":["command","expected","actual","observed","output","status"],"additionalProperties":false}},"automated_checks":{"type":"array","items":{"type":"object","properties":{"command":{"type":"string"},"actual":{"type":"string"},"observed":{"type":"string"},"output":{"type":"string"},"status":{"type":"string"}},"required":["command","actual","observed","output","status"],"additionalProperties":false}},"unable_to_run_reason":{"type":"string"}},"required":["verdict","outcome","failures_markdown","surface_kind","app_started","start_command","readiness_probe","manual_probes","automated_checks","unable_to_run_reason"],"additionalProperties":false}
-      # The full test procedure (acceptance-criteria derivation, angles of
-      # attack, sandbox/SYBRA_HOME handling, evidence grounding, output
-      # contract) lives solely in /sybra-test
-      # (internal/skills/data/sybra-test.md) — that is this step's canonical
-      # orchestration owner. This prompt carries only what the skill cannot
-      # know statically: the task id, retry guidance, the live manual_test
-      # surface, and the acceptance ledger. It used to restate the skill's
-      # entire procedure inline as well, and the two copies had already
-      # silently drifted (the inline SYBRA_HOME warning was missing the
-      # skill's flock-enforcement fact) — see
-      # TestBuiltinTestingTask_RunTestPromptDoesNotDuplicateSkillProcedure,
-      # which fails if that procedure text creeps back in here. This step
-      # enforces output_schema, so the model must return the schema-valid
-      # verdict object — the schema itself is what constrains the output. A
-      # schema-enforced run cannot also close with the trailing HTML-comment
-      # skill-conformance receipt, so that receipt is intentionally skipped for
-      # this step (see resolveWorkflowSkillPrompt / Agent.HasOutputSchema);
-      # forcing it would fail every real run to human-required. There is no
-      # correctness reason to keep a redundant fallback copy of the procedure
-      # here.
-      prompt: >-
-        Adversarially test task {{.Task.ID}} using the /sybra-test skill.
-        {{if getvar .Vars "testing_reask_note"}}
-        RETRY GUIDANCE — your previous test report was rejected:
+      prompt: |-
+        {{prompt "adversarial-test"}}
+
+        ---
+
+        # Test target
+
+        Test task {{.Task.ID}} against base ref `origin/main`, from the worktree you
+        are in. Save artifacts the verdict cites in
+        {{sidecardir .Vars}}/.sybra-test-evidence-{{.Task.ID}}.
+        {{- if getvar .Vars "testing_reask_note"}}
+
+        RETRY GUIDANCE: your previous test report was rejected:
         {{getvar .Vars "testing_reask_note"}}
-        {{end}}
-        {{if .Task.ManualTest.Kind}}This project's .sybra.yaml declares a manual_test surface:
+        {{- end}}
+        {{- if .Task.ManualTest.Kind}}
+
+        This project's .sybra.yaml declares a manual_test surface:
           - kind: {{.Task.ManualTest.Kind}}
           - command: {{.Task.ManualTest.Command}}
           - health_url: {{.Task.ManualTest.HealthURL}}
           - probe_commands:
         {{range .Task.ManualTest.ProbeCommands}}    - {{.}}
         {{end}}Prefer this surface for black-box testing unless the task scope clearly makes it irrelevant.
-        {{end}}
-        {{if acceptanceledger .Task.AcceptanceLedger}}
+        {{- end}}
+        {{- if acceptanceledger .Task.AcceptanceLedger}}
+
         The task body carries a persistent acceptance ledger of distinct prior
         product bugs. Reproduce and re-verify EVERY ledger entry against the
         CURRENT worktree on every pass. PASS only if all ledger entries hold
@@ -133,19 +125,18 @@ steps:
         not break the feature.
 
         {{acceptanceledger .Task.AcceptanceLedger}}
-        {{end}}
+        {{- end}}
+
         Before looking for defects, derive a cheap acceptance probe from the
         task when possible. For sweep/refactor wording like "everywhere",
         "all", "single utility", "unified", or "no raw X remains", run a
         repo-wide grep/test invariant that would catch missed call sites. Include
         that command in the failure report when it fails.
 
-        Follow the /sybra-test skill's Output Contract exactly: for
-        plain-text output the FINAL line MUST be exactly `TEST_VERDICT: PASS`
-        or `TEST_VERDICT: FAIL`; when your provider enforces this step's
-        output_schema, return the JSON verdict object instead. Do NOT call
-        `sybra-cli update` or mutate the task — Sybra ingests your final
-        report and appends it to the task atomically.
+        When your provider enforces this step's output_schema, your FINAL message
+        must be ONLY the JSON verdict object. Otherwise, report the same fields as
+        labelled plain text, and the FINAL line MUST be exactly `TEST_VERDICT: PASS`
+        or `TEST_VERDICT: FAIL`.
     next:
       - goto: route_test
 

@@ -31,7 +31,6 @@ import (
 	"github.com/Automaat/sybra/internal/autoupdate"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/logging"
-	"github.com/Automaat/sybra/internal/skills"
 	"github.com/Automaat/sybra/internal/sse"
 	"github.com/Automaat/sybra/internal/sybra"
 )
@@ -205,7 +204,6 @@ func buildAppOptions(
 	v3app **application.App,
 ) []sybra.Option {
 	opts := []sybra.Option{
-		sybra.WithSkillsFS(skills.FS),
 		sybra.WithEmitFactory(func(_ context.Context) func(string, any) {
 			return func(event string, data any) { (*v3emit)(event, data) }
 		}),

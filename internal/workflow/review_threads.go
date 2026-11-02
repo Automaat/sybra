@@ -20,7 +20,7 @@ const PRReviewAgentLoginVar = "pr_review_agent_login"
 //
 // Comments is the identity check, and it is a count rather than an author for
 // two reasons. The harness cannot ask "did the agent answer this?" by
-// resolution state: the fix-review skill deliberately never resolves a
+// resolution state: fix-review deliberately never resolves a
 // reviewer's thread, so a correctly answered thread stays unresolved. It also
 // cannot key on the newest comment's author: the reviewer may post again
 // between the reply and this check, which would restore the brief-time author

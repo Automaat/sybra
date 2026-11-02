@@ -176,7 +176,6 @@ func (r *eventRecorder) snapshot() []recordedEvent {
 func startupLikeServerTestConfig(home string) *config.Config {
 	cfg := config.DefaultConfig()
 	cfg.TasksDir = filepath.Join(home, "tasks")
-	cfg.SkillsDir = filepath.Join(home, "claude", "skills")
 	cfg.RepoDir = home
 	cfg.ProjectsDir = filepath.Join(home, "projects")
 	cfg.ClonesDir = filepath.Join(home, "clones")

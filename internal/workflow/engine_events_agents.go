@@ -119,11 +119,6 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 		out.TerminalStatus = taskstatus.Blocked
 		out.TerminalReason = "remote execution was rejected permanently; operator action is required before retry"
 	}
-	if def, ok := defs.get(); ok && e.maybeRecoverUnverifiedSkillRun(taskID, c.AgentID, spawnedStep, c.Result, def, def.StepByID(t.Workflow.CurrentStep)) {
-		e.clearAgentStep(taskID, c.AgentID)
-		return
-	}
-
 	if err := e.AdvanceStep(taskID, out); err != nil {
 		e.logger.Error("workflow.agent-complete.advance", "task_id", taskID, "err", err)
 		// Same surfacing as ResumeStalled: AdvanceStep often fails because

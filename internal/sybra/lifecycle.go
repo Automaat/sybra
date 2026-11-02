@@ -1003,7 +1003,7 @@ func (lm *LifecycleManager) startRoutingService(ctx context.Context, emit func(s
 
 // wireCohortObserved connects the canary-cohort gate
 // (internal/abtest.CohortObserved) both dispatch chokepoints consult —
-// agent.Manager.ApplyABVariant (orchestrator/human-review/staff-review) and
+// agent.Manager.ApplyABVariant (orchestrator/human-review/PR-review) and
 // workflow.Engine.selectABVariant (the primary task-role dispatch path) —
 // to the live evaluation report, so an experiment.Canary policy configured
 // in ab_testing.yaml is actually gated on real resolved-run counts and

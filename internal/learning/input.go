@@ -234,7 +234,7 @@ Rules:
 - Echo since/until exactly as given above — do not reformat or shift them.
 - worked/notWorked/uncertain/nextBets: each at most %d items, each item at most %d characters.
 - uncertain is for findings with too little data to be confident.
-- Any prompt/skill/model takeaway that references one of the experiments above MUST set variantRef to that
+- Any prompt/model takeaway that references one of the experiments above MUST set variantRef to that
   variant's exact id, and if that variant's insufficientData is true, the takeaway text MUST state the sample
   caveat explicitly (e.g. "low sample, N=12").
 - Do not fabricate specifics not present in the data above.

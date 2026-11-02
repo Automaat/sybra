@@ -1370,8 +1370,8 @@ func TestTaskService_EnrichFromPR_NotMyPRStartsPRReviewWorkflow(t *testing.T) {
 		t.Fatalf("AgentRuns = %+v, want one pr-review workflow agent", got.AgentRuns)
 	}
 	run := got.AgentRuns[0]
-	if run.Role != "review" || run.RequestedSkill != "staff-code-review" {
-		t.Fatalf("AgentRun = %+v, want staff review run", run)
+	if run.Role != "review" {
+		t.Fatalf("AgentRun = %+v, want review run", run)
 	}
 	if !strings.Contains(run.Prompt, "NEVER submit an APPROVE review event") ||
 		!strings.Contains(run.Prompt, "inline comments, not one aggregated comment") {

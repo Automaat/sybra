@@ -48,9 +48,7 @@ type runningFetcher struct {
 	intervalS int
 }
 
-// NewScheduler builds a Scheduler. homeDir is the cwd handed to spawned
-// agents — must be a directory whose .claude/skills/ holds the slash
-// commands the loop prompts reference.
+// NewScheduler builds a Scheduler. homeDir is the cwd handed to spawned agents.
 func NewScheduler(parent context.Context, store Repository, runner AgentRunner, logger *slog.Logger, emit EmitFunc, homeDir string) *Scheduler {
 	if logger == nil {
 		logger = slog.Default()

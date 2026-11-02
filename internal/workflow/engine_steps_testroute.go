@@ -2410,7 +2410,7 @@ func isTestFailuresHeading(line string) bool {
 
 // containsFixSuggestions reports whether the test-runner output includes
 // imperative fix language in the ## Test Failures section. Such language
-// violates the skill contract: test-runners report symptoms and reproduction
+// violates the prompt contract: test-runners report symptoms and reproduction
 // steps; implementers decide the fix.
 func containsFixSuggestions(output string) bool {
 	section := testFailSectionOf(output)
@@ -2470,7 +2470,7 @@ func skipFixSuggestionLine(trimmed string) bool {
 	return false
 }
 
-// fixSuggestionPatterns match prescriptive code-edit forms that the test skill
+// fixSuggestionPatterns match prescriptive code-edit forms that the test prompt
 // explicitly prohibits, including the "switch X to Y" form that escaped the
 // original task b319d12f implementation.
 var fixSuggestionPatterns = []*regexp.Regexp{

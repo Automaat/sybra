@@ -1,8 +1,8 @@
 package config
 
 // PromptLabConfig controls the automated Prompt Lab loop that scaffolds
-// versioned prompt/skill variant proposals from fleet evidence (Evaluation
-// report + stats). It never authors or applies prompt/skill text itself —
+// versioned prompt variant proposals from fleet evidence (Evaluation
+// report + stats). It never authors or applies prompt text itself —
 // every proposal is filed as a local task whose authoring workflow gates the
 // resulting variant through the standard offline-eval + A/B path. Disabled
 // by default: unlike HarnessEvolveConfig, a fresh install must not start

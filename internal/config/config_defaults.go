@@ -1003,7 +1003,6 @@ func WriteRawConfig(data []byte) error {
 func (c *Config) Directories() map[string]string {
 	return map[string]string{
 		"tasks":           c.TasksDir,
-		"skills":          c.SkillsDir,
 		"projects":        c.ProjectsDir,
 		"clones":          c.ClonesDir,
 		"worktrees":       c.WorktreesDir,
@@ -2007,10 +2006,6 @@ func defaultTasksDir() string {
 	return filepath.Join(HomeDir(), "tasks")
 }
 
-func defaultSkillsDir() string {
-	return filepath.Join(HomeDir(), ".claude", "skills")
-}
-
 func defaultProjectsDir() string {
 	return filepath.Join(HomeDir(), "projects")
 }
@@ -2076,7 +2071,7 @@ func HarnessEvolveDir() string {
 }
 
 // PromptLabDir is the local store for promptlab run snapshots and scaffolded
-// proposal records. It never holds authored prompt/skill text — see
+// proposal records. It never holds authored prompt text — see
 // internal/promptlab.
 func PromptLabDir() string {
 	return filepath.Join(HomeDir(), "prompt-lab")
@@ -2090,7 +2085,7 @@ func RoutingDir() string {
 	return filepath.Join(HomeDir(), "routing")
 }
 
-// PromptEvalDir is the local store for offline prompt/skill eval verdicts
+// PromptEvalDir is the local store for offline prompt eval verdicts
 // (internal/prompteval). Layout: <dir>/<variantID>/<digest>.json.
 func PromptEvalDir() string {
 	return filepath.Join(HomeDir(), "prompteval")

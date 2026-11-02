@@ -735,9 +735,6 @@ func cmpConfigSubset(got, want *Config) string {
 	if got.AutoUpdate.PollSeconds != want.AutoUpdate.PollSeconds {
 		diffs = append(diffs, fmt.Sprintf("AutoUpdate.PollSeconds: got %d want %d", got.AutoUpdate.PollSeconds, want.AutoUpdate.PollSeconds))
 	}
-	if got.SkillsDir != want.SkillsDir {
-		diffs = append(diffs, fmt.Sprintf("SkillsDir: got %q want %q", got.SkillsDir, want.SkillsDir))
-	}
 	if got.ProjectsDir != want.ProjectsDir {
 		diffs = append(diffs, fmt.Sprintf("ProjectsDir: got %q want %q", got.ProjectsDir, want.ProjectsDir))
 	}
@@ -2293,46 +2290,6 @@ func TestDefaultHeadlessSteerable(t *testing.T) {
 				t.Errorf("got %v, want %v", got, tt.want)
 			}
 		})
-	}
-}
-
-func TestLoadMigratesStaleSkillsDir(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("SYBRA_HOME", dir)
-
-	// Simulate the pre-cdb6dc5 default that users still have persisted.
-	stale := filepath.Join(dir, "skills")
-	yaml := []byte("skills_dir: " + stale + "\n")
-	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yaml, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := filepath.Join(dir, ".claude", "skills")
-	if cfg.SkillsDir != want {
-		t.Fatalf("SkillsDir = %q, want %q (migration should silently retarget the old default)", cfg.SkillsDir, want)
-	}
-}
-
-func TestLoadPreservesCustomSkillsDir(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("SYBRA_HOME", dir)
-
-	custom := "/tmp/my-custom-skills"
-	yaml := []byte("skills_dir: " + custom + "\n")
-	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yaml, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.SkillsDir != custom {
-		t.Fatalf("SkillsDir = %q, want %q (only the stale default should be migrated)", cfg.SkillsDir, custom)
 	}
 }
 

@@ -19,17 +19,6 @@ trigger:
       operator: not_equals
       value: ""
 steps:
-  # Mechanical heuristic: pick adversarial vs staff review based on PR diff
-  # size + shape. Same step type used by simple-task; here it falls back to
-  # `gh pr diff` since this workflow has no worktree. Unlike simple-task, this
-  # workflow DOES still route to staff on a big+complex diff — the review lands
-  # publicly under the operator's name, so depth is worth the spend here.
-  - id: triage_review
-    name: Triage Review
-    type: triage_review
-    next:
-      - goto: set_in_progress
-
   # Clear any prior human-required before launching the review agent.
   # Older inline triage could park tiny PRs on human-required; existing tasks
   # may still carry that status when this workflow resumes.
@@ -39,28 +28,28 @@ steps:
     config:
       status: in-progress
     next:
-      - goto: pick_review_method
+      - goto: review_simple
 
-  - id: pick_review_method
-    name: Pick Review Method
+  # Retired with staff review. Kept so a task parked on one of these at upgrade
+  # resumes with a fresh review instead of failing on a missing step.
+  - id: triage_review
+    name: Retired Triage Review
     type: condition
     next:
-      - when:
-          field: task.tags
-          operator: contains
-          value: force-staff-review
-        goto: review_staff
-      - when:
-          field: vars.step.triage_review.output
-          operator: equals
-          value: simple
-        goto: review_simple
-      - goto: review_staff
+      - goto: review_simple
 
-  # Orchestration owner: /adversarial-review (internal/skills/data/
-  # adversarial-review.md). Below is a thin posting contract (draft reviews,
-  # no approvals, attribution footer) — the review methodology lives solely in
-  # the skill.
+  - id: pick_review_method
+    name: Retired Pick Review Method
+    type: condition
+    next:
+      - goto: review_simple
+
+  - id: review_staff
+    name: Retired Staff Review
+    type: condition
+    next:
+      - goto: review_simple
+
   - id: review_simple
     name: Review PR (adversarial)
     type: run_agent
@@ -69,119 +58,22 @@ steps:
       mode: headless
       model: sonnet
       provider: cross
-      # The review skill needs a real checkout. Without this, direct-dispatch
-      # verifier setup falls back to an empty temporary cwd and checkout
-      # validation fails before an agent is registered.
+      # Without this, direct-dispatch verifier setup falls back to an empty
+      # temporary cwd and checkout validation fails before an agent is
+      # registered.
       needs_worktree: true
-      prompt: >-
-        Run /adversarial-review on https://github.com/{{.Task.ProjectID}}/pull/{{.Task.PRNumber}}
-
-        This task is an authorized Sybra PR review for the linked project. Do not
-        ask the operator for confirmation before posting your review.
+      prompt: |-
+        {{prreviewprompt .Task.ProjectID .Task.PRNumber}}
 
         If PR #{{.Task.PRNumber}} does not exist or cannot be fetched (e.g. `gh pr
-        view {{.Task.PRNumber}} --repo {{.Task.ProjectID}}` 404s), do NOT treat
-        this as a completed review. Instead run
-        `sybra-cli update {{.Task.ID}} --status human-required --status-reason "pr-review: PR #{{.Task.PRNumber}} not found"`
+        view {{.Task.PRNumber}} --repo {{.Task.ProjectID}}` 404s), or the verdict is
+        `Review Verdict: FAILED`, do NOT treat this as a completed review. Instead run
+        `sybra-cli update {{.Task.ID}} --status human-required --status-reason "pr-review: <the 404 or Gate failure line>"`
         and stop.
-
-        You have no approval authority: NEVER submit an APPROVE review event.
-        Do not run `gh pr review --approve` and do not submit `event=APPROVE`
-        via `gh api`. REQUEST_CHANGES and COMMENT are feedback, not approval
-        authority, so submit those directly instead of leaving them pending.
-
-        Before posting, fetch the PR head SHA and existing reviews; if a
-        review for that head already contains the Sybra harness footer, do not
-        create another review.
-
-        Use GitHub's review API so findings become inline comments, not one
-        aggregated comment. Add each blocking correctness issue as a `comments`
-        entry on the changed line it applies to. Put only the short verdict and
-        summary in the review body.
-
-        Post via `gh api repos/{{.Task.ProjectID}}/pulls/{{.Task.PRNumber}}/reviews
-        -X POST ...` with explicit `-f`/`-F` fields such as
-        `comments[][path]`, `comments[][line]`, `comments[][side]=RIGHT`, and
-        `comments[][body]`, then choose the event by verdict:
-
-        - At least one blocking finding: submit with `-f event=REQUEST_CHANGES`.
-        - No blocking finding but the review has notes worth surfacing: submit with `-f event=COMMENT`.
-        - Nothing to say at all (fully clean, no findings): omit `event` so GitHub leaves the review PENDING for a human to approve.
-
-        End the review summary and every review comment you post with a blank
-        line then exactly this standalone harness attribution footer:
-
-        _Generated by Sybra harness_
     next:
-      # Mirrors simple-task-review's require_code_review gate: if the agent
-      # could not find/review the PR (e.g. lookup failure) it self-escalates
-      # to human-required instead of posting, so this must stop the workflow
-      # here rather than blindly reporting the review as done (#2647).
-      - when:
-          field: task.status
-          operator: equals
-          value: human-required
-        goto: ""
-      - goto: set_in_review
-
-  # Orchestration owner: /staff-code-review (marketplace plugin skill — no
-  # bundled fallback in this repo). Thin posting contract only, mirroring
-  # review_simple above.
-  - id: review_staff
-    name: Review PR (staff)
-    type: run_agent
-    config:
-      role: review
-      mode: headless
-      # Aligned to simple-task-review's staff pass (which leaves model unset
-      # and inherits the sonnet default) — opus x an 11-subagent staff review
-      # was the priciest shape in the fleet (review = 34% of spend).
-      model: sonnet
-      provider: cross
-      # Keep this aligned with review_simple: staff review must start from the
-      # fetched PR head, never from the process-wide fallback directory.
-      needs_worktree: true
-      prompt: >-
-        Run /staff-code-review on https://github.com/{{.Task.ProjectID}}/pull/{{.Task.PRNumber}}
-
-        This task is an authorized Sybra PR review for the linked project. Do not
-        ask the operator for confirmation before posting your review.
-
-        If PR #{{.Task.PRNumber}} does not exist or cannot be fetched (e.g. `gh pr
-        view {{.Task.PRNumber}} --repo {{.Task.ProjectID}}` 404s), do NOT treat
-        this as a completed review. Instead run
-        `sybra-cli update {{.Task.ID}} --status human-required --status-reason "pr-review: PR #{{.Task.PRNumber}} not found"`
-        and stop.
-
-        You have no approval authority: NEVER submit an APPROVE review event.
-        Do not run `gh pr review --approve` and do not submit `event=APPROVE`
-        via `gh api`. REQUEST_CHANGES and COMMENT are feedback, not approval
-        authority, so submit those directly instead of leaving them pending.
-
-        Before posting, fetch the PR head SHA and existing reviews; if a
-        review for that head already contains the Sybra harness footer, do not
-        create another review.
-
-        Use GitHub's review API so findings become inline comments, not one
-        aggregated comment. Add each blocking correctness issue as a `comments`
-        entry on the changed line it applies to. Put only the short verdict and
-        summary in the review body.
-
-        Post via `gh api repos/{{.Task.ProjectID}}/pulls/{{.Task.PRNumber}}/reviews
-        -X POST ...` with explicit `-f`/`-F` fields such as
-        `comments[][path]`, `comments[][line]`, `comments[][side]=RIGHT`, and
-        `comments[][body]`, then choose the event by verdict:
-
-        - At least one blocking finding: submit with `-f event=REQUEST_CHANGES`.
-        - No blocking finding but the review has notes worth surfacing: submit with `-f event=COMMENT`.
-        - Nothing to say at all (fully clean, no findings): omit `event` so GitHub leaves the review PENDING for a human to approve.
-
-        End the review summary and every review comment you post with a blank
-        line then exactly this standalone harness attribution footer:
-
-        _Generated by Sybra harness_
-    next:
-      # Mirrors review_simple's failure-escalation gate above (#2647).
+      # If the agent could not find or review the PR it self-escalates to
+      # human-required instead of posting, so stop here rather than reporting
+      # the review as done (#2647).
       - when:
           field: task.status
           operator: equals

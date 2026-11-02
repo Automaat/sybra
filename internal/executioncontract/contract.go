@@ -121,10 +121,13 @@ type ResourceLimits struct {
 }
 
 type ExecutionOptions struct {
-	Steerable          bool   `json:"steerable,omitempty"`
-	ForkSubagent       bool   `json:"forkSubagent,omitempty"`
-	RetryWatchdog      int    `json:"retryWatchdog,omitempty"`
-	FallbackModel      string `json:"fallbackModel,omitempty"`
+	Steerable     bool   `json:"steerable,omitempty"`
+	ForkSubagent  bool   `json:"forkSubagent,omitempty"`
+	RetryWatchdog int    `json:"retryWatchdog,omitempty"`
+	FallbackModel string `json:"fallbackModel,omitempty"`
+	// RequestedSkill and SkillExecutionMode are ignored. Envelope decoding
+	// rejects unknown fields, so a leader that predates their removal would
+	// otherwise fail every dispatch to an upgraded worker.
 	RequestedSkill     string `json:"requestedSkill,omitempty"`
 	SkillExecutionMode string `json:"skillExecutionMode,omitempty"`
 	SeedWorkingMemory  bool   `json:"seedWorkingMemory,omitempty"`

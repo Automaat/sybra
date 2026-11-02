@@ -29,8 +29,8 @@ func (b reviewThreadBrief) vars() string {
 
 // fetchReviewThreadBrief loads the threads this run owes a reply to. It must
 // match the monitor's own actionable rule (FetchPRReviewState): a thread the
-// agent already answered stays unresolved forever, because the fix-review
-// skill never resolves a reviewer's thread and the reviewer rarely does
+// agent already answered stays unresolved forever, because fix-review
+// never resolves a reviewer's thread and the reviewer rarely does
 // either. Briefing those would park every later run on a thread no reply can
 // ever clear.
 //

@@ -20,7 +20,6 @@ import (
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/providerid"
-	"github.com/Automaat/sybra/internal/skillattr"
 )
 
 // newParseTestManager returns a Manager suitable for unit-testing
@@ -2189,7 +2188,7 @@ func TestPrepareRunConfig_DefaultsReasoningEffortForAllProviders(t *testing.T) {
 // TestNewRunningAgent_StampsPromptHashForEveryRun proves the canonical dispatch
 // prompt hash is stamped centrally at construction — for every provider and for
 // non-implementation run names (review, fix-review) that never flow through
-// recordImplAgentStart. Without this the completion handler's prompt_rendered
+// recordImplAgentStart. Without this the dispatch audit's prompt_hash
 // audit is dropped for those runs (empty hash short-circuits emit).
 func TestNewRunningAgent_StampsPromptHashForEveryRun(t *testing.T) {
 	t.Parallel()
@@ -2203,14 +2202,14 @@ func TestNewRunningAgent_StampsPromptHashForEveryRun(t *testing.T) {
 					Provider: provider,
 					Name:     name,
 					Mode:     "headless",
-					Prompt:   "Run /staff-code-review now",
+					Prompt:   "Review the pull request now",
 					Dir:      t.TempDir(),
 				})
 				if err != nil {
 					t.Fatalf("prepareRunConfig: %v", err)
 				}
 				a := newRunningAgent("a", cfg, prov, func() {})
-				want := skillattr.HashSourceID(cfg.Prompt)
+				want := HashPrompt(cfg.Prompt)
 				if want == "" {
 					t.Fatal("expected non-empty hash for non-empty prompt")
 				}

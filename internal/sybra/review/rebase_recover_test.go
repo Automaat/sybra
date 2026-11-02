@@ -76,7 +76,7 @@ func TestRecoverStaleBranchConflict_ReplacesActiveWorkflowDuringDispatch(t *test
 	r, tk := setupRebaseRecoveryHandler(t, true)
 	tk.Workflow = &workflow.Execution{
 		WorkflowID:  "review-workflow",
-		CurrentStep: "code_review_staff",
+		CurrentStep: "code_review_simple",
 		State:       workflow.ExecRunning,
 	}
 	if _, err := r.tasks.Update(tk.ID, task.Update{Workflow: &tk.Workflow}); err != nil {

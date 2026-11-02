@@ -280,7 +280,7 @@ func TestParallel_AppliesABAssignmentToObserverChildren(t *testing.T) {
 	}
 }
 
-func TestParallel_AppliesPromptAndSkillVariantPayloads(t *testing.T) {
+func TestParallel_AppliesPromptVariantPayloads(t *testing.T) {
 	prev := providerAvailable
 	providerAvailable = func(string) bool { return true }
 	t.Cleanup(func() { providerAvailable = prev })
@@ -293,8 +293,8 @@ func TestParallel_AppliesPromptAndSkillVariantPayloads(t *testing.T) {
 			ID:   "implement_both",
 			Type: StepParallel,
 			Parallel: []Step{
-				{ID: "impl_a", Type: StepRunAgent, Config: StepConfig{Role: "plan", Mode: "headless", Prompt: "control {{.Step.ID}} /sybra-test"}},
-				{ID: "impl_b", Type: StepRunAgent, Config: StepConfig{Role: "plan", Mode: "headless", Prompt: "control {{.Step.ID}} /sybra-test"}},
+				{ID: "impl_a", Type: StepRunAgent, Config: StepConfig{Role: "plan", Mode: "headless", Prompt: "control {{.Step.ID}}"}},
+				{ID: "impl_b", Type: StepRunAgent, Config: StepConfig{Role: "plan", Mode: "headless", Prompt: "control {{.Step.ID}}"}},
 			},
 		}},
 	}
@@ -313,7 +313,6 @@ func TestParallel_AppliesPromptAndSkillVariantPayloads(t *testing.T) {
 		Variants: []abtest.Variant{{
 			ID: "payload", Provider: "claude", Model: "sonnet", Weight: 1,
 			PromptTransform: &abtest.PromptTransform{Op: "prepend", Text: "variant {{.Step.ID}}: "},
-			SkillAliases:    map[string]string{"sybra-test": "sybra-test-v2"},
 		}},
 	}}})
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo"})
@@ -325,11 +324,11 @@ func TestParallel_AppliesPromptAndSkillVariantPayloads(t *testing.T) {
 		t.Fatalf("StartAgent calls = %d, want 2", got)
 	}
 	for _, c := range agents.calls {
-		want := "variant " + c.Assignment.AssignmentKey[strings.LastIndex(c.Assignment.AssignmentKey, "|")+1:] + ": control " + c.Assignment.AssignmentKey[strings.LastIndex(c.Assignment.AssignmentKey, "|")+1:] + " /sybra-test-v2"
+		want := "variant " + c.Assignment.AssignmentKey[strings.LastIndex(c.Assignment.AssignmentKey, "|")+1:] + ": control " + c.Assignment.AssignmentKey[strings.LastIndex(c.Assignment.AssignmentKey, "|")+1:]
 		if c.Prompt != want {
 			t.Fatalf("parallel prompt = %q, want %q", c.Prompt, want)
 		}
-		if c.Assignment.PromptTransform == nil || c.Assignment.SkillAliases["sybra-test"] != "sybra-test-v2" {
+		if c.Assignment.PromptTransform == nil {
 			t.Fatalf("parallel assignment missing payload: %+v", c.Assignment)
 		}
 	}

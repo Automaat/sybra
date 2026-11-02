@@ -66,9 +66,9 @@ func TestApplyABVariant_AppliesPromptTransform(t *testing.T) {
 		Weight:          1,
 	})
 
-	cfg := m.ApplyABVariant(RunConfig{Model: "opus", Prompt: "Run /staff-code-review"}, ab, "task-1", "review")
+	cfg := m.ApplyABVariant(RunConfig{Model: "opus", Prompt: "Review the pull request"}, ab, "task-1", "review")
 
-	if want := "Run /staff-code-review\nUse the review variant."; cfg.Prompt != want {
+	if want := "Review the pull request\nUse the review variant."; cfg.Prompt != want {
 		t.Fatalf("Prompt = %q, want %q", cfg.Prompt, want)
 	}
 }

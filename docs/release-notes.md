@@ -4,6 +4,31 @@ Operator-facing changes that alter what a running board does, in the order
 they landed. Sybra auto-deploys `main` (see `CLAUDE.md`'s Server Deployment
 section), so "release" here means "reached `main`," not a tagged version.
 
+## 2026-11-02 — Agents start from plain prompts; staff review removed
+
+Sybra no longer uses skills. Review, testing, plan critique, and the self-monitor
+loop deliver their instructions inline, so every provider reads the same text and
+nothing is installed on the host.
+
+- **Removed:** `sybra-cli install-skills` and the `skills_dir` config key. Startup
+  deletes the skills earlier versions installed, by exact name. A symlinked skill
+  is left alone. Your own skills are untouched, but Claude runs now pass
+  `--disable-slash-commands`, so agents no longer see them.
+- **Staff review is gone,** along with the `force-staff-review` tag. Every review,
+  including inbound PR review, is now the adversarial review, which does not
+  evaluate architecture, conventions, or dead code. It posts `REQUEST_CHANGES` on
+  any surviving `blocking:` or `issue:` finding.
+- **Review and testing changed.** Both now come from `smykla-skalski/sai`. A review
+  that cannot run returns `FAILED`, retries, and then parks on human-required. A
+  test verdict of `PASS (partial)` passes when at least one criterion passed on a
+  real probe, with the untested criteria in `unable_to_run_reason`.
+- **Evaluation:** the skill execution breakdown and skill-parity gating are gone,
+  and the `review-tighten-instructions-pl-a2d853b2c1d9` experiment is retired in
+  favour of `review-role-expensive`. Review and test results before and after this
+  change are not comparable.
+- **Codex:** every run now passes `--ignore-user-config`. Review and test runs used
+  to load user config because their prompts named a skill.
+
 ## 2026-09-02 — SQLite writers queue without starving readers
 
 SQLite now admits one process-local writer at a time before that writer takes

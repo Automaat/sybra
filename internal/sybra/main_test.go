@@ -8,7 +8,7 @@ import (
 // init seeds SYBRA_HOME for the package's tests so config.HomeDir() points
 // at a writable location.
 //
-// Pre-PR1 the skills-sync tests (now in internal/skillsync) had the side
+// Earlier sync tests had the side
 // effect of writing CLAUDE.md/AGENTS.md to config.HomeDir(), which
 // implicitly created the directory. Other tests (notably the planning
 // service tests) rely on config.HomeDir() existing because

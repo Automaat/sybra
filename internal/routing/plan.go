@@ -35,7 +35,7 @@ func (o PlanOptions) withDefaults(variantsPerExperiment int) PlanOptions {
 // variants absent from current are historical-only and ignored: a removed
 // cohort must not become routable again just because the evaluation report
 // still keeps its old rows visible. A current variant absent from scores, or
-// present but InsufficientData/SkillParityUnknown, or below MinSamplesToShift
+// present but InsufficientData, or below MinSamplesToShift
 // resolved runs, is exploration-only: it is never ranked and always lands at
 // FloorWeight. Every other variant is ranked by Score descending and the
 // remaining budget above the floor is distributed by rank, so a lower (or
@@ -120,14 +120,14 @@ type rankedVariant struct {
 
 // rankEligibleVariants selects variants sufficiently sampled to be ranked by
 // score, sorted descending (deterministic tie-break by ID). A variant with no
-// score at all, or InsufficientData/SkillParityUnknown, or below
+// score at all, or InsufficientData, or below
 // minSamplesToShift resolved runs, is never eligible — it stays
 // exploration-only at the floor (see distributeBudget).
 func rankEligibleVariants(variantIDs []string, scoreByVariant map[string]Score, minSamplesToShift int) []rankedVariant {
 	var eligible []rankedVariant
 	for _, vid := range variantIDs {
 		s, ok := scoreByVariant[vid]
-		sufficient := ok && !s.InsufficientData && !s.SkillParityUnknown &&
+		sufficient := ok && !s.InsufficientData &&
 			(minSamplesToShift <= 0 || s.ResolvedRuns >= minSamplesToShift)
 		if sufficient {
 			eligible = append(eligible, rankedVariant{id: vid, value: s.Value})

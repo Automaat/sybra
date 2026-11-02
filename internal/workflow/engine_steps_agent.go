@@ -17,7 +17,6 @@ import (
 	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/executioncontract"
 	"github.com/Automaat/sybra/internal/providerid"
-	"github.com/Automaat/sybra/internal/skillinvoke"
 	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
@@ -375,7 +374,6 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	if err != nil {
 		return err
 	}
-	applySkillReceiptRecoveryAssignment(step.ID, wfExec, &assignment)
 	if !claimedEffectID.IsZero() {
 		assignment.IntentID = taskID + ":" + wfExec.WorkflowID + ":" + claimedEffectID.String()
 	}
@@ -613,7 +611,6 @@ func (e *Engine) selectABVariant(ctx abtest.SelectionContext) (AgentAssignment, 
 		AssignmentKey:   a.AssignmentKey,
 		ReasoningEffort: a.ReasoningEffort,
 		PromptTransform: workflowPromptTransform(a.PromptTransform),
-		SkillAliases:    cloneWorkflowSkillAliases(a.SkillAliases),
 		DecisionVersion: a.DecisionVersion,
 	}, true, nil
 }
@@ -725,7 +722,7 @@ func (e *Engine) renderAssignedPrompt(taskID string, step *Step, ctx TemplateCon
 	} else {
 		prompt = steered
 	}
-	return skillinvoke.ApplyAliases(prompt, assignment.SkillAliases), nil
+	return prompt, nil
 }
 
 func applyPromptTransform(prompt string, transform *PromptTransform) string {
@@ -740,15 +737,6 @@ func workflowPromptTransform(in *abtest.PromptTransform) *PromptTransform {
 		return nil
 	}
 	return &PromptTransform{Op: in.Op, Text: in.Text}
-}
-
-func cloneWorkflowSkillAliases(in map[string]string) map[string]string {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make(map[string]string, len(in))
-	maps.Copy(out, in)
-	return out
 }
 
 func (e *Engine) resolveAgentVariant(t TaskInfo, step *Step, wfExec *Execution, model, fallbackLog string) (provider, resolvedModel string, assignment AgentAssignment, err error) {
@@ -1086,4 +1074,45 @@ func (e *Engine) execShell(step *Step, ctx TemplateContext) (StepOutput, error) 
 		Status: status,
 		Output: string(output),
 	}, nil
+}
+
+func agentRunInfoByID(runs []AgentRunInfo, agentID string) (AgentRunInfo, bool) {
+	if agentID == "" {
+		return AgentRunInfo{}, false
+	}
+	for i := range slices.Backward(runs) {
+		if runs[i].AgentID == agentID {
+			return runs[i], true
+		}
+	}
+	return AgentRunInfo{}, false
+}
+
+func taskSidecarContent(t TaskInfo, kind string) string {
+	switch {
+	case kind == "plan":
+		return t.Plan
+	case kind == "plan_contract":
+		return t.PlanContract
+	case kind == "plan_critique":
+		return t.PlanCritique
+	case kind == "plan_research":
+		return t.PlanResearch
+	case kind == "plan_decisions":
+		return t.PlanDecisions
+	case kind == "plan_brief":
+		return t.PlanBrief
+	case kind == "code_review":
+		return t.CodeReview
+	case kind == "current_test_failures":
+		return t.CurrentTestFailures
+	case kind == "acceptance_ledger":
+		return t.AcceptanceLedger
+	case kind == "spec_decision":
+		return t.SpecDecision
+	case strings.HasPrefix(kind, "plan_draft."):
+		return t.PlanDrafts[strings.TrimPrefix(kind, "plan_draft.")]
+	default:
+		return ""
+	}
 }

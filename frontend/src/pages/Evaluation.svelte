@@ -74,23 +74,12 @@
 
   // Fixed experiment kind order; 'unknown' (orphaned experiment IDs) only
   // renders a section when there is actually orphaned data to show.
-  const experimentKinds = ['model', 'prompt', 'skill', 'unknown'] as const
+  const experimentKinds = ['model', 'prompt', 'unknown'] as const
   function kindLabel(kind: string): string {
     return kind.charAt(0).toUpperCase() + kind.slice(1)
   }
   function kindGroup(kind: string): ExperimentKindBreakdown | undefined {
     return report?.byExperimentKind?.find((g) => g.kind === kind)
-  }
-
-  function skillExecutionModeLabel(mode: string): string {
-    switch (mode) {
-      case 'none': return 'No skill'
-      case 'native': return 'Native'
-      case 'injected': return 'Injected'
-      case 'fallback': return 'Fallback'
-      case 'unavailable': return 'Unavailable'
-      default: return 'Unknown'
-    }
   }
 </script>
 
@@ -296,7 +285,6 @@
       {#each [
         { title: 'By Provider', data: report?.byProvider },
         { title: 'By Role', data: report?.byRole },
-        { title: 'By Skill Execution', data: report?.bySkillExecutionMode },
       ] as section (section.title)}
         <div class="rounded-lg border border-surface-300 bg-surface-50 p-4 dark:border-surface-600 dark:bg-surface-800">
           <h3 class="mb-3 text-sm font-semibold text-surface-500">{section.title}</h3>
@@ -316,7 +304,7 @@
               <tbody>
                 {#each section.data as row (row.key)}
                   <tr class="border-b border-surface-100 last:border-0 dark:border-surface-700">
-                    <td class="py-1.5 font-mono text-xs">{section.title === 'By Skill Execution' ? skillExecutionModeLabel(row.key) : row.key}</td>
+                    <td class="py-1.5 font-mono text-xs">{row.key}</td>
                     <td class="py-1.5 text-right">{row.runs}</td>
                     <td class="py-1.5 text-right text-surface-400">{row.stalled}</td>
                     <td class="py-1.5 text-right" title="{row.failures}/{row.resolvedRuns} resolved runs">{pct(row.failureRate)}</td>

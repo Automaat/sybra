@@ -42,7 +42,6 @@ import (
 	"github.com/Automaat/sybra/internal/httpserve"
 	"github.com/Automaat/sybra/internal/logging"
 	"github.com/Automaat/sybra/internal/metrics"
-	"github.com/Automaat/sybra/internal/skills"
 	"github.com/Automaat/sybra/internal/sse"
 	"github.com/Automaat/sybra/internal/sybra"
 	"github.com/Automaat/sybra/internal/task"
@@ -140,7 +139,6 @@ func run() (int, error) {
 
 	app := sybra.NewApp(logger, levelVar, cfg,
 		sybra.WithEmit(broker.Emit),
-		sybra.WithSkillsFS(skills.FS),
 		sybra.WithRestartRequest(newRestartRequest(shutdownCh, &restartRequested)),
 	)
 

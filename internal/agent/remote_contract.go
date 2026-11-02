@@ -88,7 +88,6 @@ func RemoteRunSpec(start ExecutionStart, metadata RemoteRunMetadata) (executionc
 		Options: executioncontract.ExecutionOptions{
 			Steerable: start.Config.HeadlessSteerable, ForkSubagent: start.Config.ForkSubagent,
 			RetryWatchdog: start.Config.RetryWatchdog, FallbackModel: start.Config.FallbackModel,
-			RequestedSkill: start.Config.RequestedSkill, SkillExecutionMode: start.Config.SkillExecutionMode,
 			SeedWorkingMemory: start.Config.SeedWorkingMemory, ResumeSessionID: start.Config.ResumeSessionID,
 			DiscardWorkspaceChanges: start.Config.RemoteDiscardWorkspaceChanges,
 		},

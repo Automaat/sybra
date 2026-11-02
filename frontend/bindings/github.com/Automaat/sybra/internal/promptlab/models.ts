@@ -46,7 +46,7 @@ export enum OfflineVerdict {
 };
 
 /**
- * Proposal is one reviewable suggestion to create a new prompt/skill variant,
+ * Proposal is one reviewable suggestion to create a new prompt variant,
  * scaffolded from fleet evidence. It never mutates a production prompt or
  * skill file itself.
  */
@@ -166,7 +166,7 @@ export class RunResult {
 
 /**
  * Subject identifies a role/workflow-step slice of the fleet whose
- * prompt/skill may be underperforming.
+ * prompt may be underperforming.
  */
 export class Subject {
     "role": string;
@@ -192,7 +192,7 @@ export class Subject {
 
 /**
  * VariantCandidate is a versioned, content-addressed scaffold for a future
- * prompt/skill variant. Intent records only the DIRECTION of the change —
+ * prompt variant. Intent records only the DIRECTION of the change —
  * promptlab never authors the variant's actual text; that happens later, by
  * hand or by an agent, in the task this candidate is filed under.
  */

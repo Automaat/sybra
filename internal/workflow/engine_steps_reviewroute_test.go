@@ -235,19 +235,6 @@ func TestAdvanceStep_FailedReviewDoesNotRouteOnTheLastVerdict(t *testing.T) {
 	}
 }
 
-func TestPrepareReviewVerdictAttemptVars_KeepsTheStaffLaneRewindTarget(t *testing.T) {
-	t.Parallel()
-	wf := &Execution{Variables: map[string]string{
-		reviewVerdictVar:           reviewVerdictNeedsFixes,
-		reviewVerdictSourceStepVar: "code_review_staff",
-	}}
-	prepareReviewVerdictAttemptVars(wf, &Step{ID: "code_review_staff", Config: StepConfig{Role: reviewAgentRole}})
-
-	if got := wf.Variables[reviewVerdictSourceStepVar]; got != "code_review_staff" {
-		t.Fatalf("source step = %q, want a staff review to rewind to itself rather than the cheap review", got)
-	}
-}
-
 func TestRouteReviewVerdict_StopsInsteadOfFixingWhenItEscalated(t *testing.T) {
 	t.Parallel()
 	def := mustBuiltinDefinition(t, "simple-task-review")
@@ -259,5 +246,46 @@ func TestRouteReviewVerdict_StopsInsteadOfFixingWhenItEscalated(t *testing.T) {
 	if first.When == nil || first.When.Field != "task.status" ||
 		first.When.Value != string(taskstatus.HumanRequired) || first.GoTo != "" {
 		t.Fatalf("first edge = %+v, want a human-required stop before the fix edge", first)
+	}
+}
+
+func TestExtractReviewVerdict_ReturnsFailed(t *testing.T) {
+	t.Parallel()
+	if got := ExtractReviewVerdict(`{"verdict":"FAILED"}`); got != reviewVerdictFailed {
+		t.Fatalf("ExtractReviewVerdict = %q, want %q", got, reviewVerdictFailed)
+	}
+}
+
+// A FAILED review never ran, so it must not reach the task as a verdict that
+// could read as clean or send a fix agent after findings that do not exist.
+func TestExecRouteReviewVerdict_FailedRetriesWithAGateNote(t *testing.T) {
+	t.Parallel()
+
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	wfExec := &Execution{
+		CurrentStep: "route_review_verdict",
+		Variables: map[string]string{
+			reviewVerdictVar:           reviewVerdictFailed,
+			reviewVerdictSourceStepVar: "code_review_simple",
+		},
+	}
+	info, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	info.Workflow = wfExec
+
+	_, err = engine.execRouteReviewVerdict("t1", &Step{ID: "route_review_verdict"}, wfExec, info)
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("err = %v, want errStepParked", err)
+	}
+	stored, _ := tasks.GetTask("t1")
+	if stored.CodeReviewVerdict != "" {
+		t.Errorf("CodeReviewVerdict = %q, want it unset", stored.CodeReviewVerdict)
+	}
+	if got := stored.Workflow.Variables[reviewReaskNoteVar]; got != reviewGateFailedReask {
+		t.Errorf("reask note = %q, want the gate-failure note", got)
 	}
 }

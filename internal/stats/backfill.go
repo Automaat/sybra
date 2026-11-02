@@ -6,7 +6,6 @@ import (
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/runacct"
-	"github.com/Automaat/sybra/internal/skillattr"
 )
 
 // Backfill imports historical agent runs from audit logs into the stats
@@ -74,24 +73,22 @@ func backfillRecords(events []audit.Event) []RunRecord {
 
 func backfillRecord(run audit.RunLifecycle, rec runacct.Record) RunRecord {
 	r := RunRecord{
-		ID:                 rec.ID,
-		TaskID:             rec.TaskID,
-		Mode:               rec.Mode,
-		Role:               rec.Role,
-		Model:              rec.Model,
-		Provider:           rec.Provider,
-		ReasoningEffort:    rec.ReasoningEffort,
-		ExperimentID:       rec.ExperimentID,
-		VariantID:          rec.VariantID,
-		CostUSD:            rec.CostUSD,
-		DurationS:          rec.DurationS,
-		PremiumRequests:    rec.PremiumRequests,
-		TurnCount:          rec.TurnCount,
-		ToolCalls:          rec.ToolCalls,
-		Outcome:            rec.Outcome,
-		SkillExecutionMode: skillattr.ExecutionModeUnknown,
-		SkillConformance:   skillattr.ConformanceUnknown,
-		Timestamp:          rec.Timestamp,
+		ID:              rec.ID,
+		TaskID:          rec.TaskID,
+		Mode:            rec.Mode,
+		Role:            rec.Role,
+		Model:           rec.Model,
+		Provider:        rec.Provider,
+		ReasoningEffort: rec.ReasoningEffort,
+		ExperimentID:    rec.ExperimentID,
+		VariantID:       rec.VariantID,
+		CostUSD:         rec.CostUSD,
+		DurationS:       rec.DurationS,
+		PremiumRequests: rec.PremiumRequests,
+		TurnCount:       rec.TurnCount,
+		ToolCalls:       rec.ToolCalls,
+		Outcome:         rec.Outcome,
+		Timestamp:       rec.Timestamp,
 	}
 	if v, ok := run.TerminalEvent.Data["reasoning_tokens"].(float64); ok {
 		r.ReasoningTokens = int(v)
@@ -116,18 +113,6 @@ func backfillRecord(run audit.RunLifecycle, rec runacct.Record) RunRecord {
 	}
 	if v, ok := run.TerminalEvent.Data["tool_calls"].(float64); ok {
 		r.ToolCalls = int(v)
-	}
-	if v, ok := run.TerminalEvent.Data["requested_skill"].(string); ok {
-		r.RequestedSkill = v
-	}
-	if v, ok := run.TerminalEvent.Data["skill_execution_mode"].(string); ok && v != "" {
-		r.SkillExecutionMode = v
-	}
-	if v, ok := run.TerminalEvent.Data["resolved_skill_source_hash"].(string); ok {
-		r.ResolvedSkillSourceHash = v
-	}
-	if v, ok := run.TerminalEvent.Data["skill_conformance"].(string); ok && v != "" {
-		r.SkillConformance = v
 	}
 	return r
 }

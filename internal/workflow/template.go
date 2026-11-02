@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"text/template"
 
+	"github.com/Automaat/sybra/internal/prompts"
 	"github.com/Automaat/sybra/internal/textutil"
 )
 
@@ -48,6 +49,8 @@ var templateFuncs = template.FuncMap{
 	"plancontractjson":    PlanContractPromptJSON,
 	"currenttestfailures": currentTestFailures,
 	"acceptanceledger":    acceptanceLedger,
+	"prompt":              prompts.Get,
+	"prreviewprompt":      prompts.PRReview,
 }
 
 // sidecarDirVar returns the directory workflow scratch output belongs in: the

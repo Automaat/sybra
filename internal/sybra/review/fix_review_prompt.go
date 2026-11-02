@@ -38,11 +38,8 @@ const reviewFixPolicy = "- Fix it in this PR. A reviewer's comment is work for t
 // renderFixReviewRunbook fills the embedded procedure in. target is the shell
 // block that sets OWNER/REPO/PR, push the block that publishes the fix.
 //
-// The runbook is spelled out here rather than delegated to `/fix-review`
-// because a dispatch prompt is the one thing every provider reads the same
-// way: a slash invocation only resolves natively on claude, and the review
-// policy is too easy to lose in a skill body the model may skim. The
-// fix-review-auto skill still ships for operators invoking it by hand.
+// The runbook is spelled out here because a dispatch prompt is the one thing
+// every provider reads the same way.
 func renderFixReviewRunbook(target, commitFlags, push string) string {
 	return strings.NewReplacer(
 		"{{TARGET}}", target,

@@ -60,10 +60,8 @@ func TestCommitSigningHook_DrivesBothSinks(t *testing.T) {
 	t.Setenv("GIT_CONFIG_GLOBAL", cfgPath)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 
-	// skillsync writes to os.UserHomeDir() and config.HomeDir(). Without both
-	// redirected this test rewrites the operator's real ~/.claude/skills,
-	// ~/.codex/skills, ~/.agents/skills and ~/.sybra — the #1576 blast radius.
-	// It did exactly that once before these two lines existed.
+	// The instruction sync writes to config.HomeDir(). Without this redirect
+	// the test rewrites the operator's real ~/.sybra — the #1576 blast radius.
 	isolated := t.TempDir()
 	t.Setenv("HOME", isolated)
 	t.Setenv("SYBRA_HOME", filepath.Join(isolated, "sybra"))
@@ -73,14 +71,12 @@ func TestCommitSigningHook_DrivesBothSinks(t *testing.T) {
 		t.Fatalf("new project store: %v", err)
 	}
 	reviewer := &review.Handler{}
-	skillsDir := t.TempDir()
 	app := &App{
-		ctx:       t.Context(),
-		projects:  projStore,
-		reviewer:  reviewer,
-		logger:    slog.New(slog.DiscardHandler),
-		repoDir:   repoRootForTest(t),
-		skillsDir: skillsDir,
+		ctx:      t.Context(),
+		projects: projStore,
+		reviewer: reviewer,
+		logger:   slog.New(slog.DiscardHandler),
+		repoDir:  repoRootForTest(t),
 	}
 	app.configSvc = &ConfigService{}
 	app.cfg = &config.Config{}
@@ -90,15 +86,15 @@ func TestCommitSigningHook_DrivesBothSinks(t *testing.T) {
 	projStore.SetSigningPolicy(project.SigningAuto)
 	workflow.SetDefaultCommitSignFlags("-s -S")
 	// Establish the pre-reload baseline so the assertion below distinguishes
-	// "the reload rewrote the bundle" from "the bundle was never synced".
-	app.syncSkillsBundle(project.SigningAuto)
-	skill := filepath.Join(skillsDir, "fix-review-auto", "SKILL.md")
-	baseline, err := os.ReadFile(skill)
+	// "the reload rewrote the file" from "the file was never synced".
+	app.syncOrchestratorInstructions(t.Context(), project.SigningAuto)
+	synced := filepath.Join(config.HomeDir(), "CLAUDE.md")
+	baseline, err := os.ReadFile(synced)
 	if err != nil {
-		t.Fatalf("seed synced skill: %v", err)
+		t.Fatalf("seed synced instructions: %v", err)
 	}
 	if !strings.Contains(string(baseline), "-s -S") {
-		t.Fatalf("precondition: seeded skill lacks -s -S, assertion would be vacuous:\n%s", skill)
+		t.Fatalf("precondition: seeded instructions lack -s -S, assertion would be vacuous:\n%s", synced)
 	}
 
 	app.applyCommitSigning("never")
@@ -114,20 +110,19 @@ func TestCommitSigningHook_DrivesBothSinks(t *testing.T) {
 	if got := reviewer.SigningPolicy(); got != project.SigningNever {
 		t.Errorf("review handler policy = %q, want never", got)
 	}
-	// The fourth sink: the synced skill bundle is what a fix-review agent
-	// actually loads, so a reload that stops at the prompt leaves the agent
-	// reading the old flags out of its own skill file.
-	body, err := os.ReadFile(skill)
+	// The fourth sink: the orchestrator reads its flags out of this file, so a
+	// reload that stops at the prompt leaves it on the old posture.
+	body, err := os.ReadFile(synced)
 	if err != nil {
-		t.Fatalf("read synced skill: %v", err)
+		t.Fatalf("read synced instructions: %v", err)
 	}
 	if strings.Contains(string(body), "-s -S") {
-		t.Errorf("synced skill still instructs -S after reload to never:\n%s", skill)
+		t.Errorf("synced instructions still say -S after reload to never:\n%s", synced)
 	}
 }
 
-// repoRootForTest locates the repo checkout so skillsync reads the real
-// .claude/skills source rather than falling back to the embedded bundle.
+// repoRootForTest locates the repo checkout so the sync reads the real
+// orchestrator instructions.
 func repoRootForTest(t *testing.T) string {
 	t.Helper()
 	dir, err := os.Getwd()

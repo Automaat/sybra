@@ -38,7 +38,7 @@ steps:
   # Deterministic classification: calls the Go triage classifier
   # (internal/triage) directly, no agent session involved. Previously this
   # was a run_agent step that spawned a full Sonnet agent whose entire job
-  # was to invoke the /sybra-triage skill, which just calls this same
+  # was to run an operator triage prompt, which just calls this same
   # classifier via `sybra-cli triage classify` — a second LLM call wrapping
   # the first for no benefit.
   - id: triage
@@ -97,8 +97,7 @@ steps:
   # contract only; research, decisions, and human-review brief stay separate so
   # implementation agents do not ingest scrutiny/critique history.
   #
-  # The scrutiny questions are stated inline rather than delegated to a review
-  # skill. The prior prompt told the agent to convene `/council core-eng` with
+  # The scrutiny questions are stated inline. The prior prompt told the agent to convene `/council core-eng` with
   # an "if unavailable, plan directly" opt-out that nothing could check, and 69
   # of 79 traced runs took it silently while still writing council-shaped prose
   # into the research artifact.
@@ -291,9 +290,8 @@ steps:
         Do NOT call sybra-cli update — Sybra will ingest your file as the
         task sidecars after you exit. Do NOT modify task fields directly.
         Do NOT change the task status.
-      # No Skill/Agent: the prompt names neither a skill nor a subagent, so
-      # granting them only left the council one unprompted Skill call away —
-      # the plugin cache is discoverable — at 3.44x the cost of a plain plan
+      # No Agent: the prompt names no subagent, so granting it only left a
+      # council one unprompted call away at 3.44x the cost of a plain plan
       # and 7 cap breaches in 10. agent.max_cost_usd cannot pre-empt that,
       # since providers report spend only on their terminal event and the
       # ceiling fires once the money is already gone.
@@ -301,7 +299,7 @@ steps:
       # Enforced on claude only, where len(allowed_tools) > 0 maps to
       # --allowedTools. provider_claude.go is the sole reader; codex and
       # copilot ignore it (copilot hardcodes --allow-all-tools), so on those
-      # paths the prompt naming no skill is the whole defence.
+      # paths the prompt naming no subagent is the whole defence.
       allowed_tools:
         - Bash
         - Read
@@ -440,12 +438,6 @@ steps:
         goto: critique_plan
       - goto: review_plan
 
-  # Orchestration owner: /plan-critic (.claude/skills/plan-critic/SKILL.md,
-  # internal/skills/data/plan-critic.md). The steps below are I/O contract
-  # only (which sidecars to read, where to write the critique) — the persona
-  # methodology (Triage/Grounding/Persona Review/Synthesis) lives solely in
-  # the skill. Do not restate it here; that duplication (and drift between
-  # the two copies) is the failure mode task #2018 fixed for testing-task.
   - id: critique_plan
     name: Critique Plan
     type: run_agent
@@ -458,11 +450,16 @@ steps:
       max_retries: 2
       output_schema: >-
         {"type":"object","properties":{"verdict":{"type":"string","enum":["APPROVE","REFINE","REJECT"]}},"required":["verdict"],"additionalProperties":false}
-      prompt: >-
-        Critique the execution contract for task {{.Task.ID}} using the
-        /plan-critic skill. Use the planning research, decisions, and brief as
-        context, but judge whether the compact execution contract is safe to
-        implement.
+      prompt: |-
+        {{prompt "plan-critic"}}
+
+        ---
+
+        # Critique target
+
+        Critique the execution contract for task {{.Task.ID}}. Use the planning
+        research, decisions, and brief as context, but judge whether the compact
+        execution contract is safe to implement.
         {{- if getvar .Vars "plan_critique_reask_note"}}
 
         RETRY GUIDANCE — your previous final message was invalid:
@@ -482,7 +479,7 @@ steps:
              implementation consumes, so critique it directly for missing files,
              weak verification, acceptance gaps, risk, permission posture, and
              rollback/recovery coverage.
-          4. Invoke: /plan-critic {{sidecardir .Vars}}/.sybra-plan-contract-review-{{.Task.ID}}.md
+          4. Run the review above with that file as the plan.
           5. As soon as each persona/result is available, append a concise
              grounded finding summary to {{sidecardir .Vars}}/.sybra-critique-{{.Task.ID}}.md.
              Do not wait for the final synthesis before writing the first
@@ -504,7 +501,6 @@ steps:
         - Grep
         - Glob
         - Write
-        - Skill
         - Agent
       import_sidecar:
         kind: plan_critique

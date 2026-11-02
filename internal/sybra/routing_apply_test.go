@@ -9,7 +9,7 @@ import (
 
 // TestApplyRoutingWeights_PropagatesToConfigAndOrchestrator verifies the
 // routing.WeightApplier push path reaches the two directly-inspectable live
-// selection sites: App's live A/B snapshot (what human-review and staff-review
+// selection sites: App's live A/B snapshot (what human-review and PR-review
 // dispatch read on every call) and orchSvc.abTesting (what StartOrchestrator
 // dispatches the brain under).
 // workflowEngine.SetABTestingConfig and evaluationSvc.SetABTesting are each a

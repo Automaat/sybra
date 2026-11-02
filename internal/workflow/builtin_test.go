@@ -364,7 +364,7 @@ func TestBuiltinSimpleTask_ReplanCapEscalatesAfterThreeRejects(t *testing.T) {
 // TestBuiltinSimpleTaskPlan_CritiqueDoesNotTriggerReplan locks the ungated
 // critique contract (#2152): the critic's verdict is advisory context for the
 // human gate, never a router. The old route_critique_verdict step gated on the
-// literal "Plan Review: APPROVE", a format the plan-critic skill never emits
+// literal "Plan Review: APPROVE", a format the plan-critic prompt never emits
 // (it writes "# Plan Review" and "## Verdict: <X>" on separate lines), so every
 // critiqued plan fell through to a second full-price opus address_critique run.
 // No plan-role agent may be reachable from the critique path.
@@ -904,13 +904,13 @@ func TestBuiltinSimpleTaskReview_RouteReviewVerdictSkipsFixReviewOnClean(t *test
 		})
 	}
 
-	for _, id := range []string{"code_review_simple", "code_review_staff"} {
+	for _, id := range []string{"code_review_simple"} {
 		run := review.StepByID(id)
 		if run == nil {
 			t.Fatalf("%s step not found in simple-task-review", id)
 		}
-		if !strings.Contains(run.Config.OutputSchema, `"enum":["CLEAN","NEEDS_FIXES"]`) {
-			t.Fatalf("%s output_schema = %q, want CLEAN/NEEDS_FIXES enum", id, run.Config.OutputSchema)
+		if !strings.Contains(run.Config.OutputSchema, `"enum":["CLEAN","NEEDS_FIXES","FAILED"]`) {
+			t.Fatalf("%s output_schema = %q, want CLEAN/NEEDS_FIXES/FAILED enum", id, run.Config.OutputSchema)
 		}
 	}
 }

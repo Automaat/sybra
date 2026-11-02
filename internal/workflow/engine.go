@@ -121,9 +121,6 @@ type AgentRunInfo struct {
 	Provider               string
 	Mode                   string
 	State                  string
-	RequestedSkill         string
-	SkillExecutionMode     string
-	SkillConformance       string
 	StartedAt              time.Time
 	Outcome                string
 	ProtocolViolation      string
@@ -220,7 +217,7 @@ type TaskProvider interface {
 	//   "plan_research" — raw planning research/evidence
 	//   "plan_decisions" — human decision brief
 	//   "plan_brief"    — final human-facing review brief
-	//   "code_review"   — staff-code-review report
+	//   "code_review"   — adversarial review report
 	//   "current_test_failures" — latest manual-test failure report
 	//   "acceptance_ledger" — bounded ledger of distinct failure repros
 	//   "spec_decision" — latest acceptance-conflict escalation summary
@@ -413,7 +410,7 @@ type PRContentGenerator interface {
 // TaskClassifier runs the deterministic Go triage classifier directly against
 // a task and applies its verdict. Used by the `classify_task` step, which
 // replaced a run_agent step that wrapped a full Sonnet agent (invoking the
-// /sybra-triage skill) around this same classifier — a second LLM call for
+// an operator triage prompt) around this same classifier — a second LLM call for
 // no benefit. Engine operates with a nil classifier — the step then flips
 // the task to human-required, since triage is mandatory to route the task.
 type TaskClassifier interface {

@@ -146,7 +146,7 @@ func cmdEvaluationOfflineRun(cfg *config.Config, args []string, jsonOut bool) in
 
 // requireSameProviderModel enforces the offline runner's "run variants
 // against the same model/provider settings" requirement: a batch is meant to
-// screen prompt/skill variants against each other, and mixing
+// screen prompt variants against each other, and mixing
 // provider/model settings within one run would make the comparison
 // meaningless (or silently confound a prompt regression with a
 // model/provider swap).
@@ -276,7 +276,7 @@ func loadOfflineGoldenCases(path string) ([]offlineGoldenCase, error) {
 
 // cmdEvaluationGolden scores a golden-set run's results against expectations and,
 // when a baseline is given, reports regressions. Exits non-zero on any failing
-// case or regression so it can gate prompt/skill/model changes in CI.
+// case or regression so it can gate prompt/model changes in CI.
 func cmdEvaluationGolden(args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("golden", flag.ContinueOnError)
 	setPath := fs.String("set", "", "path to the golden-set JSON (required)")

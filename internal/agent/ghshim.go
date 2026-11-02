@@ -124,7 +124,7 @@ if [ "$1" = "api" ]; then
 		case "$rawvalue" in
 		*=@*)
 			# Anchor on the key. Without this, prose that merely contains
-			# "=@name" is treated as a file reference, and the skill now tells
+			# "=@name" is treated as a file reference, and the prompt now tells
 			# agents to write exactly that ("use -F body=@file"), so a reply
 			# quoting the guidance would be refused.
 			rawkey=${rawvalue%%=@*}

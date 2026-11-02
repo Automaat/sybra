@@ -13,7 +13,7 @@ import (
 
 // candidateIntents are the directions promptlab may scaffold from a weak
 // subject: tightening guardrails/instructions, or restructuring what
-// evidence/context the role is given. Real prompt/skill authoring happens
+// evidence/context the role is given. Real prompt authoring happens
 // later, in the filed task — see VariantCandidate.
 var candidateIntents = []string{
 	"tighten-instructions",
@@ -79,7 +79,7 @@ func expectedImpact(s WeakSubject, intent string) string {
 }
 
 // RenderProposalBody renders the reviewable task body for a Proposal. Never
-// includes authored prompt/skill text — only evidence, rationale, and the
+// includes authored prompt text — only evidence, rationale, and the
 // offline eval verdict that gates it.
 func RenderProposalBody(p Proposal) string {
 	var b strings.Builder
@@ -100,8 +100,8 @@ func RenderProposalBody(p Proposal) string {
 	}
 
 	fmt.Fprintf(&b, "\n## Proposed change\n\n")
-	fmt.Fprintf(&b, "Scaffold a new versioned prompt/skill variant for role `%s` (intent: `%s`). ", p.Subject.Role, p.Candidate.Intent)
-	fmt.Fprintf(&b, "This proposal does not itself contain variant prompt/skill text and does not mutate any production prompt or skill file — author the variant text in this task, then run it through the offline eval gate before online A/B enrollment.\n\n")
+	fmt.Fprintf(&b, "Scaffold a new versioned prompt variant for role `%s` (intent: `%s`). ", p.Subject.Role, p.Candidate.Intent)
+	fmt.Fprintf(&b, "This proposal does not itself contain variant prompt text and does not mutate any production prompt — author the variant text in this task, then run it through the offline eval gate before online A/B enrollment.\n\n")
 
 	fmt.Fprintf(&b, "## Expected impact\n\n%s\n\n", p.ExpectedImpact)
 

@@ -62,15 +62,10 @@ func runExec() {
 
 	switch scenario {
 	case "success":
-		emitAgentMessage(withReceiptFromArgs(os.Args, "Working on it..."))
-		emitTurnCompleted(100, 20)
-	case "no_receipt":
 		emitAgentMessage("Working on it...")
 		emitTurnCompleted(100, 20)
 	case "write_sidecar_success":
 		runCodexWriteSidecarSuccess(taskID)
-	case "write_sidecar_success_no_receipt":
-		runCodexWriteSidecarSuccessNoReceipt(taskID)
 	case "fail_exit":
 		emitError("command failed")
 		os.Exit(1)
@@ -136,8 +131,6 @@ func runCodexTestScenario(scenario string) bool {
 		runCodexTestVerdictPass()
 	case "test_verdict_pass_trailing_empty_item":
 		runCodexTestVerdictPassWithTrailingEmptyItem()
-	case "test_verdict_pass_with_receipt_preamble":
-		runCodexTestVerdictPassWithReceiptPreamble()
 	case "test_verdict_fail":
 		runCodexTestVerdictFail()
 	case "test_verdict_fail_with_trailing_reasoning_item":
@@ -164,11 +157,6 @@ func runCodexHumanReviewUnblockedReadyPR() {
 		"issue_labels":       nil,
 	})
 	emitTurnCompleted(100, 20)
-}
-
-func runCodexTestVerdictPassWithReceiptPreamble() {
-	emitAgentMessage(withReceiptFromArgs(os.Args, "Followed the mandatory skill before returning structured output."))
-	runCodexTestVerdictPass()
 }
 
 func runCodexTestVerdictPassWithTrailingEmptyItem() {
@@ -495,14 +483,6 @@ func runCodexMalformedPR() {
 // extracts the import-sidecar path from the prompt and writes a stub so
 // the engine can ingest it for the workflow step's import_sidecar.
 func runCodexWriteSidecarSuccess(taskID string) {
-	emitAgentMessage(withReceiptFromArgs(os.Args, "Writing fake sidecar..."))
-	for _, path := range extractSidecarPaths(os.Args) {
-		_ = os.WriteFile(path, []byte(fakeSidecarContent(path, taskID, "fake-codex")), 0o644)
-	}
-	emitTurnCompleted(100, 20)
-}
-
-func runCodexWriteSidecarSuccessNoReceipt(taskID string) {
 	emitAgentMessage("Writing fake sidecar...")
 	for _, path := range extractSidecarPaths(os.Args) {
 		_ = os.WriteFile(path, []byte(fakeSidecarContent(path, taskID, "fake-codex")), 0o644)
@@ -572,15 +552,6 @@ func emit(event map[string]any) {
 }
 
 var taskIDRe = regexp.MustCompile(`\b([a-f0-9]{8})\b`)
-var receiptMarkerRe = regexp.MustCompile(`<!-- sybra-skill-receipt [^>]+ -->`)
-
-func withReceiptFromArgs(args []string, text string) string {
-	marker := receiptMarkerRe.FindString(strings.Join(args, "\n"))
-	if marker == "" {
-		return text
-	}
-	return text + "\n" + marker
-}
 
 func extractTaskID(args []string) string {
 	for i, arg := range args {

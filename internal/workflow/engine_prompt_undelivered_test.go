@@ -2,7 +2,7 @@ package workflow
 
 import "testing"
 
-// The stall lane never reaches HandleAgentComplete, so the skill-receipt
+// The stall lane never reaches HandleAgentComplete, so the completion
 // ceilings cannot see these runs. Without a budget of its own a wedged CLI
 // re-dispatches forever, burning a write timeout per tick and never escalating.
 func promptUndeliveredStore(t *testing.T) *Store {

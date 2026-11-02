@@ -137,7 +137,7 @@ func TestEvalCondition_TaskTagsUseExactMembership(t *testing.T) {
 	t.Parallel()
 
 	fields := map[string]string{
-		"task.tags": "handoff, handoff-review, force-staff-review",
+		"task.tags": "handoff, handoff-review, force-review",
 	}
 
 	tests := []struct {
@@ -162,7 +162,7 @@ func TestEvalCondition_TaskTagsUseExactMembership(t *testing.T) {
 		},
 		{
 			name: "surrounding spaces are trimmed",
-			cond: Condition{Field: "task.tags", Operator: "contains", Value: "force-staff-review"},
+			cond: Condition{Field: "task.tags", Operator: "contains", Value: "force-review"},
 			want: true,
 		},
 	}

@@ -12,12 +12,13 @@ import (
 const (
 	reviewVerdictClean      = "CLEAN"
 	reviewVerdictNeedsFixes = "NEEDS_FIXES"
+	reviewVerdictFailed     = "FAILED"
 
 	// reviewVerdictVar / reviewVerdictSourceStepVar are set in engine_advance
 	// when a review-role run_agent step completes: the extracted structured
 	// verdict (see ExtractReviewVerdict, possibly "" for malformed/missing),
 	// and the step ID that produced it (code_review_simple or
-	// code_review_staff) so route_review_verdict can rewind to the right
+	// review_simple) so route_review_verdict can rewind to the right
 	// step on retry.
 	reviewVerdictVar           = "review_verdict"
 	reviewAgentRole            = "review"
@@ -40,15 +41,20 @@ const (
 		"Write the full review to the sidecar file as instructed, but your FINAL message of the " +
 		"turn must be ONLY this JSON object (no prose, no markdown fences, no extra keys): " +
 		`{"verdict":"CLEAN"} or {"verdict":"NEEDS_FIXES"}.`
+
+	// reviewGateFailedReask tells a retry why the previous round produced no
+	// usable verdict, which is not a formatting problem.
+	reviewGateFailedReask = "Your previous review returned FAILED: the gate could not run. Fetch the base ref if it " +
+		"did not resolve, then run the review again and return a verdict."
 )
 
-// ExtractReviewVerdict returns "CLEAN"/"NEEDS_FIXES"/"" from a review-role
+// ExtractReviewVerdict returns "CLEAN"/"NEEDS_FIXES"/"FAILED"/"" from a review-role
 // agent's final message.
 //
 // The message is expected to be the output_schema-enforced JSON object
-// `{"verdict":"CLEAN"|"NEEDS_FIXES"}` (see simple-task-review.yaml's
-// code_review_simple/code_review_staff steps). A non-object message, or an
-// object whose verdict field doesn't match one of the two known values,
+// `{"verdict":"CLEAN"|"NEEDS_FIXES"|"FAILED"}` (see simple-task-review.yaml's
+// code_review_simple step). A non-object message, or an
+// object whose verdict field doesn't match one of the known values,
 // returns "" — callers must treat that as "no verdict", never silently
 // assume NEEDS_FIXES. This intentionally does not fall back to scanning for
 // a legacy "Review Verdict: ..." text marker: that literal-prefix parsing is
@@ -71,6 +77,8 @@ func ExtractReviewVerdict(output string) string {
 		return reviewVerdictClean
 	case reviewVerdictNeedsFixes:
 		return reviewVerdictNeedsFixes
+	case reviewVerdictFailed:
+		return reviewVerdictFailed
 	default:
 		return ""
 	}
@@ -86,10 +94,8 @@ func reviewVerdictAutoRetryKey(sourceStep string) string {
 // the last round's answer in place and route_review_verdict acts on it as if
 // it were fresh. Mirrors prepareTestVerdictAttemptVars on the testing route.
 //
-// The source step is re-pointed rather than dropped. Both the verdict router
-// and require_code_review rewind to whatever it names, and an empty value
-// sends a staff-review task back to the cheap review its lane never runs and
-// keys the retry counter to that step as well.
+// The source step is re-pointed rather than dropped: both the verdict router
+// and require_code_review rewind to whatever it names.
 func prepareReviewVerdictAttemptVars(wfExec *Execution, step *Step) {
 	if wfExec == nil || step == nil || step.Config.Role != reviewAgentRole {
 		return
@@ -105,7 +111,8 @@ func prepareReviewVerdictAttemptVars(wfExec *Execution, step *Step) {
 //
 // A valid CLEAN/NEEDS_FIXES verdict is a pass-through: the step's own
 // `next.when` clauses in simple-task-review.yaml route on vars.review_verdict.
-// A missing/malformed verdict never falls through to either branch — it
+// A FAILED verdict means the review gate itself could not run, and like a
+// missing/malformed verdict it never falls through to either branch — it
 // bounded-retries the review agent (feeding back a schema-conformance reask
 // note) via rewindRetry, then escalates to human-required once the retry
 // budget is spent.
@@ -130,7 +137,11 @@ func (e *Engine) execRouteReviewVerdict(taskID string, step *Step, wfExec *Execu
 		rewindStep: sourceStep,
 		backoff:    func(int) time.Duration { return reviewVerdictAutoRetryBackoff },
 		onArm: func(wfExec *Execution, _ int) {
-			wfExec.SetVar(reviewReaskNoteVar, reviewMalformedReask)
+			if verdict == reviewVerdictFailed {
+				wfExec.SetVar(reviewReaskNoteVar, reviewGateFailedReask)
+			} else {
+				wfExec.SetVar(reviewReaskNoteVar, reviewMalformedReask)
+			}
 			delete(wfExec.Variables, reviewVerdictVar)
 		},
 		reason: func(attempt int) string {

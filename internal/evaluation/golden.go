@@ -9,7 +9,7 @@ import (
 )
 
 // GoldenCase is one representative task with known-good expectations. Running the
-// fleet against a curated set of these catches regressions when prompts, skills,
+// fleet against a curated set of these catches regressions when prompts,
 // or models change — SWE-bench-style, scoped to Sybra's own workload.
 type GoldenCase struct {
 	ID        string      `json:"id"`

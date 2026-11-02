@@ -65,10 +65,6 @@ type RunRecord struct {
 	// any) that set this run's variant weight — 0 for a run assigned under
 	// plain operator-configured weights with no routing overlay applied.
 	RoutingDecisionVersion   int     `json:"routingDecisionVersion,omitempty"`
-	RequestedSkill           string  `json:"requestedSkill,omitempty"`
-	SkillExecutionMode       string  `json:"skillExecutionMode,omitempty"`
-	ResolvedSkillSourceHash  string  `json:"resolvedSkillSourceHash,omitempty"`
-	SkillConformance         string  `json:"skillConformance,omitempty"`
 	CostUSD                  float64 `json:"costUsd"`
 	DurationS                float64 `json:"durationS"`
 	InputTokens              int     `json:"inputTokens,omitempty"`
@@ -143,19 +139,18 @@ type ReviewRoundsStat struct {
 
 // StatsResponse is the full analytics payload returned to the frontend.
 type StatsResponse struct {
-	Today                Summary            `json:"today"`
-	ThisWeek             Summary            `json:"thisWeek"`
-	ThisMonth            Summary            `json:"thisMonth"`
-	AllTime              Summary            `json:"allTime"`
-	ByProject            []GroupedStat      `json:"byProject"`
-	ByProjectType        []GroupedStat      `json:"byProjectType"`
-	ByMode               []GroupedStat      `json:"byMode"`
-	ByRole               []GroupedStat      `json:"byRole"`
-	ByModel              []GroupedStat      `json:"byModel"`
-	ByProvider           []GroupedStat      `json:"byProvider"`
-	BySkillExecutionMode []GroupedStat      `json:"bySkillExecutionMode"`
-	ReviewRounds         []ReviewRoundsStat `json:"reviewRounds"`
-	RecentRuns           []RunRecord        `json:"recentRuns"`
-	ClosedTasksDaily     []TaskSeriesPoint  `json:"closedTasksDaily"`
-	Limits               *limits.Summary    `json:"limits,omitempty"`
+	Today            Summary            `json:"today"`
+	ThisWeek         Summary            `json:"thisWeek"`
+	ThisMonth        Summary            `json:"thisMonth"`
+	AllTime          Summary            `json:"allTime"`
+	ByProject        []GroupedStat      `json:"byProject"`
+	ByProjectType    []GroupedStat      `json:"byProjectType"`
+	ByMode           []GroupedStat      `json:"byMode"`
+	ByRole           []GroupedStat      `json:"byRole"`
+	ByModel          []GroupedStat      `json:"byModel"`
+	ByProvider       []GroupedStat      `json:"byProvider"`
+	ReviewRounds     []ReviewRoundsStat `json:"reviewRounds"`
+	RecentRuns       []RunRecord        `json:"recentRuns"`
+	ClosedTasksDaily []TaskSeriesPoint  `json:"closedTasksDaily"`
+	Limits           *limits.Summary    `json:"limits,omitempty"`
 }

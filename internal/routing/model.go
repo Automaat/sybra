@@ -25,14 +25,13 @@ type ScoreInputs struct {
 // Score is the composite outcome score for one (experiment, variant),
 // derived by ScoreVariants from an evaluation.ComparisonBreakdown row.
 type Score struct {
-	ExperimentID       string      `json:"experimentId"`
-	VariantID          string      `json:"variantId"`
-	Value              float64     `json:"value"`
-	Runs               int         `json:"runs"`
-	ResolvedRuns       int         `json:"resolvedRuns"`
-	InsufficientData   bool        `json:"insufficientData"`
-	SkillParityUnknown bool        `json:"skillParityUnknown"`
-	Inputs             ScoreInputs `json:"inputs"`
+	ExperimentID     string      `json:"experimentId"`
+	VariantID        string      `json:"variantId"`
+	Value            float64     `json:"value"`
+	Runs             int         `json:"runs"`
+	ResolvedRuns     int         `json:"resolvedRuns"`
+	InsufficientData bool        `json:"insufficientData"`
+	Inputs           ScoreInputs `json:"inputs"`
 }
 
 // Coefficients weights each score input's contribution. Landed/merge/
@@ -93,14 +92,13 @@ type OverlayExperiment struct {
 
 // OverlayVariant is one variant's applied weight and the score that set it.
 type OverlayVariant struct {
-	VariantID          string      `json:"variantId" yaml:"variant_id"`
-	Weight             int         `json:"weight" yaml:"weight"`
-	Score              float64     `json:"score" yaml:"score"`
-	Inputs             ScoreInputs `json:"inputs" yaml:"inputs"`
-	Runs               int         `json:"runs" yaml:"runs"`
-	ResolvedRuns       int         `json:"resolvedRuns" yaml:"resolved_runs"`
-	InsufficientData   bool        `json:"insufficientData" yaml:"insufficient_data"`
-	SkillParityUnknown bool        `json:"skillParityUnknown" yaml:"skill_parity_unknown"`
+	VariantID        string      `json:"variantId" yaml:"variant_id"`
+	Weight           int         `json:"weight" yaml:"weight"`
+	Score            float64     `json:"score" yaml:"score"`
+	Inputs           ScoreInputs `json:"inputs" yaml:"inputs"`
+	Runs             int         `json:"runs" yaml:"runs"`
+	ResolvedRuns     int         `json:"resolvedRuns" yaml:"resolved_runs"`
+	InsufficientData bool        `json:"insufficientData" yaml:"insufficient_data"`
 }
 
 // WeightAt returns the previously-applied weight for (experimentID,

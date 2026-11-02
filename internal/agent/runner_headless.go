@@ -87,9 +87,9 @@ var postResultFastCloseDelay = 100 * time.Millisecond
 
 // postResultGrace bounds how long the tailer waits for a headless process to
 // exit on its own after it has emitted a terminal (non-error) result event.
-// CC normally exits within a second or two; a skill that spawns subagents or
+// CC normally exits within a second or two; a run that spawns subagents or
 // leaves a background task alive can hang the process indefinitely after the
-// final result (observed in task c4a0fda0, where a staff-code-review workflow
+// final result (observed in task c4a0fda0, where a code review workflow
 // finished but the process never exited and the stall watchdog mis-escalated
 // the completed run to human-required). When the stream ends in a result and
 // stays idle past this window the run is logically complete, so the tailer
@@ -189,10 +189,6 @@ func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, cfg RunConfi
 	}
 	defer prepared.cleanup()
 	a.SetForkSubagent(prepared.cfg.ForkSubagent && prepared.inv.name == providerid.Claude)
-
-	if _, _, unrendered := a.GetPromptRender(); len(unrendered) > 0 {
-		m.logger.Warn("agent.headless.skill_unrendered", "id", a.ID, "provider", prepared.inv.name, "skills", unrendered)
-	}
 
 	if m.survives() && a.Mode == "headless" {
 		inv := prepared.inv
