@@ -227,7 +227,7 @@ func (r *Handler) StartReviewAgent(t task.Task, force bool) error {
 		return fmt.Errorf("prepare review worktree: %w", err)
 	}
 
-	prompt := prompts.PRReview(current.ProjectID, current.PRNumber)
+	prompt := prompts.PRReview(current.ProjectID, current.PRNumber, current.ID)
 
 	cfg := r.agents.ApplyABVariant(PRReviewRunConfig(current, prompt, dir, posture, agentorch.ResolveSandboxMode(current, r.cfg)), r.abTestingConfig(), current.ID, string(agent.RoleReview))
 	cfg.SkipDispatchJitter = force

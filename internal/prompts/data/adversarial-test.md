@@ -47,7 +47,7 @@ Decide a verdict from the mandate, then report it as a JSON object with these fi
 | Decided verdict | `verdict` | `outcome` | Also |
 | :-- | :-- | :-- | :-- |
 | `PASS` | `PASS` | `pass` | `failures_markdown` is an empty string |
-| `PASS (partial)` | `PASS` | `pass` | `failures_markdown` is an empty string. List every `UNTESTED` criterion and its environmental blocker in `unable_to_run_reason`. At least one criterion must have passed on a real manual probe; if none did, the verdict is `FAIL` with `missing_evidence` |
+| `PASS (partial)` | `PASS` | `pass` | `failures_markdown` is an empty string. List every untested criterion in `unable_to_run_reason` as `UNTESTED: <criterion> - <environmental blocker>`. At least one criterion must have passed on a real manual probe; if none did, the verdict is `FAIL` with `missing_evidence` |
 | `FAIL` | `FAIL` | `product_bug` | `failures_markdown` holds the report |
 | `FAIL` because the spec conflicts or cannot be verified | `FAIL` | `ambiguous_requirement` | `failures_markdown` names the conflict |
 | `BLOCKED` | `FAIL` | `missing_evidence` | `failures_markdown` names the exact human action |

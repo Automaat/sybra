@@ -365,6 +365,7 @@ type fieldAliasIndex struct {
 // must keep loading such a file instead of failing closed with "unknown
 // config key", or every operator upgrading past the removal breaks startup.
 var removedConfigKeys = map[string]map[string]bool{
+	"":      {"skills_dir": true},
 	"agent": {"mode": true},
 }
 

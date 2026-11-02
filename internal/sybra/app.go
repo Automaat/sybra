@@ -414,7 +414,7 @@ func (a *App) startLifecycle(schedulerCtx, watcherCtx context.Context, emit func
 	issuesFetcher := a.initAutomations(schedulerCtx, emit)
 	a.wireServices(emit) //nolint:contextcheck // TaskService uses the app-bound root context; see Startup's contextcheck note.
 
-	a.syncOrchestratorInstructions(a.ctx, project.NormalizeSigningPolicy(a.cfg.CommitSigning()))
+	a.syncOrchestratorInstructions(schedulerCtx, project.NormalizeSigningPolicy(a.cfg.CommitSigning()))
 	a.removeInstalledSkills()
 	a.snapshotter = tasksnapshot.New(config.TaskSnapshotGitDir(), a.tasksDir, time.Duration(a.cfg.DefaultTaskSnapshotInterval())*time.Second, a.logger)
 	// EnsureRepo must run before RunStartupCleanup: the startup trash prune

@@ -10,6 +10,7 @@ import (
 	"github.com/Automaat/sybra/internal/loopagent"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/prompts"
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 func TestRemoveRetiredSkillsKeepsWhatSybraDidNotInstall(t *testing.T) {
@@ -96,7 +97,7 @@ func TestSeedDefaultLoopAgentsMigratesOnlyTheLegacyPrompt(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := store.Create(t.Context(), loopagent.LoopAgent{Name: "sybra-self-monitor", Prompt: saved, IntervalSec: 21600, Provider: "claude"}); err != nil {
+			if _, err := store.Create(t.Context(), loopagent.LoopAgent{Name: "sybra-self-monitor", Prompt: saved, IntervalSec: 21600, Provider: providerid.Claude}); err != nil {
 				t.Fatal(err)
 			}
 			app := &App{loopAgents: store, logger: slog.New(slog.DiscardHandler)}

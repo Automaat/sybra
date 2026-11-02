@@ -226,7 +226,6 @@ func buildPrompt(pkt Packet) string {
   "uncertain": ["one plain sentence per low-sample or ambiguous finding"],
   "nextBets": ["one plain sentence per proposed next experiment"],
   "promptTakeaways": [{"text":"...","experimentRef":"optional experiment id","variantRef":"optional variant id"}],
-  "skillTakeaways": [{"text":"...","experimentRef":"...","variantRef":"..."}],
   "modelTakeaways": [{"text":"...","experimentRef":"...","variantRef":"..."}]
 }
 

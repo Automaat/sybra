@@ -229,8 +229,8 @@ func TestBuiltinPRReview_EscalatesOnLookupFailure(t *testing.T) {
 		if step == nil {
 			t.Fatalf("%s step not found in pr-review", stepID)
 		}
-		if !strings.Contains(step.Config.Prompt, "human-required") {
-			t.Fatalf("%s prompt missing PR-not-found escalation instruction:\n%s", stepID, step.Config.Prompt)
+		if prompt := renderBuiltinPrompt(t, "pr-review", stepID); !strings.Contains(prompt, "human-required") {
+			t.Fatalf("%s prompt missing PR-not-found escalation instruction:\n%s", stepID, prompt)
 		}
 		if len(step.Next) < 2 {
 			t.Fatalf("%s next transitions = %+v, want a human-required guard before the unconditional edge", stepID, step.Next)

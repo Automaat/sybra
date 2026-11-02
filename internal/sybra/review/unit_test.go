@@ -469,7 +469,7 @@ func TestPRReviewRunConfigCarriesTaskReasoningEffort(t *testing.T) {
 func TestPRReviewPromptAuthorizesPendingReview(t *testing.T) {
 	t.Parallel()
 
-	prompt := prompts.PRReview("Automaat/example", 123)
+	prompt := prompts.PRReview("Automaat/example", 123, "task-1")
 	for _, want := range []string{
 		"Review https://github.com/Automaat/example/pull/123",
 		"Do not ask the operator for confirmation",
@@ -489,7 +489,7 @@ func TestPRReviewPromptAuthorizesPendingReview(t *testing.T) {
 func TestPRReviewPromptNeverAuthorizesApproval(t *testing.T) {
 	t.Parallel()
 
-	prompt := prompts.PRReview("Automaat/example", 123)
+	prompt := prompts.PRReview("Automaat/example", 123, "task-1")
 	if !strings.Contains(prompt, "NEVER submit an APPROVE review event") {
 		t.Fatalf("prompt does not withhold approval authority:\n%s", prompt)
 	}

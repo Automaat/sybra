@@ -171,15 +171,20 @@ func (e *Engine) recordRoleCompletionSideEffects(taskID string, currentStep *Ste
 	// Mark task reviewed after a review-role step succeeds.
 	// Persisted so a re-triggered workflow run skips code_review (idempotent).
 	if currentStep.Config.Role == reviewAgentRole && output.Status == "completed" {
-		if mErr := e.tasks.MarkTaskReviewed(taskID); mErr != nil {
-			e.logger.Warn("workflow.mark-reviewed.failed", "task_id", taskID, "err", mErr)
+		verdict := ExtractReviewVerdict(output.Output)
+		// A FAILED gate examined nothing, so it counts as neither a review nor
+		// evidence of one.
+		if verdict != reviewVerdictFailed {
+			if mErr := e.tasks.MarkTaskReviewed(taskID); mErr != nil {
+				e.logger.Warn("workflow.mark-reviewed.failed", "task_id", taskID, "err", mErr)
+			}
+			e.recordEvidence(taskID, currentStep.ID, evidenceCriterionReview, evidence.ProofReviewFinding, 0, "", output.Output)
 		}
-		e.recordEvidence(taskID, currentStep.ID, evidenceCriterionReview, evidence.ProofReviewFinding, 0, "", output.Output)
 		// Stash the structured verdict (see ExtractReviewVerdict) and which
 		// step produced it, so route_review_verdict can route on it without
 		// re-parsing the review sidecar markdown and can rewind to the
 		// right agent step on a malformed/missing verdict.
-		wfExec.SetVar(reviewVerdictVar, ExtractReviewVerdict(output.Output))
+		wfExec.SetVar(reviewVerdictVar, verdict)
 		wfExec.SetVar(reviewVerdictSourceStepVar, output.StepID)
 	}
 	if currentStep.Config.Role == "plan-critic" && output.Status == "completed" {
@@ -895,6 +900,9 @@ func (e *Engine) transitionFields(t TaskInfo, wfExec *Execution) map[string]stri
 	// follows the documented default instead of silently shipping
 	// single-pass review.
 	fields["config.review_until_clean"] = strconv.FormatBool(!e.reviewLoopDisabled.Load())
+	// Completion marks any exit-0 review run reviewed, including one that never
+	// produced a verdict, so only a recorded verdict can skip the review.
+	fields["task.reviewed"] = strconv.FormatBool(t.Reviewed && t.CodeReviewVerdict != "")
 	if e.ciEnabled(t.ID) {
 		fields["task.reviewed"] = strconv.FormatBool(e.reusableReview(t))
 		fields["config.review_until_clean"] = "true"

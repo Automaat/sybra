@@ -782,6 +782,7 @@ func normalizeStorageNamespace(builder *flatConfigBuilder, node *yaml.Node, sink
 func normalizeStoragePathsNamespace(builder *flatConfigBuilder, node *yaml.Node, sink *unknownKeySink) error {
 	return normalizeSimpleNamespaceSink(builder, node, sink, map[string]string{
 		"tasks":       "tasks_dir",
+		"skills":      "skills_dir",
 		"repo":        "repo_dir",
 		"projects":    "projects_dir",
 		"clones":      "clones_dir",

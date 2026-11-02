@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 	"os"
 	"os/exec"
@@ -4241,5 +4242,40 @@ func TestRouteTestResult_ProseClaimEscalatesWithItsOwnReason(t *testing.T) {
 	}
 	if !strings.Contains(reason, "schema") {
 		t.Fatalf("reason = %q, want the operator pointed at the provider's schema support", reason)
+	}
+}
+
+func TestPartialPassNeedsAnExecutedProbe(t *testing.T) {
+	t.Parallel()
+
+	task := TaskInfo{ID: "t1"}
+	base := `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"library","unable_to_run_reason":%q,"automated_checks":[{"command":"go test ./...","actual":"ok"}]%s}`
+	probe := `,"manual_probes":[{"command":"curl localhost/health","actual":"200 ok","status":"pass"}]`
+	cases := []struct {
+		name, reason, probes string
+		wantOK               bool
+	}{
+		{"library_without_untested_criteria", "internal package with no surface", "", true},
+		{"untested_criteria_without_probe", "UNTESTED: AC1 - no display", "", false},
+		{"untested_criteria_with_probe", "UNTESTED: AC1 - no display", probe, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ok, reason := hasManualPassEvidence(fmt.Sprintf(base, tc.reason, tc.probes), task)
+			if ok != tc.wantOK {
+				t.Fatalf("hasManualPassEvidence = %v (%s), want %v", ok, reason, tc.wantOK)
+			}
+		})
+	}
+}
+
+func TestReportsUntestedCriteria(t *testing.T) {
+	t.Parallel()
+	if !reportsUntestedCriteria("UNTESTED: AC2 - no browser") {
+		t.Error("UNTESTED criterion not detected")
+	}
+	if reportsUntestedCriteria("internal package with no surface") {
+		t.Error("plain exemption reason treated as partial")
 	}
 }

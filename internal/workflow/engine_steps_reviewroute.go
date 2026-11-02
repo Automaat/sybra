@@ -127,6 +127,11 @@ func (e *Engine) execRouteReviewVerdict(taskID string, step *Step, wfExec *Execu
 		return StepOutput{StepID: step.ID, Status: "completed", Output: verdict}, nil
 	}
 
+	// An earlier round's verdict describes a revision this round failed to
+	// review, so it must not survive to skip the next attempt.
+	if err := e.tasks.SetCodeReviewVerdict(taskID, ""); err != nil {
+		return StepOutput{}, err
+	}
 	sourceStep := wfExec.Variables[reviewVerdictSourceStepVar]
 	if sourceStep == "" {
 		sourceStep = "code_review_simple"

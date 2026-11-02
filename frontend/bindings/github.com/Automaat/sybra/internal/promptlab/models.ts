@@ -47,8 +47,7 @@ export enum OfflineVerdict {
 
 /**
  * Proposal is one reviewable suggestion to create a new prompt variant,
- * scaffolded from fleet evidence. It never mutates a production prompt or
- * skill file itself.
+ * scaffolded from fleet evidence. It never mutates a production prompt itself.
  */
 export class Proposal {
     "id": string;

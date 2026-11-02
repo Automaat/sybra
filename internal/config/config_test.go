@@ -3256,3 +3256,23 @@ func TestAgentDefaults_ReviewRoundsPerHourLimit(t *testing.T) {
 		})
 	}
 }
+
+// Save used to write skills_dir into every config, so a file from before its
+// removal must still load or the upgrade stops the server from starting.
+func TestLoadIgnoresRetiredSkillsDir(t *testing.T) {
+	for name, content := range map[string]string{
+		"legacy":    "skills_dir: /x\n",
+		"namespace": "schema_version: 2\nstorage:\n  paths:\n    skills: /x\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("SYBRA_HOME", home)
+			if err := os.WriteFile(filepath.Join(home, "config.yaml"), []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadNoPersist(); err != nil {
+				t.Fatalf("LoadNoPersist: %v", err)
+			}
+		})
+	}
+}

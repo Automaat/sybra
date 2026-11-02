@@ -587,8 +587,6 @@ func TestConfigValidatePromptAndSkillAllowWorkflowOnlySubject(t *testing.T) {
 	for _, kind := range []string{"prompt", "skill"} {
 		t.Run(kind, func(t *testing.T) {
 			subject := &Subject{WorkflowID: "simple-task"}
-			if kind == "skill" {
-			}
 			cfg := Config{Experiments: []Experiment{{
 				ID:      kind + "-workflow-only",
 				Kind:    kind,
@@ -646,8 +644,6 @@ func TestConfigValidatePromptSkillRejectsProviderModelReasoningDrift(t *testing.
 		t.Run(tt.name, func(t *testing.T) {
 			expID := strings.ReplaceAll(tt.name, " ", "-")
 			subject := &Subject{StepID: "implement"}
-			if tt.kind == "skill" {
-			}
 			cfg := Config{Experiments: []Experiment{{
 				ID:      expID,
 				Kind:    tt.kind,
@@ -894,8 +890,6 @@ func TestConfigValidateIgnoresZeroWeightPromptSkillDrift(t *testing.T) {
 	for _, kind := range []string{"prompt", "skill"} {
 		t.Run(kind, func(t *testing.T) {
 			subject := &Subject{Role: "implementation"}
-			if kind == "skill" {
-			}
 			cfg := Config{Experiments: []Experiment{{
 				ID:      kind + "-zero-weight",
 				Kind:    kind,

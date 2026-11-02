@@ -262,7 +262,7 @@ func TestExecRouteReviewVerdict_FailedRetriesWithAGateNote(t *testing.T) {
 	t.Parallel()
 
 	tasks := newMemTasks()
-	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	tasks.Put(TaskInfo{ID: "t1", Status: taskstatus.InProgress})
 	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	wfExec := &Execution{
 		CurrentStep: "route_review_verdict",
@@ -287,5 +287,60 @@ func TestExecRouteReviewVerdict_FailedRetriesWithAGateNote(t *testing.T) {
 	}
 	if got := stored.Workflow.Variables[reviewReaskNoteVar]; got != reviewGateFailedReask {
 		t.Errorf("reask note = %q, want the gate-failure note", got)
+	}
+}
+
+func TestRecordRoleCompletion_FailedVerdictIsNotAReview(t *testing.T) {
+	t.Parallel()
+
+	for verdict, wantReviewed := range map[string]bool{
+		`{"verdict":"FAILED"}`: false,
+		`{"verdict":"CLEAN"}`:  true,
+	} {
+		tasks := newMemTasks()
+		tasks.Put(TaskInfo{ID: "t1", Status: taskstatus.InProgress})
+		engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+		step := &Step{ID: "code_review_simple", Config: StepConfig{Role: reviewAgentRole}}
+		wfExec := &Execution{CurrentStep: step.ID, Variables: map[string]string{}}
+
+		engine.recordRoleCompletionSideEffects("t1", step, wfExec, StepOutput{StepID: step.ID, Status: "completed", Output: verdict})
+
+		got, err := tasks.GetTask("t1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Reviewed != wantReviewed {
+			t.Errorf("verdict %s: Reviewed = %v, want %v", verdict, got.Reviewed, wantReviewed)
+		}
+	}
+}
+
+// Completion marks every exit-0 review run reviewed, so an escalated gate failure
+// reaches a retrigger with Reviewed set. That must lead to a new review.
+func TestExecRouteReviewVerdict_FailureClearsAnEarlierVerdict(t *testing.T) {
+	t.Parallel()
+
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: taskstatus.InProgress, Reviewed: true, CodeReviewVerdict: reviewVerdictClean})
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	wfExec := &Execution{
+		CurrentStep: "route_review_verdict",
+		Variables: map[string]string{
+			reviewVerdictVar:           reviewVerdictFailed,
+			reviewVerdictSourceStepVar: "code_review_simple",
+		},
+	}
+	info, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	info.Workflow = wfExec
+
+	if _, err := engine.execRouteReviewVerdict("t1", &Step{ID: "route_review_verdict"}, wfExec, info); !errors.Is(err, errStepParked) {
+		t.Fatalf("err = %v, want errStepParked", err)
+	}
+	stored, _ := tasks.GetTask("t1")
+	if stored.CodeReviewVerdict != "" {
+		t.Errorf("CodeReviewVerdict = %q, want it cleared", stored.CodeReviewVerdict)
 	}
 }

@@ -12,8 +12,9 @@ nothing is installed on the host.
 
 - **Removed:** `sybra-cli install-skills` and the `skills_dir` config key. Startup
   deletes the skills earlier versions installed, by exact name. A symlinked skill
-  is left alone. Your own skills are untouched, but Claude runs now pass
-  `--disable-slash-commands`, so agents no longer see them.
+  is left alone. Your own skills are untouched, but every Claude run, including
+  one-shot classifier calls, now passes `--disable-slash-commands`, so agents no
+  longer see them.
 - **Staff review is gone,** along with the `force-staff-review` tag. Every review,
   including inbound PR review, is now the adversarial review, which does not
   evaluate architecture, conventions, or dead code. It posts `REQUEST_CHANGES` on

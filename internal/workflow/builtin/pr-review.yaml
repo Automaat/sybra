@@ -62,14 +62,7 @@ steps:
       # temporary cwd and checkout validation fails before an agent is
       # registered.
       needs_worktree: true
-      prompt: |-
-        {{prreviewprompt .Task.ProjectID .Task.PRNumber}}
-
-        If PR #{{.Task.PRNumber}} does not exist or cannot be fetched (e.g. `gh pr
-        view {{.Task.PRNumber}} --repo {{.Task.ProjectID}}` 404s), or the verdict is
-        `Review Verdict: FAILED`, do NOT treat this as a completed review. Instead run
-        `sybra-cli update {{.Task.ID}} --status human-required --status-reason "pr-review: <the 404 or Gate failure line>"`
-        and stop.
+      prompt: '{{prreviewprompt .Task.ProjectID .Task.PRNumber .Task.ID}}'
     next:
       # If the agent could not find or review the PR it self-escalates to
       # human-required instead of posting, so stop here rather than reporting

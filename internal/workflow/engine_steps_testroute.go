@@ -1048,6 +1048,9 @@ func hasManualPassEvidence(output string, t TaskInfo) (ok bool, reason string) {
 			!hasManualProbeEvidence(parsed.ManualProbes) {
 			return false, "PASS used a no-app exemption without CLI/test harness evidence"
 		}
+		if reportsUntestedCriteria(parsed.UnableToRunReason) && !hasConcreteManualProbeEvidence(parsed.ManualProbes) {
+			return false, partialPassWithoutProbe
+		}
 		return true, ""
 	}
 	if surface == "library" || surface == "docs" || surface == "none" {
@@ -1157,6 +1160,15 @@ func isManualTestExemption(surface string, t TaskInfo) bool {
 	return false
 }
 
+const partialPassWithoutProbe = "PASS listed UNTESTED criteria but no criterion passed on an executed manual probe"
+
+// reportsUntestedCriteria reports a PASS (partial), which the test prompt maps to
+// PASS with its UNTESTED criteria in unable_to_run_reason. Regression checks can
+// stand in for a surface that does not exist, not for one the run failed to reach.
+func reportsUntestedCriteria(reason string) bool {
+	return strings.Contains(strings.ToUpper(reason), "UNTESTED")
+}
+
 func hasPlainTextManualPassEvidence(output string, t TaskInfo) (ok bool, reason string) {
 	surface := normalizeSurfaceKind(firstPlainEvidenceField(output, "surface_kind", "surface kind"))
 	if surface == "" {
@@ -1168,6 +1180,9 @@ func hasPlainTextManualPassEvidence(output string, t TaskInfo) (ok bool, reason 
 		}
 		if !hasPlainTextRegressionCheckEvidence(output) {
 			return false, "plain-text PASS used a no-app exemption without CLI/test harness evidence"
+		}
+		if reportsUntestedCriteria(firstPlainEvidenceField(output, "unable_to_run_reason", "unable to run manual test")) && !hasPlainTextConcreteProbeEvidence(output) {
+			return false, partialPassWithoutProbe
 		}
 		return true, ""
 	}
