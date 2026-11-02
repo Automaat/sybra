@@ -12,8 +12,8 @@ import (
 
 // resolveAddressedCopilotThreads breaks the pet auto-merge deadlock.
 //
-// The merge gate requires zero unresolved review threads, but the fix-review
-// skill is deliberately told never to resolve threads ("the reviewer decides").
+// The merge gate requires zero unresolved review threads, but fix-review
+// is deliberately told never to resolve threads ("the reviewer decides").
 // GitHub Copilot is an automated reviewer that won't resolve its own threads, so
 // a pet PR that Copilot commented on would stay parked forever. For a pet PR
 // that is otherwise ready to merge and blocked only by unresolved threads, this

@@ -8,7 +8,7 @@ import (
 
 // ScoreVariants derives a composite outcome score per (experimentID,
 // variantID) from evaluation.ComparisonBreakdown rows — the same rows the
-// Evaluation tab renders, with skill-parity/infra-stall exclusion already
+// Evaluation tab renders, with infra-stall exclusion already
 // applied. Pure and deterministic: rows carrying no experiment/variant
 // attribution are skipped, and the result is sorted for stable output.
 //
@@ -43,14 +43,13 @@ func ScoreVariants(rows []evaluation.ComparisonBreakdown, coef Coefficients) []S
 			coef.DurationWeight*normalize(inputs.DurationP50S, coef.DurationNormalizer)
 
 		scores = append(scores, Score{
-			ExperimentID:       r.ExperimentID,
-			VariantID:          r.VariantID,
-			Value:              value,
-			Runs:               r.Runs,
-			ResolvedRuns:       r.ResolvedRuns,
-			InsufficientData:   r.InsufficientData,
-			SkillParityUnknown: r.SkillParityUnknown,
-			Inputs:             inputs,
+			ExperimentID:     r.ExperimentID,
+			VariantID:        r.VariantID,
+			Value:            value,
+			Runs:             r.Runs,
+			ResolvedRuns:     r.ResolvedRuns,
+			InsufficientData: r.InsufficientData,
+			Inputs:           inputs,
 		})
 	}
 	sort.Slice(scores, func(i, j int) bool {

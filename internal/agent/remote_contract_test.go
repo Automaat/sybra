@@ -26,7 +26,7 @@ func TestRemoteRunSpecRoundTripPreservesExecutionIntent(t *testing.T) {
 			RequirePermissions: true, HeadlessPermissionMode: "auto",
 			Model: "gpt-5.6-codex", MaxTurns: 150, BashTimeoutMs: 120000,
 			HeadlessSteerable: true, ForkSubagent: true, RetryWatchdog: 8,
-			FallbackModel: "gpt-5.5", RequestedSkill: "ship-issue", SkillExecutionMode: "native",
+			FallbackModel:     "gpt-5.5",
 			SeedWorkingMemory: true, ResumeSessionID: "sensitive-session",
 			OutputSchema: `{"type":"object"}`,
 		},

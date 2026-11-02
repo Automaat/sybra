@@ -138,7 +138,6 @@ func (e *Engine) spawnParallelChild(taskID string, parent, child *Step, wfExec *
 	if err != nil {
 		return err
 	}
-	applySkillReceiptRecoveryAssignment(child.ID, wfExec, &assignment)
 	assignment.IntentID = admissionIntentID(taskID+":"+wfExec.WorkflowID+":parallel:"+parent.ID+":"+child.ID, status.AdmissionGeneration)
 	assignment.AdmissionObserve = true
 

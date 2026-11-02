@@ -23,7 +23,6 @@ import (
 	"github.com/Automaat/sybra/internal/notes"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/providerid"
-	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/taskstatus"
 	"github.com/Automaat/sybra/internal/toolledger"
@@ -541,9 +540,6 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	}
 	cfg.Model = nextRequestedModel
 	cfg.resolvedModel = resolvedModel
-	if err := m.resolveWorkflowSkillPrompt(&cfg, prov); err != nil {
-		return cfg, nil, err
-	}
 	cfg.provider = prov
 	m.warnUnenforceableAllowedTools(cfg, prov)
 	cfg.ReasoningEffort = m.resolveReasoningEffort(cfg.Role, cfg.ReasoningEffort)
@@ -2039,14 +2035,10 @@ var providerReadSubdirs = []string{filepath.Join(".local", "share", providerid.C
 // granting only the resolved target leaves the symlink itself absent from the
 // mount namespace, so every tilde-relative lookup the CLI makes still fails.
 // That failure is silent and authentication-shaped rather than an EROFS.
-//
-// .agents is not a provider state dir but codex's skills tree (~/.agents/skills,
-// 37 reads in a single traced codex run); without it codex loses every skill.
 var homeStateLinks = []string{
 	".claude",
 	".codex",
 	".copilot",
-	".agents",
 	filepath.Join(".local", "share", "opencode"),
 }
 
@@ -2357,35 +2349,26 @@ func validateRunDir(dir string) error {
 func newRunningAgent(id string, cfg RunConfig, prov Provider, cancel context.CancelFunc) *Agent {
 	now := time.Now().UTC()
 	a := &Agent{
-		ID:                      id,
-		TaskID:                  cfg.TaskID,
-		Name:                    cfg.Name,
-		Role:                    cfg.Role,
-		Mode:                    cfg.Mode,
-		Provider:                prov.Name(),
-		Model:                   cfg.resolvedModel,
-		RequestedModel:          cfg.Model,
-		ReasoningEffort:         cfg.ReasoningEffort,
-		RequestedSkill:          cfg.RequestedSkill,
-		SkillExecutionMode:      cfg.SkillExecutionMode,
-		ResolvedSkillSourceHash: cfg.ResolvedSkillSourceHash,
-		SkillConformance:        cfg.SkillConformance,
-		OutputSchema:            cfg.OutputSchema,
-		skillRecoveryAttempt:    cfg.SkillRecoveryAttempt,
-		// Only a provider that actually forwards OutputSchema to its CLI makes
-		// the conformance receipt unsatisfiable; copilot/opencode ignore it, so
-		// their runs still get (and must pass) receipt verification. Mirror the
-		// exact wantReceipt condition in resolveWorkflowSkillPrompt.
+		ID:              id,
+		TaskID:          cfg.TaskID,
+		Name:            cfg.Name,
+		Role:            cfg.Role,
+		Mode:            cfg.Mode,
+		Provider:        prov.Name(),
+		Model:           cfg.resolvedModel,
+		RequestedModel:  cfg.Model,
+		ReasoningEffort: cfg.ReasoningEffort,
+		OutputSchema:    cfg.OutputSchema,
 		hasOutputSchema: cfg.OutputSchema != "" && prov.EnforcesOutputSchema(),
 		Prompt:          cfg.Prompt,
 		// Stamp the canonical dispatch prompt hash centrally for every run
 		// (all providers, all roles, both modes). cfg.Prompt is the fully
-		// prepared prompt (post NOTES.md/guardrail/skill preparation) — the
+		// prepared prompt (post NOTES.md/guardrail preparation) — the
 		// same value recordImplAgentStart hashes. Stamping here (not only in
-		// the implementation-only dispatch path) is what lets completion emit
-		// agent.prompt_rendered for review/fix-review/pr-fix/human-review/
-		// workflow runs, which also record provider render summaries.
-		promptHash:             skillattr.HashSourceID(cfg.Prompt),
+		// the implementation-only dispatch path) is what gives the dispatch
+		// audit records of review/fix-review/pr-fix/human-review/workflow runs
+		// the same hash.
+		promptHash:             HashPrompt(cfg.Prompt),
 		State:                  StateRunning,
 		StartedAt:              now,
 		LastEventAt:            now,

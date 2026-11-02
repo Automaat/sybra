@@ -235,19 +235,6 @@ func TestAdvanceStep_FailedReviewDoesNotRouteOnTheLastVerdict(t *testing.T) {
 	}
 }
 
-func TestPrepareReviewVerdictAttemptVars_KeepsTheStaffLaneRewindTarget(t *testing.T) {
-	t.Parallel()
-	wf := &Execution{Variables: map[string]string{
-		reviewVerdictVar:           reviewVerdictNeedsFixes,
-		reviewVerdictSourceStepVar: "code_review_staff",
-	}}
-	prepareReviewVerdictAttemptVars(wf, &Step{ID: "code_review_staff", Config: StepConfig{Role: reviewAgentRole}})
-
-	if got := wf.Variables[reviewVerdictSourceStepVar]; got != "code_review_staff" {
-		t.Fatalf("source step = %q, want a staff review to rewind to itself rather than the cheap review", got)
-	}
-}
-
 func TestRouteReviewVerdict_StopsInsteadOfFixingWhenItEscalated(t *testing.T) {
 	t.Parallel()
 	def := mustBuiltinDefinition(t, "simple-task-review")
@@ -259,5 +246,101 @@ func TestRouteReviewVerdict_StopsInsteadOfFixingWhenItEscalated(t *testing.T) {
 	if first.When == nil || first.When.Field != "task.status" ||
 		first.When.Value != string(taskstatus.HumanRequired) || first.GoTo != "" {
 		t.Fatalf("first edge = %+v, want a human-required stop before the fix edge", first)
+	}
+}
+
+func TestExtractReviewVerdict_ReturnsFailed(t *testing.T) {
+	t.Parallel()
+	if got := ExtractReviewVerdict(`{"verdict":"FAILED"}`); got != ReviewVerdictFailed {
+		t.Fatalf("ExtractReviewVerdict = %q, want %q", got, ReviewVerdictFailed)
+	}
+}
+
+// A FAILED review never ran, so it must not reach the task as a verdict that
+// could read as clean or send a fix agent after findings that do not exist.
+func TestExecRouteReviewVerdict_FailedRetriesWithAGateNote(t *testing.T) {
+	t.Parallel()
+
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: taskstatus.InProgress})
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	wfExec := &Execution{
+		CurrentStep: "route_review_verdict",
+		Variables: map[string]string{
+			reviewVerdictVar:           ReviewVerdictFailed,
+			reviewVerdictSourceStepVar: "code_review_simple",
+		},
+	}
+	info, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	info.Workflow = wfExec
+
+	_, err = engine.execRouteReviewVerdict("t1", &Step{ID: "route_review_verdict"}, wfExec, info)
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("err = %v, want errStepParked", err)
+	}
+	stored, _ := tasks.GetTask("t1")
+	if stored.CodeReviewVerdict != "" {
+		t.Errorf("CodeReviewVerdict = %q, want it unset", stored.CodeReviewVerdict)
+	}
+	if got := stored.Workflow.Variables[reviewReaskNoteVar]; got != reviewGateFailedReask {
+		t.Errorf("reask note = %q, want the gate-failure note", got)
+	}
+}
+
+func TestRecordRoleCompletion_FailedVerdictIsNotAReview(t *testing.T) {
+	t.Parallel()
+
+	for verdict, wantReviewed := range map[string]bool{
+		`{"verdict":"FAILED"}`: false,
+		`{"verdict":"CLEAN"}`:  true,
+	} {
+		tasks := newMemTasks()
+		tasks.Put(TaskInfo{ID: "t1", Status: taskstatus.InProgress})
+		engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+		step := &Step{ID: "code_review_simple", Config: StepConfig{Role: reviewAgentRole}}
+		wfExec := &Execution{CurrentStep: step.ID, Variables: map[string]string{}}
+
+		engine.recordRoleCompletionSideEffects("t1", step, wfExec, StepOutput{StepID: step.ID, Status: "completed", Output: verdict})
+
+		got, err := tasks.GetTask("t1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Reviewed != wantReviewed {
+			t.Errorf("verdict %s: Reviewed = %v, want %v", verdict, got.Reviewed, wantReviewed)
+		}
+	}
+}
+
+// Completion marks every exit-0 review run reviewed, so an escalated gate failure
+// reaches a retrigger with Reviewed set. That must lead to a new review.
+func TestExecRouteReviewVerdict_FailureClearsAnEarlierVerdict(t *testing.T) {
+	t.Parallel()
+
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: taskstatus.InProgress, Reviewed: true, CodeReviewVerdict: reviewVerdictClean})
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	wfExec := &Execution{
+		CurrentStep: "route_review_verdict",
+		Variables: map[string]string{
+			reviewVerdictVar:           ReviewVerdictFailed,
+			reviewVerdictSourceStepVar: "code_review_simple",
+		},
+	}
+	info, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	info.Workflow = wfExec
+
+	if _, err := engine.execRouteReviewVerdict("t1", &Step{ID: "route_review_verdict"}, wfExec, info); !errors.Is(err, errStepParked) {
+		t.Fatalf("err = %v, want errStepParked", err)
+	}
+	stored, _ := tasks.GetTask("t1")
+	if stored.CodeReviewVerdict != "" {
+		t.Errorf("CodeReviewVerdict = %q, want it cleared", stored.CodeReviewVerdict)
 	}
 }

@@ -39,9 +39,23 @@ type Provider interface {
 	// SupportsOutputSchema reports whether this provider actually applies
 	// RunConfig.OutputSchema to the spawned CLI. False means the schema is
 	// silently ignored and the run falls back to whatever plain-text contract
-	// the step's own prompt anticipates — see resolveWorkflowSkillPrompt's
-	// schemaEnforced check.
+	// the step's own prompt anticipates.
 	SupportsOutputSchema() bool
+}
+
+// ProviderSupportsOutputSchema reports whether providerName's resolved Provider
+// actually applies RunConfig.OutputSchema. An empty or unresolvable name is false:
+// lookupProvider's own empty-defaults-to-claude fallback serves a legacy caller
+// that never set Provider, and would otherwise silently resolve to true here.
+func ProviderSupportsOutputSchema(providerName string) bool {
+	if strings.TrimSpace(providerName) == "" {
+		return false
+	}
+	prov, err := lookupProvider(providerName)
+	if err != nil {
+		return false
+	}
+	return prov.SupportsOutputSchema()
 }
 
 type baseProvider struct{}

@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/fsutil"
-	"github.com/Automaat/sybra/internal/skillattr"
 )
 
 const storeLockTimeout = 2 * time.Second
@@ -267,7 +266,6 @@ func Aggregate(runs []RunRecord, now time.Time) StatsResponse {
 	byRole := map[string][]RunRecord{}
 	byModel := map[string][]RunRecord{}
 	byProvider := map[string][]RunRecord{}
-	bySkillExecutionMode := map[string][]RunRecord{}
 
 	for i := range runs {
 		r := normalizedRunRecord(runs[i])
@@ -309,21 +307,19 @@ func Aggregate(runs []RunRecord, now time.Time) StatsResponse {
 		}
 		byProvider[provider] = append(byProvider[provider], r)
 
-		bySkillExecutionMode[r.SkillExecutionMode] = append(bySkillExecutionMode[r.SkillExecutionMode], r)
 	}
 
 	resp := StatsResponse{
-		Today:                summarize(today),
-		ThisWeek:             summarize(week),
-		ThisMonth:            summarize(month),
-		AllTime:              summarize(all),
-		ByProject:            groupedStats(byProject),
-		ByMode:               groupedStats(byMode),
-		ByRole:               groupedStats(byRole),
-		ByModel:              groupedStats(byModel),
-		ByProvider:           groupedStats(byProvider),
-		BySkillExecutionMode: groupedStats(bySkillExecutionMode),
-		ReviewRounds:         reviewRoundsByModel(runs),
+		Today:        summarize(today),
+		ThisWeek:     summarize(week),
+		ThisMonth:    summarize(month),
+		AllTime:      summarize(all),
+		ByProject:    groupedStats(byProject),
+		ByMode:       groupedStats(byMode),
+		ByRole:       groupedStats(byRole),
+		ByModel:      groupedStats(byModel),
+		ByProvider:   groupedStats(byProvider),
+		ReviewRounds: reviewRoundsByModel(runs),
 	}
 
 	// Recent runs: last 50, newest first
@@ -341,8 +337,6 @@ func Aggregate(runs []RunRecord, now time.Time) StatsResponse {
 }
 
 func normalizedRunRecord(r RunRecord) RunRecord {
-	r.SkillExecutionMode = skillattr.NormalizeExecutionMode(r.SkillExecutionMode)
-	r.SkillConformance = skillattr.NormalizeConformance(r.SkillConformance)
 	return r
 }
 

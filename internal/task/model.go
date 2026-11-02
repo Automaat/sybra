@@ -217,20 +217,7 @@ type AgentRun struct {
 	AssignmentKey   string `json:"assignmentKey,omitempty"`
 	DecisionVersion int    `json:"decisionVersion,omitempty"`
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`
-	RequestedSkill  string `json:"requestedSkill,omitempty"`
-	// SkillExecutionMode records how a mandatory workflow skill actually ran:
-	// none, native invocation, injected SKILL.md, bundled fallback, or
-	// unavailable. Legacy empty values remain readable and normalize to
-	// unknown at query time.
-	SkillExecutionMode string `json:"skillExecutionMode,omitempty"`
-	// ResolvedSkillSourceHash is a privacy-safe hash of the resolved local or
-	// bundled skill source identifier. Empty when the skill ran natively or no
-	// source was resolved.
-	ResolvedSkillSourceHash string `json:"resolvedSkillSourceHash,omitempty"`
-	// SkillConformance records whether the executed skill path exactly matched
-	// the requested skill, fell back, was unavailable, or had no skill at all.
-	SkillConformance string `json:"skillConformance,omitempty"`
-	State            string `json:"state"`
+	State           string `json:"state"`
 	// Outcome records the terminal result the completion handler actually
 	// observed (RunOutcomeSuccess/RunOutcomeFailure), independent of State
 	// ("stopped" covers both a clean finish and a failed one) and independent

@@ -149,7 +149,6 @@ type AgentAssignment struct {
 	AssignmentKey    string
 	ReasoningEffort  string
 	PromptTransform  *PromptTransform
-	SkillAliases     map[string]string
 	// ReadOnlyPaths are additional paths a diagnostic agent may inspect under
 	// the deny-by-default sandbox read posture. They never grant write access.
 	ReadOnlyPaths []string
@@ -160,14 +159,6 @@ type AgentAssignment struct {
 	// RemoteSidecarDir is the leader-local rendered root to virtualize out of
 	// remote prompts. It never crosses the execution contract.
 	RemoteSidecarDir string
-	// ForceInjectedSkill forces provider prep to inject the resolved skill
-	// instructions instead of relying on native visibility. Used by the
-	// automatic retry after a missing mandatory-skill receipt.
-	ForceInjectedSkill bool
-	// SkillRecoveryAttempt marks the automatic second-chance retry after a
-	// missing mandatory-skill receipt so completion can record a recovered run
-	// distinctly from a first-pass conformant one.
-	SkillRecoveryAttempt bool
 	// DecisionVersion mirrors abtest.Assignment.DecisionVersion — the routing
 	// overlay generation (if any) that set this assignment's variant weight.
 	DecisionVersion int

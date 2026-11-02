@@ -370,7 +370,6 @@ func testConfig(t *testing.T) *config.Config {
 	return &config.Config{
 		Logging:      config.LoggingConfig{Dir: t.TempDir()},
 		TasksDir:     t.TempDir(),
-		SkillsDir:    t.TempDir(),
 		ProjectsDir:  t.TempDir(),
 		ClonesDir:    t.TempDir(),
 		WorktreesDir: t.TempDir(),
@@ -397,7 +396,6 @@ func TestGetPressureGateWiresDiskReclaimer(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Logging.Dir = filepath.Join(home, "logs")
 	cfg.TasksDir = filepath.Join(home, "tasks")
-	cfg.SkillsDir = filepath.Join(home, "skills")
 	cfg.ProjectsDir = filepath.Join(home, "projects")
 	cfg.ClonesDir = filepath.Join(home, "clones")
 	cfg.WorktreesDir = filepath.Join(home, "worktrees")
@@ -426,7 +424,6 @@ func TestPressureGateReclaimSurfacesInHealthTelemetry(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Logging.Dir = filepath.Join(home, "logs")
 	cfg.TasksDir = filepath.Join(home, "tasks")
-	cfg.SkillsDir = filepath.Join(home, "skills")
 	cfg.ProjectsDir = filepath.Join(home, "projects")
 	cfg.ClonesDir = filepath.Join(home, "clones")
 	cfg.WorktreesDir = filepath.Join(home, "worktrees")
@@ -473,7 +470,6 @@ func TestHealthPressureStatusSurfacesLastReclaimWithoutGate(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Logging.Dir = filepath.Join(home, "logs")
 	cfg.TasksDir = filepath.Join(home, "tasks")
-	cfg.SkillsDir = filepath.Join(home, "skills")
 	cfg.ProjectsDir = filepath.Join(home, "projects")
 	cfg.ClonesDir = filepath.Join(home, "clones")
 	cfg.WorktreesDir = filepath.Join(home, "worktrees")

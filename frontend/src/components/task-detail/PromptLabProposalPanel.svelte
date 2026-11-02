@@ -45,7 +45,7 @@
     <span class="text-sm font-semibold text-tertiary-700 dark:text-tertiary-300">Prompt Lab Proposal</span>
     <p class="text-xs text-surface-600 dark:text-surface-300">
       This proposal has no concrete diff yet — it only reports rationale, evidence, and an offline
-      failure-rate delta. Approving greenlights authoring the variant prompt/skill text and running
+      failure-rate delta. Approving greenlights authoring the variant prompt text and running
       it through the offline eval gate; it does not itself apply a change.
     </p>
 

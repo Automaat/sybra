@@ -28,7 +28,6 @@ cd "$(dirname "$0")/.."
 #   llmexec/command.go          runs what the registered factory returned, and
 #                               falls back to a bare CLI only outside the app
 #   agent/discovery.go          --version probes for install discovery
-#   agent/skill_invoke.go       codex plugin list --json, a metadata query
 #   provider/probes.go          auth status health probes
 #   sybra/svc_info*.go          version strings for the About panel
 #   limits/live.go              reads a keychain entry, not a provider
@@ -40,7 +39,6 @@ ALLOWLIST=(
   "internal/agent/oneshot.go"
   "internal/llmexec/command.go"
   "internal/agent/discovery.go"
-  "internal/agent/skill_invoke.go"
   "internal/provider/probes.go"
   "internal/sybra/svc_info.go"
   "internal/sybra/svc_info_runtimes.go"

@@ -128,22 +128,6 @@
     }
   }
 
-  function skillExecutionModeLabel(mode?: string): string {
-    switch (mode) {
-      case 'none': return 'No skill'
-      case 'native': return 'Native'
-      case 'injected': return 'Injected'
-      case 'fallback': return 'Fallback'
-      case 'unavailable': return 'Unavailable'
-      default: return 'Unknown'
-    }
-  }
-
-  function breakdownLabel(sectionKind: string, key: string): string {
-    if (sectionKind === 'skill') return skillExecutionModeLabel(key)
-    return key
-  }
-
   function outcomeCountsLabel(outcomeCounts?: Record<string, number | undefined>): string {
     if (!outcomeCounts) return '—'
     const preferred = ['completed', 'failed', 'unknown']
@@ -164,29 +148,14 @@
     return entries.map(([key, count]) => `${count} ${key}`).join(' · ')
   }
 
-  function skillCellPrimary(run: any): string {
-    if (run.requestedSkill) return run.requestedSkill
-    return skillExecutionModeLabel(run.skillExecutionMode)
-  }
-
-  function skillCellMeta(run: any): string {
-    const parts: string[] = []
-    if (run.requestedSkill) parts.push(skillExecutionModeLabel(run.skillExecutionMode))
-    if (run.skillConformance && run.skillConformance !== 'none' && run.skillConformance !== 'unknown') parts.push(run.skillConformance)
-    if (run.resolvedSkillSourceHash) parts.push(`src ${run.resolvedSkillSourceHash}`)
-    if (run.subagentCallCount) parts.push(`${run.subagentCallCount} subagents`)
-    return parts.join(' · ')
-  }
-
   const breakdownSections = $derived(
     statsStore.data
       ? [
-          { title: 'By Project Type', data: statsStore.data.byProjectType, kind: 'default' },
-          { title: 'By Project', data: statsStore.data.byProject, kind: 'default' },
-          { title: 'By Role', data: statsStore.data.byRole, kind: 'default' },
-          { title: 'By Mode', data: statsStore.data.byMode, kind: 'default' },
-          { title: 'By Model', data: statsStore.data.byModel, kind: 'default' },
-          { title: 'By Skill Execution', data: statsStore.data.bySkillExecutionMode, kind: 'skill' },
+          { title: 'By Project Type', data: statsStore.data.byProjectType },
+          { title: 'By Project', data: statsStore.data.byProject },
+          { title: 'By Role', data: statsStore.data.byRole },
+          { title: 'By Mode', data: statsStore.data.byMode },
+          { title: 'By Model', data: statsStore.data.byModel },
         ]
       : [],
   )
@@ -375,7 +344,7 @@
               <tbody>
                 {#each section.data as row (row.key)}
                   <tr class="border-b border-surface-100 last:border-0 dark:border-surface-700">
-                    <td class="py-1.5 font-mono text-xs">{breakdownLabel(section.kind, row.key)}</td>
+                    <td class="py-1.5 font-mono text-xs">{row.key}</td>
                     <td class="py-1.5 text-right">{row.stats.totalRuns}</td>
                     <td class="py-1.5 text-right">{row.stats.failedRuns}</td>
                     <td class="py-1.5 text-right">${row.stats.totalCostUsd.toFixed(2)}</td>
@@ -457,7 +426,6 @@
                 <th class="pb-2">Task</th>
                 <th class="pb-2">Role</th>
                 <th class="pb-2">Mode</th>
-                <th class="pb-2">Skill</th>
                 <th class="pb-2">Model</th>
                 <th class="pb-2 text-right">Cost</th>
                 <th class="pb-2 text-right">Duration</th>
@@ -473,11 +441,10 @@
                   <td class="py-1.5">
                     <span class="rounded px-1.5 py-0.5 text-xs {roleBadgeClasses(run.role)}">{run.role}</span>
                   </td>
-                  <td class="py-1.5 text-xs">{run.mode}</td>
-                  <td class="py-1.5">
-                    <div class="font-mono text-xs">{skillCellPrimary(run)}</div>
-                    {#if skillCellMeta(run)}
-                      <div class="text-xs text-surface-400">{skillCellMeta(run)}</div>
+                  <td class="py-1.5 text-xs">
+                    {run.mode}
+                    {#if run.subagentCallCount}
+                      <div class="text-surface-400">{run.subagentCallCount} subagents</div>
                     {/if}
                   </td>
                   <td class="py-1.5 text-xs">{run.model || '—'}</td>

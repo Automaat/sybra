@@ -84,7 +84,7 @@
   let successMsg = $state('')
 
   const dirty = $derived(settings !== null && JSON.stringify(settings) !== original)
-  const dirOrder = ['tasks', 'skills', 'projects', 'clones', 'worktrees', 'logs', 'audit']
+  const dirOrder = ['tasks', 'projects', 'clones', 'worktrees', 'logs', 'audit']
 
   let serverVersion = $state<string | null>(null)
   const clientVersion = String(import.meta.env.VITE_APP_VERSION || 'dev')

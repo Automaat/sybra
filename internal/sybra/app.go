@@ -13,7 +13,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -117,7 +116,6 @@ type App struct {
 	stats             stats.Repository
 	limits            *limits.Store
 	tasksDir          string
-	skillsDir         string
 	repoDir           string
 	worktreesDir      string
 	logger            *slog.Logger
@@ -253,10 +251,6 @@ type App struct {
 
 	bgops *bgop.Tracker
 
-	// skillsFS is an optional embedded FS used as a fallback when the
-	// repository's .claude/skills/ directory is not present on disk.
-	skillsFS fs.FS
-
 	// Wails-bound services (created in startup)
 	taskSvc      *TaskService
 	planSvc      *PlanningService
@@ -330,17 +324,9 @@ func WithRestartRequest(fn func()) Option {
 	return func(a *App) { a.requestRestart = fn }
 }
 
-// WithSkillsFS sets an embedded FS used as a fallback source for skill files
-// when the repository's .claude/skills/ directory is not present on disk.
-// Typically populated from the internal/skills package in the server binary.
-func WithSkillsFS(skillsFS fs.FS) Option {
-	return func(a *App) { a.skillsFS = skillsFS }
-}
-
 func NewApp(logger *slog.Logger, logLevel *slog.LevelVar, cfg *config.Config, opts ...Option) *App {
 	a := &App{
 		tasksDir:                 cfg.TasksDir,
-		skillsDir:                cfg.SkillsDir,
 		repoDir:                  cfg.RepoDir,
 		worktreesDir:             cfg.WorktreesDir,
 		logger:                   logger,
@@ -428,9 +414,8 @@ func (a *App) startLifecycle(schedulerCtx, watcherCtx context.Context, emit func
 	issuesFetcher := a.initAutomations(schedulerCtx, emit)
 	a.wireServices(emit) //nolint:contextcheck // TaskService uses the app-bound root context; see Startup's contextcheck note.
 
-	// syncSkillsBundle's deep diagnostic logging uses context.Background()
-	// intentionally (see skillsync.Syncer.log) — not a cancellation bug.
-	a.syncSkillsBundle(project.NormalizeSigningPolicy(a.cfg.CommitSigning())) //nolint:contextcheck // plain diagnostic logging inside skillsync, see its log() comment
+	a.syncOrchestratorInstructions(schedulerCtx, project.NormalizeSigningPolicy(a.cfg.CommitSigning()))
+	a.removeInstalledSkills()
 	a.snapshotter = tasksnapshot.New(config.TaskSnapshotGitDir(), a.tasksDir, time.Duration(a.cfg.DefaultTaskSnapshotInterval())*time.Second, a.logger)
 	// EnsureRepo must run before RunStartupCleanup: the startup trash prune
 	// fires CommitBeforePrune, which on a fresh install would otherwise commit

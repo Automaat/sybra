@@ -158,7 +158,7 @@
     {@render textList('Uncertain', digest.uncertain, true)}
     {@render textList('Next bets', digest.nextBets)}
     {@render takeawayList('Prompt takeaways', 'prompt', digest.promptTakeaways)}
-    {@render takeawayList('Skill takeaways', 'skill', digest.skillTakeaways)}
+    {@render takeawayList('Earlier takeaways', 'earlier', digest.skillTakeaways)}
     {@render takeawayList('Model takeaways', 'model', digest.modelTakeaways)}
     {@render evidenceList(digest.evidence)}
   </div>

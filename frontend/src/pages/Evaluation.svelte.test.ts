@@ -1,7 +1,7 @@
 import { cleanup, render, screen, within } from '@testing-library/svelte'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-type Subject = { workflowId?: string; stepId?: string; role?: string; skillName?: string }
+type Subject = { workflowId?: string; stepId?: string; role?: string; }
 
 const mockEvaluationStore = {
   data: null as Record<string, unknown> | null,
@@ -104,7 +104,6 @@ function makeReport() {
     weaknesses: [],
     byProvider: [],
     byRole: [],
-    bySkillExecutionMode: [],
     byAgentModel: [comparisonRow],
     byCostTier: [{ ...comparisonRow, key: 'claude:implementation:cheap' }],
     costPerMergedBaseline: { costPerMergedUsd: 4.5, tokensPerMergedPr: 10_000, mergedPrs: 8 },
@@ -184,22 +183,8 @@ describe('Evaluation', () => {
     expect(within(tierSection).getByText('claude:implementation:cheap')).toBeDefined()
   })
 
-  it('renders the skill execution breakdown with friendly labels', () => {
-    const report = makeReport()
-    report.bySkillExecutionMode = [
-      { key: 'native', runs: 3, failures: 1, failureRate: 1 / 3, totalCostUsd: 2, turns: 4, tools: 6 },
-    ] as any
-    mockEvaluationStore.data = report
-
-    render(Evaluation, { props: {} })
-
-    expect(screen.getByText('By Skill Execution')).toBeDefined()
-    expect(screen.getByText('Native')).toBeDefined()
-  })
-
   it('shows distinct empty-state messages for unconfigured and zero-runs kinds, and hides unknown when absent', () => {
     const report = makeReport()
-    report.byExperimentKind.push({ kind: 'skill', groups: [] })
     mockEvaluationStore.data = report
 
     render(Evaluation, { props: {} })
@@ -207,8 +192,6 @@ describe('Evaluation', () => {
     expect(screen.getByText('Model experiments')).toBeDefined()
     expect(screen.getByText('Prompt experiments')).toBeDefined()
     expect(screen.getByText('No prompt experiments configured.')).toBeDefined()
-    expect(screen.getByText('Skill experiments')).toBeDefined()
-    expect(screen.getByText('Skill experiments configured, but no runs recorded yet.')).toBeDefined()
     expect(screen.queryByText('Unknown experiments')).toBeNull()
   })
 

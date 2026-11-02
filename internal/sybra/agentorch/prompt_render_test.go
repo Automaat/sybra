@@ -11,7 +11,6 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
-	"github.com/Automaat/sybra/internal/sybra/completion"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -45,12 +44,10 @@ func readAuditNDJSON(t *testing.T, dir string) []audit.Event {
 	return events
 }
 
-// TestRecordImplAgentStart_PromptHashCorrelatesWithCompletion proves the
-// dispatch-time prompt_hash stamped by recordImplAgentStart (agent.started)
-// matches the completion-time prompt_hash on agent.prompt_rendered — the join
-// key diagnostics use to correlate a run's provider render summary back to
-// its dispatch record, without either event ever carrying prompt text.
-func TestRecordImplAgentStart_PromptHashCorrelatesWithCompletion(t *testing.T) {
+// TestRecordImplAgentStart_HashesDispatchedPrompt proves agent.started carries
+// the hash of the prepared prompt, not the pre-preparation one, without ever
+// carrying prompt text.
+func TestRecordImplAgentStart_HashesDispatchedPrompt(t *testing.T) {
 	auditDir := t.TempDir()
 	al, err := audit.NewLogger(auditDir)
 	if err != nil {
@@ -63,52 +60,27 @@ func TestRecordImplAgentStart_PromptHashCorrelatesWithCompletion(t *testing.T) {
 		t.Fatalf("task.NewStore: %v", err)
 	}
 	tm := task.NewManager(ts, nil)
-	tk, err := tm.Create("prompt render task", "", "headless")
+	tk, err := tm.Create("prompt hash task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	o := New(tm, nil, nil, al, discardSlogLogger(), nil, &config.Config{})
+	ag := &agent.Agent{ID: "agent-1", TaskID: tk.ID, Provider: "codex", Mode: "headless", Prompt: "Implement it\n\n<NOTES.md scratchpad>"}
 
-	// ag.Prompt is the prepared prompt Run dispatched (post NOTES.md/guardrail/
-	// skill preparation) — recordImplAgentStart hashes this, not the
-	// pre-preparation prompt passed as fullPrompt.
-	ag := &agent.Agent{ID: "agent-1", TaskID: tk.ID, Provider: "codex", Mode: "headless", Prompt: "Run /plan-critic now\n\n<NOTES.md scratchpad>"}
-	// Mirrors what codexProvider.BuildHeadlessInvocation stamps before
-	// dispatch records the run.
-	ag.SetPromptRender("slash-to-dollar", []string{"plan-critic"}, nil)
-
-	o.recordImplAgentStart(ag, tk, tk.ID, "headless", "bypass", false, false, "Run /plan-critic now")
-
-	h := completion.New(completion.Config{Logger: discardSlogLogger(), Audit: al, Tasks: tm})
-	h.OnComplete(ag)
+	o.recordImplAgentStart(ag, tk, tk.ID, "headless", "bypass", false, false, "Implement it")
 	_ = al.Close()
 
-	events := readAuditNDJSON(t, auditDir)
-	var started, rendered *audit.Event
-	for i := range events {
-		switch events[i].Type {
-		case audit.EventAgentStarted:
-			started = &events[i]
-		case audit.EventAgentPromptRendered:
-			rendered = &events[i]
+	for _, event := range readAuditNDJSON(t, auditDir) {
+		if event.Type != audit.EventAgentStarted {
+			continue
 		}
+		if got, want := event.Data["prompt_hash"], agent.HashPrompt(ag.Prompt); got != want {
+			t.Fatalf("prompt_hash = %v, want %q", got, want)
+		}
+		return
 	}
-	if started == nil {
-		t.Fatal("no agent.started event recorded")
-	}
-	if rendered == nil {
-		t.Fatal("no agent.prompt_rendered event recorded")
-	}
-
-	startedHash, _ := started.Data["prompt_hash"].(string)
-	renderedHash, _ := rendered.Data["prompt_hash"].(string)
-	if startedHash == "" {
-		t.Fatal("agent.started prompt_hash is empty")
-	}
-	if startedHash != renderedHash {
-		t.Fatalf("prompt_hash mismatch: started=%q rendered=%q", startedHash, renderedHash)
-	}
+	t.Fatal("no agent.started event recorded")
 }
 
 func TestBuildTaskStartPrompt_AppendsAttachmentPathsOnly(t *testing.T) {

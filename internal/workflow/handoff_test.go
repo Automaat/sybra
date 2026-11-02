@@ -145,8 +145,7 @@ func TestBuiltinHandoffReview_SkipsToReview(t *testing.T) {
 	if !hasCondition(review.Trigger.Conditions, "task.status", "equals", "ready-review") {
 		t.Errorf("simple-task-review must trigger on status=ready-review; got %+v", review.Trigger.Conditions)
 	}
-	// code_review_simple stays a cross-check lane; code_review_staff is pinned
-	// to claude for high-risk review (see simple-task-review.yaml).
+	// code_review_simple stays a cross-check lane.
 	simple := review.StepByID("code_review_simple")
 	if simple == nil {
 		t.Fatal("simple-task-review code_review_simple step not found")
@@ -154,14 +153,6 @@ func TestBuiltinHandoffReview_SkipsToReview(t *testing.T) {
 	}
 	if simple.Config.Provider != "cross" {
 		t.Errorf("simple-task-review code_review_simple provider = %q, want cross", simple.Config.Provider)
-	}
-	staff := review.StepByID("code_review_staff")
-	if staff == nil {
-		t.Fatal("simple-task-review code_review_staff step not found")
-		return
-	}
-	if staff.Config.Provider != "ab" {
-		t.Errorf("simple-task-review code_review_staff provider = %q, want ab", staff.Config.Provider)
 	}
 }
 
@@ -178,7 +169,7 @@ func TestBuiltinHandoffPR_ReviewsCrossProvider(t *testing.T) {
 	if !hasCondition(pr.Trigger.Conditions, "task.tags", "contains", "review") {
 		t.Errorf("pr-review trigger must require tag review; got %+v", pr.Trigger.Conditions)
 	}
-	for _, stepID := range []string{"review_simple", "review_staff"} {
+	for _, stepID := range []string{"review_simple"} {
 		step := pr.StepByID(stepID)
 		if step == nil {
 			t.Fatalf("pr-review %s step not found", stepID)
@@ -223,7 +214,7 @@ func TestBuiltinHandoffReview_DoesNotEnterPRReview(t *testing.T) {
 	t.Parallel()
 
 	fields := map[string]string{
-		"task.tags": "handoff,handoff-review,force-staff-review",
+		"task.tags": "handoff,handoff-review",
 	}
 
 	hr := defByID(t, "simple-task-handoff-review")

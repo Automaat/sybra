@@ -375,10 +375,6 @@ export class View {
     "assignmentKey"?: string;
     "decisionVersion"?: number;
     "reasoningEffort"?: string;
-    "skillExecutionMode"?: string;
-    "requestedSkill"?: string;
-    "resolvedSkillSourceHash"?: string;
-    "skillConformance"?: string;
     "prompt"?: string;
     "turnCount"?: number;
     "toolCalls"?: number;
@@ -432,10 +428,10 @@ export class View {
      * Creates a new View instance from a string or object.
      */
     static createFrom($$source: any = {}): View {
-        const $$createField39_0 = $$createType6;
+        const $$createField35_0 = $$createType6;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pluginErrors" in $$parsedSource) {
-            $$parsedSource["pluginErrors"] = $$createField39_0($$parsedSource["pluginErrors"]);
+            $$parsedSource["pluginErrors"] = $$createField35_0($$parsedSource["pluginErrors"]);
         }
         return new View($$parsedSource as Partial<View>);
     }

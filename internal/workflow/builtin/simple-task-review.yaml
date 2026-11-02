@@ -1,6 +1,6 @@
 id: simple-task-review
 name: Simple Task — Review
-description: Triage the review depth, run code review (simple or staff), apply fixes, then hand the task to the testing phase (status → testing). PR creation now lives in simple-task-pr, which runs after testing passes. Triggered by the cascade after simple-task-implement flips status to ready-review.
+description: Triage the review depth, run the adversarial code review, apply fixes, then hand the task to the testing phase (status → testing). PR creation now lives in simple-task-pr, which runs after testing passes. Triggered by the cascade after simple-task-implement flips status to ready-review.
 builtin: true
 trigger:
   on: task.status_changed
@@ -55,10 +55,7 @@ steps:
         goto: triage_review
       - goto: done_review
 
-  # Mechanical heuristic (no LLM): inspects diff size + file shape. Only its
-  # "skip" verdict is load-bearing here — the post-implement stage never routes
-  # to staff on a size/shape judgement (see pick_review_method). Kept so a
-  # zero-net-line diff still short-circuits the review cycle.
+  # Mechanical (no LLM): a zero-net-line diff short-circuits the review cycle.
   - id: triage_review
     name: Triage Review
     type: triage_review
@@ -94,23 +91,11 @@ steps:
     next:
       - goto: pick_review_method
 
-  # Post-implement review is ALWAYS adversarial. Staff review is reserved for
-  # PRs a human is asked to review (pr-review.yaml); running an 11-subagent
-  # staff pass on every landing is what made review 34% of fleet spend while
-  # the "simple" branch sat dead — triage picked staff on 62 of 62 reviews.
-  # Routes:
-  #   - task.tags contains force-staff-review → staff (the only route to staff)
-  #   - vars.step.triage_review.output equals skip → trivial diff, skip review
-  #   - otherwise → /adversarial-review
+  # Skip only a zero-net-line diff; everything else gets the adversarial review.
   - id: pick_review_method
     name: Pick Review Method
     type: condition
     next:
-      - when:
-          field: task.tags
-          operator: contains
-          value: force-staff-review
-        goto: code_review_staff
       - when:
           field: vars.step.triage_review.output
           operator: equals
@@ -118,18 +103,12 @@ steps:
         goto: done_review
       - goto: code_review_simple
 
-  # Default review depth for every landing. Writes to the same sidecar path as
-  # code_review_staff so fix_review reads either one transparently.
-  # /adversarial-review emits `Review Verdict: CLEAN|NEEDS_FIXES` natively, so
-  # the mapping below is identity — no verdict translation to get wrong.
-  # Orchestration owner: /adversarial-review (internal/skills/data/
-  # adversarial-review.md). The prompt below is a thin artifact contract
-  # (where to save the diff/review, the verdict-line format this workflow
-  # routes on) — the review methodology itself lives solely in the skill.
+  # The report goes to the code_review sidecar for fix_review; the JSON final
+  # message is what route_review_verdict reads.
   - id: code_review_simple
     name: Code Review (adversarial)
     type: run_agent
-    config:
+    config: &code_review_config
       role: review
       review_progress_base: refs/remotes/origin/main
       mode: headless
@@ -137,107 +116,51 @@ steps:
       needs_worktree: true
       max_retries: 2
       output_schema: >-
-        {"type":"object","properties":{"verdict":{"type":"string","enum":["CLEAN","NEEDS_FIXES"]}},"required":["verdict"],"additionalProperties":false}
-      prompt: >-
-        Review the changes on the current branch vs origin/main.
-        The PR has not been created yet — review the local diff.
+        {"type":"object","properties":{"verdict":{"type":"string","enum":["CLEAN","NEEDS_FIXES","FAILED"]}},"required":["verdict"],"additionalProperties":false}
+      prompt: |-
+        {{prompt "adversarial-review"}}
+
+        ---
+
+        # Review target
+
+        Review the changes on the current branch against base ref `origin/main`.
+        The PR has not been created yet, so review the local diff and read files
+        from the working tree. Task context is the title and body from
+        `sybra-cli --json get {{.Task.ID}}`.
         {{- if getvar .Vars "review_reask_note"}}
 
-        RETRY GUIDANCE — your previous final message was invalid:
-        {{getvar .Vars "review_reask_note"}}
+        RETRY GUIDANCE: {{getvar .Vars "review_reask_note"}}
         {{- end}}
 
-        Steps:
-          1. git diff origin/main..HEAD > {{sidecardir .Vars}}/.sybra-diff-{{.Task.ID}}.patch
-          2. Run /adversarial-review against that patch and the worktree source
-          3. Save the full review to {{sidecardir .Vars}}/.sybra-review-{{.Task.ID}}.md
+        Before starting, run
+        `git diff origin/main..HEAD > {{sidecardir .Vars}}/.sybra-diff-{{.Task.ID}}.patch`.
 
-        The FIRST line of {{sidecardir .Vars}}/.sybra-review-{{.Task.ID}}.md MUST be exactly the
-        verdict line /adversarial-review emits, copied verbatim:
-          - `Review Verdict: CLEAN` when no surviving finding requires a code
-            change before PR creation. Style-only comments, simplification
-            ideas, unused-code observations that do not affect behavior, and
-            optional consistency suggestions stay CLEAN.
-          - `Review Verdict: NEEDS_FIXES` when any surviving finding should
-            trigger code changes before PR creation.
-        This line gates whether a fix-review agent runs next — get it right.
+        Save the full report to {{sidecardir .Vars}}/.sybra-review-{{.Task.ID}}.md. Its
+        first line is the `Review Verdict:` line. This line gates whether a
+        fix-review agent runs next, so get it right.
 
         Do NOT submit anything to GitHub. Sybra will ingest
         {{sidecardir .Vars}}/.sybra-review-{{.Task.ID}}.md as the code_review sidecar
-        after you exit — you do not need to call sybra-cli yourself.
-        The review file is git-excluded and remains for the next step (fix_review) to
-        read directly.
+        after you exit, so you do not need to call sybra-cli yourself. The review
+        file is git-excluded and remains for the next step (fix_review) to read
+        directly.
 
         Your FINAL message of the turn must be ONLY the schema-valid JSON
-        verdict object: `{"verdict":"CLEAN"}` or
-        `{"verdict":"NEEDS_FIXES"}`.
+        verdict object: `{"verdict":"CLEAN"}`, `{"verdict":"NEEDS_FIXES"}`, or
+        `{"verdict":"FAILED"}`.
       import_sidecar:
         kind: code_review
         from: '{{sidecardir .Vars}}/.sybra-review-{{.Task.ID}}.md'
     next:
       - goto: require_code_review
 
-  # Deep review. Same sidecar contract as code_review_simple. Reachable ONLY
-  # via the force-staff-review tag — triage no longer routes here. Tag a task
-  # when you want the architectural/convention/dead-code lenses that
-  # /adversarial-review deliberately drops.
-  # Orchestration owner: /staff-code-review (marketplace plugin skill — no
-  # bundled fallback in this repo). Thin artifact contract only, mirroring
-  # code_review_simple above; the review methodology lives solely in the
-  # skill.
+  # A task parked on this retired ID at upgrade runs the same review, so it
+  # resumes instead of failing on a missing step.
   - id: code_review_staff
-    name: Code Review (staff)
+    name: Code Review (adversarial, resumed)
     type: run_agent
-    config:
-      role: review
-      review_progress_base: refs/remotes/origin/main
-      mode: headless
-      # Routed through the A/B suite (review-expensive) for provider equality.
-      # Historically pinned to claude because codex review failed ~2x more often
-      # on staff-level diffs (scorecard: 17% vs 9%); uniform weights plus the
-      # eval scorecard are expected to re-balance this — watch the review
-      # breakdown per provider after rollout.
-      provider: ab
-      needs_worktree: true
-      max_retries: 2
-      output_schema: >-
-        {"type":"object","properties":{"verdict":{"type":"string","enum":["CLEAN","NEEDS_FIXES"]}},"required":["verdict"],"additionalProperties":false}
-      prompt: >-
-        Review the changes on the current branch vs origin/main.
-        The PR has not been created yet — review the local diff.
-        {{- if getvar .Vars "review_reask_note"}}
-
-        RETRY GUIDANCE — your previous final message was invalid:
-        {{getvar .Vars "review_reask_note"}}
-        {{- end}}
-
-        Steps:
-          1. git diff origin/main..HEAD > {{sidecardir .Vars}}/.sybra-diff-{{.Task.ID}}.patch
-          2. Run /staff-code-review against that patch and the worktree source
-          3. Save the full review to {{sidecardir .Vars}}/.sybra-review-{{.Task.ID}}.md
-
-        The FIRST line of {{sidecardir .Vars}}/.sybra-review-{{.Task.ID}}.md MUST be exactly one
-        verdict marker, mapped from /staff-code-review's native verdict:
-          - `Review Verdict: CLEAN` for APPROVE, and for
-            APPROVE_WITH_COMMENTS only when every comment is low-severity,
-            style-only, optional, or non-actionable before PR creation.
-          - `Review Verdict: NEEDS_FIXES` for REQUEST_CHANGES, or for
-            APPROVE_WITH_COMMENTS when any critical/high/medium severity
-            finding should trigger code changes before PR creation.
-        This line gates whether a fix-review agent runs next — get it right.
-
-        Do NOT submit anything to GitHub. Sybra will ingest
-        {{sidecardir .Vars}}/.sybra-review-{{.Task.ID}}.md as the code_review sidecar
-        after you exit — you do not need to call sybra-cli yourself.
-        The review file is git-excluded and remains for the next step (fix_review) to
-        read directly.
-
-        Your FINAL message of the turn must be ONLY the schema-valid JSON
-        verdict object: `{"verdict":"CLEAN"}` or
-        `{"verdict":"NEEDS_FIXES"}`.
-      import_sidecar:
-        kind: code_review
-        from: '{{sidecardir .Vars}}/.sybra-review-{{.Task.ID}}.md'
+    config: *code_review_config
     next:
       - goto: require_code_review
 

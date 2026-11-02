@@ -12,7 +12,7 @@ import (
 
 // maxBucketItems and maxItemChars bound every free-text bucket so a digest
 // stays a narrative retrospective, never a raw dump. maxTakeaways bounds the
-// combined prompt/skill/model takeaway count.
+// combined prompt/model takeaway count.
 const (
 	maxBucketItems = 20
 	maxItemChars   = 400

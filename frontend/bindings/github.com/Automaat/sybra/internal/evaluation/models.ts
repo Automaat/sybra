@@ -402,25 +402,6 @@ export class ComparisonBreakdown {
     "toolsPerLanded": number;
     "insufficientData": boolean;
     "qualityAttributionLimited": boolean;
-
-    /**
-     * SkillConformance is this row's skill-conformance bucket
-     * (SkillCohortSkill/SkillCohortDirect/SkillCohortIndeterminate) when every
-     * run credited to the row shares one, "" when the row blends more than
-     * one — see SkillParityUnknown, the same condition reified as a bool for
-     * API consumers that would rather not special-case an empty string.
-     */
-    "skillConformance"?: string;
-
-    /**
-     * SkillParityUnknown reports whether this row's population is not purely
-     * SkillCohortSkill or SkillCohortDirect — either it blends runs with
-     * different skill delivery, or every run in it has indeterminate
-     * conformance. Either way the row can't support a skill-parity
-     * comparison regardless of sample size, so it always forces
-     * InsufficientData.
-     */
-    "skillParityUnknown"?: boolean;
     "baseline": boolean;
     "baselineVariantId"?: string;
     "sampleStatus"?: string;
@@ -553,7 +534,7 @@ export class ComparisonBreakdown {
         const $$createField28_0 = $$createType9;
         const $$createField29_0 = $$createType9;
         const $$createField30_0 = $$createType9;
-        const $$createField50_0 = $$createType11;
+        const $$createField48_0 = $$createType11;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("subject" in $$parsedSource) {
             $$parsedSource["subject"] = $$createField9_0($$parsedSource["subject"]);
@@ -580,7 +561,7 @@ export class ComparisonBreakdown {
             $$parsedSource["revertEstimate"] = $$createField30_0($$parsedSource["revertEstimate"]);
         }
         if ("roleBreakdowns" in $$parsedSource) {
-            $$parsedSource["roleBreakdowns"] = $$createField50_0($$parsedSource["roleBreakdowns"]);
+            $$parsedSource["roleBreakdowns"] = $$createField48_0($$parsedSource["roleBreakdowns"]);
         }
         return new ComparisonBreakdown($$parsedSource as Partial<ComparisonBreakdown>);
     }
@@ -670,7 +651,7 @@ export enum EvidenceState {
 /**
  * ExperimentGroup is the comparison table for a single experiment: every row
  * shares the same ExperimentID, and therefore the same Subject and (for
- * prompt/skill experiments) the same fixed variant provider/model settings.
+ * prompt experiments) the same fixed variant provider/model settings.
  */
 export class ExperimentGroup {
     "experimentId": string;
@@ -715,7 +696,7 @@ export class ExperimentGroup {
 
 /**
  * ExperimentKindBreakdown groups A/B comparison rows by experiment kind
- * (model, prompt, skill) so a prompt/skill rewrite is never compared against a
+ * (model, prompt) so a prompt rewrite is never compared against a
  * model swap in the same table. "unknown" collects rows whose ExperimentID no
  * longer resolves against the configured abtest.Config (e.g. a retired
  * experiment) so orphaned data stays visible instead of silently vanishing.
@@ -1096,7 +1077,6 @@ export class Report {
     "overall": Scorecard;
     "byProvider"?: Breakdown[];
     "byRole"?: Breakdown[];
-    "bySkillExecutionMode"?: Breakdown[];
     "byAgentModel"?: ComparisonBreakdown[];
     "byAgentModelContribution"?: ComparisonBreakdown[];
 
@@ -1166,16 +1146,15 @@ export class Report {
         const $$createField4_0 = $$createType22;
         const $$createField5_0 = $$createType24;
         const $$createField6_0 = $$createType24;
-        const $$createField7_0 = $$createType24;
+        const $$createField7_0 = $$createType11;
         const $$createField8_0 = $$createType11;
         const $$createField9_0 = $$createType11;
-        const $$createField10_0 = $$createType11;
-        const $$createField11_0 = $$createType26;
-        const $$createField12_0 = $$createType28;
-        const $$createField13_0 = $$createType29;
-        const $$createField14_0 = $$createType30;
-        const $$createField15_0 = $$createType31;
-        const $$createField16_0 = $$createType33;
+        const $$createField10_0 = $$createType26;
+        const $$createField11_0 = $$createType28;
+        const $$createField12_0 = $$createType29;
+        const $$createField13_0 = $$createType30;
+        const $$createField14_0 = $$createType31;
+        const $$createField15_0 = $$createType33;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("overall" in $$parsedSource) {
             $$parsedSource["overall"] = $$createField4_0($$parsedSource["overall"]);
@@ -1186,35 +1165,32 @@ export class Report {
         if ("byRole" in $$parsedSource) {
             $$parsedSource["byRole"] = $$createField6_0($$parsedSource["byRole"]);
         }
-        if ("bySkillExecutionMode" in $$parsedSource) {
-            $$parsedSource["bySkillExecutionMode"] = $$createField7_0($$parsedSource["bySkillExecutionMode"]);
-        }
         if ("byAgentModel" in $$parsedSource) {
-            $$parsedSource["byAgentModel"] = $$createField8_0($$parsedSource["byAgentModel"]);
+            $$parsedSource["byAgentModel"] = $$createField7_0($$parsedSource["byAgentModel"]);
         }
         if ("byAgentModelContribution" in $$parsedSource) {
-            $$parsedSource["byAgentModelContribution"] = $$createField9_0($$parsedSource["byAgentModelContribution"]);
+            $$parsedSource["byAgentModelContribution"] = $$createField8_0($$parsedSource["byAgentModelContribution"]);
         }
         if ("byCostTier" in $$parsedSource) {
-            $$parsedSource["byCostTier"] = $$createField10_0($$parsedSource["byCostTier"]);
+            $$parsedSource["byCostTier"] = $$createField9_0($$parsedSource["byCostTier"]);
         }
         if ("byExperimentKind" in $$parsedSource) {
-            $$parsedSource["byExperimentKind"] = $$createField11_0($$parsedSource["byExperimentKind"]);
+            $$parsedSource["byExperimentKind"] = $$createField10_0($$parsedSource["byExperimentKind"]);
         }
         if ("weaknesses" in $$parsedSource) {
-            $$parsedSource["weaknesses"] = $$createField12_0($$parsedSource["weaknesses"]);
+            $$parsedSource["weaknesses"] = $$createField11_0($$parsedSource["weaknesses"]);
         }
         if ("notes" in $$parsedSource) {
-            $$parsedSource["notes"] = $$createField13_0($$parsedSource["notes"]);
+            $$parsedSource["notes"] = $$createField12_0($$parsedSource["notes"]);
         }
         if ("slo" in $$parsedSource) {
-            $$parsedSource["slo"] = $$createField14_0($$parsedSource["slo"]);
+            $$parsedSource["slo"] = $$createField13_0($$parsedSource["slo"]);
         }
         if ("autonomySlos" in $$parsedSource) {
-            $$parsedSource["autonomySlos"] = $$createField15_0($$parsedSource["autonomySlos"]);
+            $$parsedSource["autonomySlos"] = $$createField14_0($$parsedSource["autonomySlos"]);
         }
         if ("costPerMergedBaseline" in $$parsedSource) {
-            $$parsedSource["costPerMergedBaseline"] = $$createField16_0($$parsedSource["costPerMergedBaseline"]);
+            $$parsedSource["costPerMergedBaseline"] = $$createField15_0($$parsedSource["costPerMergedBaseline"]);
         }
         return new Report($$parsedSource as Partial<Report>);
     }

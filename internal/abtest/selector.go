@@ -8,7 +8,6 @@ import (
 
 	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/roleeffort"
-	"github.com/Automaat/sybra/internal/skillinvoke"
 )
 
 // Select deterministically chooses a variant for the task/stage. It returns
@@ -174,7 +173,6 @@ func baselineAssignment(exp Experiment, v Variant, unit, key string, weightsVers
 		AssignmentUnit:  unit,
 		AssignmentKey:   key,
 		PromptTransform: clonePromptTransform(v.PromptTransform),
-		SkillAliases:    cloneSkillAliases(v.SkillAliases),
 		DecisionVersion: decisionVersion,
 	}
 }
@@ -230,7 +228,6 @@ func selectFromExperiment(exp Experiment, taskID, role, stepID string, providerA
 				AssignmentUnit:  unit,
 				AssignmentKey:   key,
 				PromptTransform: clonePromptTransform(v.PromptTransform),
-				SkillAliases:    cloneSkillAliases(v.SkillAliases),
 				DecisionVersion: decisionVersion,
 			}, true, nil
 		}
@@ -284,9 +281,6 @@ func subjectMatches(subject *Subject, ctx SelectionContext) bool {
 	if want := strings.TrimSpace(subject.Role); want != "" && want != defaultRole(ctx.Role) {
 		return false
 	}
-	if want := strings.TrimSpace(subject.SkillName); want != "" && !skillinvoke.ContainsInvocation(ctx.Prompt, want) {
-		return false
-	}
 	return true
 }
 
@@ -337,7 +331,7 @@ func validateExperiment(exp Experiment, providerAllowed func(string) bool) error
 		}
 		seen[v.ID] = true
 	}
-	if err := validatePromptSkillHomogeneity(exp, providerAllowed); err != nil {
+	if err := validatePromptHomogeneity(exp, providerAllowed); err != nil {
 		return err
 	}
 	if err := validateCanary(exp); err != nil {
@@ -396,13 +390,10 @@ func validateExperimentSubject(exp Experiment) error {
 	if strings.TrimSpace(exp.Subject.WorkflowID) == "" && strings.TrimSpace(exp.Subject.StepID) == "" && strings.TrimSpace(exp.Subject.Role) == "" {
 		return fmt.Errorf("abtest: experiment %q kind %q requires subject workflow_id, step_id, or role", exp.ID, exp.KindValue())
 	}
-	if exp.KindValue() == "skill" && strings.TrimSpace(exp.Subject.SkillName) == "" {
-		return fmt.Errorf("abtest: experiment %q kind %q requires subject skill_name", exp.ID, exp.KindValue())
-	}
 	return nil
 }
 
-func validatePromptSkillHomogeneity(exp Experiment, providerAllowed func(string) bool) error {
+func validatePromptHomogeneity(exp Experiment, providerAllowed func(string) bool) error {
 	switch exp.KindValue() {
 	case "prompt", "skill":
 	default:
@@ -496,9 +487,6 @@ func validateVariant(expID string, v Variant) error {
 	if err := validatePromptTransform(v); err != nil {
 		return err
 	}
-	if err := validateSkillAliases(v); err != nil {
-		return err
-	}
 	return nil
 }
 
@@ -522,48 +510,12 @@ func validatePromptTransform(v Variant) error {
 	return nil
 }
 
-func validateSkillAliases(v Variant) error {
-	for from, to := range v.SkillAliases {
-		if from != strings.TrimSpace(from) {
-			return fmt.Errorf("abtest: variant %q has invalid skill alias source %q", v.ID, from)
-		}
-		if to != strings.TrimSpace(to) {
-			return fmt.Errorf("abtest: variant %q has invalid skill alias target %q", v.ID, to)
-		}
-		normalizedFrom, ok := skillinvoke.NormalizeName(from)
-		if !ok || normalizedFrom != strings.TrimPrefix(strings.TrimSpace(from), "/") {
-			return fmt.Errorf("abtest: variant %q has invalid skill alias source %q", v.ID, from)
-		}
-		normalizedTo, ok := skillinvoke.NormalizeName(to)
-		if !ok || normalizedTo != strings.TrimPrefix(strings.TrimSpace(to), "/") {
-			return fmt.Errorf("abtest: variant %q has invalid skill alias target %q", v.ID, to)
-		}
-	}
-	return nil
-}
-
 func clonePromptTransform(in *PromptTransform) *PromptTransform {
 	if in == nil {
 		return nil
 	}
 	out := *in
 	return &out
-}
-
-func cloneSkillAliases(in map[string]string) map[string]string {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make(map[string]string, len(in))
-	for from, to := range in {
-		normalizedFrom, okFrom := skillinvoke.NormalizeName(from)
-		normalizedTo, okTo := skillinvoke.NormalizeName(to)
-		if !okFrom || !okTo {
-			continue
-		}
-		out[normalizedFrom] = normalizedTo
-	}
-	return out
 }
 
 func hashKey(s string) uint64 {

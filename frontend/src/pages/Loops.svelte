@@ -162,7 +162,7 @@
   {:else if loopStore.list.length === 0}
     <div class="flex flex-col items-center gap-2 py-16 opacity-50">
       <p class="text-lg">No loop agents</p>
-      <p class="text-sm">Create a recurring headless agent to run a skill on a schedule</p>
+      <p class="text-sm">Create a recurring headless agent to run a prompt on a schedule</p>
     </div>
   {:else}
     <div class="flex flex-col gap-2">

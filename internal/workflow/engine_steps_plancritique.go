@@ -139,14 +139,14 @@ func normalizePlanCritiqueVerdict(verdict string) string {
 // ("this plan is rejected") still resolves to the base verdict.
 var verdictWordRe = regexp.MustCompile(`(?i)\b(APPROV(?:E|ES|ED|ING)|REFIN(?:E|ES|ED|ING)|REJECT(?:S|ED|ING)?)\b`)
 
-// verdictColonLineRe matches the /plan-critic skill's current output
-// contract (internal/skills/data/plan-critic.md, Phase 6): a bare
+// verdictColonLineRe matches the plan-critic prompt's current output
+// contract (internal/prompts/data/plan-critic.md, Output): a bare
 // "# Plan Review" title followed by "## Verdict: <VERDICT>" — the verdict
 // sits on the Verdict heading's own line, not in prose below it. Tolerates
 // 1-6 leading `#`s and captures the rest of that line for verdictWordRe.
 var verdictColonLineRe = regexp.MustCompile(`(?im)^#{1,6}\s*Verdict:\s*(.*)$`)
 
-// planReviewTitleRe matches the skill's older title-line contract,
+// planReviewTitleRe matches the prompt's older title-line contract,
 // "# Plan Review: <VERDICT>", kept as a fallback for critiques produced
 // before the Phase 6 format above, or a critic that reverts to it.
 var planReviewTitleRe = regexp.MustCompile(`(?im)^#{1,6}\s*Plan Review:?\s*([A-Z]*)`)
@@ -175,7 +175,7 @@ func canonicalVerdict(word string) string {
 
 // PlanCritiqueVerdict extracts the verdict word from a plan-critique
 // sidecar, checking three locations in order of how closely they match the
-// skill's actual current contract: the "## Verdict: <VERDICT>" line
+// prompt's actual current contract: the "## Verdict: <VERDICT>" line
 // (current), the older "# Plan Review: <VERDICT>" title line, and finally
 // the "## Verdict" section's prose body for a critic that drifted from both.
 // Deliberately does not scan the rest of the document (findings, required

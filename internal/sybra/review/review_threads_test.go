@@ -52,7 +52,7 @@ func TestReviewThreadLocation(t *testing.T) {
 }
 
 // The brief must match the monitor's actionable rule. A thread the agent
-// already answered stays unresolved forever - the fix-review skill never
+// already answered stays unresolved forever - fix-review never
 // resolves a reviewer's thread - so briefing one would park every later run
 // on a thread no reply can clear.
 func TestActionableReviewThread(t *testing.T) {
@@ -155,7 +155,7 @@ func TestCommentsPromptCarriesTheBrief(t *testing.T) {
 
 // A conceded-then-deferred reply reads as handled to every later gate, so the
 // rule that forbids it has to reach the agent on both dispatch paths, not just
-// through the skill body it may or may not follow closely.
+// through a prompt body it may or may not follow closely.
 func TestReviewFixPolicyReachesBothDispatchPrompts(t *testing.T) {
 	t.Parallel()
 

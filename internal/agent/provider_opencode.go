@@ -32,15 +32,7 @@ func (p opencodeProvider) BuildCommand(cfg RunConfig, model string) string {
 }
 
 func (p opencodeProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (headlessInvocation, error) {
-	// opencode invokes no skill natively — a Claude-style /skill is stripped
-	// (and the workflow skill inlined upstream), mirroring copilot. Stamping the
-	// render summary keeps the agent.prompt_rendered contract satisfied for this
-	// provider instead of emitting an empty rendered_syntax.
-	skillNames := discoverOpencodeSkills()
-	prompt := stripSkillInvocations(cfg.Prompt, skillNames)
-	rendered, unrendered := computeSkillRender(cfg.Prompt, skillNames)
-	a.SetPromptRender("slash-stripped", rendered, unrendered)
-	args := buildOpenCodeRunArgs(a, cfg, prompt)
+	args := buildOpenCodeRunArgs(a, cfg, cfg.Prompt)
 	return headlessInvocation{
 		name:    providerid.OpenCode,
 		args:    args,

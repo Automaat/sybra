@@ -326,7 +326,7 @@
         class="rounded bg-tertiary-500 px-2.5 py-1 text-xs font-medium text-white hover:bg-tertiary-600 disabled:opacity-50"
         onclick={runFixReview}
         disabled={fixReviewLoading || fixingReviewAgent}
-        title="Run fix-review skill to apply unresolved PR review comments"
+        title="Run fix-review to apply unresolved PR review comments"
       >
         {fixReviewLoading ? 'Starting...' : 'Fix Review Comments'}
       </button>

@@ -23,7 +23,6 @@ import (
 	"github.com/Automaat/sybra/internal/pressure"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/sandbox"
-	"github.com/Automaat/sybra/internal/skillinvoke"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/sybra/runenv"
 	"github.com/Automaat/sybra/internal/sybra/verification"
@@ -832,9 +831,6 @@ func toRunInfos(runs []task.AgentRun) []workflow.AgentRunInfo {
 			AgentID:                runs[i].AgentID,
 			Role:                   runs[i].Role,
 			Provider:               runs[i].Provider,
-			RequestedSkill:         runs[i].RequestedSkill,
-			SkillExecutionMode:     runs[i].SkillExecutionMode,
-			SkillConformance:       runs[i].SkillConformance,
 			StartedAt:              runs[i].StartedAt,
 			Outcome:                runs[i].Outcome,
 			ProtocolViolation:      runs[i].ProtocolViolation,
@@ -1235,9 +1231,6 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		OneShot:                 oneShot,
 		// mode is coerced to headless above, so legacy interactive tasks get
 		// no concurrency bypass — they are treated as ordinary headless runs.
-		RequestedSkill:         workflowRequestedSkill(prompt),
-		ForceInjectedSkill:     assignment.ForceInjectedSkill,
-		SkillRecoveryAttempt:   assignment.SkillRecoveryAttempt,
 		MaxTurns:               t.MaxTurns,
 		RequirePermissions:     agentorch.ResolvePermission(t, a.agentOrch.Cfg()),
 		HeadlessPermissionMode: posture,
@@ -1618,14 +1611,6 @@ func (a *agentAdapter) reprepareProvidedWorktreeForRole(t task.Task, taskID stri
 	}
 }
 
-func workflowRequestedSkill(prompt string) string {
-	names := skillinvoke.InvokedNames(prompt)
-	if len(names) != 1 {
-		return ""
-	}
-	return names[0]
-}
-
 func (a *agentAdapter) configureTestRunnerRun(cfg *agent.RunConfig, taskID string, role agent.Role, t task.Task) {
 	if a.sandboxes != nil {
 		if role == agent.RoleTestRunner {
@@ -1761,26 +1746,22 @@ func (a *agentAdapter) recordSystemAgentStart(taskID, role, mode string, cfg age
 		nextStatus = task.Ptr(task.StatusInProgress)
 	}
 	if addErr := a.tasks.AddRunWithStatusBy(taskID, "workflow.engine.record_agent_start", task.AgentRun{
-		AgentID:                 ag.ID,
-		Role:                    role,
-		Mode:                    mode,
-		Provider:                ag.Provider,
-		Model:                   ag.Model,
-		ExperimentID:            ag.ExperimentID,
-		VariantID:               ag.VariantID,
-		RoutingReason:           ag.RoutingReason,
-		AssignmentUnit:          ag.AssignmentUnit,
-		AssignmentKey:           ag.AssignmentKey,
-		DecisionVersion:         ag.DecisionVersion,
-		ReasoningEffort:         ag.ReasoningEffort,
-		RequestedSkill:          ag.RequestedSkill,
-		SkillExecutionMode:      ag.SkillExecutionMode,
-		ResolvedSkillSourceHash: ag.ResolvedSkillSourceHash,
-		SkillConformance:        ag.SkillConformance,
-		OneShot:                 cfg.OneShot,
-		State:                   string(agent.StateRunning),
-		StartedAt:               ag.StartedAt,
-		Prompt:                  cfg.Prompt,
+		AgentID:         ag.ID,
+		Role:            role,
+		Mode:            mode,
+		Provider:        ag.Provider,
+		Model:           ag.Model,
+		ExperimentID:    ag.ExperimentID,
+		VariantID:       ag.VariantID,
+		RoutingReason:   ag.RoutingReason,
+		AssignmentUnit:  ag.AssignmentUnit,
+		AssignmentKey:   ag.AssignmentKey,
+		DecisionVersion: ag.DecisionVersion,
+		ReasoningEffort: ag.ReasoningEffort,
+		OneShot:         cfg.OneShot,
+		State:           string(agent.StateRunning),
+		StartedAt:       ag.StartedAt,
+		Prompt:          cfg.Prompt,
 	}, nextStatus); addErr != nil {
 		if errors.Is(addErr, os.ErrNotExist) {
 			// A stale workflow dispatcher can lose the task underneath it

@@ -162,7 +162,7 @@ func TestUnusedRootSentinelsAreDistinct(t *testing.T) {
 // application-data root at startup. Without a write grant there it dies with
 // "failed to initialize in-process app-server client: Operation not
 // permitted" before producing any output, which surfaced downstream as a
-// missing skill-conformance receipt rather than as a sandbox denial.
+// failed run rather than as a sandbox denial.
 func TestWrapInvocation_GrantsAppSupportRoot(t *testing.T) {
 	const appSupport = "/Users/u/Library/Application Support"
 	cfg := &RunConfig{sandbox: sandboxSpec{

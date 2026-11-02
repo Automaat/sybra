@@ -1,7 +1,7 @@
 package config
 
 // SelfMonitorConfig controls the in-process selfmonitor service that
-// replaces the /loop 6h /sybra-self-monitor skill. Each tick snapshots
+// replaces the legacy 6-hour self-monitor loop. Each tick snapshots
 // the latest health report, distills per-finding agent logs into a
 // LogSummary, runs a two-stage LLM judge + synthesizer (Phase C), files
 // deduped issues via the shared monitor.IssueSink, and autonomously

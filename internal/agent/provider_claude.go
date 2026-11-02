@@ -52,9 +52,6 @@ func (claudeProvider) BuildCommand(cfg RunConfig, model string) string {
 }
 
 func (claudeProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (headlessInvocation, error) {
-	// Claude invokes skills natively via its own slash syntax — no rewrite
-	// happens on this path.
-	a.SetPromptRender("none", nil, nil)
 	var args []string
 	if cfg.HeadlessSteerable {
 		// Mirrors buildConvoArgs: the prompt is delivered over stdin (as the
@@ -67,6 +64,9 @@ func (claudeProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (headless
 		// caller writes cfg.Prompt to stdin and closes it instead.
 		args = []string{"-p", "--output-format", "stream-json", "--verbose"}
 	}
+	// Sybra delivers its instructions in the prompt, so a skill installed on the
+	// host could only make the same task behave differently per machine.
+	args = append(args, "--disable-slash-commands")
 	if sid := a.GetSessionID(); sid != "" {
 		args = append(args, "--resume", sid)
 	}

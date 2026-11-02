@@ -189,7 +189,7 @@ func TestUnparseableConfigFailsRatherThanEditingFiles(t *testing.T) {
 }
 
 // TestJSONErrorIsParseable pins that --json failures stay machine-readable.
-// Agents run `sybra-cli --json update` per the sybra-tasks skill, and the
+// Agents run `sybra-cli --json update` per their prompts, and the
 // unknown-key messages this change routes to them quote the offending key —
 // interpolating that into a JSON string literal produced output no agent could
 // parse.

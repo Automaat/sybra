@@ -80,7 +80,7 @@ func seedConfigForLogs(t *testing.T, home string) {
 // TestE2ECLIInvestigateDistillsLog walks the full `investigate` round-trip:
 // stage a health report + agent log under SYBRA_HOME, run the CLI, and
 // verify the JSON report carries the distilled LogSummary. This is the
-// end-to-end contract the Claude Code triage skill depends on.
+// end-to-end contract the Claude Code triage prompt depends on.
 func TestE2ECLIInvestigateDistillsLog(t *testing.T) {
 	home := setupStore(t)
 	seedConfigForLogs(t, home)

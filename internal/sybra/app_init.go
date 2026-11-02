@@ -41,12 +41,12 @@ import (
 	"github.com/Automaat/sybra/internal/pressure"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/prompteval"
+	"github.com/Automaat/sybra/internal/prompts"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/recovery"
 	"github.com/Automaat/sybra/internal/reviewprogress"
 	"github.com/Automaat/sybra/internal/sandbox"
-	"github.com/Automaat/sybra/internal/skillsync"
 	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/sybra/clusterlead"
 	"github.com/Automaat/sybra/internal/sybra/dispatch"
@@ -2138,6 +2138,8 @@ func (a *App) initLoopScheduler(ctx context.Context, emit func(string, any)) {
 	a.loopSched.SyncContext(ctx)
 }
 
+const legacySelfMonitorPrompt = "/sybra-self-monitor"
+
 func (a *App) seedDefaultLoopAgents(ctx context.Context) {
 	if a.loopAgents == nil {
 		return
@@ -2145,7 +2147,7 @@ func (a *App) seedDefaultLoopAgents(ctx context.Context) {
 	const name = "sybra-self-monitor"
 	created, inserted, err := a.loopAgents.CreateIfAbsentByName(ctx, loopagent.LoopAgent{
 		Name:         name,
-		Prompt:       "/sybra-self-monitor",
+		Prompt:       prompts.MustGet(prompts.SelfMonitor),
 		IntervalSec:  21600, // 6 hours
 		AllowedTools: []string{"Bash", "Read", "Grep", "Glob"},
 		Provider:     providerid.Claude,
@@ -2157,9 +2159,23 @@ func (a *App) seedDefaultLoopAgents(ctx context.Context) {
 		return
 	}
 	if !inserted {
+		a.migrateSeededLoopAgentPrompt(ctx, created)
 		return
 	}
 	a.logger.Info("loopagent.seed.created", "id", created.ID, "name", name)
+}
+
+// migrateSeededLoopAgentPrompt replaces the slash invocation an earlier seed
+// saved, which no provider can run now skills are gone. A prompt the operator
+// edited is left alone.
+func (a *App) migrateSeededLoopAgentPrompt(ctx context.Context, existing loopagent.LoopAgent) {
+	if existing.Prompt != legacySelfMonitorPrompt {
+		return
+	}
+	existing.Prompt = prompts.MustGet(prompts.SelfMonitor)
+	if _, err := a.loopAgents.Update(ctx, existing); err != nil {
+		a.logger.Warn("loopagent.seed.migrate-failed", "id", existing.ID, "name", existing.Name, "err", err)
+	}
 }
 
 // newRecovery wires the App's deps into a recovery.Recovery used for
@@ -2200,7 +2216,7 @@ func (a *App) newRecovery() *recovery.Recovery {
 		OrphanRoots: []string{
 			filepath.Join(config.HomeDir(), "sandboxes"),
 			filepath.Join(config.HomeDir(), "worktrees"),
-			// The /sybra-test skill's fake-provider harness spawns its
+			// The adversarial test prompt's fake-provider harness spawns its
 			// subject process directly under a fresh os.TempDir()/sybra-test-*
 			// sandbox, outside the normal task/worktree/sandbox lifecycle
 			// (sybra#2210) — glob-expanded fresh on every sweep since each
@@ -2231,26 +2247,6 @@ func (a *App) newRecovery() *recovery.Recovery {
 		r.CommitBeforePrune = a.snapshotter.CommitNow
 	}
 	return r
-}
-
-// syncSkillsBundle drives the skillsync package with the App's source/dst
-// configuration. UserHomeDir is best-effort — when unavailable the user-home
-// destinations (~/.claude/skills, ~/.codex/skills) are silently skipped so
-// startup still succeeds in environments without a usable home dir.
-func (a *App) syncSkillsBundle(signing project.SigningPolicy) {
-	userHome, err := os.UserHomeDir()
-	if err != nil {
-		a.logger.Debug("skills.sync.no_user_home", "err", err)
-		userHome = ""
-	}
-	(&skillsync.Syncer{Logger: a.logger}).Run(skillsync.Options{
-		RepoDir:              a.repoDir,
-		SkillsFS:             a.skillsFS,
-		PrimaryDst:           a.skillsDir,
-		SybraHomeDir:         config.HomeDir(),
-		UserHomeDir:          userHome,
-		DowngradeCommitFlags: !signing.SignsCommits(context.Background()),
-	})
 }
 
 // openWorkflowStore returns the definition store for the configured backend, importing the existing files the first time a database is used.

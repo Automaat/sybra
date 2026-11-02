@@ -354,7 +354,7 @@ func (w *Watchdog) tick(ctx context.Context, s *state, now time.Time) {
 			}
 			// A headless agent whose stream already ended in a successful terminal
 			// result is logically complete; its process just has not exited yet (a
-			// skill that spawns subagents can leave CC alive after the final
+			// run that spawns subagents can leave CC alive after the final
 			// result). The runner's post-result guard usually finalizes it within
 			// seconds, so never inspect or escalate such an agent — doing so flips
 			// a finished run to human-required on a false stall (task c4a0fda0).
@@ -944,7 +944,7 @@ func hasUsablePlanningArtifacts(t task.Task) bool {
 
 // hasUnaddressedReviewFinding reports whether a code-review sidecar still
 // names a concrete file:line finding for a fix-review agent to act on. The
-// adversarial-review skill (internal/skills/data/adversarial-review.md) emits
+// adversarial-review prompt (internal/prompts/data/adversarial-review.md) emits
 // every finding with a "*Location:* `path:line`" line, so its presence is a
 // cheap, reliable signal that the sidecar has somewhere concrete to point a
 // retry at rather than being empty or purely prose.

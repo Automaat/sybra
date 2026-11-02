@@ -59,20 +59,20 @@ describe('ExperimentGroup', () => {
   it('supports a custom emptyMessage override', () => {
     render(ExperimentGroup, {
       props: {
-        kind: 'skill',
-        title: 'Skill experiments',
+        kind: 'prompt',
+        title: 'Prompt experiments',
         breakdown: undefined,
-        emptyMessage: 'See #1204 for skill experiment enrollment.',
+        emptyMessage: 'See #1204 for prompt experiment enrollment.',
       },
     })
 
-    expect(screen.getByText('See #1204 for skill experiment enrollment.')).toBeDefined()
+    expect(screen.getByText('See #1204 for prompt experiment enrollment.')).toBeDefined()
   })
 
   it('shows a zero-runs message when configured but no groups recorded', () => {
-    render(ExperimentGroup, { props: { kind: 'skill', title: 'Skill experiments', breakdown: breakdown('skill', []) } })
+    render(ExperimentGroup, { props: { kind: 'prompt', title: 'Prompt experiments', breakdown: breakdown('prompt', []) } })
 
-    expect(screen.getByText('Skill experiments configured, but no runs recorded yet.')).toBeDefined()
+    expect(screen.getByText('Prompt experiments configured, but no runs recorded yet.')).toBeDefined()
   })
 
   it('renders one table per experiment within a kind, keyed by experiment id', () => {
@@ -133,44 +133,6 @@ describe('ExperimentGroup', () => {
     expect(dominant.length).toBeGreaterThanOrEqual(2)
     expect(within(container).getByText('low-sample').classList.contains('experiment-caveat--dominant')).toBe(true)
     expect(within(container).getByText(/Revert: breach/).classList.contains('experiment-caveat--dominant')).toBe(true)
-  })
-
-  it('renders parity-unknown caveats distinctly from low-sample ones', () => {
-    render(ExperimentGroup, {
-      props: {
-        kind: 'model',
-        title: 'Model experiments',
-        breakdown: breakdown('model', [
-          {
-            experimentId: 'exp-a',
-            subject: undefined,
-            rows: [
-              row({
-                key: 'exp-a:v1',
-                experimentId: 'exp-a',
-                variantId: 'v1',
-                sampleStatus: 'parity-unknown',
-              }),
-            ],
-            rowsContribution: [],
-            experiments: [{
-              key: 'exp-a|implementation',
-              experimentId: 'exp-a',
-              role: 'implementation',
-              minSamplesPerVariant: 20,
-              variants: [{ variantId: 'v1', runs: 20, resolvedRuns: 20, ready: false, configured: true, observed: true, sampleStatus: 'parity-unknown' }],
-              readyVariants: 0,
-              totalRuns: 20,
-              totalResolvedRuns: 20,
-              status: 'low-sample',
-            }],
-          },
-        ]),
-      },
-    })
-
-    expect(screen.getByText('parity-unknown')).toBeDefined()
-    expect(screen.getByText('1 parity-unknown variant')).toBeDefined()
   })
 
   it('never renders pause/retire affordances', () => {

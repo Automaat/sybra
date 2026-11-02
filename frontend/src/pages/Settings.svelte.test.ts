@@ -109,7 +109,6 @@ function baseSettings(): any {
     projectTypes: [],
     directories: {
       tasks: '/home/.sybra/tasks',
-      skills: '/home/.sybra/skills',
     },
   }
 }
@@ -563,7 +562,6 @@ describe('Settings', () => {
     await vi.waitFor(() => {
       expect(screen.getByRole('heading', { name: 'Directories' })).toBeDefined()
       expect(screen.getByDisplayValue('/home/.sybra/tasks')).toBeDefined()
-      expect(screen.getByDisplayValue('/home/.sybra/skills')).toBeDefined()
     })
   })
 

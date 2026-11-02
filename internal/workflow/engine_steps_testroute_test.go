@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 	"os"
 	"os/exec"
@@ -13,7 +14,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"unicode/utf8"
 
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/notes"
@@ -332,105 +332,6 @@ func TestExtractFailuresMarkdownFieldRegex_StopsAtTrailingSchemaFields(t *testin
 	gotWithArray := extractFailuresMarkdownFieldRegex(malformedWithArray)
 	if gotWithArray != wantWithArray {
 		t.Fatalf("extractFailuresMarkdownFieldRegex (manual_probes) = %q, want %q", gotWithArray, wantWithArray)
-	}
-}
-
-func TestSkillReceiptExhaustionSummary_UsesExistingVerdictRecovery(t *testing.T) {
-	t.Parallel()
-
-	malformed := `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":"## Test Failures\n\n### product_bug: repo does not compile\n\nObserved output:\n` +
-		"```text\npkg/api-server/resource_inspect_endpoints.go:14: dangling import\n```" +
-		`"}`
-
-	got := skillReceiptExhaustionSummary(malformed)
-	want := "product_bug: repo does not compile"
-	if got != want {
-		t.Fatalf("skillReceiptExhaustionSummary = %q, want %q", got, want)
-	}
-}
-
-func TestSkillReceiptExhaustionSummary_DoesNotPairMismatchedOutcomeDetail(t *testing.T) {
-	t.Parallel()
-
-	output := `{"verdict":"FAIL","outcome":"ambiguous_requirement","failures_markdown":"## Test Failures\n\n### product_bug: repo does not compile\n\nObserved output: nothing"}`
-
-	got := skillReceiptExhaustionSummary(output)
-	if got != testOutcomeAmbiguousRequirement {
-		t.Fatalf("skillReceiptExhaustionSummary = %q, want %q", got, testOutcomeAmbiguousRequirement)
-	}
-}
-
-func TestSkillReceiptExhaustionSummary_UsesFallbackAfterMismatchedOutcomeDetail(t *testing.T) {
-	t.Parallel()
-
-	output := `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":"## Test Failures\n\n### ambiguous_requirement: unrelated minor nit\n\nObserved output: the actual crash trace that matters"}`
-
-	got := skillReceiptExhaustionSummary(output)
-	want := "product_bug: the actual crash trace that matters"
-	if got != want {
-		t.Fatalf("skillReceiptExhaustionSummary = %q, want %q", got, want)
-	}
-}
-
-func TestSkillReceiptExhaustionSummary_IgnoresLabelsInFencedOutput(t *testing.T) {
-	t.Parallel()
-
-	output := `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":"## Test Failures\n\n` +
-		"```text\noutput: quoted setup noise\n```\n\n" +
-		`Observed output: real failure surfaced"}`
-
-	got := skillReceiptExhaustionSummary(output)
-	want := "product_bug: real failure surfaced"
-	if got != want {
-		t.Fatalf("skillReceiptExhaustionSummary = %q, want %q", got, want)
-	}
-}
-
-func TestSkillReceiptExhaustionSummary_DoesNotClassifyOutcomePrefixesInsideWords(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name   string
-		output string
-		want   string
-	}{
-		{
-			name: "password bullet is not pass",
-			output: "## Test Failures\n\n" +
-				"- Password reset fails silently after profile update\n\n" +
-				"Observed output: HTTP 500 returned",
-			want: "HTTP 500 returned",
-		},
-		{
-			name: "buggy bullet is not bug alias",
-			output: `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":"## Test Failures\n\n` +
-				`- Buggy workflow keeps showing the stale receipt\n\n` +
-				`Observed output: stale receipt remains visible"}`,
-			want: "product_bug: stale receipt remains visible",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := skillReceiptExhaustionSummary(tt.output)
-			if got != tt.want {
-				t.Fatalf("skillReceiptExhaustionSummary = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestTrimReceiptSummary_PreservesUTF8WhenTruncating(t *testing.T) {
-	t.Parallel()
-
-	got := trimReceiptSummary(strings.Repeat("a", 155) + "中文测试内容延长")
-	if !utf8.ValidString(got) {
-		t.Fatalf("trimReceiptSummary returned invalid UTF-8: %q", got)
-	}
-	if !strings.HasSuffix(got, "...") {
-		t.Fatalf("trimReceiptSummary = %q, want ellipsis suffix", got)
 	}
 }
 
@@ -4341,5 +4242,109 @@ func TestRouteTestResult_ProseClaimEscalatesWithItsOwnReason(t *testing.T) {
 	}
 	if !strings.Contains(reason, "schema") {
 		t.Fatalf("reason = %q, want the operator pointed at the provider's schema support", reason)
+	}
+}
+
+func TestPartialPassNeedsAnExecutedProbe(t *testing.T) {
+	t.Parallel()
+
+	task := TaskInfo{ID: "t1"}
+	base := `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"library","unable_to_run_reason":%q,"automated_checks":[{"command":"go test ./...","actual":"ok"}]%s}`
+	probe := `,"manual_probes":[{"command":"curl localhost/health","actual":"200 ok","status":"pass"}]`
+	cases := []struct {
+		name, reason, probes string
+		wantOK               bool
+	}{
+		{"library_without_untested_criteria", "internal package with no surface", "", true},
+		{"untested_criteria_without_probe", "UNTESTED: AC1 - no display", "", false},
+		{"untested_criteria_with_probe", "UNTESTED: AC1 - no display", probe, true},
+		{"untested_criteria_with_probe_that_never_ran", "UNTESTED: AC1 - no display", `,"manual_probes":[{"command":"curl localhost/health","actual":"not run","status":"not run"}]`, false},
+		{"untested_criteria_with_only_a_test_suite", "UNTESTED: AC1 - no display", `,"manual_probes":[{"command":"go test ./...","actual":"ok","status":"passed"}]`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ok, reason := hasManualPassEvidence(fmt.Sprintf(base, tc.reason, tc.probes), task)
+			if ok != tc.wantOK {
+				t.Fatalf("hasManualPassEvidence = %v (%s), want %v", ok, reason, tc.wantOK)
+			}
+		})
+	}
+}
+
+func TestReportsUntestedCriteria(t *testing.T) {
+	t.Parallel()
+	if !reportsUntestedCriteria("UNTESTED: AC2 - no browser") {
+		t.Error("UNTESTED criterion not detected")
+	}
+	if reportsUntestedCriteria("internal package with no surface") {
+		t.Error("plain exemption reason treated as partial")
+	}
+}
+
+func TestPartialPassNeedsAProbeOnEverySurface(t *testing.T) {
+	t.Parallel()
+
+	reports := map[string]string{
+		"server": `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"server","app_started":true,"start_command":"./srv","readiness_probe":{"command":"curl /health","actual":"200"},"unable_to_run_reason":"UNTESTED: AC1 - no display","manual_probes":[{"command":"go test ./...","actual":"ok","status":"passed"}]}`,
+		"cli":    `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"cli","unable_to_run_reason":"UNTESTED: AC1 - no display","manual_probes":[{"command":"curl /x","actual":"not run","status":"not run"}]}`,
+	}
+	for name, report := range reports {
+		if ok, _ := hasManualPassEvidence(report, TaskInfo{ID: "t1"}); ok {
+			t.Errorf("%s: PASS accepted with no executed probe", name)
+		}
+	}
+}
+
+// The unrunnable-gate route opens the PR, so a partial PASS must never take it.
+func TestApplyTestVerdict_PartialPassWithoutProbeIsNotAnUnrunnableGate(t *testing.T) {
+	t.Parallel()
+
+	report := `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"server","app_started":false,"start_command":"","readiness_probe":{"command":"","actual":""},"unable_to_run_reason":"UNTESTED: AC1 - could not start the server, no display","manual_probes":[],"automated_checks":[{"command":"go test ./...","actual":"ok","status":"passed"}]}`
+	wf := &Execution{CurrentStep: testVerdictSourceStep, Variables: map[string]string{}}
+	out := StepOutput{StepID: testVerdictSourceStep, Status: "completed", Output: report}
+
+	_, outcome, _ := applyTestVerdictCompletion(wf, &out, "", TaskInfo{ID: "t1"})
+
+	if outcome != testOutcomeMissingEvidence {
+		t.Fatalf("outcome = %q, want %q", outcome, testOutcomeMissingEvidence)
+	}
+	if out.Status != "failed" {
+		t.Fatalf("status = %q, want failed", out.Status)
+	}
+	if got := wf.Variables["step."+testVerdictSourceStep+"."+testSurfaceUnavailableKey]; got != "" {
+		t.Fatalf("surface marked unavailable: %q", got)
+	}
+}
+
+// The attempt after a rejected partial PASS can fail for its own reasons, which
+// classifies as infra_failure. That must not open a PR for an unverified change.
+func TestRouteTestResult_RejectedPartialPassBlocksTheUnrunnableGatePR(t *testing.T) {
+	t.Parallel()
+
+	for name, vars := range map[string]map[string]string{
+		"rejected": {testPartialPassRejectedVar: "1"},
+		"clean":    {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			e, tasks := makeTestEngine(t)
+			tasks.Put(TaskInfo{ID: "t1", Status: taskstatus.Testing})
+			wf := &Execution{WorkflowID: "testing-task", StartedAt: time.Now().UTC(), Variables: vars}
+			wf.Variables[testingAutoRetryKey(testOutcomeInfraFailure)] = "99"
+
+			_, err := e.retryOrOpenPRForUnrunnableGate("t1", "route_test", wf, mustGetTaskInfo(t, tasks, "t1"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := taskstatus.ReadyPR
+			if name == "rejected" {
+				want = taskstatus.HumanRequired
+			}
+			got, _ := tasks.GetTask("t1")
+			if got.Status != want {
+				t.Errorf("status = %q, want %q", got.Status, want)
+			}
+		})
 	}
 }

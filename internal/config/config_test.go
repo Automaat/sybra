@@ -735,9 +735,6 @@ func cmpConfigSubset(got, want *Config) string {
 	if got.AutoUpdate.PollSeconds != want.AutoUpdate.PollSeconds {
 		diffs = append(diffs, fmt.Sprintf("AutoUpdate.PollSeconds: got %d want %d", got.AutoUpdate.PollSeconds, want.AutoUpdate.PollSeconds))
 	}
-	if got.SkillsDir != want.SkillsDir {
-		diffs = append(diffs, fmt.Sprintf("SkillsDir: got %q want %q", got.SkillsDir, want.SkillsDir))
-	}
 	if got.ProjectsDir != want.ProjectsDir {
 		diffs = append(diffs, fmt.Sprintf("ProjectsDir: got %q want %q", got.ProjectsDir, want.ProjectsDir))
 	}
@@ -2296,46 +2293,6 @@ func TestDefaultHeadlessSteerable(t *testing.T) {
 	}
 }
 
-func TestLoadMigratesStaleSkillsDir(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("SYBRA_HOME", dir)
-
-	// Simulate the pre-cdb6dc5 default that users still have persisted.
-	stale := filepath.Join(dir, "skills")
-	yaml := []byte("skills_dir: " + stale + "\n")
-	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yaml, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := filepath.Join(dir, ".claude", "skills")
-	if cfg.SkillsDir != want {
-		t.Fatalf("SkillsDir = %q, want %q (migration should silently retarget the old default)", cfg.SkillsDir, want)
-	}
-}
-
-func TestLoadPreservesCustomSkillsDir(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("SYBRA_HOME", dir)
-
-	custom := "/tmp/my-custom-skills"
-	yaml := []byte("skills_dir: " + custom + "\n")
-	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yaml, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.SkillsDir != custom {
-		t.Fatalf("SkillsDir = %q, want %q (only the stale default should be migrated)", cfg.SkillsDir, custom)
-	}
-}
-
 func TestHomeDirDefault(t *testing.T) {
 	t.Setenv("SYBRA_HOME", "")
 
@@ -3295,6 +3252,27 @@ func TestAgentDefaults_ReviewRoundsPerHourLimit(t *testing.T) {
 			got := AgentDefaults{ReviewRoundsPerHour: tt.set}.ReviewRoundsPerHourLimit()
 			if got != tt.want {
 				t.Errorf("ReviewRoundsPerHourLimit(%d) = %d, want %d", tt.set, got, tt.want)
+			}
+		})
+	}
+}
+
+// Save used to write skills_dir into every config, so a file from before its
+// removal must still load or the upgrade stops the server from starting.
+func TestLoadIgnoresRetiredSkillsDir(t *testing.T) {
+	for name, content := range map[string]string{
+		"legacy":     "skills_dir: /x\n",
+		"namespace":  "schema_version: 2\nstorage:\n  paths:\n    skills: /x\n",
+		"experiment": "ab_testing:\n  experiments:\n    - id: e\n      kind: skill\n      subject:\n        role: review\n        skill_name: x\n      variants:\n        - id: a\n          provider: claude\n          model: sonnet\n          weight: 1\n          skill_aliases:\n            x: y\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("SYBRA_HOME", home)
+			if err := os.WriteFile(filepath.Join(home, "config.yaml"), []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadNoPersist(); err != nil {
+				t.Fatalf("LoadNoPersist: %v", err)
 			}
 		})
 	}

@@ -350,7 +350,7 @@ steps:
 }
 
 // TestNewRecovery_OrphanRootsIncludesSybraTestTmpGlob guards sybra#2210: the
-// /sybra-test skill's fake-provider harness spawns its subject process
+// adversarial test prompt's fake-provider harness spawns its subject process
 // directly under a fresh os.TempDir()/sybra-test-* sandbox, outside the
 // normal task/worktree/sandbox lifecycle, so the boot-time orphan sweep must
 // be told about that root explicitly.

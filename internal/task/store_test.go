@@ -1290,10 +1290,6 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 		AssignmentUnit:          Ptr("task"),
 		AssignmentKey:           Ptr("task-abc123"),
 		ReasoningEffort:         Ptr("high"),
-		RequestedSkill:          Ptr("sybra-test"),
-		SkillExecutionMode:      Ptr("injected"),
-		ResolvedSkillSourceHash: Ptr("deadbeefcafebabe"),
-		SkillConformance:        Ptr("exact"),
 		SessionID:               Ptr("session-123"),
 		ProtocolViolation:       Ptr("missing-json"),
 		TestOutcome:             Ptr("product_bug"),
@@ -1336,10 +1332,6 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 		AssignmentKey:           "task-abc123",
 		DecisionVersion:         7,
 		ReasoningEffort:         "high",
-		RequestedSkill:          "sybra-test",
-		SkillExecutionMode:      "injected",
-		ResolvedSkillSourceHash: "deadbeefcafebabe",
-		SkillConformance:        "exact",
 		State:                   "done",
 		Outcome:                 RunOutcomeSuccess,
 		RemoteCompletionReceipt: "v1:receipt-payload",
@@ -1408,18 +1400,6 @@ func assertAgentRunPayload(t *testing.T, got, want AgentRun) {
 	}
 	if got.ReasoningEffort != want.ReasoningEffort {
 		t.Errorf("ReasoningEffort = %q, want %q", got.ReasoningEffort, want.ReasoningEffort)
-	}
-	if got.RequestedSkill != want.RequestedSkill {
-		t.Errorf("RequestedSkill = %q, want %q", got.RequestedSkill, want.RequestedSkill)
-	}
-	if got.SkillExecutionMode != want.SkillExecutionMode {
-		t.Errorf("SkillExecutionMode = %q, want %q", got.SkillExecutionMode, want.SkillExecutionMode)
-	}
-	if got.ResolvedSkillSourceHash != want.ResolvedSkillSourceHash {
-		t.Errorf("ResolvedSkillSourceHash = %q, want %q", got.ResolvedSkillSourceHash, want.ResolvedSkillSourceHash)
-	}
-	if got.SkillConformance != want.SkillConformance {
-		t.Errorf("SkillConformance = %q, want %q", got.SkillConformance, want.SkillConformance)
 	}
 	if got.State != want.State {
 		t.Errorf("State = %q, want %q", got.State, want.State)

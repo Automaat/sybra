@@ -4,7 +4,7 @@ An interrupted review may resume its own bounded provisional checkpoint. This
 does not change final verdict schemas, review retries, turn ceilings, evidence
 gates, or the separation between implementation and verification.
 
-The bundled simple and staff pre-PR reviews opt in with
+The bundled pre-PR reviews opt in with
 `review_progress_base: refs/remotes/origin/main`. Custom review steps may opt in
 only with their actual full comparison ref. Reviews without an explicit base
 (including inbound PR review workflows) remain stateless.

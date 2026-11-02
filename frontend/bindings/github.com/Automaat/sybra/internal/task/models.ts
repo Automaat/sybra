@@ -50,28 +50,6 @@ export class AgentRun {
     "assignmentKey"?: string;
     "decisionVersion"?: number;
     "reasoningEffort"?: string;
-    "requestedSkill"?: string;
-
-    /**
-     * SkillExecutionMode records how a mandatory workflow skill actually ran:
-     * none, native invocation, injected SKILL.md, bundled fallback, or
-     * unavailable. Legacy empty values remain readable and normalize to
-     * unknown at query time.
-     */
-    "skillExecutionMode"?: string;
-
-    /**
-     * ResolvedSkillSourceHash is a privacy-safe hash of the resolved local or
-     * bundled skill source identifier. Empty when the skill ran natively or no
-     * source was resolved.
-     */
-    "resolvedSkillSourceHash"?: string;
-
-    /**
-     * SkillConformance records whether the executed skill path exactly matched
-     * the requested skill, fell back, was unavailable, or had no skill at all.
-     */
-    "skillConformance"?: string;
     "state": string;
 
     /**

@@ -7,24 +7,22 @@ import (
 )
 
 type Record struct {
-	ID                 string
-	TaskID             string
-	Role               string
-	Mode               string
-	Provider           string
-	Model              string
-	ReasoningEffort    string
-	ExperimentID       string
-	VariantID          string
-	SkillExecutionMode string
-	SkillConformance   string
-	CostUSD            float64
-	DurationS          float64
-	PremiumRequests    float64
-	TurnCount          int
-	ToolCalls          int
-	Outcome            string
-	Timestamp          time.Time
+	ID              string
+	TaskID          string
+	Role            string
+	Mode            string
+	Provider        string
+	Model           string
+	ReasoningEffort string
+	ExperimentID    string
+	VariantID       string
+	CostUSD         float64
+	DurationS       float64
+	PremiumRequests float64
+	TurnCount       int
+	ToolCalls       int
+	Outcome         string
+	Timestamp       time.Time
 }
 
 type Counts struct {

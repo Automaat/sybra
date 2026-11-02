@@ -217,6 +217,15 @@ func (e *Engine) retryOrOpenPRForUnrunnableGate(taskID, stepID string, wfExec *E
 	if parked {
 		return StepOutput{}, errStepParked
 	}
+	// Opening a PR says the gate could not run. A tester that already claimed PASS
+	// without a probe did run, so a later attempt failing must not launder that.
+	if wfExec.Variables[testPartialPassRejectedVar] != "" {
+		reason := "test-runner PASS report listed UNTESTED criteria with no executed probe, and later attempts produced no usable report — needs human inspection"
+		if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
+			return StepOutput{}, err
+		}
+		return StepOutput{StepID: stepID, Status: "completed", Output: "partial pass rejected — escalated"}, nil
+	}
 	return e.openPRForUnrunnableTestingGate(taskID, stepID)
 }
 
@@ -1039,6 +1048,9 @@ func hasManualPassEvidence(output string, t TaskInfo) (ok bool, reason string) {
 	if surface == "" {
 		return false, "PASS report omitted surface_kind"
 	}
+	if reportsUntestedCriteria(parsed.UnableToRunReason) && !hasExecutedManualProbe(parsed.ManualProbes) {
+		return false, partialVerdictWithoutProbe
+	}
 	if isManualTestExemption(surface, t) {
 		if strings.TrimSpace(parsed.UnableToRunReason) == "" {
 			return false, "PASS used a no-app exemption but omitted unable_to_run_reason"
@@ -1157,6 +1169,43 @@ func isManualTestExemption(surface string, t TaskInfo) bool {
 	return false
 }
 
+// testPartialPassRejectedVar outlives the per-attempt verdict keys, because the
+// attempt after a rejection decides the route.
+const testPartialPassRejectedVar = "test_partial_pass_rejected"
+
+const partialVerdictWithoutProbe = "PASS listed UNTESTED criteria but no criterion passed on an executed manual probe"
+
+// reportsUntestedCriteria reports a PASS (partial), which the test prompt maps to
+// PASS with its UNTESTED criteria in unable_to_run_reason. Regression checks can
+// stand in for a surface that does not exist, not for one the run failed to reach.
+func reportsUntestedCriteria(reason string) bool {
+	return strings.Contains(strings.ToUpper(reason), "UNTESTED")
+}
+
+// hasExecutedManualProbe is stricter than the surface checks: a test suite or a
+// probe that never ran cannot stand behind a report that left criteria untested.
+func hasExecutedManualProbe(probes manualProbeEvidenceList) bool {
+	for _, p := range probes {
+		command := strings.ToLower(strings.TrimSpace(p.Command))
+		if command == "" || isAutomatedSuiteCommand(command) {
+			continue
+		}
+		result := strings.ToLower(strings.TrimSpace(string(p.Actual) + " " + string(p.Output) + " " + string(p.Observed) + " " + string(p.Status)))
+		if result == "" || strings.Contains(result, "not run") || strings.Contains(result, "untested") || strings.Contains(result, "skipped") || result == "n/a" {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func isAutomatedSuiteCommand(lower string) bool {
+	return containsAny(lower,
+		"go test", "go vet", "go build", "npm test", "npm run test", "npm run check",
+		"pnpm test", "pnpm run test", "yarn test", "pytest", "cargo test",
+		"type-check", "typecheck", "lint")
+}
+
 func hasPlainTextManualPassEvidence(output string, t TaskInfo) (ok bool, reason string) {
 	surface := normalizeSurfaceKind(firstPlainEvidenceField(output, "surface_kind", "surface kind"))
 	if surface == "" {
@@ -1168,6 +1217,9 @@ func hasPlainTextManualPassEvidence(output string, t TaskInfo) (ok bool, reason 
 		}
 		if !hasPlainTextRegressionCheckEvidence(output) {
 			return false, "plain-text PASS used a no-app exemption without CLI/test harness evidence"
+		}
+		if reportsUntestedCriteria(firstPlainEvidenceField(output, "unable_to_run_reason", "unable to run manual test")) && !hasPlainTextConcreteProbeEvidence(output) {
+			return false, partialVerdictWithoutProbe
 		}
 		return true, ""
 	}
@@ -1587,12 +1639,17 @@ func applyTestVerdictCompletion(wfExec *Execution, output *StepOutput, body stri
 			if proseUnstartableClaim(output.Output, t) {
 				wfExec.SetVar("step."+output.StepID+"."+testSchemaReaskKey, "1")
 			}
-			if surface := unstartableSurface(output.Output, t); surface != "" {
+			// A report claiming PASS with untested criteria is not an unrunnable
+			// gate: that route opens the PR, which is what the probe rule forbids.
+			if surface := unstartableSurface(output.Output, t); surface != "" && reason != partialVerdictWithoutProbe {
 				wfExec.SetVar("step."+output.StepID+"."+testVerdictOutcomeKey, testOutcomeInfraFailure)
 				wfExec.SetVar("step."+output.StepID+"."+testSurfaceUnavailableKey, surface)
 				output.Status = "failed"
 				output.Output = appendUnstartableSurface(output.Output, surface)
 				return "", testOutcomeInfraFailure, ""
+			}
+			if reason == partialVerdictWithoutProbe {
+				wfExec.SetVar(testPartialPassRejectedVar, "1")
 			}
 			wfExec.SetVar("step."+output.StepID+"."+testVerdictOutcomeKey, testOutcomeMissingEvidence)
 			wfExec.SetVar("step."+output.StepID+"."+testVerdictTaintedKey, testProtocolMissingEvidence)
@@ -1601,6 +1658,7 @@ func applyTestVerdictCompletion(wfExec *Execution, output *StepOutput, body stri
 			output.Output = appendTestProtocolViolation(output.Output, reason)
 			return testProtocolMissingEvidence, testOutcomeMissingEvidence, ""
 		}
+		delete(wfExec.Variables, testPartialPassRejectedVar)
 	}
 	if outcome == testOutcomeInfraFailure {
 		output.Status = "failed"
@@ -2410,7 +2468,7 @@ func isTestFailuresHeading(line string) bool {
 
 // containsFixSuggestions reports whether the test-runner output includes
 // imperative fix language in the ## Test Failures section. Such language
-// violates the skill contract: test-runners report symptoms and reproduction
+// violates the prompt contract: test-runners report symptoms and reproduction
 // steps; implementers decide the fix.
 func containsFixSuggestions(output string) bool {
 	section := testFailSectionOf(output)
@@ -2470,7 +2528,7 @@ func skipFixSuggestionLine(trimmed string) bool {
 	return false
 }
 
-// fixSuggestionPatterns match prescriptive code-edit forms that the test skill
+// fixSuggestionPatterns match prescriptive code-edit forms that the test prompt
 // explicitly prohibits, including the "switch X to Y" form that escaped the
 // original task b319d12f implementation.
 var fixSuggestionPatterns = []*regexp.Regexp{

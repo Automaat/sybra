@@ -65,7 +65,7 @@ func (k Key) Hash() string {
 }
 
 // Digest is one periodic retrospective: what worked, what didn't, and what
-// to try next, along with typed takeaways for prompt/skill/model experiments
+// to try next, along with typed takeaways for prompt/model experiments
 // and bounded evidence pointers.
 //
 // Until is the exclusive upper bound of the source window: a digest covers

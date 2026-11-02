@@ -327,7 +327,7 @@ func (s *Service) emitAudit(overlay Overlay, applied bool) {
 }
 
 // flattenRows collects every experiment/variant comparison row across every
-// experiment kind — routing weights all A/B kinds (model/prompt/skill/
+// experiment kind — routing weights all A/B kinds (model/prompt/
 // compound) uniformly, matching how abtest.Config.Experiments itself makes
 // no kind distinction at selection time.
 func flattenRows(rep evaluation.Report) []evaluation.ComparisonBreakdown {
@@ -423,14 +423,13 @@ func buildOverlay(version int, now time.Time, plan WeightPlan, scores []Score, p
 		for _, vid := range variantIDs {
 			s := scoreByKey[expID+"|"+vid]
 			ov.Variants = append(ov.Variants, OverlayVariant{
-				VariantID:          vid,
-				Weight:             weights[vid],
-				Score:              s.Value,
-				Inputs:             s.Inputs,
-				Runs:               s.Runs,
-				ResolvedRuns:       s.ResolvedRuns,
-				InsufficientData:   s.InsufficientData,
-				SkillParityUnknown: s.SkillParityUnknown,
+				VariantID:        vid,
+				Weight:           weights[vid],
+				Score:            s.Value,
+				Inputs:           s.Inputs,
+				Runs:             s.Runs,
+				ResolvedRuns:     s.ResolvedRuns,
+				InsufficientData: s.InsufficientData,
 			})
 		}
 		overlay.Experiments = append(overlay.Experiments, ov)

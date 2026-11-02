@@ -105,9 +105,9 @@ Sign-off (`-s`) always works, and is guaranteed independently by the `prepare-co
 
 Note that `git commit -S` on the command line overrides the `commit.gpgsign=false` Sybra pins on each clone; config is a floor for plain commits, not a way to neutralize an explicit flag.
 
-## Skill and Prompt Compatibility
+## Prompt Compatibility
 
-Existing Sybra skills (`/sybra-tasks`, `/sybra-triage`, `/sybra-plan`, etc.) are provider-agnostic — they use `sybra-cli` and shell commands, not the Claude SDK directly. They work without modification under either provider.
+Sybra delivers every agent's instructions inline in its prompt, so nothing has to be installed for a provider and all providers read the same text.
 
 The orchestrator prompt (`orchestrator/CLAUDE.md`) governs the Sybra orchestrator session, which always runs as a Claude Code agent. Codex is used for implementation agents dispatched by the orchestrator, not for the orchestrator itself.
 

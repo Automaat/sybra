@@ -22,7 +22,7 @@ const evidenceCriterionReviewThreads = "verify_review_threads"
 //
 // A briefed thread counts as untouched when it is still unresolved, still
 // anchored to live code, and has gained no comment since brief time. That is
-// deliberately weaker than requiring resolution: the fix-review skill never
+// deliberately weaker than requiring resolution: fix-review never
 // resolves a reviewer's thread, so gating on resolution would park every
 // honest run.
 //

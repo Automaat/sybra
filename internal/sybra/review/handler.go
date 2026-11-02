@@ -1225,7 +1225,7 @@ func (r *Handler) advanceClosedTaskPR(ctx context.Context, c github.ClosedPR, co
 		return err
 	}
 	// The task just landed; any still-Running/Waiting workflow (e.g.
-	// paused at code_review_staff) is now stale. Cancel it so
+	// paused at code_review_simple) is now stale. Cancel it so
 	// Engine.ResumeStalled doesn't pick the done task back up and rebase
 	// its already-merged branch against origin/main, which self-conflicts
 	// and flips the task back to human-required.

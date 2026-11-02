@@ -45,6 +45,7 @@ sybra/
 │   ├── config/              # YAML config, defaults, validation, docs generation
 │   ├── github/              # Live GitHub integration surface (issues, PRs, checks, reviews)
 │   ├── harnessevolution/    # CLI-driven proposal mining from persisted self-monitor reports
+│   ├── prompts/             # Agent instructions delivered inline in dispatch prompts
 │   ├── selfmonitor/         # In-process report pipeline persisted for CLI/GUI reuse
 │   ├── sybra/               # App wiring, Wails/HTTP services, orchestrator, automation loops
 │   ├── task/                # Task model, parsing, manager/store, planning/review metadata
@@ -53,10 +54,6 @@ sybra/
 ├── cmd/
 │   ├── sybra-cli/           # Multi-command CLI (tasks, projects, PRs, selfmonitor, harness-evolution)
 │   └── sybra-server/        # Headless HTTP/server entrypoint
-├── .claude/
-│   └── skills/              # Claude Code skills (auto-copied to ~/.sybra/skills on start)
-│       ├── sybra-tasks.md # Task CRUD skill
-│       └── sybra-triage.md # Triage workflow skill
 ├── tasks/                   # Markdown task files (runtime data)
 ├── frontend/
 │   ├── src/
@@ -442,7 +439,7 @@ renovate: { enabled: true }
 
 Startup logs an `app.automations` summary line so you can verify the role of each instance at a glance.
 
-**Out of scope:** the orchestrator brain (`/sybra-monitor` Claude Code cron) is external to Sybra — manage it independently per machine via the Claude Code `schedule` skill.
+**Out of scope:** the orchestrator brain (a Claude Code cron) is external to Sybra — manage it independently per machine via the Claude Code `schedule` skill.
 
 ### Server Deployment (home-nas)
 
@@ -616,7 +613,7 @@ cd frontend && npm install
 
 ## CLI (`sybra-cli`)
 
-Standalone binary for task CRUD, used by Claude Code skills. Installed via `go install ./cmd/sybra-cli`.
+Standalone binary for task CRUD, used by agents. Installed via `go install ./cmd/sybra-cli`.
 
 ```bash
 sybra-cli [--json] <command> [flags]
@@ -629,7 +626,7 @@ delete   <id>
 config   dump | doctor
 ```
 
-- `--json` for machine-parseable output (used by skills)
+- `--json` for machine-parseable output (used by agents)
 - `mise run dev` auto-installs latest CLI before launching the desktop app
 - `config dump` prints the resolved `~/.sybra/config.yaml` (env overrides applied, `server.auth_token` redacted); `config doctor` sanity-checks data dirs, `agent.provider`, `agent.headless_permission_mode`, and enabled integrations missing required credentials. See `docs/CONFIG.md` (generated from `internal/config` struct tags via `go generate ./internal/config/...`) for the full key reference.
 
@@ -643,7 +640,7 @@ Target resolution — loopback wherever the configuration allows one, so the tok
 
 `SYBRA_HOST`, `SYBRA_PORT`, and `SYBRA_BIND_ADDR` are deliberately **not** consulted. They name where a server should *listen*; letting one steer a client aims it — and the bearer token it sends next — at whatever answers there. Read `cfg.Cluster` directly, never `ListenAddrs`, which honours `SYBRA_BIND_ADDR` internally.
 
-`--home` / `SYBRA_CONTROL_HOME` / `SYBRA_HOME` select **which board's** config and recorded port to read — they no longer mean "edit files instead". `config`, `health`, `install-skills`, and `cluster` (its `gen-cert`/`nodes` halves touch no board; `reassign` refuses for itself) still run with no server. So does `doctor`, because it is what an operator reaches for when the server is what broke, but it refuses to delete.
+`--home` / `SYBRA_CONTROL_HOME` / `SYBRA_HOME` select **which board's** config and recorded port to read — they no longer mean "edit files instead". `config`, `health`, and `cluster` (its `gen-cert`/`nodes` halves touch no board; `reassign` refuses for itself) still run with no server. So does `doctor`, because it is what an operator reaches for when the server is what broke, but it refuses to delete.
 
 **A board is trusted with this disk only when it serves this home.** `GET /health` reports `home_id`, a digest of the home an instance serves — never the path, since that endpoint carries no authentication and the path would hand over the operator's username and layout. The CLI compares it against `httpserve.HomeID(config.HomeDir())`. Loopback is not the question: two instances on one machine are both loopback and own different homes, and an address-only check let a cleanup delete a live sandbox belonging to the other one. Anything that acts on local files must ask `apiClient.ownsHome`, never `!remote`.
 
@@ -657,13 +654,13 @@ A contended record comes back as `503` and the CLI exits **75**, which is what a
 
 Tests get a board, not a directory: `startTestBoard` (`cmd/sybra-cli/testboard_test.go`) mounts the real stores on the real dispatcher, so a test still asserts against files on disk and a missing task is still a 404. Add a service there when a command starts calling a new one.
 
-### Skills
+### Agent Prompts
 
-Project-local Claude Code skills in `.claude/skills/`:
-- `sybra-tasks.md` — task CRUD via CLI (`/sybra-tasks`)
-- `sybra-triage.md` — triage workflow (`/sybra-triage`)
+Sybra uses no skills. An agent starts from a plain prompt, so nothing is installed on the host and every provider reads the same text. Claude runs pass `--disable-slash-commands` so a skill on the host cannot change what a task does.
 
-Skills are auto-copied to `~/.sybra/skills/` on app startup (via `syncSkills()` in `app.go`).
+Long instructions live in `internal/prompts/data/`. Workflows include them with `{{prompt "<name>"}}`; Go callers use `prompts.Get`. `data/sai/` holds unmodified mandates vendored from `smykla-skalski/sai`, with the pinned commit and update steps in its `README.md`. `adversarial-review.md` and `adversarial-test.md` adapt the upstream procedures to Sybra, so keep the Sybra rules there and leave the mandates untouched.
+
+Startup removes the skills earlier versions installed, by exact name. Never add a slash invocation to a prompt: only Claude resolves one, and `--disable-slash-commands` now refuses it there too.
 
 ### Orchestrator Brain
 

@@ -146,8 +146,8 @@ func TestDefaultConfigUsesCheapBracketForCodeAuthorRoles(t *testing.T) {
 // TestDefaultConfigEnrollsEveryProviderUniformly locks the "equal agents"
 // posture: every default model-comparison experiment enrolls every supported
 // provider at weight 1 so no role is shut out of any provider and the
-// scorecard sees balanced samples. Prompt/skill experiments are exempt: they
-// compare variant text on one fixed provider/model (validatePromptSkillHomogeneity
+// scorecard sees balanced samples. Prompt experiments are exempt: they
+// compare variant text on one fixed provider/model (validatePromptHomogeneity
 // requires this), and their enrollment is controlled by offline eval gates
 // instead of provider-balance checks.
 func TestDefaultConfigEnrollsEveryProviderUniformly(t *testing.T) {
@@ -200,70 +200,18 @@ func TestDefaultConfigUsesExpensiveBracketForReviewRoles(t *testing.T) {
 				}
 				wantExp := "review-expensive"
 				if role == "review" {
-					wantExp = "review-tighten-instructions-pl-a2d853b2c1d9"
+					wantExp = "review-role-expensive"
 				}
 				if a.ExperimentID != wantExp {
 					t.Fatalf("ExperimentID = %q, want %s", a.ExperimentID, wantExp)
 				}
 				switch a.VariantID {
-				case "claude-opus", "codex-gpt-5.5", "copilot-gemini-3.1-pro", "opencode-glm-5.2", "pl-a2d853b2c1d9-codex-gpt-5.5":
+				case "claude-opus", "codex-gpt-5.5", "copilot-gemini-3.1-pro", "opencode-glm-5.2":
 				default:
 					t.Fatalf("VariantID = %q, want expensive variant", a.VariantID)
 				}
 			}
 		})
-	}
-}
-
-func TestDefaultConfigReviewTightenVariantIsDigestedPromptTransform(t *testing.T) {
-	cfg := enabledDefaultConfig()
-	var found *Variant
-	for i := range cfg.Experiments {
-		if cfg.Experiments[i].ID != "review-tighten-instructions-pl-a2d853b2c1d9" {
-			continue
-		}
-		if cfg.Experiments[i].KindValue() != "compound" {
-			t.Fatalf("Kind = %q, want compound", cfg.Experiments[i].KindValue())
-		}
-		if cfg.Experiments[i].Subject == nil || cfg.Experiments[i].Subject.Role != "review" {
-			t.Fatalf("Subject = %+v, want role review", cfg.Experiments[i].Subject)
-		}
-		for j := range cfg.Experiments[i].Variants {
-			if cfg.Experiments[i].Variants[j].ID == "pl-a2d853b2c1d9-codex-gpt-5.5" {
-				found = &cfg.Experiments[i].Variants[j]
-			}
-		}
-	}
-	if found == nil {
-		t.Fatal("prompt-lab review variant not found")
-	}
-	if found.Version != "pl-a2d853b2c1d9" {
-		t.Fatalf("Version = %q, want proposal id", found.Version)
-	}
-	if found.PromptTransform == nil || found.PromptTransform.Op != "append" || found.PromptTransform.Text != ReviewTightenInstructionsPLA2D853B2C1D9 {
-		t.Fatalf("PromptTransform = %+v, want append of reviewed text", found.PromptTransform)
-	}
-	if want := digestString(ReviewTightenInstructionsPLA2D853B2C1D9); found.Digest != want {
-		t.Fatalf("Digest = %q, want %q", found.Digest, want)
-	}
-
-	data, err := os.ReadFile("../prompteval/testdata/promptlab-review-tighten-codex-variants.json")
-	if err != nil {
-		t.Fatalf("read offline fixture: %v", err)
-	}
-	var fixtures []struct {
-		ID     string `json:"id"`
-		Digest string `json:"digest"`
-		Prompt string `json:"prompt"`
-	}
-	if err := json.Unmarshal(data, &fixtures); err != nil {
-		t.Fatalf("parse offline fixture: %v", err)
-	}
-	if len(fixtures) != 1 {
-		t.Fatalf("offline fixture count = %d, want 1", len(fixtures))
-	}
-	if fixtures[0].ID != found.ID || fixtures[0].Digest != found.Digest || fixtures[0].Prompt != found.PromptTransform.Text {
-		t.Fatalf("offline fixture = %+v, want id/digest/prompt from default variant", fixtures[0])
 	}
 }
 
@@ -533,34 +481,6 @@ func TestSelectEligibleStillErrorsWhenAllWeightsAreZero(t *testing.T) {
 	}
 }
 
-func TestSelectPromptSkillPayload(t *testing.T) {
-	enabled := true
-	cfg := Config{Enabled: &enabled, Experiments: []Experiment{{
-		ID:             "payload",
-		Kind:           "compound",
-		AssignmentUnit: "task",
-		Roles:          []string{"implementation"},
-		Variants: []Variant{{
-			ID:              "v2",
-			Provider:        "codex",
-			Model:           "gpt-5.5",
-			PromptTransform: &PromptTransform{Op: "append", Text: "\nUse the variant."},
-			SkillAliases:    map[string]string{"/sybra-test": "/sybra-test-v2"},
-			Weight:          1,
-		}},
-	}}}
-	a, ok, err := Select(cfg, "task-1", "implementation", "implement")
-	if err != nil || !ok {
-		t.Fatalf("Select ok=%v err=%v", ok, err)
-	}
-	if a.PromptTransform == nil || a.PromptTransform.Op != "append" || a.PromptTransform.Text != "\nUse the variant." {
-		t.Fatalf("PromptTransform = %+v", a.PromptTransform)
-	}
-	if got := a.SkillAliases["sybra-test"]; got != "sybra-test-v2" {
-		t.Fatalf("SkillAliases[sybra-test] = %q", got)
-	}
-}
-
 func TestValidateVariantPromptTransform(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -580,31 +500,6 @@ func TestValidateVariantPromptTransform(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := validateVariant("exp", Variant{ID: "v", Provider: "claude", Model: "sonnet", PromptTransform: tt.pt})
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("validateVariant err = %v, wantErr %v", err, tt.wantErr)
-			}
-		})
-	}
-}
-
-func TestValidateVariantSkillAliases(t *testing.T) {
-	tests := []struct {
-		name    string
-		aliases map[string]string
-		wantErr bool
-	}{
-		{name: "nil"},
-		{name: "slash and no slash", aliases: map[string]string{"/sybra-test": "sybra-test-v2"}},
-		{name: "empty source", aliases: map[string]string{"": "sybra-test-v2"}, wantErr: true},
-		{name: "empty target", aliases: map[string]string{"sybra-test": ""}, wantErr: true},
-		{name: "whitespace source", aliases: map[string]string{" sybra-test": "sybra-test-v2"}, wantErr: true},
-		{name: "path source", aliases: map[string]string{"tmp/sybra-test": "sybra-test-v2"}, wantErr: true},
-		{name: "dollar target", aliases: map[string]string{"sybra-test": "$sybra-test-v2"}, wantErr: true},
-		{name: "uppercase target", aliases: map[string]string{"sybra-test": "Sybra-Test-V2"}, wantErr: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := validateVariant("exp", Variant{ID: "v", Provider: "claude", Model: "sonnet", SkillAliases: tt.aliases})
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("validateVariant err = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -658,7 +553,6 @@ experiments:
     assignment_unit: task
     subject:
       role: review
-      skill_name: sybra-test
     variants:
       - id: control
         provider: codex
@@ -684,9 +578,6 @@ experiments:
 	if got := cfg.Experiments[0].Variants[1].Version; got != "v2" {
 		t.Fatalf("version = %q", got)
 	}
-	if got := cfg.Experiments[1].Subject.SkillName; got != "sybra-test" {
-		t.Fatalf("skill_name = %q", got)
-	}
 	if got := cfg.Experiments[1].Variants[1].Digest; got != "sha256:skill" {
 		t.Fatalf("digest = %q", got)
 	}
@@ -696,9 +587,6 @@ func TestConfigValidatePromptAndSkillAllowWorkflowOnlySubject(t *testing.T) {
 	for _, kind := range []string{"prompt", "skill"} {
 		t.Run(kind, func(t *testing.T) {
 			subject := &Subject{WorkflowID: "simple-task"}
-			if kind == "skill" {
-				subject.SkillName = "sybra-test"
-			}
 			cfg := Config{Experiments: []Experiment{{
 				ID:      kind + "-workflow-only",
 				Kind:    kind,
@@ -756,9 +644,6 @@ func TestConfigValidatePromptSkillRejectsProviderModelReasoningDrift(t *testing.
 		t.Run(tt.name, func(t *testing.T) {
 			expID := strings.ReplaceAll(tt.name, " ", "-")
 			subject := &Subject{StepID: "implement"}
-			if tt.kind == "skill" {
-				subject.SkillName = "sybra-test"
-			}
 			cfg := Config{Experiments: []Experiment{{
 				ID:      expID,
 				Kind:    tt.kind,
@@ -770,7 +655,7 @@ func TestConfigValidatePromptSkillRejectsProviderModelReasoningDrift(t *testing.
 			}}}
 			err := cfg.Validate()
 			if err == nil {
-				t.Fatal("Validate should reject prompt/skill model attribution drift")
+				t.Fatal("Validate should reject prompt model attribution drift")
 			}
 			msg := err.Error()
 			for _, want := range tt.wantFields {
@@ -976,24 +861,6 @@ func TestConfigValidateRejectsMissingPromptSkillSubject(t *testing.T) {
 	}
 }
 
-func TestConfigValidateRejectsMissingSkillName(t *testing.T) {
-	cfg := Config{Experiments: []Experiment{{
-		ID:      "skill-no-name",
-		Kind:    "skill",
-		Subject: &Subject{StepID: "implement"},
-		Variants: []Variant{
-			{ID: "v", Provider: "claude", Model: "sonnet", Weight: 1},
-		},
-	}}}
-	err := cfg.Validate()
-	if err == nil {
-		t.Fatal("Validate should reject skill experiment without subject skill_name")
-	}
-	if !strings.Contains(err.Error(), "skill_name") {
-		t.Fatalf("error %q does not contain %q", err.Error(), "skill_name")
-	}
-}
-
 func TestSelectIgnoresProviderDriftOnIneligibleVariant(t *testing.T) {
 	enabled := true
 	cfg := Config{Enabled: &enabled, Experiments: []Experiment{{
@@ -1023,9 +890,6 @@ func TestConfigValidateIgnoresZeroWeightPromptSkillDrift(t *testing.T) {
 	for _, kind := range []string{"prompt", "skill"} {
 		t.Run(kind, func(t *testing.T) {
 			subject := &Subject{Role: "implementation"}
-			if kind == "skill" {
-				subject.SkillName = "sybra-test"
-			}
 			cfg := Config{Experiments: []Experiment{{
 				ID:      kind + "-zero-weight",
 				Kind:    kind,

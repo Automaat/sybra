@@ -9,13 +9,10 @@ import (
 	"github.com/Automaat/sybra/internal/attribution"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
-	"github.com/Automaat/sybra/internal/skillinvoke"
 )
 
-// The dispatch prompt carries the whole procedure, so a run must not depend on
-// a skill resolving: a slash invocation only runs natively on claude, and it
-// also sets RunConfig.RequestedSkill, which arms a receipt gate for a skill this
-// path no longer uses.
+// The dispatch prompt carries the whole procedure, so a run depends on nothing
+// installed on the host.
 func TestFixReviewPromptsAreSelfContained(t *testing.T) {
 	t.Parallel()
 
@@ -26,9 +23,6 @@ func TestFixReviewPromptsAreSelfContained(t *testing.T) {
 	}
 
 	for name, prompt := range prompts {
-		if names := skillinvoke.InvokedNames(prompt); len(names) != 0 {
-			t.Errorf("%s prompt invokes skills %v, which arms the skill-receipt gate", name, names)
-		}
 		for _, want := range []string{
 			"reviewThreads(first: 100)",
 			"isResolved: false",

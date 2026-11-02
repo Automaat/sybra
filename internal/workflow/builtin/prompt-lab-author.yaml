@@ -1,7 +1,7 @@
 id: prompt-lab-author
 name: Prompt Lab — Author Variant
 description: >-
-  Human-approved Prompt Lab proposal. Author a concrete prompt/skill A/B
+  Human-approved Prompt Lab proposal. Author a concrete prompt A/B
   variant, run the offline prompt eval gate, then hand the repo change through
   the normal review/testing/PR pipeline.
 builtin: true
@@ -36,21 +36,19 @@ steps:
         The task body contains the Proposal ID, subject role, candidate intent,
         evidence, expected impact, and offline-eval note. Do not treat the
         proposal text as the final variant text; author the actual
-        prompt/skill change in this repo.
+        prompt change in this repo.
 
         Required outcome:
 
-        1. Identify the prompt, workflow prompt, or skill body that controls
+        1. Identify the prompt or workflow prompt that controls
            the proposal's subject role. Keep the change tightly scoped to that
            role/subject.
-        2. Add a versioned A/B experiment variant for the new prompt/skill
+        2. Add a versioned A/B experiment variant for the new prompt
            using Sybra's existing abtest config model. Preserve the baseline
            variant and give the new variant a stable ID derived from the
            Proposal ID.
         3. For prompt variants, set a prompt_transform with resolved text and
-           a digest matching the exact bytes evaluated offline. For skill
-           variants, use skill_aliases or the existing skill-versioning
-           mechanism if present.
+           a digest matching the exact bytes evaluated offline.
         4. Create or update the smallest useful offline golden cases and
            candidate-variant JSON needed to screen this change. Run:
 

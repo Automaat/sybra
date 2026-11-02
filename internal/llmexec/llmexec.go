@@ -315,7 +315,7 @@ func invocation(p, prompt, model string, enableTools bool, schemaPath string) (n
 		args = append(args, prompt)
 		return providerid.OpenCode, args, ""
 	default:
-		args := []string{"-p", prompt, "--output-format", "json"}
+		args := []string{"-p", prompt, "--output-format", "json", "--disable-slash-commands"}
 		if enableTools {
 			args = append(args, "--dangerously-skip-permissions")
 		} else {

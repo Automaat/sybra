@@ -25,7 +25,7 @@ Complex tasks go through a planning phase. Simple tasks go straight to execution
 - **Planning workflow** — complex tasks get a plan that humans review before implementation starts
 - **Spotlight** — keyboard-driven task creation from anywhere in the app
 - **Audit log** — structured NDJSON event log for failure analysis and cycle-time tracking
-- **CLI** (`sybra-cli`) — task CRUD from the terminal, used by Claude Code skills
+- **CLI** (`sybra-cli`) — task CRUD from the terminal, used by agents
 
 ## Tech stack
 
@@ -73,7 +73,7 @@ project  list|get|create|delete
 audit    [--since 7d] [--summary]
 ```
 
-Use `--json` for machine-readable output (required by Claude Code skills).
+Use `--json` for machine-readable output (what agents use).
 
 ## Task format
 
@@ -104,8 +104,6 @@ sybra-cli create --title "Add feature" --project "owner/repo"
 ## Orchestrator
 
 Sybra ships with a Claude Code system prompt (`orchestrator/CLAUDE.md`) that turns a Claude Code session into the orchestration brain — triage, dispatch, monitor, resolve. Load it in any Claude Code session pointed at `~/.sybra/`.
-
-Claude Code skills (`sybra-tasks`, `sybra-triage`, `sybra-plan`, `sybra-evaluate`) are auto-installed to `~/.claude/skills/` on app startup, laid out as `<skill-name>/SKILL.md` subdirectories — the format Claude Code's skill loader requires.
 
 ## File naming conventions
 

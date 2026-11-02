@@ -34,7 +34,7 @@ type Config struct {
 // returned by DefaultConfig. Bump this whenever the built-in experiments'
 // roles, variants, or weights change in a way that persisted configs should
 // pick up automatically.
-const CurrentBuiltinVersion = 8
+const CurrentBuiltinVersion = 9
 
 // BuiltinExperimentIDs lists the experiment IDs owned by Sybra's shipped
 // defaults. A persisted config's experiment is only replaced during a builtin
@@ -45,6 +45,8 @@ var BuiltinExperimentIDs = []string{
 	"code-author-maintenance-cheap",
 	"fix-review-expensive",
 	"review-expensive",
+	"review-role-expensive",
+	// Retired with staff-code-review; kept so a builtin reconcile drops it.
 	"review-tighten-instructions-pl-a2d853b2c1d9",
 	"human-review-restructure-context-pl-50bbd0314913",
 }
@@ -69,17 +71,6 @@ Read the context below in this fixed priority order, not the order it appears:
 3. Only then read agent Result text and the Sybra host log tail, and only as far as needed to explain what steps 1-2 already narrowed down.
 
 If steps 1-2 already establish a clear stall reason — a genuine human-required cause, or a Sybra bug pattern — do not let unrelated noise later in the log tail override that conclusion. In "reason", name which of steps 1-2 grounded your decision before citing any log excerpt.
-`
-
-const ReviewTightenInstructionsPLA2D853B2C1D9 = `
-
-Review variant pl-a2d853b2c1d9: apply a stricter staff-code-review standard before returning a verdict.
-
-- Lead with concrete blocking defects only: correctness, security, data loss, broken workflows, test gaps that can hide a regression, or repository-rule violations.
-- For every finding, name the exact file/line evidence and the user-visible failure mode. If you cannot tie a concern to behavior or a repo rule, omit it.
-- Check that implementation and tests cover the task's current acceptance criteria, including edge cases and failure paths. Treat missing focused tests as a finding when the change is risky or user-visible.
-- Separate must-fix-before-merge issues from optional cleanup; do not block on style preferences, speculative rewrites, or unrelated refactors.
-- If no blocking issues remain, say that clearly and call out any residual test or runtime verification gap.
 `
 
 const ImplementationTightenInstructionsPL41673AA95495 = `
@@ -138,26 +129,24 @@ type CanaryPolicy struct {
 	MinCohort int `yaml:"min_cohort" json:"minCohort"`
 }
 
-// Subject identifies the workflow target for prompt and skill experiments.
+// Subject identifies the workflow target for prompt experiments.
 type Subject struct {
 	WorkflowID string `yaml:"workflow_id,omitempty" json:"workflowId,omitempty"`
 	StepID     string `yaml:"step_id,omitempty" json:"stepId,omitempty"`
 	Role       string `yaml:"role,omitempty" json:"role,omitempty"`
-	SkillName  string `yaml:"skill_name,omitempty" json:"skillName,omitempty"`
 }
 
 // Variant is one provider/model arm of an experiment.
 type Variant struct {
-	ID              string            `yaml:"id" json:"id"`
-	Provider        string            `yaml:"provider" json:"provider"`
-	Model           string            `yaml:"model" json:"model"`
-	ReasoningEffort string            `yaml:"reasoning_effort,omitempty" json:"reasoningEffort,omitempty"`
-	Tier            string            `yaml:"tier,omitempty" json:"tier,omitempty"` // "cheap" or "expensive"
-	Version         string            `yaml:"version,omitempty" json:"version,omitempty"`
-	Digest          string            `yaml:"digest,omitempty" json:"digest,omitempty"`
-	PromptTransform *PromptTransform  `yaml:"prompt_transform,omitempty" json:"promptTransform,omitempty"`
-	SkillAliases    map[string]string `yaml:"skill_aliases,omitempty" json:"skillAliases,omitempty"`
-	Weight          int               `yaml:"weight" json:"weight"`
+	ID              string           `yaml:"id" json:"id"`
+	Provider        string           `yaml:"provider" json:"provider"`
+	Model           string           `yaml:"model" json:"model"`
+	ReasoningEffort string           `yaml:"reasoning_effort,omitempty" json:"reasoningEffort,omitempty"`
+	Tier            string           `yaml:"tier,omitempty" json:"tier,omitempty"` // "cheap" or "expensive"
+	Version         string           `yaml:"version,omitempty" json:"version,omitempty"`
+	Digest          string           `yaml:"digest,omitempty" json:"digest,omitempty"`
+	PromptTransform *PromptTransform `yaml:"prompt_transform,omitempty" json:"promptTransform,omitempty"`
+	Weight          int              `yaml:"weight" json:"weight"`
 }
 
 // PromptTransform describes an optional variant-specific prompt rewrite.
@@ -198,7 +187,6 @@ type Assignment struct {
 	AssignmentUnit  string
 	AssignmentKey   string
 	PromptTransform *PromptTransform
-	SkillAliases    map[string]string
 	// DecisionVersion mirrors the Config's WeightsVersion at selection time
 	// (0 when the config carries no routing overlay), so downstream run
 	// records can be attributed to the routing generation that set this
@@ -231,7 +219,7 @@ func DefaultConfig() Config {
 			codeAuthorMaintenanceCheapExperiment(cheap),
 			fixReviewExpensiveExperiment(expensive),
 			reviewExpensiveExperiment(expensive),
-			reviewTightenInstructionsExperiment(expensive),
+			reviewRoleExperiment(expensive),
 			humanReviewRestructureContextExperiment(),
 		},
 	}
@@ -318,11 +306,10 @@ func reviewExpensiveExperiment(expensive map[string]string) Experiment {
 	}
 }
 
-func reviewTightenInstructionsExperiment(expensive map[string]string) Experiment {
+func reviewRoleExperiment(expensive map[string]string) Experiment {
 	expEnabled := true
 	return Experiment{
-		ID:             "review-tighten-instructions-pl-a2d853b2c1d9",
-		Kind:           "compound",
+		ID:             "review-role-expensive",
 		Enabled:        &expEnabled,
 		AssignmentUnit: "stage",
 		Bracket:        "expensive",
@@ -333,19 +320,6 @@ func reviewTightenInstructionsExperiment(expensive map[string]string) Experiment
 			{ID: "codex-gpt-5.5", Provider: providerid.Codex, Model: expensive[providerid.Codex], Tier: "expensive", Weight: 1},
 			{ID: "copilot-gemini-3.1-pro", Provider: providerid.Copilot, Model: expensive[providerid.Copilot], Tier: "expensive", Weight: 1},
 			{ID: "opencode-glm-5.2", Provider: providerid.OpenCode, Model: expensive[providerid.OpenCode], Tier: "expensive", Weight: 1},
-			{
-				ID:       "pl-a2d853b2c1d9-codex-gpt-5.5",
-				Provider: providerid.Codex,
-				Model:    expensive[providerid.Codex],
-				Tier:     "expensive",
-				Version:  "pl-a2d853b2c1d9",
-				Digest:   digestString(ReviewTightenInstructionsPLA2D853B2C1D9),
-				PromptTransform: &PromptTransform{
-					Op:   "append",
-					Text: ReviewTightenInstructionsPLA2D853B2C1D9,
-				},
-				Weight: 1,
-			},
 		},
 	}
 }
@@ -406,7 +380,7 @@ func (c Config) Validate() error {
 // dispatch, which is recoverable. It matters for edits made outside Sybra and
 // for configs a code change retroactively invalidates: the per-role
 // reasoning-effort baseline decides what an omitted variant effort resolves to,
-// so retuning a role can invalidate an operator's prompt/skill experiment.
+// so retuning a role can invalidate an operator's prompt experiment.
 func (c Config) WithoutInvalidExperiments(report func(id string, err error)) Config {
 	if len(c.Experiments) == 0 {
 		return c

@@ -217,7 +217,7 @@ Expected:
 - `agentRuns[-1]` has `model`, `experimentId`, `variantId`, `assignmentUnit`, and `assignmentKey`.
 - The final NDJSON record in `stats.json` has the same A/B metadata.
 - Copilot smoke runs preserve fractional `premiumRequests` such as `7.5`.
-- Evaluation report includes rows in `byAgentModel` and `byExperimentKind` groups (`kind: "model"`, `"prompt"`, `"skill"`, `"unknown"`), each with a `groups[]` list keyed by `experimentId` (never mixing two experiments' rows), and each `groups[].rows`/`groups[].rowsContribution` breakdown carrying role drilldowns when multiple roles are present.
+- Evaluation report includes rows in `byAgentModel` and `byExperimentKind` groups (`kind: "model"`, `"prompt"`, `"unknown"`), each with a `groups[]` list keyed by `experimentId` (never mixing two experiments' rows), and each `groups[].rows`/`groups[].rowsContribution` breakdown carrying role drilldowns when multiple roles are present.
 
 To test landed-task attribution in Evaluation, append a synthetic audit event in the isolated audit log after the workflow finishes:
 

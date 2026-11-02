@@ -6,13 +6,12 @@
 import { Create as $Create } from "@wailsio/runtime";
 
 /**
- * Subject identifies the workflow target for prompt and skill experiments.
+ * Subject identifies the workflow target for prompt experiments.
  */
 export class Subject {
     "workflowId"?: string;
     "stepId"?: string;
     "role"?: string;
-    "skillName"?: string;
 
     /** Creates a new Subject instance. */
     constructor($$source: Partial<Subject> = {}) {

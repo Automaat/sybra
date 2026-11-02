@@ -8,7 +8,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log/slog"
 	"math"
 	"net/http"
 	"os"
@@ -35,8 +34,6 @@ import (
 	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/provider"
-	"github.com/Automaat/sybra/internal/skills"
-	"github.com/Automaat/sybra/internal/skillsync"
 	"github.com/Automaat/sybra/internal/sybra"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -412,8 +409,6 @@ func dispatch(cmd string, rest []string, cfg *config.Config, jsonOut bool) int {
 		return cmdPromptLab(cfg, api, store, projStore, rest, jsonOut)
 	case "stats":
 		return cmdStats(cfg, api, rest, jsonOut)
-	case "install-skills":
-		return cmdInstallSkills(cfg, jsonOut)
 	case "artifact":
 		return cmdArtifact(api, rest, jsonOut)
 	case "progress":
@@ -562,8 +557,6 @@ func dispatchWithoutBoard(cmd string, rest []string, cfg *config.Config, cause s
 		return cmdDoctor(cfg, nil, false, cause, rest, jsonOut)
 	case "health":
 		return cmdHealth(cfg, rest, jsonOut)
-	case "install-skills":
-		return cmdInstallSkills(cfg, jsonOut)
 	case "cluster":
 		// gen-cert writes a keypair and nodes reads config; only reassign needs
 		// a board, and it refuses for itself. gen-cert in particular is the
@@ -578,7 +571,7 @@ func dispatchWithoutBoard(cmd string, rest []string, cfg *config.Config, cause s
 // runsWithoutServer reports the commands that inspect or repair this machine alone. They stay usable when the board they would otherwise talk to is down, which is what makes them the ones an operator reaches for to find out why it is down.
 func runsWithoutServer(cmd string) bool {
 	switch cmd {
-	case "config", "doctor", "health", "install-skills", "cluster":
+	case "config", "doctor", "health", "cluster":
 		return true
 	}
 	return false
@@ -1297,73 +1290,6 @@ func deriveProjectID(dir string) (string, error) {
 		return "", err
 	}
 	return owner + "/" + repo, nil
-}
-
-// cmdInstallSkills mirrors Sybra's bundled skills into the per-agent skill
-// directories (~/.claude/skills, ~/.codex/skills, ~/.agents/skills) plus the
-// app's skills dir, so the skills are available in interactive Claude Code and
-// Codex sessions in any repo. Reuses the same skillsync.Syncer the app runs at
-// startup, so behaviour (frontmatter validation, orphan pruning) is identical.
-func cmdInstallSkills(cfg *config.Config, jsonOut bool) int {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return fatal(jsonOut, "resolve home dir: %v", err)
-	}
-
-	// Resolve the skill source. Prefer a configured RepoDir; otherwise fall
-	// back to cwd ONLY when it is genuinely the sybra source repo (matching the
-	// app's launched-from-repo behaviour, which provides the richer dir-based
-	// skills). When cwd is some other repo, point at a path without a go.mod so
-	// the syncer uses the embedded bundle instead of installing the wrong
-	// repo's skills.
-	repoDir := cfg.RepoDir
-	if repoDir == "" {
-		if cwd, cwdErr := os.Getwd(); cwdErr == nil && isSybraRepo(cwd) {
-			repoDir = cwd
-		} else {
-			repoDir = config.HomeDir()
-		}
-	}
-
-	var logger *slog.Logger
-	if !jsonOut {
-		logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	}
-	(&skillsync.Syncer{Logger: logger}).Run(skillsync.Options{
-		RepoDir:              repoDir,
-		SkillsFS:             skills.FS,
-		PrimaryDst:           cfg.SkillsDir,
-		SybraHomeDir:         config.HomeDir(),
-		UserHomeDir:          home,
-		DowngradeCommitFlags: !project.NormalizeSigningPolicy(cfg.CommitSigning()).SignsCommits(context.Background()),
-	})
-
-	dsts := []string{
-		cfg.SkillsDir,
-		filepath.Join(home, ".claude", "skills"),
-		filepath.Join(home, ".codex", "skills"),
-		filepath.Join(home, ".copilot", "skills"),
-		filepath.Join(home, ".agents", "skills"),
-	}
-	if jsonOut {
-		return printJSON(map[string]any{"status": "ok", "destinations": dsts})
-	}
-	fmt.Println("Installed Sybra skills to:")
-	for _, d := range dsts {
-		fmt.Printf("  %s\n", d)
-	}
-	return 0
-}
-
-// isSybraRepo reports whether dir is the sybra source checkout, by matching the
-// module path in its go.mod. Used to gate the cwd fallback in install-skills so
-// it never installs an unrelated repo's skills.
-func isSybraRepo(dir string) bool {
-	data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
-	if err != nil {
-		return false
-	}
-	return strings.Contains(string(data), "module github.com/Automaat/sybra")
 }
 
 // findActiveDuplicate looks for an existing non-terminal task that matches
@@ -2893,7 +2819,7 @@ func usageProjectAndOps() {
   harness-evolution run [--lookback 168h] [--min-cluster-size 2] [--file] [--json]
            Cluster selfmonitor failures into governed harness-change proposals.
   prompt-lab run [--lookback 168h] [--min-samples 5] [--file] [--dry-run] [--json]
-           Scaffold versioned prompt/skill variant proposals from fleet evidence.
+           Scaffold versioned prompt variant proposals from fleet evidence.
   stats lifecycle [--since 30d] [--slowest N] [--json]
            Per-phase lead-time breakdown (planning/implementing/testing/review/
            waiting) for tasks that landed in the window — where time is spent.
@@ -2902,11 +2828,6 @@ func usageProjectAndOps() {
   triage classify <id>         Classify a single task (must have status=new) via claude -p
                                and apply the verdict.
   triage classify --all        Classify every task with status=new.
-
-  install-skills               Install/refresh Sybra's bundled skills into
-                               ~/.claude/skills, ~/.codex/skills, ~/.copilot/skills,
-                               ~/.agents/skills (and the app skills dir) for
-                               Claude Code, Codex, and Copilot.
 
   artifact list <task-id>      List artifacts for a task.
   artifact get  <task-id> <name>  Print raw artifact bytes to stdout.

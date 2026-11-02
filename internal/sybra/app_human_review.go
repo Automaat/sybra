@@ -95,7 +95,7 @@ type humanReviewHandler struct {
 	// construction-time snapshot and is never rewritten, so reading the
 	// posture from it alone latches the startup value — the same latch that
 	// had to be fixed in the workflow template, the project store, the review
-	// dispatcher and the skill bundle. Empty means "not late-bound".
+	// dispatcher and the orchestrator instructions. Empty means "not late-bound".
 	signing   atomic.Value
 	abTesting func() abtest.Config
 	tasks     *task.Manager

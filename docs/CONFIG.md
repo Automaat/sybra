@@ -495,7 +495,7 @@ laptop with the source checkout, leave disabled on the server.
 ### MonitorConfig (`supervision.monitor`)
 
 MonitorConfig controls the in-process monitor service that replaces the
-/loop 5m /sybra-monitor skill. Each tick snapshots the board + audit
+legacy 5-minute monitor loop. Each tick snapshots the board + audit
 window, detects anomalies (lost agents, PR gaps, dwell, failure spikes,
 bottlenecks), runs idempotent remediations directly, and dispatches a
 focused headless agent for anomalies that need LLM judgment.
@@ -544,7 +544,7 @@ that the dwell budget (hours) would only catch much later.
 ### SelfMonitorConfig (`supervision.self_monitor`)
 
 SelfMonitorConfig controls the in-process selfmonitor service that
-replaces the /loop 6h /sybra-self-monitor skill. Each tick snapshots
+replaces the legacy 6-hour self-monitor loop. Each tick snapshots
 the latest health report, distills per-finding agent logs into a
 LogSummary, runs a two-stage LLM judge + synthesizer (Phase C), files
 deduped issues via the shared monitor.IssueSink, and autonomously
@@ -585,7 +585,7 @@ it needs no project-type routing — each machine scores its own local data.
 
 ### OfflineEvalConfig (`supervision.evaluation.offline`)
 
-OfflineEvalConfig controls the offline prompt/skill eval runner
+OfflineEvalConfig controls the offline prompt eval runner
 (internal/prompteval) that screens candidate variants before they are
 eligible for online A/B enrollment.
 
@@ -651,8 +651,8 @@ prompt, workflow, permission, retry, validator, or deployment changes itself.
 ### PromptLabConfig (`supervision.prompt_lab`)
 
 PromptLabConfig controls the automated Prompt Lab loop that scaffolds
-versioned prompt/skill variant proposals from fleet evidence (Evaluation
-report + stats). It never authors or applies prompt/skill text itself —
+versioned prompt variant proposals from fleet evidence (Evaluation
+report + stats). It never authors or applies prompt text itself —
 every proposal is filed as a local task whose authoring workflow gates the
 resulting variant through the standard offline-eval + A/B path. Disabled
 by default: unlike HarnessEvolveConfig, a fresh install must not start
@@ -694,7 +694,6 @@ Scalar/root keys that live directly under this namespace.
 | YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
 |---|---|---|---|---|---|---|---|---|---|
 | `storage.paths.tasks` | `string` | `"~/.sybra/tasks"` |  | `SYBRA_TASKS_DIR` | `tasks_dir` | `false` | `immutable` |  |  |
-| `storage.paths.skills` | `string` | `"~/.sybra/.claude/skills"` |  |  | `skills_dir` | `false` | `immutable` |  |  |
 | `storage.paths.repo` | `string` | `""` |  |  | `repo_dir` | `false` | `immutable` |  |  |
 | `storage.paths.projects` | `string` | `"~/.sybra/projects"` |  |  | `projects_dir` | `false` | `immutable` |  |  |
 | `storage.paths.clones` | `string` | `"~/.sybra/clones"` |  |  | `clones_dir` | `false` | `immutable` |  |  |
