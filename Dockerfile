@@ -71,7 +71,7 @@ RUN apt-get update \
 # script that could change or be compromised without any diff in this
 # repo).
 # renovate: datasource=github-releases depName=smykla-skalski/klaudiush
-ARG KLAUDIUSH_VERSION=v1.44.13
+ARG KLAUDIUSH_VERSION=v1.44.14
 RUN ARCH="$(dpkg --print-architecture)" \
     && case "${ARCH}" in \
          amd64|arm64) KLAUDIUSH_ARCH="${ARCH}" ;; \
@@ -92,11 +92,11 @@ RUN ARCH="$(dpkg --print-architecture)" \
 
 # --- Layer C: node CLIs (claude code + codex + opencode), pinned for cache stability ---
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
-ARG CLAUDE_CODE_VERSION=2.1.311
+ARG CLAUDE_CODE_VERSION=2.1.316
 # renovate: datasource=npm depName=@openai/codex
 ARG CODEX_VERSION=0.164.0
 # renovate: datasource=npm depName=opencode-ai
-ARG OPENCODE_VERSION=1.19.4
+ARG OPENCODE_VERSION=1.19.5
 RUN npm install -g \
         "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
         "@openai/codex@${CODEX_VERSION}" \
