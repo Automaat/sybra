@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/executil"
 	"github.com/Automaat/sybra/internal/providerid"
 )
 
@@ -33,11 +34,11 @@ var codexVersionRe = regexp.MustCompile(`\d+\.\d+(?:\.\d+)*`)
 func ProbeClaude(ctx context.Context) (Status, error) {
 	cctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(cctx, providerid.Claude, "auth", "status", "--json")
+	cmd := executil.ProbeCommand(cctx, providerid.Claude, "auth", "status", "--json")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	err := cmd.Run()
+	err := executil.RunProbe(cmd)
 	if err != nil {
 		if isLoggedOutStderr(stderr.String()) {
 			return Status{Provider: providerid.Claude, Healthy: false, Reason: "logged_out", LastCheck: time.Now()}, nil
@@ -54,11 +55,11 @@ func ProbeClaude(ctx context.Context) (Status, error) {
 func ProbeCodex(ctx context.Context) (Status, error) {
 	cctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(cctx, providerid.Codex, "login", "status")
+	cmd := executil.ProbeCommand(cctx, providerid.Codex, "login", "status")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	err := cmd.Run()
+	err := executil.RunProbe(cmd)
 	raw := stdout.Bytes()
 	if len(bytes.TrimSpace(raw)) == 0 {
 		raw = stderr.Bytes()
@@ -101,11 +102,11 @@ var copilotTokenEnvVars = []string{"COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_T
 func ProbeCopilot(ctx context.Context) (Status, error) {
 	cctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(cctx, providerid.Copilot, "--version")
+	cmd := executil.ProbeCommand(cctx, providerid.Copilot, "--version")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	if err := executil.RunProbe(cmd); err != nil {
 		if isLoggedOutStderr(stderr.String()) {
 			return Status{Provider: providerid.Copilot, Healthy: false, Reason: "logged_out", LastCheck: time.Now()}, nil
 		}
@@ -127,11 +128,11 @@ func ProbeCopilot(ctx context.Context) (Status, error) {
 func ProbeOpenCode(ctx context.Context) (Status, error) {
 	cctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(cctx, providerid.OpenCode, "--version")
+	cmd := executil.ProbeCommand(cctx, providerid.OpenCode, "--version")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	if err := executil.RunProbe(cmd); err != nil {
 		if isLoggedOutStderr(stderr.String()) {
 			return Status{Provider: providerid.OpenCode, Healthy: false, Reason: "logged_out", LastCheck: time.Now()}, nil
 		}
@@ -160,11 +161,13 @@ func copilotTokenEnvVar() string {
 func probeCodexVersion(ctx context.Context) string {
 	cctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(cctx, providerid.Codex, "--version").Output()
-	if err != nil {
+	cmd := executil.ProbeCommand(cctx, providerid.Codex, "--version")
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	if err := executil.RunProbe(cmd); err != nil {
 		return ""
 	}
-	return codexVersionRe.FindString(string(out))
+	return codexVersionRe.FindString(stdout.String())
 }
 
 // codexVersionAtLeast reports whether have >= want using dotted numeric
