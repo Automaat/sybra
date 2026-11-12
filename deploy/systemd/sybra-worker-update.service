@@ -13,11 +13,13 @@ EnvironmentFile=/etc/sybra/sybra.env
 EnvironmentFile=/etc/sybra/sybra-agentd.env
 # Deployment and gh must resolve only through root-controlled executables.
 # EnvironmentFile can override Environment=, so fix PATH at exec time.
-ExecStart=/usr/bin/env PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin XDG_CACHE_HOME=/var/lib/sybra-worker-update/cache /opt/sybra/bin/sybra-worker-update -config /etc/sybra/worker-update.yaml
+ExecStart=/usr/bin/env PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin XDG_CACHE_HOME=/var/lib/sybra-worker-update/cache /usr/local/lib/sybra/bin/sybra-worker-update -config /etc/sybra/worker-update.yaml
 TimeoutStartSec=11min
 NoNewPrivileges=true
 ProtectHome=read-only
 ProtectSystem=strict
-ReadWritePaths=/opt/sybra /var/lib/sybra-worker-update
+# Root-owned tree: the service account must not be able to replace the
+# updater, a release, or the current link (every ancestor is checked).
+ReadWritePaths=/usr/local/lib/sybra/worker /var/lib/sybra-worker-update
 PrivateTmp=true
 # A separate deployment helper; never starts/restarts sybra.service.

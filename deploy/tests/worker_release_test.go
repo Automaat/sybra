@@ -81,3 +81,45 @@ func TestWorkerUpdaterOnlyOwnsDeployment(t *testing.T) {
 		t.Fatal("timer targets wrong service")
 	}
 }
+
+// A co-hosted board owns /opt/sybra as the service account, and the updater
+// rejects any input with a non-root ancestor: root-run worker-update paths
+// there fail on every timer tick.
+func TestWorkerUpdatePathsAvoidServiceAccountTree(t *testing.T) {
+	const root = "/usr/local/lib/sybra/"
+	for _, file := range []string{
+		"../systemd/sybra-worker-update.service",
+		"../systemd/sybra-worker-update-github-app.conf",
+		"../systemd/sybra-agentd-standalone.conf",
+		"../worker-update.yaml.example",
+		"../bin/sybra-worker-github-auth.py",
+	} {
+		t.Run(file, func(t *testing.T) {
+			data, err := os.ReadFile(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			text := string(data)
+			if strings.Contains(text, "/opt/sybra") {
+				t.Error("root-run worker update path under /opt/sybra")
+			}
+			if !strings.Contains(text, root) {
+				t.Error("missing root-owned worker update path", root)
+			}
+		})
+	}
+	unit, err := os.ReadFile("../systemd/sybra-worker-update.service")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(strings.Split(string(unit), "\n"), "ReadWritePaths=/usr/local/lib/sybra/worker /var/lib/sybra-worker-update") {
+		t.Error("updater may write outside its release tree and state")
+	}
+	helper, err := os.ReadFile("../bin/sybra-worker-github-auth.py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(helper), `UPDATER = "`+root+`bin/sybra-worker-update"`) {
+		t.Error("auth helper executes an updater outside the root-owned tree")
+	}
+}
