@@ -139,7 +139,7 @@ def main():
         if os.geteuid() != 0 or sys.argv[1:] not in ([], ["--check-auth"]):
             raise AuthError("run as root, optionally with --check-auth")
         trusted_path(UPDATER)
-        trusted_path(UPDATE_CONFIG, private=True)
+        trusted_path(UPDATE_CONFIG)
         try:
             token = installation_token(load_config())
         except Exception:

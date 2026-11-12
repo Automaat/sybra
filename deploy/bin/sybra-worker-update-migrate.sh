@@ -27,21 +27,31 @@ die() {
 
 [[ "$(id -u)" == 0 ]] || die "run as root"
 
+# Stop the timer first so no update starts between the journal check and the
+# move. A running update is left alone, not killed mid-operation.
+systemctl stop sybra-worker-update.timer || true
+if systemctl is-active --quiet sybra-worker-update.service; then
+  die "sybra-worker-update.service is running; retry when it finishes"
+fi
+
 # An in-flight operation holds the worker and its journal names old paths.
 if [[ -e "$JOURNAL" ]]; then
-  phase="$(grep -o '"phase":"[a-z-]*"' "$JOURNAL" | head -n 1 | cut -d'"' -f4 || true)"
+  phase="$(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1])).get("phase", ""))' "$JOURNAL" 2>/dev/null)" ||
+    die "cannot read $JOURNAL; inspect it before migrating"
   case "$phase" in
     "" | complete | retired | quarantined) ;;
     *) die "update operation in phase '$phase' is in flight; let it finish first" ;;
   esac
 fi
 
+for key in release_root current_link; do
+  grep -q "^$key: " "$UPDATE_CONFIG" || die "$UPDATE_CONFIG has no top-level '$key:' line to rewrite"
+done
+
 target="$(readlink "$OLD_ROOT/worker-current")" || die "$OLD_ROOT/worker-current is not a symlink"
 revision="$(basename "$target")"
 [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || die "current worker target is not a full SHA release"
 [[ "$target" == "$OLD_ROOT/worker-releases/$revision" ]] || die "current worker target is outside $OLD_ROOT/worker-releases"
-
-systemctl stop sybra-worker-update.timer sybra-worker-update.service || true
 
 install -d -o root -g root -m 0755 "$NEW_ROOT" "$NEW_ROOT/bin" "$NEW_ROOT/worker" "$NEW_ROOT/worker/releases"
 
@@ -70,10 +80,15 @@ install -o root -g root -m 0755 "$DEPLOY_DIR/bin/sybra-worker-github-auth.py" "$
 ln -sfn "$release" "$NEW_ROOT/worker/current.migrating"
 mv -T "$NEW_ROOT/worker/current.migrating" "$NEW_ROOT/worker/current"
 
+cp -p -- "$UPDATE_CONFIG" "$UPDATE_CONFIG.pre-migrate"
 sed -i \
   -e "s#^release_root: .*#release_root: $NEW_ROOT/worker/releases#" \
   -e "s#^current_link: .*#current_link: $NEW_ROOT/worker/current#" \
   "$UPDATE_CONFIG"
+if ! grep -qx "release_root: $NEW_ROOT/worker/releases" "$UPDATE_CONFIG" ||
+  ! grep -qx "current_link: $NEW_ROOT/worker/current" "$UPDATE_CONFIG"; then
+  die "rewriting $UPDATE_CONFIG failed; the original is at $UPDATE_CONFIG.pre-migrate"
+fi
 
 install -o root -g root -m 0644 "$DEPLOY_DIR/systemd/sybra-worker-update.service" "$UNIT_DIR/sybra-worker-update.service"
 install -o root -g root -m 0644 "$DEPLOY_DIR/systemd/sybra-worker-update.timer" "$UNIT_DIR/sybra-worker-update.timer"
@@ -94,5 +109,6 @@ When the worker has no accepted runs:
   systemctl restart sybra-agentd
   systemctl start sybra-worker-update.timer
 The old $OLD_ROOT/worker-releases, $OLD_ROOT/worker-current and
-$OLD_ROOT/bin/sybra-worker-* are unused now; remove them after verifying.
+$OLD_ROOT/bin/sybra-worker-* and $UPDATE_CONFIG.pre-migrate are unused now;
+remove them after verifying.
 EOF
