@@ -36,10 +36,12 @@ by quota. Repeated error-log records are not unique failed runs.
    the old board's database, registry, logs, and worktrees. Do not delete or
    copy a live worker's state root to create another identity.
 2. Build `./cmd/sybra-agentd` from the green, merged revision for the worker OS.
-   Stage an immutable release under `/opt/sybra/worker-releases/<revision>/`.
+   Stage an immutable release under
+   `/usr/local/lib/sybra/worker/releases/<revision>/` (root-owned, every ancestor
+   too).
    Validate it using `-check-config -config /etc/sybra/sybra-agentd.yaml` in the
    existing service environment; do not print the environment or token.
-   Point `/opt/sybra/worker-current` at this release. Retain the previous target
+   Point `/usr/local/lib/sybra/worker/current` at this release. Retain the previous target
    for rollback. Do not point it inside the full-board release-pruning tree.
 3. Back up and upgrade [the base unit](../deploy/systemd/sybra-agentd.service)
    at `/etc/systemd/system/sybra-agentd.service`, preserving any host-specific

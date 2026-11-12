@@ -75,6 +75,9 @@ Layout on the box:
   quarantine/    <sha+config-fingerprint>.reason markers for rejected candidates
   deploy-state/  per-candidate health-failure counters + phase detail logs (host-local, never shipped)
   deploy.lock    flock'd across build + health-check so they never overlap
+/usr/local/lib/sybra/    root-owned; only on hosts enrolled in worker updates (docs/worker-updates.md)
+  bin/           sybra-worker-update, sybra-worker-github-auth.py
+  worker/releases/<sha>/, worker/current
 /etc/sybra/sybra.env
 /data/sybra/home  →  HOME=/home/sybra/.sybra  (config, tasks, worktrees, agent registry)
 ```
@@ -230,7 +233,9 @@ echo "deb [signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://
   > /etc/apt/sources.list.d/github-cli.list
 apt-get update && apt-get install -y gh
 
-install -d -o sybra -g sybra /opt/sybra /opt/sybra/bin /opt/sybra/review-src /etc/sybra
+install -d -o sybra -g sybra /opt/sybra /opt/sybra/bin /opt/sybra/review-src
+# Root-only: the worker updater trusts nothing with a non-root ancestor.
+install -d -o root -g root -m 0755 /etc/sybra
 # releases/, current, last-good, quarantine/, deploy-state/, deploy.lock are
 # created on demand by sybra-build.sh/sybra-healthcheck.sh — nothing to
 # pre-create for them.

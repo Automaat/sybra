@@ -50,9 +50,14 @@ lost while the worker resumed accepting work.
 
 Use the standalone unit/drop-in from the
 [worker-only rollout](factory-rollout.md#worker-only-rollout), with
-`/opt/sybra/worker-current` pointing to a retained, known full-SHA release under
-`/opt/sybra/worker-releases`. Do not enable the old `sybra.service` on an
-execution-only host.
+`/usr/local/lib/sybra/worker/current` pointing to a retained, known full-SHA
+release under `/usr/local/lib/sybra/worker/releases`. Do not enable the old
+`sybra.service` on an execution-only host.
+
+Everything the root updater executes or switches lives under the root-owned
+`/usr/local/lib/sybra`, never under `/opt/sybra`. A co-hosted board needs
+`/opt/sybra` owned by the `sybra` account, and the updater rejects any path
+with a non-root or group/world-writable ancestor.
 
 1. Upgrade the leader through its normal green-CI deployment. Wait for the
    matching main CI artifact to finish publication.
@@ -63,7 +68,8 @@ execution-only host.
    --source-digest SHA --signer-digest SHA --deny-self-hosted-runners
    --hostname github.com`, replacing `SHA` with the leader's full revision.
 3. Install the verified updater as root-owned mode `0755` at
-   `/opt/sybra/bin/sybra-worker-update`. The updater itself is a separately
+   `/usr/local/lib/sybra/bin/sybra-worker-update`
+   (`install -d -o root -g root -m 0755 /usr/local/lib/sybra/bin` first). The updater itself is a separately
    enrolled root helper; worker activation does not silently replace it.
 4. Copy `deploy/worker-update.yaml.example` to `/etc/sybra/worker-update.yaml`.
    Fill the expected board health identity and this daemon's explicit `node_id`;
@@ -80,6 +86,24 @@ execution-only host.
    `systemctl daemon-reload`, then `systemctl enable --now
    sybra-worker-update.timer`. The timer checks about once a minute. The
    service's state directory is created by systemd, mode `0700`.
+7. Optional GitHub App credentials instead of a PAT: install
+   `deploy/bin/sybra-worker-github-auth.py` as root-owned mode `0755` at
+   `/usr/local/lib/sybra/bin/`, put the App's `app_id`/`installation_id` JSON
+   and private key at `/etc/sybra/worker-github-app.{json,pem}` (root, mode
+   `0600`), and install `deploy/systemd/sybra-worker-update-github-app.conf` as
+   `sybra-worker-update.service.d/zz-github-app.conf`. Check with
+   `python3 -I /usr/local/lib/sybra/bin/sybra-worker-github-auth.py --check-auth`.
+
+### Migrating from `/opt/sybra`
+
+Earlier enrollments put the updater, releases, and current link under
+`/opt/sybra`. Where `/opt/sybra` is owned by the `sybra` account every run
+fails with `authentication path is not root-controlled` or `deployment inputs
+must be root-owned`. With no operation in flight, run
+`deploy/bin/sybra-worker-update-migrate.sh` as root with `gh` authenticated. It
+re-verifies the current release's attestations, copies it to the new tree,
+rewrites `release_root`/`current_link`, and reinstalls the units. Restart
+`sybra-agentd` once it has no accepted runs, then start the timer.
 
 Check `journalctl -u sybra-worker-update.service`, the current-link target, and
 `/worker/v1/diagnostics?workerId=WORKER_ID`. That filtered endpoint returns only
