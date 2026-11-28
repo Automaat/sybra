@@ -71,7 +71,7 @@ RUN apt-get update \
 # script that could change or be compromised without any diff in this
 # repo).
 # renovate: datasource=github-releases depName=smykla-skalski/klaudiush
-ARG KLAUDIUSH_VERSION=v1.44.14
+ARG KLAUDIUSH_VERSION=v1.44.21
 RUN ARCH="$(dpkg --print-architecture)" \
     && case "${ARCH}" in \
          amd64|arm64) KLAUDIUSH_ARCH="${ARCH}" ;; \
@@ -92,11 +92,11 @@ RUN ARCH="$(dpkg --print-architecture)" \
 
 # --- Layer C: node CLIs (claude code + codex + opencode), pinned for cache stability ---
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
-ARG CLAUDE_CODE_VERSION=2.1.316
+ARG CLAUDE_CODE_VERSION=2.1.332
 # renovate: datasource=npm depName=@openai/codex
 ARG CODEX_VERSION=0.167.0
 # renovate: datasource=npm depName=opencode-ai
-ARG OPENCODE_VERSION=1.19.5
+ARG OPENCODE_VERSION=1.19.6
 RUN npm install -g \
         "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
         "@openai/codex@${CODEX_VERSION}" \
@@ -115,7 +115,7 @@ RUN npm install -g \
 # own tool (npm ci, uv sync, cargo build, ./.sybra/bootstrap.sh …).
 #
 # renovate: datasource=github-releases depName=jdx/mise
-ARG MISE_VERSION=v2026.11.7
+ARG MISE_VERSION=v2026.11.14
 RUN ARCH="$(dpkg --print-architecture)" \
     && case "${ARCH}" in \
          amd64) MISE_ARCH=x64 ;; \

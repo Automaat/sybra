@@ -270,7 +270,7 @@ jobs:
 
       - name: Install nilaway
         # renovate: datasource=go depName=go.uber.org/nilaway
-        run: go install go.uber.org/nilaway/cmd/nilaway@v0.0.0-20260918162853-acb8859b9031
+        run: go install go.uber.org/nilaway/cmd/nilaway@v0.0.0-20261124161746-91ad9bf5d8e6
 
       - name: Run nilaway
         run: |
